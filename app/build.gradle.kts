@@ -1,59 +1,103 @@
 plugins {
-    id("com.android.application")
+    alias(libs.plugins.android.application)
 }
 
 android {
     namespace = "com.capypaint.capy"
-    compileSdk = 36
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.capypaint.capy"
         minSdk = 24
-        targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 35
+        versionCode = 2
+        versionName = "2.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    val releaseKeystorePath = System.getenv("CAPY_KEYSTORE_PATH")
+
     signingConfigs {
-        getByName("debug") {
-            storeFile = file("${rootDir}/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (!releaseKeystorePath.isNullOrBlank()) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("CAPY_KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("CAPY_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("CAPY_KEY_PASSWORD") ?: ""
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debug")
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if (!releaseKeystorePath.isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
     }
 
     buildFeatures {
         buildConfig = true
     }
+}
 
-    lint {
-        abortOnError = false
-        checkReleaseBuilds = false
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
     }
 }
 
 val buildWeb = tasks.register<Exec>("buildWeb") {
-    description = "Compiles the web frontend bundle"
-    workingDir = rootDir
-    commandLine("npm", "run", "build")
+    description = "Builds the web/ TypeScript/Vite frontend bundle into web/dist."
+    group = "build"
+    workingDir = layout.projectDirectory.dir("../web").asFile
+
+    val isWindows = System.getProperty("os.name").lowercase().contains("windows")
+    commandLine(if (isWindows) listOf("cmd", "/c", "npm", "run", "build") else listOf("npm", "run", "build"))
+
+    inputs.dir(layout.projectDirectory.dir("../web/src"))
+    inputs.dir(layout.projectDirectory.dir("../web/public"))
+    inputs.file(layout.projectDirectory.file("../web/package.json"))
+    inputs.file(layout.projectDirectory.file("../web/vite.config.ts"))
+    inputs.file(layout.projectDirectory.file("../web/index.html"))
+    outputs.dir(layout.projectDirectory.dir("../web/dist"))
 }
 
 val syncWebAssets = tasks.register<Sync>("syncWebAssets") {
-    dependsOn(buildWeb)
-    from(file("${rootDir}/dist"))
-    into(file("src/main/assets/www"))
+    val distIndex = layout.projectDirectory.file("../web/dist/index.html").asFile
+    doFirst {
+        if (!distIndex.exists()) {
+            throw GradleException(
+                "Missing web frontend distribution bundle at '${distIndex.absolutePath}'.\n" +
+                "Before compiling the Android launcher, please build the web assets by running:\n" +
+                "  cd web && npm ci && npm run build\n" +
+                "or run the Gradle task ':app:buildWeb' (if Node.js / npm is installed)."
+            )
+        }
+    }
+    from(layout.projectDirectory.dir("../web/dist")) {
+        exclude("**/capy.png")
+    }
+    into(layout.projectDirectory.dir("src/main/assets/www"))
 }
 
 tasks.named("preBuild") {
@@ -61,7 +105,8 @@ tasks.named("preBuild") {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-ktx:1.9.3")
-    implementation("androidx.webkit:webkit:1.12.1")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.ktx)
+    implementation(libs.androidx.webkit)
+    testImplementation(libs.junit)
 }

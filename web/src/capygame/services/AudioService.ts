@@ -37,7 +37,6 @@ class CapyAudioService {
     return this.isMuted;
   }
 
-  // Coin / Berry Pickup Ding
   public playCoin() {
     if (this.isMuted) return;
     this.initContext();
@@ -48,8 +47,8 @@ class CapyAudioService {
     const t = this.ctx.currentTime;
 
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(987.77, t); // B5
-    osc.frequency.exponentialRampToValueAtTime(1318.51, t + 0.08); // E6
+    osc.frequency.setValueAtTime(987.77, t);
+    osc.frequency.exponentialRampToValueAtTime(1318.51, t + 0.08);
 
     gain.gain.setValueAtTime(0.12, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
@@ -61,7 +60,6 @@ class CapyAudioService {
     osc.stop(t + 0.22);
   }
 
-  // Jump Boing
   public playJump() {
     if (this.isMuted) return;
     this.initContext();
@@ -85,7 +83,6 @@ class CapyAudioService {
     osc.stop(t + 0.22);
   }
 
-  // Brick / Block Smash Chime
   public playBrickHit(pitchMultiplier: number = 1.0) {
     if (this.isMuted) return;
     this.initContext();
@@ -109,7 +106,6 @@ class CapyAudioService {
     osc.stop(t + 0.2);
   }
 
-  // Yuzu Munch / Fruit Chomp
   public playChomp() {
     if (this.isMuted) return;
     this.initContext();
@@ -133,7 +129,6 @@ class CapyAudioService {
     osc.stop(t + 0.15);
   }
 
-  // Splash in Hot Spring
   public playSplash() {
     if (this.isMuted) return;
     this.initContext();
@@ -157,13 +152,12 @@ class CapyAudioService {
     osc.stop(t + 0.32);
   }
 
-  // Level Up / Prestige Fanfare
   public playPrestigeFanfare() {
     if (this.isMuted) return;
     this.initContext();
     if (!this.ctx) return;
 
-    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
+    const notes = [523.25, 659.25, 783.99, 1046.5];
     notes.forEach((freq, idx) => {
       if (!this.ctx) return;
       const osc = this.ctx.createOscillator();
@@ -184,13 +178,12 @@ class CapyAudioService {
     });
   }
 
-  // Gentle procedural ambient music loop (zen bamboo notes)
   public startAmbientMusic() {
     if (this.isMuted || this.isMusicPlaying) return;
     this.initContext();
     this.isMusicPlaying = true;
 
-    const pentatonicScale = [261.63, 293.66, 329.63, 392.0, 440.0, 523.25]; // C D E G A C
+    const pentatonicScale = [261.63, 293.66, 329.63, 392.0, 440.0, 523.25];
 
     const playNextNote = () => {
       if (this.isMuted || !this.isMusicPlaying) return;

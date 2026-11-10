@@ -142,14 +142,12 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
 
       - name: Build & typecheck web app (web/)
         if: steps.target.outputs.skip != 'true'
         working-directory: web
         run: |
-          npm ci --prefer-offline --no-audit --no-fund
+          npm install --prefer-offline --no-audit --no-fund
           npm run build
 
       - name: Set up JDK 17
@@ -283,6 +281,12 @@ jobs:
           echo "Listing contents for ${LIST_PATH}" > deployment-directory-listing.txt
           ls -lh "${LIST_PATH}" | tee -a deployment-directory-listing.txt
 
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+        continue-on-error: true
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
@@ -292,6 +296,7 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+        continue-on-error: true
         with:
           artifact_name: github-pages-${{ github.run_attempt }}
 

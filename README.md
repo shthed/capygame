@@ -1,7 +1,7 @@
 # Capy Suite: CapyGame 3D and CapyPaint
 
-[![Web App](https://img.shields.io/badge/Web_App-Play_Online-blue?style=for-the-badge&logo=googlechrome&logoColor=white)](https://shthed.github.io/capy/)
-[![Android APK](https://img.shields.io/badge/Android-Download_APK-green?style=for-the-badge&logo=android&logoColor=white)](https://shthed.github.io/capy/capy.apk)
+[![Web App](https://img.shields.io/badge/Web_App-Play_Online-blue?style=for-the-badge&logo=googlechrome&logoColor=white)](https://shthed.github.io/capygame/)
+[![Android APK](https://img.shields.io/badge/Android-Download_APK-green?style=for-the-badge&logo=android&logoColor=white)](https://shthed.github.io/capygame/capy.apk)
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC_BY--NC--SA_4.0-orange?style=for-the-badge)](./LICENSE.md)
 
 **Capy** is a unified, multi-platform capybara web and Android suite combining two seamless experiences in a single application:
@@ -9,8 +9,9 @@
 1. **CapyGame 3D**: A procedurally generated 3D capybara world-building simulator and endless multi-playstyle game featuring **Capy Sanctuary**, **Spore Lagoon Evolution**, **Yuzu Breakout**, **Number Stampede**, and **Yuzu Mountain Parkour**, unified by a single cross-mode economy, Spore DNA body mutations, and Prestige ascension.
 2. **CapyPaint**: A high-precision vector color-by-number studio with a 5-strategy Web Worker segmentation pipeline, interior centroid labeling, Free Colour mode, and Google Maps-style pinch/pan canvas navigation.
 
-- **[Play Capy in Your Browser](https://shthed.github.io/capy/)**
-- **[Download the Android APK](https://shthed.github.io/capy/capy.apk)**
+- **[Play CapyGame 3D in Your Browser (`shthed/capygame`)](https://shthed.github.io/capygame/)**
+- **[Download the Android APK (`shthed/capygame`)](https://shthed.github.io/capygame/capy.apk)**
+- **[Play Original Capy Suite (`shthed/capy`)](https://shthed.github.io/capy/)**
 
 ---
 

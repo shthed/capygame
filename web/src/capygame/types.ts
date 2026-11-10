@@ -161,8 +161,8 @@ export interface LiveModeTelemetry {
 export interface PlayerStats {
   coins: number;
   totalCoinsEarned: number;
-  dna: number; // Earned in Spore mode & across worlds for evolutionary mutations
-  karma: number; // Prestige currency
+  dna: number;
+  karma: number;
   prestigeLevel: number;
   selectedPlayStyle: PlayStyle;
   activeHat: string;
@@ -170,20 +170,18 @@ export interface PlayerStats {
   activeMutations: MutationId[];
   evolutionStage: number;
 
-  // Endless High Scores across all modes
   highScoreSpore: number;
   highScoreBreakout: number;
   highScoreRunner: number;
   highScoreFallGuys: number;
 
-  // Unified Upgrades
   upgrades: {
-    herdSize: number;       // Starting herd size in Runner & Sanctuary buddies
-    coinMagnet: number;     // Pickup radius for Yuzu & DNA orbs
-    speedBoost: number;     // Movement & paddle speed
-    paddleSize: number;     // Breakout paddle width & multiball chance
-    bounciness: number;     // Jump height & trampoline launch power
-    idleMultiplier: number; // Sanctuary CPS multiplier
+    herdSize: number;
+    coinMagnet: number;
+    speedBoost: number;
+    paddleSize: number;
+    bounciness: number;
+    idleMultiplier: number;
   };
 
   buildings: WorldBuilding[];

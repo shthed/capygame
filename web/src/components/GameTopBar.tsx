@@ -37,7 +37,7 @@ export const GameTopBar: React.FC<GameTopBarProps> = ({
       }}
     >
       {/* Top Left: Progress % / Title Pill */}
-      <div className="pointer-events-auto">
+      <div className="pointer-events-auto flex items-center gap-2">
         <button
           type="button"
           onClick={onOpenSaves}
@@ -72,7 +72,6 @@ export const GameTopBar: React.FC<GameTopBarProps> = ({
 
       {/* Top Right: Actions */}
       <div className="pointer-events-auto flex items-center gap-2">
-        {/* Toggle Preview Button */}
         <button
           type="button"
           onClick={onTogglePreview}
@@ -86,7 +85,6 @@ export const GameTopBar: React.FC<GameTopBarProps> = ({
           {isPreviewMode ? <EyeOff size={18} /> : <Eye size={18} />}
         </button>
 
-        {/* Toggle Full Screen Button */}
         {onToggleFullscreen && (
           <button
             type="button"
@@ -103,7 +101,6 @@ export const GameTopBar: React.FC<GameTopBarProps> = ({
           </button>
         )}
 
-        {/* Pick Image Button */}
         <button
           type="button"
           onClick={onPickImage}
@@ -113,7 +110,6 @@ export const GameTopBar: React.FC<GameTopBarProps> = ({
           <ImagePlus size={18} />
         </button>
 
-        {/* Settings Button */}
         <button
           type="button"
           onClick={onOpenSettings}

@@ -112,7 +112,6 @@ export class CapyModelGenerator {
       metalness: skin === 'golden' ? 0.35 : 0.05,
     });
 
-    // 1. Barrel Body
     const bodyGeo = new THREE.CylinderGeometry(0.52, 0.58, 1.4, 16);
     bodyGeo.rotateX(Math.PI / 2);
     const bodyMesh = new THREE.Mesh(bodyGeo, furMat);
@@ -122,7 +121,6 @@ export class CapyModelGenerator {
     bodyMesh.receiveShadow = true;
     group.add(bodyMesh);
 
-    // Rounded rump cap & chest cap for organic silhouette
     const capGeo = new THREE.SphereGeometry(0.54, 14, 12);
     const chestCap = new THREE.Mesh(capGeo, furMat);
     chestCap.position.set(0, 0.72, 0.65);
@@ -131,7 +129,6 @@ export class CapyModelGenerator {
     rumpCap.position.set(0, 0.72, -0.65);
     group.add(rumpCap);
 
-    // 2. Head Group
     const headGroup = new THREE.Group();
     headGroup.position.set(0, 0.96, 0.78);
 
@@ -142,14 +139,12 @@ export class CapyModelGenerator {
     headMesh.castShadow = true;
     headGroup.add(headMesh);
 
-    // 3. Snout
     const snoutGeo = new THREE.BoxGeometry(0.62, 0.5, 0.55);
     const snoutMesh = new THREE.Mesh(snoutGeo, this.snoutMaterial);
     snoutMesh.position.set(0, 0.05, 0.48);
     snoutMesh.castShadow = true;
     headGroup.add(snoutMesh);
 
-    // 4. Nostrils
     const nostrilGeo = new THREE.BoxGeometry(0.1, 0.06, 0.05);
     const nostrilL = new THREE.Mesh(nostrilGeo, this.noseMaterial);
     nostrilL.position.set(-0.14, 0.18, 0.76);
@@ -158,7 +153,6 @@ export class CapyModelGenerator {
     headGroup.add(nostrilL);
     headGroup.add(nostrilR);
 
-    // 5. Eyes
     const eyeGeo = new THREE.SphereGeometry(0.08, 10, 8);
     const eyeL = new THREE.Mesh(eyeGeo, this.eyeMaterial);
     eyeL.position.set(-0.35, 0.32, 0.22);
@@ -167,7 +161,6 @@ export class CapyModelGenerator {
     headGroup.add(eyeL);
     headGroup.add(eyeR);
 
-    // 6. Ears
     const earGeo = new THREE.CylinderGeometry(0.04, 0.12, 0.18, 8);
     earGeo.rotateZ(Math.PI / 6);
     const earL = new THREE.Mesh(earGeo, this.snoutMaterial);
@@ -178,7 +171,6 @@ export class CapyModelGenerator {
     headGroup.add(earL);
     headGroup.add(earR);
 
-    // 7. Hat Group
     const hatGroup = new THREE.Group();
     hatGroup.position.set(0, 0.48, 0.05);
     this.attachHat(hatGroup, hat);
@@ -186,7 +178,6 @@ export class CapyModelGenerator {
 
     group.add(headGroup);
 
-    // 8. Four Animated Legs
     const legGeo = new THREE.CylinderGeometry(0.14, 0.15, 0.55, 10);
     legGeo.translate(0, -0.25, 0);
 
@@ -206,18 +197,13 @@ export class CapyModelGenerator {
     legBR.position.set(0.36, 0.55, -0.45);
     legBR.castShadow = true;
 
-    group.add(legFL);
-    group.add(legFR);
-    group.add(legBL);
-    group.add(legBR);
+    group.add(legFL, legFR, legBL, legBR);
 
-    // 9. Tail Bump
     const tailGeo = new THREE.SphereGeometry(0.12, 8, 8);
     const tail = new THREE.Mesh(tailGeo, this.snoutMaterial);
     tail.position.set(0, 0.65, -0.82);
     group.add(tail);
 
-    // 10. Spore Mutation Group
     const mutationGroup = new THREE.Group();
     group.add(mutationGroup);
     this.attachMutations(mutationGroup, mutations);
@@ -388,7 +374,6 @@ export class CapyModelGenerator {
       shell.position.set(0, 0.82, -0.05);
       mutationGroup.add(shell);
 
-      // Golden spikes on shell
       for (let i = -1; i <= 1; i++) {
         const spike = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.25, 6), this.yuzuMaterial);
         spike.position.set(0, 1.38, i * 0.42);
@@ -503,14 +488,9 @@ export class CapyModelGenerator {
     pipe.position.set(-radius + 0.7, 1.0, 0);
     group.add(pipe);
 
-    // Floating yuzu fruits in the bath
     for (let i = 0; i < 4; i++) {
       const fy = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 10), this.yuzuMaterial);
-      fy.position.set(
-        Math.cos(i * 1.7) * 0.9,
-        0.28,
-        Math.sin(i * 1.7) * 0.9
-      );
+      fy.position.set(Math.cos(i * 1.7) * 0.9, 0.28, Math.sin(i * 1.7) * 0.9);
       group.add(fy);
     }
 

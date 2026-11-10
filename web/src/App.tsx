@@ -33,7 +33,7 @@ interface UndoHistoryEntry {
 }
 
 export const App: React.FC = () => {
-  // App switcher: 'game' (CapyGame 3D world building) or 'paint' (CapyPaint color-by-number)
+  // App switcher: 'game' (CapyGame 3D multi-mode world builder) or 'paint' (CapyPaint color-by-number)
   const [currentApp, setCurrentApp] = useState<'game' | 'paint'>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('capy_active_app');
