@@ -1,0 +1,351 @@
+name: Deploy GitHub Pages previews
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'notes/**'
+      - '.gitignore'
+      - 'LICENSE'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'notes/**'
+      - '.gitignore'
+      - 'LICENSE'
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Optional branch name to deploy manually (defaults to the selected branch)'
+        required: false
+        type: string
+      allow_without_pr:
+        description: 'Allow preview deployment even if no open PR is found'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      branch: ${{ steps.target.outputs.branch }}
+      safe_branch: ${{ steps.target.outputs.safe_branch }}
+      pr: ${{ steps.target.outputs.pr }}
+      target_dir: ${{ steps.target.outputs.target_dir }}
+      preview_url: ${{ steps.target.outputs.preview_url }}
+      skip: ${{ steps.target.outputs.skip }}
+      checkout_ref: ${{ steps.target.outputs.checkout_ref }}
+    steps:
+      - name: Determine deployment target
+        id: target
+        uses: actions/github-script@v9
+        env:
+          BASE_PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        with:
+          script: |
+            const inputs = context.payload?.inputs || {};
+            const branchInput = inputs.target_branch || '';
+            const allowWithoutPrInput = inputs.allow_without_pr;
+            const prFromPayload = context.payload?.pull_request?.number;
+            const branchFromPayload = context.payload?.pull_request?.head?.ref;
+            const branch = branchInput || branchFromPayload || context.ref.replace('refs/heads/', '');
+            const allowWithoutPr = String(allowWithoutPrInput).toLowerCase() === 'true';
+
+            if (!branch) {
+              core.setFailed('Branch name is required');
+              return;
+            }
+
+            const basePreview = process.env.BASE_PREVIEW_URL;
+            const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
+
+            let prNumber = prFromPayload;
+            if (!prNumber && branch !== 'main') {
+              try {
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  head: `${context.repo.owner}:${branch}`,
+                  state: 'open',
+                  per_page: 1,
+                });
+
+                prNumber = prs[0]?.number;
+              } catch (error) {
+                core.warning(`Failed to look up PR for ${branch}: ${error.message}`);
+              }
+            }
+
+            const targetDir = branch === 'main'
+              ? '.'
+              : prNumber
+                ? `pull/${prNumber}`
+                : `pull/${safeBranch}`;
+
+            const previewUrl = targetDir === '.'
+              ? `${basePreview}/`
+              : `${basePreview}/${targetDir}/`;
+
+            const shouldSkip = branch !== 'main' && !prNumber && !allowWithoutPr;
+
+            const checkoutRef = context.payload?.pull_request?.head?.sha || branchInput || context.sha;
+
+            const summaryLines = [
+              `Branch: ${branch}`,
+              `Checkout ref: ${checkoutRef}`,
+              prNumber ? `PR: #${prNumber}` : 'PR: none found',
+              `Target directory: ${targetDir}`,
+              `Preview URL (Web): ${previewUrl}`,
+              `Android APK URL: ${previewUrl}capy.apk`,
+            ];
+
+            if (shouldSkip) {
+              summaryLines.push('Deployment skipped: branch has no open PR (override with allow_without_pr).');
+            }
+
+            core.setOutput('branch', branch);
+            core.setOutput('safe_branch', safeBranch);
+            core.setOutput('pr', prNumber ? String(prNumber) : '');
+            core.setOutput('target_dir', targetDir);
+            core.setOutput('preview_url', previewUrl);
+            core.setOutput('skip', shouldSkip ? 'true' : 'false');
+            core.setOutput('checkout_ref', checkoutRef);
+
+            core.summary.addRaw(summaryLines.join('\n')).write();
+
+      - name: Check out source
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.target.outputs.checkout_ref }}
+
+      - name: Use Node.js 22
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build & typecheck web app (web/)
+        if: steps.target.outputs.skip != 'true'
+        working-directory: web
+        run: |
+          npm ci --prefer-offline --no-audit --no-fund
+          npm run build
+
+      - name: Set up JDK 17
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        if: steps.target.outputs.skip != 'true'
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Run unit tests and build Debug APK (app/)
+        if: steps.target.outputs.skip != 'true'
+        run: ./gradlew app:testDebugUnitTest app:assembleDebug --build-cache
+
+      - name: Stage build artifacts
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          mkdir -p staging/web
+          cp -r web/dist/* staging/web/
+          mkdir -p staging/apk
+          cp app/build/outputs/apk/debug/app-debug.apk staging/apk/capy.apk
+
+      - name: Upload build artifacts
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-artifacts-${{ github.run_attempt }}
+          path: staging
+          retention-days: 1
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: [build]
+    if: needs.build.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ needs.build.outputs.preview_url }}
+    concurrency:
+      group: deploy-pages
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+      pull-requests: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: build-artifacts-${{ github.run_attempt }}
+          path: staging
+
+      - name: Retrieve existing gh-pages content
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          rm -rf pages
+
+          if git ls-remote --exit-code --heads "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages; then
+            git clone --depth 1 --branch gh-pages "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" pages
+          else
+            git clone --depth 1 "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" pages
+            rm -rf pages/*
+          fi
+
+          rm -rf pages/README
+
+      - name: Prepare site content
+        env:
+          TARGET_DIR: ${{ needs.build.outputs.target_dir }}
+        run: |
+          set -euo pipefail
+
+          DEST_DIR="pages/${TARGET_DIR}"
+
+          if [ "${TARGET_DIR}" = "." ]; then
+            DEST_DIR="pages"
+            mkdir -p "${DEST_DIR}"
+            rsync -avc --delete \
+              --exclude '.git/' \
+              --exclude 'pull/' \
+              staging/web/ "${DEST_DIR}/"
+          else
+            rm -rf "${DEST_DIR}"
+            mkdir -p "${DEST_DIR}"
+            rsync -avc --delete \
+              staging/web/ "${DEST_DIR}/"
+          fi
+
+          cp -f staging/web/index.html "${DEST_DIR}/index.html"
+          cp staging/apk/capy.apk "${DEST_DIR}/capy.apk"
+
+      - name: Sync gh-pages branch (squashed history) and remove .git before artifact upload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_DIR: ${{ needs.build.outputs.target_dir }}
+        run: |
+          set -euo pipefail
+          if [ -d pages/.git ]; then
+            cd pages
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git add -A
+            if ! git diff --cached --quiet || git cat-file -p HEAD | grep -q '^parent '; then
+              git checkout --orphan gh-pages-squashed
+              git add -A
+              git commit -m "Deploy ${TARGET_DIR}"
+              git branch -M gh-pages
+              git push --force origin gh-pages
+            fi
+            cd ..
+            rm -rf pages/.git
+          fi
+
+      - name: Capture deployment directory listing
+        env:
+          TARGET_DIR: ${{ needs.build.outputs.target_dir }}
+        run: |
+          set -euo pipefail
+
+          LIST_PATH="pages/${TARGET_DIR}"
+          echo "Listing contents for ${LIST_PATH}" > deployment-directory-listing.txt
+          ls -lh "${LIST_PATH}" | tee -a deployment-directory-listing.txt
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: pages
+          name: github-pages-${{ github.run_attempt }}
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
+
+      - name: Comment PR with preview & APK links
+        if: needs.build.outputs.pr != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = Number('${{ needs.build.outputs.pr }}');
+            const previewUrl = '${{ needs.build.outputs.preview_url }}';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const marker = '<!-- capy-pages-preview -->';
+            const body = [
+              marker,
+              '### 🚀 Capy Preview & APK Deployed',
+              `- **Workflow Run**: [${context.runId}](${runUrl})`,
+              `- **Web App (\`/\`)**: ${previewUrl}`,
+              `- **Android Debug APK**: [${previewUrl}capy.apk](${previewUrl}capy.apk)`
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+      - name: Output preview link
+        env:
+          TARGET_DIR: ${{ needs.build.outputs.target_dir }}
+          PREVIEW_URL: ${{ needs.build.outputs.preview_url }}
+        run: |
+          {
+            echo "Preview (Web): ${PREVIEW_URL}"
+            echo "Android APK: ${PREVIEW_URL}capy.apk"
+            echo ""
+            echo "Deployment directory listing (pages/${TARGET_DIR}):"
+            echo '```'
+            cat deployment-directory-listing.txt
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
