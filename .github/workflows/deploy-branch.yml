@@ -114,7 +114,6 @@ jobs:
               prNumber ? `PR: #${prNumber}` : 'PR: none found',
               `Target directory: ${targetDir}`,
               `Preview URL (Web): ${previewUrl}`,
-              `Android APK URL: ${previewUrl}capy.apk`,
             ];
 
             if (shouldSkip) {
@@ -150,35 +149,11 @@ jobs:
           npm install --prefer-offline --no-audit --no-fund
           npm run build
 
-      - name: Set up JDK 17
-        if: steps.target.outputs.skip != 'true'
-        uses: actions/setup-java@v6
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Gradle
-        if: steps.target.outputs.skip != 'true'
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
-
-      - name: Run unit tests and build Debug APK (app/)
-        if: steps.target.outputs.skip != 'true'
-        continue-on-error: true
-        run: |
-          chmod +x ./gradlew
-          ./gradlew app:testDebugUnitTest app:assembleDebug --build-cache
-
       - name: Stage build artifacts
         if: steps.target.outputs.skip != 'true'
         run: |
           mkdir -p staging/web
           cp -r web/dist/* staging/web/
-          mkdir -p staging/apk
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk staging/apk/capy.apk
-          fi
 
       - name: Upload build artifacts
         if: steps.target.outputs.skip != 'true'
@@ -251,9 +226,6 @@ jobs:
           fi
 
           cp -f staging/web/index.html "${DEST_DIR}/index.html"
-          if [ -f staging/apk/capy.apk ]; then
-            cp staging/apk/capy.apk "${DEST_DIR}/capy.apk"
-          fi
 
       - name: Sync gh-pages branch (squashed history) and remove .git before artifact upload
         env:
@@ -307,7 +279,7 @@ jobs:
         with:
           artifact_name: github-pages-${{ github.run_attempt }}
 
-      - name: Comment PR with preview & APK links
+      - name: Comment PR with preview link
         if: needs.build.outputs.pr != ''
         uses: actions/github-script@v9
         with:
@@ -318,10 +290,9 @@ jobs:
             const marker = '<!-- capy-pages-preview -->';
             const body = [
               marker,
-              '### 🚀 Capy Preview & APK Deployed',
+              '### Capy Web Preview Deployed',
               `- **Workflow Run**: [${context.runId}](${runUrl})`,
               `- **Web App (\`/\`)**: ${previewUrl}`,
-              `- **Android Debug APK**: [${previewUrl}capy.apk](${previewUrl}capy.apk)`
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
@@ -354,7 +325,6 @@ jobs:
         run: |
           {
             echo "Preview (Web): ${PREVIEW_URL}"
-            echo "Android APK: ${PREVIEW_URL}capy.apk"
             echo ""
             echo "Deployment directory listing (pages/${TARGET_DIR}):"
             echo '```'
