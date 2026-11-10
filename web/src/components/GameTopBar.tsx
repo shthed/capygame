@@ -12,6 +12,7 @@ interface GameTopBarProps {
   onToggleFullscreen?: () => void;
   onOpenSettings: () => void;
   onOpenSaves: () => void;
+  onSwitchToGame?: () => void;
 }
 
 export const GameTopBar: React.FC<GameTopBarProps> = ({
@@ -25,6 +26,7 @@ export const GameTopBar: React.FC<GameTopBarProps> = ({
   onToggleFullscreen,
   onOpenSettings,
   onOpenSaves,
+  onSwitchToGame,
 }) => {
   return (
     <header
@@ -54,6 +56,18 @@ export const GameTopBar: React.FC<GameTopBarProps> = ({
           <span>•</span>
           <span>{progressPercentage}%</span>
         </button>
+
+        {onSwitchToGame && (
+          <button
+            type="button"
+            onClick={onSwitchToGame}
+            title="Switch to CapyGame 3D World"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 shadow-lg backdrop-blur-md transition-all active:scale-95"
+          >
+            <span>🎮</span>
+            <span>CapyGame 3D</span>
+          </button>
+        )}
       </div>
 
       {/* Top Right: Actions */}

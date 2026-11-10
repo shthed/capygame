@@ -14,7 +14,19 @@ For target-specific deep dives, see also:
 
 ---
 
-## Milestone 1: Replay Animation Export & Advanced Gestures
+## Milestone 1: CapyGame 3D Cross-App Synergy & Interactive World Placement
+
+- [ ] **Cross-App CapyPaint to CapyGame 3D Reward Bridge**:
+  - Award CapyCoins and Spore DNA in `capy_game_save_v2` when players complete regions or full artworks in `CapyPaint`.
+  - Render the player's latest completed `CapyPaint` canvas onto a 3D wooden easel monument inside the `Capy Sanctuary` island.
+- [ ] **Interactive Raycast Building Placement Ghost (`sanctuary`)**:
+  - Allow players to toggle a translucent 3D building placement ghost under their pointer on the Sanctuary island terrain to choose exact `(x, z)` coordinates before constructing a structure.
+- [ ] **Dynamic Day, Sunset, and Bioluminescent Night Cycle**:
+  - Add smooth lighting transitions across all 5 `PlayStyle` worlds so `Bioluminescent Tail` mutations, `Sacred Capy Pagoda` lanterns, and 3D World Portals illuminate the night scene.
+
+---
+
+## Milestone 2: Replay Animation Export & Advanced Gestures
 
 - [ ] **Replay Animation Video and GIF Export**:
   - Allow players to export their chronological puzzle completion replay directly as an animated GIF or lightweight WebM/MP4 video to save or share.

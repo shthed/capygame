@@ -23,6 +23,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { ReplayControls } from './components/ReplayControls';
 import { ColorPickerPopover } from './components/ColorPickerPopover';
+import { CapyGameView } from './capygame/components/CapyGameView';
 
 interface UndoHistoryEntry {
   regionId: number;
@@ -32,6 +33,22 @@ interface UndoHistoryEntry {
 }
 
 export const App: React.FC = () => {
+  // App switcher: 'game' (CapyGame 3D world building) or 'paint' (CapyPaint color-by-number)
+  const [currentApp, setCurrentApp] = useState<'game' | 'paint'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('capy_active_app');
+      if (saved === 'paint') return 'paint';
+    }
+    return 'game';
+  });
+
+  const handleSwitchApp = (mode: 'game' | 'paint') => {
+    setCurrentApp(mode);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('capy_active_app', mode);
+    }
+  };
+
   // Persistence & Settings
   const [settings, setSettings] = useState<UserSettings>(() => StorageService.loadSettings());
   const [snapshots, setSnapshots] = useState<SavedSnapshot[]>(() => StorageService.loadSnapshots());
@@ -1602,6 +1619,14 @@ export const App: React.FC = () => {
     [settings.hapticsEnabled]
   );
 
+  if (currentApp === 'game') {
+    return (
+      <div className="relative w-full h-full overflow-hidden bg-slate-950 select-none">
+        <CapyGameView onSwitchToPaint={() => handleSwitchApp('paint')} />
+      </div>
+    );
+  }
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-black select-none">
       {/* Hidden File Picker */}
@@ -1631,6 +1656,7 @@ export const App: React.FC = () => {
           setSettingsInitialTab(3);
           setShowSettings(true);
         }}
+        onSwitchToGame={() => handleSwitchApp('game')}
       />
 
       {/* Full Screen Interactive Canvas */}
