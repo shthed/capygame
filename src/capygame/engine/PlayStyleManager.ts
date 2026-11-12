@@ -50,6 +50,9 @@ import {
   ZONE_LOCATIONS,
   findNearestScaleBandIndex,
   formatPhysicalScaleMeters,
+  OrbitTelemetry,
+  OrbitTimeScaleId,
+  ORBIT_TIME_SCALES,
 } from '../types';
 import { AudioService } from '../services/AudioService';
 import { ProgressionService } from '../services/ProgressionService';
@@ -194,6 +197,7 @@ export interface GameEventCallbacks {
     flashOpacity: number
   ) => void;
   onUniverseScaleChange?: (scaleInfo: UniverseScaleTelemetry) => void;
+  onOrbitTelemetryChange?: (telemetry: OrbitTelemetry) => void;
 }
 
 export class PlayStyleManager {
@@ -231,11 +235,22 @@ export class PlayStyleManager {
 
   public selectedGalaxyIndex: number = 0;
   public selectedStarIndex: number = 0;
-  public selectedPlanetIndex: number = 0;
+  public selectedPlanetIndex: number = 1;
   public selectedLandingIndex: number = 0;
   public selectedCapyHeroIndex: number = 0;
+  public orbitTimeScale: OrbitTimeScaleId = '1_orbit_min';
   public activeBiome: PlanetaryBiomeConfig =
-    COSMIC_GALAXIES[0].starSystems[0].planets[0].landingSpots[0].biome;
+    (COSMIC_GALAXIES[0].starSystems[0].planets.find((p) => p.landingSpots.length > 0)
+      ?.landingSpots[0].biome) || {
+      biomeName: 'Emerald Onsen Bay',
+      skyHex: 0x38bdf8,
+      fogHex: 0x38bdf8,
+      oceanHex: 0x0284c7,
+      islandGrassHex: 0x4ade80,
+      beachSandHex: 0xfde68a,
+      floraPaletteHexes: [0xfef08a, 0xf472b6, 0x93c5fd, 0xd8b4fe, 0xe2e8f0],
+      gravityMultiplier: 1.0,
+    };
   public activeHeroSpec: PlayableCapyHero = PLAYABLE_CAPY_HEROES[0];
 
   private cosmicCamPos = new THREE.Vector3(0, 0, 26);
@@ -1621,11 +1636,38 @@ export class PlayStyleManager {
 
   public selectStarSystem(index: number) {
     const galaxy = COSMIC_GALAXIES[this.selectedGalaxyIndex] || COSMIC_GALAXIES[0];
-    this.selectedStarIndex = THREE.MathUtils.clamp(index, 0, galaxy.starSystems.length - 1);
-    this.selectedPlanetIndex = 0;
+    const star = galaxy.starSystems[this.selectedStarIndex] || galaxy.starSystems[0];
+    const habitableIdx = star.planets.findIndex((p) => p.landingSpots.length > 0);
+    this.selectedPlanetIndex = habitableIdx >= 0 ? habitableIdx : 0;
     this.selectedLandingIndex = 0;
     AudioService.playCosmicWarp(1.25);
     this.setCosmicStage('star_system_view');
+    this.callbacks.onOrbitTelemetryChange?.(this.getOrbitTelemetry());
+  }
+
+  public setOrbitTimeScale(scaleId: OrbitTimeScaleId) {
+    this.orbitTimeScale = scaleId;
+    this.cosmicBuilder.setOrbitTimeScale(scaleId);
+    this.seamlessUniverse.setOrbitTimeScale(scaleId);
+    this.callbacks.onOrbitTelemetryChange?.(this.getOrbitTelemetry());
+  }
+
+  public getOrbitTimeScale(): OrbitTimeScaleId {
+    return this.orbitTimeScale;
+  }
+
+  public getOrbitTelemetry(): OrbitTelemetry {
+    return this.cosmicBuilder.getOrbitTelemetry(this.selectedPlanetIndex);
+  }
+
+  public selectAsteroidBelt() {
+    const galaxy = COSMIC_GALAXIES[this.selectedGalaxyIndex] || COSMIC_GALAXIES[0];
+    const star = galaxy.starSystems[this.selectedStarIndex] || galaxy.starSystems[0];
+    const belt = star.asteroidBelt;
+    const name = belt?.name || 'Main Asteroid Belt';
+    const sub = belt?.subtitle || '2.8 AU · 1,200 Planetesimals';
+    this.callbacks.onModeNotification?.(`${name} · ${sub}`);
+    AudioService.playCoin();
   }
 
   public selectPlanet(index: number) {
@@ -1796,6 +1838,10 @@ export class PlayStyleManager {
         }
         if (cosmicType === 'planet' && typeof index === 'number') {
           this.selectPlanet(index);
+          return true;
+        }
+        if (cosmicType === 'asteroid_belt') {
+          this.selectAsteroidBelt();
           return true;
         }
         if (cosmicType === 'landing' && typeof index === 'number') {
@@ -4796,7 +4842,7 @@ export class PlayStyleManager {
 
       let baseRadius = isFollowingStar ? 64 : 155;
       if (this.cosmicStage === 'galaxy_view') baseRadius = 68;
-      else if (this.cosmicStage === 'star_system_view') baseRadius = 64;
+      else if (this.cosmicStage === 'star_system_view') baseRadius = 82;
       else if (this.cosmicStage === 'planet_orbit') baseRadius = 28;
       const radius = Math.max(10, baseRadius * this.cosmicZoomMultiplier);
 
@@ -4818,6 +4864,8 @@ export class PlayStyleManager {
       this.camera.lookAt(this.cosmicCamLook);
       if (this.cosmicStage === 'universe_flight') {
         this.emitCosmicState();
+      } else if (this.cosmicStage === 'star_system_view') {
+        this.callbacks.onOrbitTelemetryChange?.(this.getOrbitTelemetry());
       }
       return;
     }

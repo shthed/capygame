@@ -117,5 +117,5 @@ npm run build                # Production bundle compilation into dist/
 npm run test:game            # End-to-end Playwright suite (scripts/test-capygame.mjs)
 npm run test:pwa             # Offline Service Worker & PWA manifest verification
 npm run gallery:capture      # Capture 3D district showcase screenshots
-npm run gallery:capture:zoom # Capture all 25 logarithmic universe scale screenshots
+npm run gallery:capture:zoom # Capture all 21 logarithmic universe scale screenshots
 ```

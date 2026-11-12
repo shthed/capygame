@@ -22,10 +22,6 @@ const ALL_SCALE_BANDS = [
   'nebulas',
   'stellar_nurseries',
   'solar_systems',
-  'asteroid_clouds',
-  'gas_giants',
-  'rocky_planets_moons',
-  'habitable_planets',
   'atmosphere',
   'land_masses',
   'ecosystems',
@@ -159,7 +155,7 @@ async function captureCdpPng(cdp) {
       bandTitle: meta?.bandTitle || bandId,
       bandSubtitle: meta?.bandSubtitle || '',
     });
-    console.log(`Captured [${idxStr}/25] ${filename} (${meta?.scientificLabel} — ${meta?.bandTitle})`);
+    console.log(`Captured [${idxStr}/${ALL_SCALE_BANDS.length}] ${filename} (${meta?.scientificLabel} — ${meta?.bandTitle})`);
   }
 
   // 1B. Capture Exact Bug-Audit Scales (10^+13.7m / 326 AU & 10^+17.1m / 14.07 ly) + Unlockable Optics Showcases
@@ -232,6 +228,52 @@ async function captureCdpPng(cdp) {
     mgr.setAllFeaturesUnlocked(false);
   });
   console.log('Captured Reality Rescaler showcase: optics_solar_rescaled_atlas.png');
+
+  // 1C. Capture Unified Stellar System Architecture (Rocky Planets, 3D Main Asteroid Belt, Gas Giants & Orbit Controls)
+  await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return;
+    mgr.selectedGalaxyIndex = 0;
+    mgr.selectStarSystem(0);
+    mgr.cosmicOrbitYaw = 0.65;
+    mgr.cosmicOrbitPitch = 0.42;
+    mgr.cosmicZoomMultiplier = 1.05;
+    mgr.setOrbitTimeScale('1_orbit_min');
+    mgr.tick(0.08);
+    mgr.tick(0.05, 0.06);
+  });
+  await page.waitForTimeout(140);
+  saveToGalleries(await captureCdpPng(cdp), 'cosmic_star_system_unified.png');
+  saveToZoomGalleries(await captureCdpPng(cdp), 'zoom_cosmic_star_system_unified.png');
+  console.log('Captured unified stellar system: cosmic_star_system_unified.png');
+
+  // Fast-Forward Orbital Timescale (1 Orbit/sec Keplerian whirl)
+  await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return;
+    mgr.setOrbitTimeScale('1_orbit_s');
+    for (let s = 0; s < 12; s++) mgr.tick(0.05);
+    mgr.tick(0.05, 0.06);
+  });
+  await page.waitForTimeout(100);
+  saveToGalleries(await captureCdpPng(cdp), 'cosmic_fastforward_orbits.png');
+  saveToZoomGalleries(await captureCdpPng(cdp), 'zoom_cosmic_fastforward_orbits.png');
+  console.log('Captured fast-forward orbits: cosmic_fastforward_orbits.png');
+
+  // Ringed Gas Giant View (Azure Ringworld Kronos)
+  await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return;
+    mgr.selectPlanet(3);
+    mgr.cosmicOrbitYaw = 0.52;
+    mgr.cosmicOrbitPitch = 0.28;
+    mgr.tick(0.05);
+    mgr.tick(0.05, 0.06);
+  });
+  await page.waitForTimeout(120);
+  saveToGalleries(await captureCdpPng(cdp), 'cosmic_gas_giant_rings.png');
+  saveToZoomGalleries(await captureCdpPng(cdp), 'zoom_cosmic_gas_giant_rings.png');
+  console.log('Captured ringed gas giant: cosmic_gas_giant_rings.png');
 
   // 2. Capture Active Surface Gameplay across all 5 Sectors + Compact Single-Line Top Bar Dropdown Showcase
   await page.evaluate(() => {

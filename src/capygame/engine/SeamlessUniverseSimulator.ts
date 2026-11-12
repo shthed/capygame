@@ -7,6 +7,8 @@ import {
   UNIVERSE_SCALE_BANDS,
   UniverseScaleBandId,
   UniverseScaleBandSpec,
+  OrbitTimeScaleId,
+  ORBIT_TIME_SCALES,
 } from '../types';
 import { CapyMeshGroup, CapyModelGenerator } from './CapyModelGenerator';
 import {
@@ -82,16 +84,6 @@ interface SolarPlanetEntry {
   colorCss: string;
 }
 
-interface JovianMoonEntry {
-  name: string;
-  orbitPlanetRadii: number;
-  moonToPlanetRadiusRatio: number;
-  angularSpeed: number;
-  pivot: THREE.Group;
-  moonMesh: THREE.Mesh;
-  glintPoint: THREE.Points;
-  orbitLine: THREE.LineLoop;
-}
 
 const MAX_PROJECTED_MARKERS = 12;
 
@@ -146,11 +138,8 @@ export class SeamlessUniverseSimulator {
   private solarCoronaSprite: THREE.Sprite | null = null;
   private solarBeltPoints: THREE.Points | null = null;
   private solarBeltBaseAu: Float32Array | null = null;
-
-  private jovianMoons: JovianMoonEntry[] = [];
-  private habitableMoonPivot: THREE.Group | null = null;
-  private habitableMoonMesh: THREE.Mesh | null = null;
-  private habitableMoonOrbitLine: THREE.LineLoop | null = null;
+  private solarOortPoints: THREE.Points | null = null;
+  private orbitTimeScaleId: OrbitTimeScaleId = '1_orbit_min';
 
   private atomicNuclearClusterGroup: THREE.Group | null = null;
   private nucleonMeshes: Array<{
@@ -435,18 +424,6 @@ export class SeamlessUniverseSimulator {
           break;
         case 'solar_systems':
           tickFn = this.populateSolarSystemLayer(group, glowWarm);
-          break;
-        case 'asteroid_clouds':
-          tickFn = this.populateAsteroidCloudLayer(group);
-          break;
-        case 'gas_giants':
-          tickFn = this.populateGasGiantLayer(group);
-          break;
-        case 'rocky_planets_moons':
-          tickFn = this.populateRockyPlanetsMoonsLayer(group);
-          break;
-        case 'habitable_planets':
-          tickFn = this.populateHabitablePlanetLayer(group);
           break;
         case 'atmosphere':
           tickFn = this.populateAtmosphereLayer(group);
@@ -1538,16 +1515,134 @@ export class SeamlessUniverseSimulator {
     );
     ecliptic.add(this.solarBeltPoints);
 
+    // Main Asteroid Belt & Kuiper Belt registered navigational markers
+    const asteroidBeltAnchor = new THREE.Object3D();
+    asteroidBeltAnchor.position.set(2.8 * (22.0 / 30.07), 0, 0);
+    ecliptic.add(asteroidBeltAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_asteroid_belt',
+      label: 'Main Asteroid Belt',
+      sublabel: '2.2–3.2 AU · Ceres & Silicates',
+      node: asteroidBeltAnchor,
+      layerBandId: 'solar_systems',
+      minLog: 10.4,
+      maxLog: 14.2,
+      targetLogMeters: 11.65,
+      colorCss: '#d6d3d1',
+      physicalRadiusWorldAtOneToOne: 2.8 * (22.0 / 30.07),
+    });
+
+    const kuiperAnchor = new THREE.Object3D();
+    kuiperAnchor.position.set(38.0 * (22.0 / 30.07), 0, 0);
+    ecliptic.add(kuiperAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_kuiper_belt',
+      label: 'Kuiper Belt & Scattered Disk',
+      sublabel: '30–50 AU · Pluto & Icy Bodies',
+      node: kuiperAnchor,
+      layerBandId: 'solar_systems',
+      minLog: 10.8,
+      maxLog: 14.8,
+      targetLogMeters: 12.95,
+      colorCss: '#7dd3fc',
+      physicalRadiusWorldAtOneToOne: 38.0 * (22.0 / 30.07),
+    });
+
+    // Outer Spherical Oort Cloud (2,000–100,000 AU / ~10^15–10^16 m)
+    // Envelops the central star and planetary system in an isotropic 3D spherical shell of icy comets
+    const oortCount = this.isSoftwareGl ? 450 : 1600;
+    const oPos = new Float32Array(oortCount * 3);
+    const oCol = new Float32Array(oortCount * 3);
+    const oSc = new Float32Array(oortCount);
+    const oLum = new Float32Array(oortCount);
+
+    for (let k = 0; k < oortCount; k++) {
+      // Isotropic spherical shell: radius 60.0 to 140.0 world units
+      const r = 60.0 + Math.pow(seededRand(k * 7 + 1), 0.85) * 80.0;
+      const theta = Math.acos(2 * seededRand(k * 7 + 2) - 1);
+      const phi = seededRand(k * 7 + 3) * Math.PI * 2;
+      oPos[k * 3] = r * Math.sin(theta) * Math.cos(phi);
+      oPos[k * 3 + 1] = r * Math.cos(theta);
+      oPos[k * 3 + 2] = r * Math.sin(theta) * Math.sin(phi);
+
+      // Pristine volatile cometary ice composition: cyan-white / pale azure glints
+      const isInnerHills = r < 90.0;
+      _scratchColorA.setHex(isInnerHills ? 0xcffafe : 0xe0f2fe);
+      oCol[k * 3] = _scratchColorA.r;
+      oCol[k * 3 + 1] = _scratchColorA.g;
+      oCol[k * 3 + 2] = _scratchColorA.b;
+      oSc[k] = 0.5 + seededRand(k * 7 + 4) * 0.9;
+      oLum[k] = 0.35 + seededRand(k * 7 + 5) * 0.45;
+    }
+
+    const oortGeo = new THREE.BufferGeometry();
+    oortGeo.setAttribute('position', new THREE.BufferAttribute(oPos, 3));
+    oortGeo.setAttribute('color', new THREE.BufferAttribute(oCol, 3));
+    oortGeo.setAttribute('aScale', new THREE.BufferAttribute(oSc, 1));
+    oortGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(oLum, 1));
+    this.solarOortPoints = new THREE.Points(
+      oortGeo,
+      createStarPsfMaterial({
+        baseSize: 6.8,
+        minPixelSize: 1.2,
+        maxPixelSize: 4.8,
+        diffractionStrength: 0.0,
+        opacity: 0.65,
+      })
+    );
+    group.add(this.solarOortPoints);
+
+    const oortAnchor = new THREE.Object3D();
+    oortAnchor.position.set(0, 0, 85.0);
+    group.add(oortAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_oort_cloud',
+      label: 'Oort Cometary Cloud',
+      sublabel: '2,000–100,000 AU · Spherical Reservoir',
+      node: oortAnchor,
+      layerBandId: 'solar_systems',
+      minLog: 11.2,
+      maxLog: 15.2,
+      targetLogMeters: 12.95,
+      colorCss: '#38bdf8',
+      physicalRadiusWorldAtOneToOne: 85.0,
+    });
+
     this.applySolarSystemRescaler(1.0);
 
     return (dt, _elapsed, gamma, showMarkers) => {
       if (Math.abs(gamma - this.lastGammaApplied) > 0.002) {
         this.applySolarSystemRescaler(gamma);
       }
+
+      const scaleSpec =
+        ORBIT_TIME_SCALES.find((s) => s.id === this.orbitTimeScaleId) || ORBIT_TIME_SCALES[4];
+      let baseEarthRadSec = 0;
+      if (
+        this.orbitTimeScaleId !== 'paused' &&
+        Number.isFinite(scaleSpec.earthOrbitDurationSec) &&
+        scaleSpec.earthOrbitDurationSec > 0
+      ) {
+        baseEarthRadSec = (Math.PI * 2) / scaleSpec.earthOrbitDurationSec;
+      }
+
       for (let i = 0; i < this.solarPlanets.length; i++) {
         const p = this.solarPlanets[i];
-        p.pivot.rotation.y += p.angularSpeed * 0.14 * dt;
+        const semiMajor = Math.max(0.2, p.semiMajorAu || 1.0);
+        const keplerOmega = baseEarthRadSec * Math.pow(semiMajor, -1.5);
+        p.pivot.rotation.y += keplerOmega * dt;
         p.orbitLine.visible = showMarkers || gamma < 0.92;
+      }
+
+      if (this.solarBeltPoints) {
+        const beltSemiMajor = 2.8;
+        const beltKeplerOmega = baseEarthRadSec * Math.pow(beltSemiMajor, -1.5);
+        this.solarBeltPoints.rotation.y += beltKeplerOmega * dt;
+      }
+
+      if (this.solarOortPoints) {
+        this.solarOortPoints.rotation.y += dt * 0.003;
+        this.solarOortPoints.rotation.x += dt * 0.0015;
       }
     };
   }
@@ -1615,382 +1710,34 @@ export class SeamlessUniverseSimulator {
       posAttr.needsUpdate = true;
     }
 
+    if (this.solarOortPoints) {
+      this.solarOortPoints.scale.setScalar(Math.pow(1.0, gamma));
+    }
+
     void sunWorldR;
   }
 
-  // --- 9. ASTEROID CLOUDS & MAIN BELT PLANETESIMALS (+11.65 · 3.0 AU) ---
-  private populateAsteroidCloudLayer(
+  // --- 9. ATMOSPHERE & STRATOSPHERIC CLOUD DECKS (+4.9 · 80 km KÁRMÁN LIMB) ---
+  private populateAtmosphereLayer(
     group: THREE.Group
   ): (dt: number, elapsed: number) => void {
-    const rockMat = createRockyBodyMaterial({
-      sunDir: _sharedSunDir,
-      baseColorHex: 0x6b645e,
-      highlandColorHex: 0xa8a29e,
-    });
-
-    // Craggy high-subdivision rubble-pile asteroid (Itokawa / Bennu / Ryugu morphology)
-    const heroGeo = new THREE.SphereGeometry(2.4, this.isSoftwareGl ? 20 : 36, 24);
-    const hPos = heroGeo.attributes.position;
-    for (let v = 0; v < hPos.count; v++) {
-      const x = hPos.getX(v);
-      const y = hPos.getY(v);
-      const z = hPos.getZ(v);
-      // Bi-lobed contact-binary waist + multi-octave impact facets
-      const lobe = 1.0 + 0.28 * Math.cos(x * 0.85) - 0.18 * Math.exp(-x * x * 0.6);
-      const crag =
-        1.0 +
-        0.14 * Math.sin(x * 1.9 + y * 2.3) * Math.cos(z * 2.1) +
-        0.06 * Math.cos(x * 4.7 - z * 4.3);
-      hPos.setXYZ(v, x * 1.32 * lobe * crag, y * 0.78 * crag, z * 0.88 * crag);
-    }
-    heroGeo.computeVertexNormals();
-    const heroAsteroid = new THREE.Mesh(heroGeo, rockMat);
-    group.add(heroAsteroid);
-
-    // Swarm of distant sunlit silicate planetesimals (sparse, realistic low spatial density)
-    const count = this.isSoftwareGl ? 95 : 260;
-    const subGeo = new THREE.IcosahedronGeometry(0.26, 2);
-    const inst = new THREE.InstancedMesh(subGeo, rockMat, count);
-    for (let i = 0; i < count; i++) {
-      const ang = seededRand(i * 7 + 1) * Math.PI * 2;
-      const rad = 5.5 + seededRand(i * 7 + 2) * 22.0;
-      const y = (seededRand(i * 7 + 3) - 0.5) * 6.5;
-      _dummyObj.position.set(Math.cos(ang) * rad, y, Math.sin(ang) * rad);
-      _dummyObj.rotation.set(
-        seededRand(i * 7 + 4) * Math.PI,
-        seededRand(i * 7 + 5) * Math.PI,
-        seededRand(i * 7 + 6) * Math.PI
-      );
-      const s = 0.22 + Math.pow(seededRand(i * 11 + 1), 2.5) * 1.35;
-      _dummyObj.scale.set(s * 1.3, s * 0.82, s * 0.95);
-      _dummyObj.updateMatrix();
-      inst.setMatrixAt(i, _dummyObj.matrix);
-    }
-    group.add(inst);
-
-    return (dt) => {
-      heroAsteroid.rotation.y += dt * 0.16;
-      heroAsteroid.rotation.z += dt * 0.05;
-      inst.rotation.y += dt * 0.03;
-    };
-  }
-
-  // --- 10. GAS GIANTS & RINGED JOVIANS (+8.93 · 850,000 km SYSTEM SPAN) ---
-  private populateGasGiantLayer(
-    group: THREE.Group
-  ): (dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void {
-    const systemTilt = new THREE.Group();
-    systemTilt.rotation.z = 0.26;
-    systemTilt.rotation.x = 0.20;
-    group.add(systemTilt);
-
-    // Canonical scale: 22.0 units === 425,000 km radius (850,000 km diameter, Io's 421,700 km orbit!)
-    // True 1:1 Jupiter equatorial radius = 71,492 km => 22.0 * (71,492 / 425,000) = 3.70 units!
-    const planetRadius = 3.70;
-    const body = new THREE.Mesh(
-      new THREE.SphereGeometry(
-        planetRadius,
-        this.isSoftwareGl ? 32 : 56,
-        this.isSoftwareGl ? 24 : 42
-      ),
-      createGasGiantMaterial(_sharedSunDir)
-    );
-    // Authentic 6.5% rapid-rotation polar oblateness!
-    body.scale.set(1.0, 0.935, 1.0);
-    systemTilt.add(body);
-
-    // Subtle Rayleigh/H2 upper-troposphere limb haze shell
-    const hazeShell = new THREE.Mesh(
-      new THREE.SphereGeometry(planetRadius * 1.032, 36, 28),
-      createAtmosphereScatteringMaterial({
-        sunDir: _sharedSunDir,
-        rayleighColor: new THREE.Color(0.58, 0.72, 0.96),
-        intensity: 0.75,
-      })
-    );
-    hazeShell.scale.set(1.0, 0.935, 1.0);
-    systemTilt.add(hazeShell);
-
-    // High-resolution Cassini/Encke optical-depth ring disc receiving real planet shadow!
-    const ringInner = planetRadius * 1.28;
-    const ringOuter = planetRadius * 2.32;
-    const rings = new THREE.Mesh(
-      new THREE.RingGeometry(ringInner, ringOuter, this.isSoftwareGl ? 64 : 128),
-      createPlanetaryRingMaterial({
-        innerRadius: ringInner,
-        outerRadius: ringOuter,
-        planetRadius,
-        sunDir: _sharedSunDir,
-      })
-    );
-    rings.rotation.x = Math.PI / 2;
-    systemTilt.add(rings);
-
-    // 4 Galilean Moons at TRUE real-life orbital radii (in Jupiter radii R_J) & TRUE moon-to-Jupiter radius ratios!
-    // Io: 5.90 R_J (r = 0.0255 R_J), Europa: 9.39 R_J (r = 0.0218 R_J), Ganymede: 14.97 R_J (r = 0.0368 R_J), Callisto: 26.33 R_J (r = 0.0337 R_J)
-    const moonDefs = [
-      { id: 'io', name: 'Io (Volcanic)', rRj: 5.90, sizeRatio: 0.0255, hex: 0xfacc15, css: '#fde047', speed: 0.85 },
-      { id: 'europa', name: 'Europa (Ice Ocean)', rRj: 9.39, sizeRatio: 0.0218, hex: 0xe0f2fe, css: '#7dd3fc', speed: 0.42 },
-      { id: 'ganymede', name: 'Ganymede', rRj: 14.97, sizeRatio: 0.0368, hex: 0xd6d3d1, css: '#cbd5e1', speed: 0.21 },
-      { id: 'callisto', name: 'Callisto', rRj: 26.33, sizeRatio: 0.0337, hex: 0x94a3b8, css: '#94a3b8', speed: 0.09 },
-    ];
-
-    this.jovianMoons = [];
-    for (let m = 0; m < moonDefs.length; m++) {
-      const md = moonDefs[m];
-      const orbitWorld = planetRadius * md.rRj;
-      const { line } = this.createOrbitHairline(orbitWorld, 0.004, 0x64748b, 80);
-      systemTilt.add(line);
-
-      const pivot = new THREE.Group();
-      pivot.rotation.y = m * 1.45 + 0.6;
-      const moonMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(1.0, 18, 16),
-        createRockyBodyMaterial({
-          sunDir: _sharedSunDir,
-          baseColorHex: md.hex,
-          highlandColorHex: 0xf8fafc,
-        })
-      );
-      const glint = this.createSinglePointGlint(md.hex, 7.5, 0.22);
-      moonMesh.add(glint);
-      pivot.add(moonMesh);
-      systemTilt.add(pivot);
-
-      this.jovianMoons.push({
-        name: md.name,
-        orbitPlanetRadii: md.rRj,
-        moonToPlanetRadiusRatio: md.sizeRatio,
-        angularSpeed: md.speed,
-        pivot,
-        moonMesh,
-        glintPoint: glint,
-        orbitLine: line,
-      });
-
-      this.registerMarkerAnchor({
-        id: `marker_jovian_${md.id}`,
-        label: md.name,
-        sublabel: `${md.rRj.toFixed(1)} R_J`,
-        node: moonMesh,
-        layerBandId: 'gas_giants',
-        minLog: 8.1,
-        maxLog: 9.9,
-        targetLogMeters: 7.85,
-        colorCss: md.css,
-        physicalRadiusWorldAtOneToOne: planetRadius * md.sizeRatio,
-      });
-    }
-
-    return (dt, _elapsed, gamma, showMarkers) => {
-      body.rotation.y += dt * 0.24;
-      for (let i = 0; i < this.jovianMoons.length; i++) {
-        const jm = this.jovianMoons[i];
-        jm.pivot.rotation.y += jm.angularSpeed * 0.22 * dt;
-        const dist = planetRadius * Math.pow(jm.orbitPlanetRadii, gamma);
-        const rad = planetRadius * Math.pow(jm.moonToPlanetRadiusRatio, gamma);
-        jm.moonMesh.position.set(dist, 0, 0);
-        jm.moonMesh.scale.setScalar(rad);
-        jm.orbitLine.scale.setScalar(dist / (planetRadius * jm.orbitPlanetRadii));
-        jm.orbitLine.visible = showMarkers || gamma < 0.92;
-      }
-    };
-  }
-
-  // --- 11. ROCKY PLANETS & INNER ORBITING MOONS (+7.85 · 71,000 km · MARS / PHOBOS-DEIMOS) ---
-  private populateRockyPlanetsMoonsLayer(
-    group: THREE.Group
-  ): (dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void {
-    // True Mars-Phobos-Deimos proportions:
-    // Viewport span 71,000 km -> 44.0 world units (1 unit = 1,613 km).
-    // Mars radius = 3,390 km => 2.10 units; Phobos orbit = 9,376 km (5.81 units); Deimos orbit = 23,463 km (14.55 units)!
-    const planetRadius = 2.65;
-    const body = new THREE.Mesh(
-      new THREE.SphereGeometry(
-        planetRadius,
-        this.isSoftwareGl ? 28 : 48,
-        this.isSoftwareGl ? 20 : 36
-      ),
-      createRockyBodyMaterial({
-        sunDir: _sharedSunDir,
-        baseColorHex: 0xb45309,
-        highlandColorHex: 0xfdba74,
-      })
-    );
-    group.add(body);
-
-    // Thin dusty CO2 salmon-rose Martian limb haze
-    const co2Atmo = new THREE.Mesh(
-      new THREE.SphereGeometry(planetRadius * 1.028, 32, 24),
-      createAtmosphereScatteringMaterial({
-        sunDir: _sharedSunDir,
-        rayleighColor: new THREE.Color(0.92, 0.54, 0.34),
-        intensity: 0.62,
-      })
-    );
-    group.add(co2Atmo);
-
-    const phobosOrbit = this.createOrbitHairline(5.81, 0.015, 0xfb923c, 64);
-    const deimosOrbit = this.createOrbitHairline(14.55, 0.001, 0x94a3b8, 72);
-    group.add(phobosOrbit.line, deimosOrbit.line);
-
-    const phobosPivot = new THREE.Group();
-    const phobosMesh = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(1.0, 1),
-      createRockyBodyMaterial({ sunDir: _sharedSunDir, baseColorHex: 0x78716c, highlandColorHex: 0xd6d3d1 })
-    );
-    phobosMesh.add(this.createSinglePointGlint(0xfdba74, 6.5, 0.12));
-    phobosPivot.add(phobosMesh);
-
-    const deimosPivot = new THREE.Group();
-    deimosPivot.rotation.y = 2.1;
-    const deimosMesh = phobosMesh.clone();
-    deimosPivot.add(deimosMesh);
-    group.add(phobosPivot, deimosPivot);
-
-    this.registerMarkerAnchor({
-      id: 'marker_phobos',
-      label: 'Phobos Moonlet',
-      sublabel: '9,376 km · 22.2 km',
-      node: phobosMesh,
-      layerBandId: 'rocky_planets_moons',
-      minLog: 7.4,
-      maxLog: 8.4,
-      targetLogMeters: 7.11,
-      colorCss: '#fdba74',
-      physicalRadiusWorldAtOneToOne: 0.015,
-    });
-
-    return (dt, _elapsed, gamma, showMarkers) => {
-      body.rotation.y += dt * 0.14;
-      phobosPivot.rotation.y += dt * 0.62;
-      deimosPivot.rotation.y += dt * 0.24;
-      const mScale = planetRadius * Math.pow(0.004, gamma);
-      phobosMesh.position.set(5.81, 0, 0);
-      phobosMesh.scale.set(mScale * 1.3, mScale * 0.9, mScale);
-      deimosMesh.position.set(14.55, 0, 0);
-      deimosMesh.scale.setScalar(mScale * 0.75);
-      phobosOrbit.line.visible = showMarkers || gamma < 0.92;
-      deimosOrbit.line.visible = showMarkers || gamma < 0.92;
-    };
-  }
-
-  // --- 12. HABITABLE BIOSPHERE PLANET (+7.11 · 12,742 km EARTH + MOON AT 30.17x D_EARTH) ---
-  private populateHabitablePlanetLayer(
-    group: THREE.Group
-  ): (dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void {
-    const axialTilt = new THREE.Group();
-    axialTilt.rotation.z = THREE.MathUtils.degToRad(23.44);
-    group.add(axialTilt);
-
-    // Earth equatorial radius = 8.0 world units => Diameter D_Earth = 16.0 units === 12,742 km!
-    const earthR = 8.0;
-    const globe = new THREE.Mesh(
-      new THREE.SphereGeometry(
-        earthR,
-        this.isSoftwareGl ? 36 : 64,
-        this.isSoftwareGl ? 28 : 48
-      ),
-      createHabitablePlanetMaterial(_sharedSunDir)
-    );
-    axialTilt.add(globe);
-
-    // Independent rotating Cumulus & Cyclone Cloud Deck Sphere (1.012 R_Earth)
-    const clouds = new THREE.Mesh(
-      new THREE.SphereGeometry(
-        earthR * 1.013,
-        this.isSoftwareGl ? 32 : 56,
-        this.isSoftwareGl ? 24 : 40
-      ),
-      createPlanetCloudMaterial(_sharedSunDir)
-    );
-    axialTilt.add(clouds);
-
-    // SpaceEngine / ISS Rayleigh + Mie Sapphire-Cyan Atmospheric Horizon Limb Shell (1.038 R_Earth)
-    const atmoShell = new THREE.Mesh(
-      new THREE.SphereGeometry(
-        earthR * 1.042,
-        this.isSoftwareGl ? 32 : 56,
-        this.isSoftwareGl ? 24 : 40
-      ),
-      createAtmosphereScatteringMaterial({
-        sunDir: _sharedSunDir,
-        rayleighColor: new THREE.Color(0.16, 0.56, 1.0),
-        intensity: 1.48,
-      })
-    );
-    axialTilt.add(atmoShell);
-
-    // Companion Moon ("Luna"):
-    // True 1:1 radius = 0.2727 * R_Earth = 2.182 units (3,474 km)
-    // True 1:1 orbital semi-major axis = 30.17 * D_Earth = 30.17 * 16.0 = 482.7 units (384,400 km)!
-    this.habitableMoonPivot = new THREE.Group();
-    this.habitableMoonPivot.rotation.x = 0.09; // 5.14 deg lunar orbital inclination
-    this.habitableMoonPivot.rotation.y = 0.72;
-    this.habitableMoonMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(2.182, this.isSoftwareGl ? 20 : 32, 24),
-      createRockyBodyMaterial({
-        sunDir: _sharedSunDir,
-        baseColorHex: 0x64748b,
-        highlandColorHex: 0xe2e8f0,
-      })
-    );
-    this.habitableMoonMesh.add(this.createSinglePointGlint(0xf1f5f9, 8.0, 0.2));
-    this.habitableMoonPivot.add(this.habitableMoonMesh);
-    group.add(this.habitableMoonPivot);
-
-    const lunarOrbit = this.createOrbitHairline(482.7, 0.055, 0x38bdf8, 128);
-    lunarOrbit.line.rotation.x = 0.09;
-    this.habitableMoonOrbitLine = lunarOrbit.line;
-    group.add(lunarOrbit.line);
-
-    this.registerMarkerAnchor({
-      id: 'marker_luna_moon',
-      label: 'Luna (Companion Moon)',
-      sublabel: '384,400 km · 30.2× Earth Diam.',
-      node: this.habitableMoonMesh,
-      layerBandId: 'habitable_planets',
-      minLog: 6.6,
-      maxLog: 9.2,
-      targetLogMeters: 7.85,
-      colorCss: '#e2e8f0',
-      physicalRadiusWorldAtOneToOne: 2.182,
-    });
-
+    // Registered Atmospheric Entry waypoint for Capybara Forest Sanctuary
     const sanctuaryEntryAnchor = new THREE.Object3D();
-    sanctuaryEntryAnchor.position.set(0, 0, earthR);
-    axialTilt.add(sanctuaryEntryAnchor);
+    sanctuaryEntryAnchor.position.set(0, 0, 0);
+    group.add(sanctuaryEntryAnchor);
     this.registerMarkerAnchor({
       id: 'marker_sanctuary_archipelago',
       label: 'Capybara Forest Archipelago',
       sublabel: 'Atmospheric Entry · 6.3 m',
       node: sanctuaryEntryAnchor,
-      layerBandId: 'habitable_planets',
-      minLog: 5.5,
-      maxLog: 7.6,
+      layerBandId: 'atmosphere',
+      minLog: 3.5,
+      maxLog: 6.5,
       targetLogMeters: 0.8,
       colorCss: '#34d399',
       physicalRadiusWorldAtOneToOne: 0.001,
     });
 
-    return (dt, _elapsed, gamma, showMarkers) => {
-      globe.rotation.y += dt * 0.08;
-      clouds.rotation.y += dt * 0.105;
-      if (this.habitableMoonPivot && this.habitableMoonMesh && this.habitableMoonOrbitLine) {
-        this.habitableMoonPivot.rotation.y += dt * 0.045;
-        // At gamma=1.0: exact 30.17 * 16.0 = 482.7 units! Under Reality Rescaler: 16.0 * (30.17^gamma)!
-        const moonDist = 16.0 * Math.pow(30.17, gamma);
-        this.habitableMoonMesh.position.set(moonDist, 0, 0);
-        this.habitableMoonOrbitLine.scale.setScalar(moonDist / 482.7);
-        this.habitableMoonOrbitLine.visible = showMarkers || gamma < 0.92;
-      }
-    };
-  }
-
-  // --- 13. ATMOSPHERE & STRATOSPHERIC CLOUD DECKS (+4.9 · 80 km KÁRMÁN LIMB) ---
-  private populateAtmosphereLayer(
-    group: THREE.Group
-  ): (dt: number, elapsed: number) => void {
     // Curved planetary Rayleigh limb + cumulus cloud sea below with open descent corridor at (0,0)
     const limbCurvature = new THREE.Mesh(
       new THREE.SphereGeometry(52, 48, 28, 0, Math.PI * 2, 0, Math.PI * 0.36),
@@ -3156,9 +2903,11 @@ export class SeamlessUniverseSimulator {
       // Neighbor-aware visibility bounds:
       // At strict 1:1 (gamma = 1.0): parent layers fade out cleanly by 10^+1.18x (15x viewport) so giant
       // dust pillars at +16.63 NEVER slice through Solar System orbits at +13.7!
-      // When Reality Rescaler compresses gamma -> 0.30, scaledDelta shrinks so multi-scale parent & child
-      // structures stay nested on screen simultaneously!
-      const maxExpandDex = 1.16;
+      // When viewing within the unified planetary stellar system (+6.8 to +14.5 m), keep the solar system
+      // structure (rocky planets, main asteroid belt, gas giants) visible together in the same system!
+      const isPlanetaryScaleBand = logScaleMeters >= 6.8 && logScaleMeters <= 14.5;
+      const isSolarSystem = layer.spec.id === 'solar_systems';
+      const maxExpandDex = (isSolarSystem && isPlanetaryScaleBand) ? 6.2 : 1.16;
       const maxShrinkDex = -2.35;
 
       if (scaledDelta > maxExpandDex || scaledDelta < maxShrinkDex) {
@@ -3169,7 +2918,9 @@ export class SeamlessUniverseSimulator {
       }
 
       let alpha = 1.0;
-      if (scaledDelta < 0) {
+      if (isSolarSystem && isPlanetaryScaleBand) {
+        alpha = Math.max(0.42, 1.0 - smoothstep01(4.2, maxExpandDex, scaledDelta));
+      } else if (scaledDelta < 0) {
         alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
       } else {
         alpha = 1.0 - smoothstep01(0.30, maxExpandDex, scaledDelta);
@@ -3300,6 +3051,14 @@ export class SeamlessUniverseSimulator {
   public hide() {
     this.rootGroup.visible = false;
     this.celestialBackdropGroup.visible = false;
+  }
+
+  public setOrbitTimeScale(scaleId: OrbitTimeScaleId) {
+    this.orbitTimeScaleId = scaleId;
+  }
+
+  public getOrbitTimeScale(): OrbitTimeScaleId {
+    return this.orbitTimeScaleId;
   }
 
   public getBandById(id: UniverseScaleBandId): UniverseScaleBandSpec {

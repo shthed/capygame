@@ -495,10 +495,29 @@ export interface CosmicLandingSpot {
   biome: PlanetaryBiomeConfig;
 }
 
+export type CosmicPlanetType =
+  | 'rocky'
+  | 'habitable'
+  | 'asteroid_belt'
+  | 'gas_giant'
+  | 'ice_giant';
+
+export interface CosmicAsteroidBeltSpec {
+  id: string;
+  name: string;
+  subtitle: string;
+  semiMajorAu: number;
+  widthAu: number;
+  rockCount: number;
+  orbitalPeriodYears: number;
+  colorHex: number;
+}
+
 export interface CosmicPlanetSpec {
   id: string;
   name: string;
   subtitle: string;
+  planetType?: CosmicPlanetType;
   orbitRadius: number;
   orbitSpeed: number;
   size: number;
@@ -507,6 +526,10 @@ export interface CosmicPlanetSpec {
   atmosphereHex: number;
   hasRings?: boolean;
   ringColorHex?: number;
+  semiMajorAu?: number;
+  orbitalPeriodYears?: number;
+  massLabel?: string;
+  diameterKm?: number;
   landingSpots: CosmicLandingSpot[];
 }
 
@@ -521,7 +544,105 @@ export interface CosmicStarSystemSpec {
   starColorHex: number;
   coronaHex: number;
   starScale: number;
+  asteroidBelt?: CosmicAsteroidBeltSpec;
   planets: CosmicPlanetSpec[];
+}
+
+// ============================================================================
+// ORBITAL TIME SIMULATION & FAST-FORWARD CONTROLS
+// ============================================================================
+
+export type OrbitTimeScaleId =
+  | 'paused'
+  | 'realtime'
+  | '1_day_s'
+  | '1_month_s'
+  | '1_orbit_min'
+  | '1_orbit_s'
+  | '10_yr_s';
+
+export interface OrbitTimeScaleSpec {
+  id: OrbitTimeScaleId;
+  label: string;
+  shortLabel: string;
+  multiplier: number;
+  earthOrbitDurationSec: number;
+  description: string;
+}
+
+export const ORBIT_TIME_SCALES: OrbitTimeScaleSpec[] = [
+  {
+    id: 'paused',
+    label: 'Paused (0x)',
+    shortLabel: '⏸ Pause',
+    multiplier: 0,
+    earthOrbitDurationSec: Infinity,
+    description: 'Orbital motion suspended for snapshot inspection.',
+  },
+  {
+    id: 'realtime',
+    label: 'Real-Time (1x)',
+    shortLabel: '1x Real',
+    multiplier: 1,
+    earthOrbitDurationSec: 31557600,
+    description: 'Astronomical 1:1 time (Earth completes 1 orbit in 365.25 days).',
+  },
+  {
+    id: '1_day_s',
+    label: '1 Day / sec',
+    shortLabel: '1 Day/s',
+    multiplier: 86400,
+    earthOrbitDurationSec: 365.25,
+    description: '1 second = 1 Earth day (Earth completes 1 orbit in ~6.1 minutes).',
+  },
+  {
+    id: '1_month_s',
+    label: '1 Month / sec',
+    shortLabel: '1 Mo/s',
+    multiplier: 2592000,
+    earthOrbitDurationSec: 12.175,
+    description: '1 second = 30 Earth days (Earth completes 1 orbit in ~12.2 seconds).',
+  },
+  {
+    id: '1_orbit_min',
+    label: '1 Orbit / min',
+    shortLabel: '1 Orb/min',
+    multiplier: 525960,
+    earthOrbitDurationSec: 60.0,
+    description: 'Earth completes 1 full revolution in 60 seconds (Keplerian baseline).',
+  },
+  {
+    id: '1_orbit_s',
+    label: '1 Orbit / sec',
+    shortLabel: '1 Orb/s',
+    multiplier: 31557600,
+    earthOrbitDurationSec: 1.0,
+    description: 'Earth completes 1 full revolution every second.',
+  },
+  {
+    id: '10_yr_s',
+    label: '10 Years / sec',
+    shortLabel: '10 Yr/s',
+    multiplier: 315576000,
+    earthOrbitDurationSec: 0.1,
+    description: 'Fast-forward: sweeps a decade per second to observe outer gas giant orbits.',
+  },
+];
+
+export interface OrbitTelemetry {
+  scaleId: OrbitTimeScaleId;
+  multiplier: number;
+  simElapsedYears: number;
+  simElapsedDays: number;
+  earthOrbitDurationSec: number;
+  activeBody?: {
+    name: string;
+    type: CosmicPlanetType;
+    semiMajorAu: number;
+    orbitalPeriodYears: number;
+    orbitalSpeedKmS: number;
+    currentAngleDeg: number;
+  };
 }
 
 export interface CosmicGalaxySpec {
@@ -656,24 +777,56 @@ function createStarSystemsForGalaxy(
       id: `${galaxyPrefix}_star_sol`,
       name: 'Sol Yuzu Prime',
       spectralClass: 'G2V Golden Star',
-      subtitle: 'Warm habitable archipelago system',
+      subtitle: 'Warm habitable archipelago system with full planetary family',
       localX: 8,
       localY: 1.2,
       localZ: 5,
       starColorHex: 0xfacc15,
       coronaHex: 0xf97316,
       starScale: 1.25,
+      asteroidBelt: {
+        id: `${galaxyPrefix}_belt_main`,
+        name: 'Sol Yuzu Asteroid Belt',
+        subtitle: '2.4–3.2 AU · 1,200 Planetesimals & Carbonaceous Chondrites',
+        semiMajorAu: 2.8,
+        widthAu: 0.8,
+        rockCount: 420,
+        orbitalPeriodYears: 4.69,
+        colorHex: 0xd6d3d1,
+      },
       planets: [
+        {
+          id: `${galaxyPrefix}_p_vulcan`,
+          name: 'Basalt Pyro-Prime',
+          subtitle: 'Scorched basalt crust & vulcan magma calderas',
+          planetType: 'rocky',
+          orbitRadius: 5.2,
+          orbitSpeed: 0.82,
+          size: 0.85,
+          colorHex: 0x78350f,
+          continentHex: 0xb45309,
+          atmosphereHex: 0xf97316,
+          semiMajorAu: 0.42,
+          orbitalPeriodYears: 0.27,
+          diameterKm: 5120,
+          massLabel: '0.06 Earth Masses',
+          landingSpots: [],
+        },
         {
           id: `${galaxyPrefix}_p_haven`,
           name: 'Capy Haven Alpha',
           subtitle: 'Lush Onsen Archipelago & Emerald Pastures',
-          orbitRadius: 9,
+          planetType: 'habitable',
+          orbitRadius: 9.0,
           orbitSpeed: 0.45,
           size: 1.35,
           colorHex: baseOceanHex,
           continentHex: baseGrassHex,
           atmosphereHex: baseSkyHex,
+          semiMajorAu: 1.0,
+          orbitalPeriodYears: 1.0,
+          diameterKm: 12756,
+          massLabel: '1.00 Earth Mass',
           landingSpots: [
             {
               id: `${galaxyPrefix}_land_emerald`,
@@ -746,17 +899,40 @@ function createStarSystemsForGalaxy(
           ],
         },
         {
+          id: `${galaxyPrefix}_p_jovian`,
+          name: 'Grand Yuzu Jovian',
+          subtitle: 'Massive gas giant with amber storm cyclonic belts',
+          planetType: 'gas_giant',
+          orbitRadius: 17.5,
+          orbitSpeed: 0.22,
+          size: 2.6,
+          colorHex: 0xf59e0b,
+          continentHex: 0xd97706,
+          atmosphereHex: 0xfde68a,
+          hasRings: false,
+          semiMajorAu: 5.2,
+          orbitalPeriodYears: 11.86,
+          diameterKm: 142984,
+          massLabel: '317.8 Earth Masses',
+          landingSpots: [],
+        },
+        {
           id: `${galaxyPrefix}_p_azure`,
-          name: 'Azure Ringworld',
-          subtitle: 'Crystalline ringed ocean world',
-          orbitRadius: 15,
-          orbitSpeed: 0.28,
-          size: 1.65,
+          name: 'Azure Ringworld Kronos',
+          subtitle: 'Majestic ice-dust rings & crystalline stratosphere',
+          planetType: 'gas_giant',
+          orbitRadius: 23.5,
+          orbitSpeed: 0.15,
+          size: 2.15,
           colorHex: 0x0284c7,
           continentHex: 0x2dd4bf,
           atmosphereHex: 0x38bdf8,
           hasRings: true,
           ringColorHex: 0x7dd3fc,
+          semiMajorAu: 9.54,
+          orbitalPeriodYears: 29.45,
+          diameterKm: 120536,
+          massLabel: '95.2 Earth Masses',
           landingSpots: [
             {
               id: `${galaxyPrefix}_azure_1`,
@@ -797,13 +973,20 @@ function createStarSystemsForGalaxy(
         {
           id: `${galaxyPrefix}_p_velvet`,
           name: 'Amethyst Dawn',
-          subtitle: 'Violet nebula meadows & floating spores',
-          orbitRadius: 21,
-          orbitSpeed: 0.19,
-          size: 1.2,
+          subtitle: 'Deep azure ice giant with high-atmosphere auroras',
+          planetType: 'ice_giant',
+          orbitRadius: 29.0,
+          orbitSpeed: 0.09,
+          size: 1.6,
           colorHex: 0x6d28d9,
           continentHex: 0xc084fc,
           atmosphereHex: 0xa855f7,
+          hasRings: true,
+          ringColorHex: 0xd8b4fe,
+          semiMajorAu: 19.2,
+          orbitalPeriodYears: 84.0,
+          diameterKm: 51118,
+          massLabel: '14.5 Earth Masses',
           landingSpots: [
             {
               id: `${galaxyPrefix}_velvet_1`,
@@ -830,24 +1013,56 @@ function createStarSystemsForGalaxy(
       id: `${galaxyPrefix}_star_hyperion`,
       name: 'Sirius Cyan-B',
       spectralClass: 'B1V Blue Supergiant',
-      subtitle: 'High-energy luminous binary arm cluster',
+      subtitle: 'High-energy luminous stellar system',
       localX: -11,
       localY: -0.8,
       localZ: 9,
       starColorHex: 0x38bdf8,
       coronaHex: 0x0284c7,
       starScale: 1.45,
+      asteroidBelt: {
+        id: `${galaxyPrefix}_belt_cyan`,
+        name: 'Cyan Glint Asteroid Ring',
+        subtitle: 'Silicate & metallic boulder field at 2.6 AU',
+        semiMajorAu: 2.6,
+        widthAu: 0.7,
+        rockCount: 380,
+        orbitalPeriodYears: 4.19,
+        colorHex: 0x93c5fd,
+      },
       planets: [
+        {
+          id: `${galaxyPrefix}_p_iron`,
+          name: 'Ferrum Obsidian',
+          subtitle: 'Metallic rocky iron world in close orbit',
+          planetType: 'rocky',
+          orbitRadius: 5.8,
+          orbitSpeed: 0.75,
+          size: 0.9,
+          colorHex: 0x475569,
+          continentHex: 0x64748b,
+          atmosphereHex: 0x94a3b8,
+          semiMajorAu: 0.48,
+          orbitalPeriodYears: 0.33,
+          diameterKm: 6050,
+          massLabel: '0.12 Earth Masses',
+          landingSpots: [],
+        },
         {
           id: `${galaxyPrefix}_p_hyper_1`,
           name: 'Cerenkov Atoll',
           subtitle: 'Electric blue seas & bioluminescent palms',
-          orbitRadius: 11,
+          planetType: 'habitable',
+          orbitRadius: 10.5,
           orbitSpeed: 0.38,
           size: 1.4,
           colorHex: 0x0369a1,
           continentHex: 0x4ade80,
           atmosphereHex: 0x38bdf8,
+          semiMajorAu: 1.15,
+          orbitalPeriodYears: 1.23,
+          diameterKm: 13400,
+          massLabel: '1.18 Earth Masses',
           landingSpots: [
             {
               id: `${galaxyPrefix}_hyper_land_1`,
@@ -868,6 +1083,25 @@ function createStarSystemsForGalaxy(
             },
           ],
         },
+        {
+          id: `${galaxyPrefix}_p_cyan_giant`,
+          name: 'Hyperion Storm Colossus',
+          subtitle: 'Methane-banded turquoise supergiant',
+          planetType: 'gas_giant',
+          orbitRadius: 19.0,
+          orbitSpeed: 0.2,
+          size: 2.5,
+          colorHex: 0x0284c7,
+          continentHex: 0x0369a1,
+          atmosphereHex: 0x67e8f9,
+          hasRings: true,
+          ringColorHex: 0xa5f3fc,
+          semiMajorAu: 6.1,
+          orbitalPeriodYears: 15.06,
+          diameterKm: 138000,
+          massLabel: '240 Earth Masses',
+          landingSpots: [],
+        },
       ],
     },
     {
@@ -881,12 +1115,40 @@ function createStarSystemsForGalaxy(
       starColorHex: 0xf97316,
       coronaHex: 0xef4444,
       starScale: 1.5,
+      asteroidBelt: {
+        id: `${galaxyPrefix}_belt_amber`,
+        name: 'Amber Shingle Asteroid Belt',
+        subtitle: 'Pyroxene & gold-rich rubble swarm at 2.9 AU',
+        semiMajorAu: 2.9,
+        widthAu: 0.9,
+        rockCount: 390,
+        orbitalPeriodYears: 4.94,
+        colorHex: 0xfde047,
+      },
       planets: [
+        {
+          id: `${galaxyPrefix}_p_cinder`,
+          name: 'Cinder Crust',
+          subtitle: 'Cratered silicate world with red glow cracks',
+          planetType: 'rocky',
+          orbitRadius: 6.2,
+          orbitSpeed: 0.7,
+          size: 0.95,
+          colorHex: 0x991b1b,
+          continentHex: 0x7f1d1d,
+          atmosphereHex: 0xf87171,
+          semiMajorAu: 0.52,
+          orbitalPeriodYears: 0.38,
+          diameterKm: 6800,
+          massLabel: '0.15 Earth Masses',
+          landingSpots: [],
+        },
         {
           id: `${galaxyPrefix}_p_sunset`,
           name: 'Golden Yuzu Prime',
           subtitle: 'Warm sunset oceans & citrus groves',
-          orbitRadius: 12,
+          planetType: 'habitable',
+          orbitRadius: 11.5,
           orbitSpeed: 0.34,
           size: 1.5,
           colorHex: 0x0d9488,
@@ -894,6 +1156,10 @@ function createStarSystemsForGalaxy(
           atmosphereHex: 0xfb923c,
           hasRings: true,
           ringColorHex: 0xfde047,
+          semiMajorAu: 1.25,
+          orbitalPeriodYears: 1.4,
+          diameterKm: 14100,
+          massLabel: '1.25 Earth Masses',
           landingSpots: [
             {
               id: `${galaxyPrefix}_sunset_land_1`,
@@ -913,6 +1179,25 @@ function createStarSystemsForGalaxy(
               },
             },
           ],
+        },
+        {
+          id: `${galaxyPrefix}_p_amber_kronos`,
+          name: 'Ochre Saturnia',
+          subtitle: 'Banded amber gas giant with wide golden ring planes',
+          planetType: 'gas_giant',
+          orbitRadius: 21.0,
+          orbitSpeed: 0.17,
+          size: 2.4,
+          colorHex: 0xd97706,
+          continentHex: 0xb45309,
+          atmosphereHex: 0xfef08a,
+          hasRings: true,
+          ringColorHex: 0xfef08a,
+          semiMajorAu: 7.8,
+          orbitalPeriodYears: 21.78,
+          diameterKm: 125000,
+          massLabel: '110 Earth Masses',
+          landingSpots: [],
         },
       ],
     },
@@ -1043,10 +1328,6 @@ export type UniverseScaleBandId =
   | 'nebulas'
   | 'stellar_nurseries'
   | 'solar_systems'
-  | 'asteroid_clouds'
-  | 'gas_giants'
-  | 'rocky_planets_moons'
-  | 'habitable_planets'
   | 'atmosphere'
   | 'land_masses'
   | 'ecosystems'
@@ -1159,58 +1440,14 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
   },
   {
     id: 'solar_systems',
-    title: 'Solar Systems & Planetary Orbits',
+    title: 'Solar & Planetary Systems (Oort Cloud to Inner Worlds)',
     shortLabel: 'Solar System',
-    subtitle: 'G2V star (0.00465 AU), 1:1 AU Keplerian planetary orbits & Kuiper disk',
+    subtitle: '0.005–50,000 AU · Central Star, Terrestrial Planets, Asteroids, Jovian Giants, Kuiper Belt & Oort Cloud',
     logMeters: 12.95,
-    typicalSizeLabel: '9.0×10^12 m · 60.2 AU',
+    typicalSizeLabel: '1.5×10^13 m · 100 AU (to 10^16 m Oort Cloud)',
     domain: 'stellar',
     skyHex: 0x010308,
     accentHex: 0xfacc15,
-  },
-  {
-    id: 'asteroid_clouds',
-    title: 'Asteroid Clouds & Main Belt',
-    shortLabel: 'Asteroids',
-    subtitle: '2.2–3.2 AU silicate & carbonaceous planetesimals in Kirkwood resonance',
-    logMeters: 11.65,
-    typicalSizeLabel: '4.5×10^11 m · 3.0 AU',
-    domain: 'planetary',
-    skyHex: 0x020308,
-    accentHex: 0xd6d3d1,
-  },
-  {
-    id: 'gas_giants',
-    title: 'Gas Giants & Ringed Jovians',
-    shortLabel: 'Gas Giants',
-    subtitle: '142,984 km oblate Jovian, Cassini-divided ice rings & Galilean moons',
-    logMeters: 8.93,
-    typicalSizeLabel: '8.5×10^8 m · 850,000 km',
-    domain: 'planetary',
-    skyHex: 0x020308,
-    accentHex: 0xf59e0b,
-  },
-  {
-    id: 'rocky_planets_moons',
-    title: 'Rocky Planets & Orbiting Moons',
-    shortLabel: 'Rocky & Moons',
-    subtitle: 'Cratered basalt/regolith terrestrial worlds & tidally locked moons',
-    logMeters: 7.85,
-    typicalSizeLabel: '7.1×10^7 m · 71,000 km',
-    domain: 'planetary',
-    skyHex: 0x020308,
-    accentHex: 0xf87171,
-  },
-  {
-    id: 'habitable_planets',
-    title: 'Habitable Biosphere Planet',
-    shortLabel: 'Habitable World',
-    subtitle: '12,742 km ocean world, Rayleigh limb, cumulus clouds & Moon at 384,400 km',
-    logMeters: 7.11,
-    typicalSizeLabel: '1.27×10^7 m · 12,742 km',
-    domain: 'planetary',
-    skyHex: 0x020612,
-    accentHex: 0x34d399,
   },
   {
     id: 'atmosphere',

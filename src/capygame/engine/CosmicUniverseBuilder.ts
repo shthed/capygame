@@ -3,6 +3,11 @@ import {
   COSMIC_GALAXIES,
   CosmicGalaxySpec,
   CosmicStage,
+  CosmicPlanetType,
+  CosmicAsteroidBeltSpec,
+  OrbitTimeScaleId,
+  ORBIT_TIME_SCALES,
+  OrbitTelemetry,
 } from '../types';
 
 const MAX_HARDWARE_PARTICLES = 48000;
@@ -247,11 +252,24 @@ export class CosmicUniverseBuilder {
     meshGroup: THREE.Group;
     orbitRadius: number;
     orbitSpeed: number;
+    semiMajorAu: number;
+    planetType: CosmicPlanetType;
+    name: string;
+    specIndex: number;
     angle: number;
   }> = [];
   private orbitGlobeGroup = new THREE.Group();
   private orbitCloudMesh: THREE.Mesh | null = null;
   private landingBeaconMeshes: THREE.Group[] = [];
+
+  // Unified Planetary & Asteroid Belt Orbit Time Simulation State
+  private orbitTimeScale: OrbitTimeScaleId = '1_orbit_min';
+  private simElapsedSeconds: number = 0;
+  private asteroidBeltGroup: THREE.Group | null = null;
+  private asteroidBeltHitMesh: THREE.Mesh | null = null;
+  private asteroidBeltAngle: number = 0;
+  private currentActiveStarIndex: number = 0;
+  private currentActiveGalaxyIndex: number = 0;
 
   public readonly clickableObjects: THREE.Object3D[] = [];
 
@@ -1427,10 +1445,13 @@ export class CosmicUniverseBuilder {
   public populateStarSystemView(galaxyIndex: number, starIndex: number) {
     this.clearGroup(this.starSystemGroup);
     this.planetNodes = [];
+    this.currentActiveGalaxyIndex = galaxyIndex;
+    this.currentActiveStarIndex = starIndex;
 
     const galaxy = COSMIC_GALAXIES[galaxyIndex] || COSMIC_GALAXIES[0];
     const star = galaxy.starSystems[starIndex] || galaxy.starSystems[0];
 
+    // 1. Central Star & Corona Photosphere
     const starGeo = new THREE.SphereGeometry(4.0 * star.starScale, 48, 48);
     const starMat = new THREE.MeshBasicMaterial({ color: star.starColorHex });
     const starMesh = new THREE.Mesh(starGeo, starMat);
@@ -1447,18 +1468,19 @@ export class CosmicUniverseBuilder {
     const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
     this.starSystemGroup.add(coronaMesh);
 
-    const pointLight = new THREE.PointLight(star.starColorHex, 3.0, 220);
+    const pointLight = new THREE.PointLight(star.starColorHex, 3.2, 260);
     this.starSystemGroup.add(pointLight);
-    const ambient = new THREE.AmbientLight(0x94a3b8, 0.55);
+    const ambient = new THREE.AmbientLight(0x94a3b8, 0.6);
     this.starSystemGroup.add(ambient);
 
+    // 2. Planets (Rocky Worlds, Habitable Sanctuaries, Gas Giants & Ice Giants)
     star.planets.forEach((planet, idx) => {
       const scaledOrbitR = planet.orbitRadius * 2.0;
       const trackGeo = new THREE.RingGeometry(scaledOrbitR - 0.08, scaledOrbitR + 0.08, 128);
       const trackMat = new THREE.MeshBasicMaterial({
         color: planet.atmosphereHex,
         transparent: true,
-        opacity: 0.22,
+        opacity: 0.24,
         side: THREE.DoubleSide,
         depthWrite: false,
       });
@@ -1468,7 +1490,7 @@ export class CosmicUniverseBuilder {
 
       const orbitGroup = new THREE.Group();
       const meshGroup = new THREE.Group();
-      const startAngle = idx * 2.1 + 0.6;
+      const startAngle = idx * 1.85 + 0.5;
       meshGroup.position.set(
         Math.cos(startAngle) * scaledOrbitR,
         0,
@@ -1476,47 +1498,160 @@ export class CosmicUniverseBuilder {
       );
 
       const pRadius = 1.9 * planet.size;
-      const oceanGeo = new THREE.SphereGeometry(pRadius, 36, 36);
-      const oceanMat = new THREE.MeshStandardMaterial({
-        color: planet.colorHex,
-        roughness: 0.42,
-        metalness: 0.12,
-      });
-      const oceanMesh = new THREE.Mesh(oceanGeo, oceanMat);
-      meshGroup.add(oceanMesh);
+      const planetType = planet.planetType || (planet.hasRings ? 'gas_giant' : 'habitable');
 
-      const contGeo = new THREE.IcosahedronGeometry(pRadius * 1.015, 2);
-      const contMat = new THREE.MeshStandardMaterial({
-        color: planet.continentHex,
-        roughness: 0.82,
-      });
-      const contMesh = new THREE.Mesh(contGeo, contMat);
-      contMesh.scale.set(1.03, 0.9, 0.97);
-      meshGroup.add(contMesh);
-
-      const atmoGeo = new THREE.SphereGeometry(pRadius * 1.15, 32, 32);
-      const atmoMat = new THREE.MeshBasicMaterial({
-        color: planet.atmosphereHex,
-        transparent: true,
-        opacity: 0.22,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      meshGroup.add(new THREE.Mesh(atmoGeo, atmoMat));
-
-      if (planet.hasRings && planet.ringColorHex) {
-        const pRingGeo = new THREE.RingGeometry(pRadius * 1.45, pRadius * 2.35, 64);
-        const pRingMat = new THREE.MeshBasicMaterial({
-          color: planet.ringColorHex,
-          transparent: true,
-          opacity: 0.58,
-          side: THREE.DoubleSide,
+      if (planetType === 'rocky') {
+        // Cratered, silicate/basalt terrestrial planet
+        const rockyGeo = new THREE.IcosahedronGeometry(pRadius, 3);
+        const rockyMat = new THREE.MeshStandardMaterial({
+          color: planet.colorHex,
+          roughness: 0.88,
+          metalness: 0.18,
         });
-        const pRing = new THREE.Mesh(pRingGeo, pRingMat);
-        pRing.rotation.x = Math.PI * 0.38;
-        meshGroup.add(pRing);
+        const rockyMesh = new THREE.Mesh(rockyGeo, rockyMat);
+        meshGroup.add(rockyMesh);
+
+        // Dark basalt caldera patches
+        const calderaGeo = new THREE.IcosahedronGeometry(pRadius * 1.01, 1);
+        const calderaMat = new THREE.MeshStandardMaterial({
+          color: planet.continentHex,
+          roughness: 0.95,
+        });
+        const calderaMesh = new THREE.Mesh(calderaGeo, calderaMat);
+        calderaMesh.scale.set(0.98, 0.92, 1.02);
+        meshGroup.add(calderaMesh);
+
+        // Very thin tenuous exosphere
+        const thinAtmoGeo = new THREE.SphereGeometry(pRadius * 1.06, 24, 24);
+        const thinAtmoMat = new THREE.MeshBasicMaterial({
+          color: planet.atmosphereHex,
+          transparent: true,
+          opacity: 0.12,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        meshGroup.add(new THREE.Mesh(thinAtmoGeo, thinAtmoMat));
+      } else if (planetType === 'gas_giant') {
+        // Massive Jovian gas giant with distinct atmospheric storm cloud bands
+        const gasGeo = new THREE.SphereGeometry(pRadius, 48, 48);
+        const gasMat = new THREE.MeshStandardMaterial({
+          color: planet.colorHex,
+          roughness: 0.52,
+          metalness: 0.05,
+        });
+        meshGroup.add(new THREE.Mesh(gasGeo, gasMat));
+
+        // Equatorial & tropical atmospheric bands
+        const bandGeo = new THREE.SphereGeometry(pRadius * 1.008, 40, 20);
+        const bandMat = new THREE.MeshStandardMaterial({
+          color: planet.continentHex,
+          roughness: 0.65,
+          transparent: true,
+          opacity: 0.62,
+        });
+        const bandMesh = new THREE.Mesh(bandGeo, bandMat);
+        bandMesh.scale.set(1.03, 0.65, 1.03);
+        meshGroup.add(bandMesh);
+
+        // Deep haze halo
+        const hazeGeo = new THREE.SphereGeometry(pRadius * 1.12, 32, 32);
+        const hazeMat = new THREE.MeshBasicMaterial({
+          color: planet.atmosphereHex,
+          transparent: true,
+          opacity: 0.28,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        meshGroup.add(new THREE.Mesh(hazeGeo, hazeMat));
+
+        if (planet.hasRings && planet.ringColorHex) {
+          const pRingGeo = new THREE.RingGeometry(pRadius * 1.45, pRadius * 2.5, 96);
+          const pRingMat = new THREE.MeshBasicMaterial({
+            color: planet.ringColorHex,
+            transparent: true,
+            opacity: 0.72,
+            side: THREE.DoubleSide,
+          });
+          const pRing = new THREE.Mesh(pRingGeo, pRingMat);
+          pRing.rotation.x = Math.PI * 0.36;
+          meshGroup.add(pRing);
+        }
+      } else if (planetType === 'ice_giant') {
+        // Azure / methane ice giant with high-altitude cryo-cirrus
+        const iceGeo = new THREE.SphereGeometry(pRadius, 40, 40);
+        const iceMat = new THREE.MeshStandardMaterial({
+          color: planet.colorHex,
+          roughness: 0.38,
+          metalness: 0.08,
+        });
+        meshGroup.add(new THREE.Mesh(iceGeo, iceMat));
+
+        const cryoAtmoGeo = new THREE.SphereGeometry(pRadius * 1.14, 32, 32);
+        const cryoAtmoMat = new THREE.MeshBasicMaterial({
+          color: planet.atmosphereHex,
+          transparent: true,
+          opacity: 0.32,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        meshGroup.add(new THREE.Mesh(cryoAtmoGeo, cryoAtmoMat));
+
+        if (planet.hasRings && planet.ringColorHex) {
+          const pRingGeo = new THREE.RingGeometry(pRadius * 1.35, pRadius * 2.2, 80);
+          const pRingMat = new THREE.MeshBasicMaterial({
+            color: planet.ringColorHex,
+            transparent: true,
+            opacity: 0.6,
+            side: THREE.DoubleSide,
+          });
+          const pRing = new THREE.Mesh(pRingGeo, pRingMat);
+          pRing.rotation.x = Math.PI * 0.42;
+          meshGroup.add(pRing);
+        }
+      } else {
+        // Habitable sanctuary world (oceans, continents, atmosphere)
+        const oceanGeo = new THREE.SphereGeometry(pRadius, 36, 36);
+        const oceanMat = new THREE.MeshStandardMaterial({
+          color: planet.colorHex,
+          roughness: 0.42,
+          metalness: 0.12,
+        });
+        meshGroup.add(new THREE.Mesh(oceanGeo, oceanMat));
+
+        const contGeo = new THREE.IcosahedronGeometry(pRadius * 1.015, 2);
+        const contMat = new THREE.MeshStandardMaterial({
+          color: planet.continentHex,
+          roughness: 0.82,
+        });
+        const contMesh = new THREE.Mesh(contGeo, contMat);
+        contMesh.scale.set(1.03, 0.9, 0.97);
+        meshGroup.add(contMesh);
+
+        const atmoGeo = new THREE.SphereGeometry(pRadius * 1.15, 32, 32);
+        const atmoMat = new THREE.MeshBasicMaterial({
+          color: planet.atmosphereHex,
+          transparent: true,
+          opacity: 0.24,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        meshGroup.add(new THREE.Mesh(atmoGeo, atmoMat));
+
+        if (planet.hasRings && planet.ringColorHex) {
+          const pRingGeo = new THREE.RingGeometry(pRadius * 1.45, pRadius * 2.35, 64);
+          const pRingMat = new THREE.MeshBasicMaterial({
+            color: planet.ringColorHex,
+            transparent: true,
+            opacity: 0.58,
+            side: THREE.DoubleSide,
+          });
+          const pRing = new THREE.Mesh(pRingGeo, pRingMat);
+          pRing.rotation.x = Math.PI * 0.38;
+          meshGroup.add(pRing);
+        }
       }
 
+      // Invisible raycast hit sphere
       const hitGeo = new THREE.SphereGeometry(Math.max(5.5, pRadius * 2.4), 16, 16);
       const hitMat = new THREE.MeshBasicMaterial({
         transparent: true,
@@ -1535,9 +1670,118 @@ export class CosmicUniverseBuilder {
         meshGroup,
         orbitRadius: scaledOrbitR,
         orbitSpeed: planet.orbitSpeed,
+        semiMajorAu: planet.semiMajorAu || (planet.orbitRadius / 9.0),
+        planetType,
+        name: planet.name,
+        specIndex: idx,
         angle: startAngle,
       });
     });
+
+    // 3. 3D Main Asteroid Belt (orbiting between inner terrestrial and outer Jovian planets)
+    const beltSpec = star.asteroidBelt || {
+      id: `${star.id}_belt`,
+      name: `${star.name} Asteroid Belt`,
+      subtitle: 'Main Belt Planetesimals',
+      semiMajorAu: 2.8,
+      widthAu: 0.8,
+      rockCount: 360,
+      orbitalPeriodYears: 4.69,
+      colorHex: 0xd6d3d1,
+    };
+
+    const beltRadius = beltSpec.semiMajorAu * 4.8; // ~13.44 world units
+
+    // Belt orbital track hairline
+    const beltTrackGeo = new THREE.RingGeometry(beltRadius - 0.75, beltRadius + 0.75, 96);
+    const beltTrackMat = new THREE.MeshBasicMaterial({
+      color: beltSpec.colorHex,
+      transparent: true,
+      opacity: 0.14,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const beltTrackMesh = new THREE.Mesh(beltTrackGeo, beltTrackMat);
+    beltTrackMesh.rotation.x = Math.PI / 2;
+    this.starSystemGroup.add(beltTrackMesh);
+
+    // 3D Instanced Rock Boulders
+    this.asteroidBeltGroup = new THREE.Group();
+    const rockCount = Math.min(280, beltSpec.rockCount);
+    const rockGeo = new THREE.DodecahedronGeometry(0.32, 1);
+    const rockMat = new THREE.MeshStandardMaterial({
+      color: beltSpec.colorHex,
+      roughness: 0.92,
+      metalness: 0.12,
+    });
+    const rockInstanced = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
+    const dummy = new THREE.Object3D();
+
+    for (let r = 0; r < rockCount; r++) {
+      const radiusOffset = ((r * 17) % 100 - 50) / 50 * 1.4;
+      const rockR = beltRadius + radiusOffset;
+      const rockAngle = (r / rockCount) * Math.PI * 2 + (((r * 31) % 50) / 50) * 0.12;
+      const rockY = (((r * 43) % 100 - 50) / 50) * 0.65;
+      const rockScale = 0.45 + (((r * 23) % 100) / 100) * 0.9;
+
+      dummy.position.set(
+        Math.cos(rockAngle) * rockR,
+        rockY,
+        Math.sin(rockAngle) * rockR
+      );
+      dummy.rotation.set(
+        (r * 0.7) % Math.PI,
+        (r * 1.3) % Math.PI,
+        (r * 0.5) % Math.PI
+      );
+      dummy.scale.set(
+        rockScale * (0.8 + ((r % 5) / 10)),
+        rockScale,
+        rockScale * (0.85 + ((r % 7) / 10))
+      );
+      dummy.updateMatrix();
+      rockInstanced.setMatrixAt(r, dummy.matrix);
+    }
+    rockInstanced.instanceMatrix.needsUpdate = true;
+    this.asteroidBeltGroup.add(rockInstanced);
+
+    // Fine glittering dust & planetesimal glints
+    const dustCount = 360;
+    const dustPos = new Float32Array(dustCount * 3);
+    for (let d = 0; d < dustCount; d++) {
+      const dOffset = (((d * 19) % 100 - 50) / 50) * 1.7;
+      const dRadius = beltRadius + dOffset;
+      const dAngle = (d / dustCount) * Math.PI * 2;
+      const dY = (((d * 37) % 100 - 50) / 50) * 0.8;
+      dustPos[d * 3] = Math.cos(dAngle) * dRadius;
+      dustPos[d * 3 + 1] = dY;
+      dustPos[d * 3 + 2] = Math.sin(dAngle) * dRadius;
+    }
+    const dustGeo = new THREE.BufferGeometry();
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+    const dustMat = new THREE.PointsMaterial({
+      size: 1.8,
+      color: beltSpec.colorHex,
+      transparent: true,
+      opacity: 0.52,
+      depthWrite: false,
+    });
+    const dustPoints = new THREE.Points(dustGeo, dustMat);
+    this.asteroidBeltGroup.add(dustPoints);
+
+    // Invisible raycast hit torus for clicking or inspecting the asteroid belt
+    const beltHitGeo = new THREE.TorusGeometry(beltRadius, 1.8, 8, 48);
+    beltHitGeo.rotateX(Math.PI / 2);
+    const beltHitMat = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    this.asteroidBeltHitMesh = new THREE.Mesh(beltHitGeo, beltHitMat);
+    this.asteroidBeltHitMesh.userData = { cosmicType: 'asteroid_belt', index: 0 };
+    this.starSystemGroup.add(this.asteroidBeltHitMesh);
+
+    this.starSystemGroup.add(this.asteroidBeltGroup);
   }
 
   public populatePlanetOrbitView(galaxyIndex: number, starIndex: number, planetIndex: number) {
@@ -1793,6 +2037,9 @@ export class CosmicUniverseBuilder {
           }
         });
       });
+      if (this.asteroidBeltHitMesh) {
+        this.clickableObjects.push(this.asteroidBeltHitMesh);
+      }
     } else if (stage === 'planet_orbit') {
       this.landingBeaconMeshes.forEach((b) => {
         b.traverse((child) => {
@@ -1963,15 +2210,39 @@ export class CosmicUniverseBuilder {
     }
 
     if (stage === 'star_system_view') {
+      const scaleSpec =
+        ORBIT_TIME_SCALES.find((s) => s.id === this.orbitTimeScale) || ORBIT_TIME_SCALES[4];
+      const effectiveMult = scaleSpec.multiplier;
+      this.simElapsedSeconds += dt * effectiveMult;
+
+      let baseEarthRadSec = 0;
+      if (
+        this.orbitTimeScale !== 'paused' &&
+        Number.isFinite(scaleSpec.earthOrbitDurationSec) &&
+        scaleSpec.earthOrbitDurationSec > 0
+      ) {
+        baseEarthRadSec = (Math.PI * 2) / scaleSpec.earthOrbitDurationSec;
+      }
+
       for (let i = 0; i < this.planetNodes.length; i++) {
         const p = this.planetNodes[i];
-        p.angle += dt * p.orbitSpeed * 0.45;
+        const semiMajor = Math.max(0.2, p.semiMajorAu || 1.0);
+        // Kepler's Third Law: omega = omega_Earth * (a)^(-1.5)
+        const keplerOmega = baseEarthRadSec * Math.pow(semiMajor, -1.5);
+        p.angle += dt * keplerOmega;
         p.meshGroup.position.set(
           Math.cos(p.angle) * p.orbitRadius,
           0,
           Math.sin(p.angle) * p.orbitRadius
         );
         p.meshGroup.rotation.y += dt * 0.8;
+      }
+
+      if (this.asteroidBeltGroup) {
+        const beltSemiMajor = 2.8;
+        const beltKeplerOmega = baseEarthRadSec * Math.pow(beltSemiMajor, -1.5);
+        this.asteroidBeltAngle += dt * beltKeplerOmega;
+        this.asteroidBeltGroup.rotation.y = this.asteroidBeltAngle;
       }
     }
 
@@ -2333,6 +2604,53 @@ export class CosmicUniverseBuilder {
     if (!beacon) return out.set(0, 0, 11);
     beacon.getWorldPosition(out);
     return out;
+  }
+
+  public setOrbitTimeScale(scaleId: OrbitTimeScaleId) {
+    this.orbitTimeScale = scaleId;
+  }
+
+  public getOrbitTimeScale(): OrbitTimeScaleId {
+    return this.orbitTimeScale;
+  }
+
+  public getSimElapsedSeconds(): number {
+    return this.simElapsedSeconds;
+  }
+
+  public getOrbitTelemetry(activePlanetIndex: number = 0): OrbitTelemetry {
+    const scaleSpec =
+      ORBIT_TIME_SCALES.find((s) => s.id === this.orbitTimeScale) || ORBIT_TIME_SCALES[4];
+    const totalDays = this.simElapsedSeconds / 86400;
+    const years = Math.floor(totalDays / 365.25);
+    const days = Math.floor(totalDays % 365.25);
+
+    const activeNode = this.planetNodes[activePlanetIndex] || this.planetNodes[0];
+    let activeBodyInfo: OrbitTelemetry['activeBody'] = undefined;
+
+    if (activeNode) {
+      const a = activeNode.semiMajorAu || 1.0;
+      const periodYrs = Math.pow(a, 1.5);
+      const orbitalSpeedKmS = 29.78 / Math.sqrt(a);
+      const angleDeg = ((activeNode.angle * 180) / Math.PI) % 360;
+      activeBodyInfo = {
+        name: activeNode.name,
+        type: activeNode.planetType,
+        semiMajorAu: Number(a.toFixed(2)),
+        orbitalPeriodYears: Number(periodYrs.toFixed(2)),
+        orbitalSpeedKmS: Number(orbitalSpeedKmS.toFixed(1)),
+        currentAngleDeg: Math.round((angleDeg + 360) % 360),
+      };
+    }
+
+    return {
+      scaleId: this.orbitTimeScale,
+      multiplier: scaleSpec.multiplier,
+      simElapsedYears: years,
+      simElapsedDays: days,
+      earthOrbitDurationSec: scaleSpec.earthOrbitDurationSec,
+      activeBody: activeBodyInfo,
+    };
   }
 
   private clearGroup(group: THREE.Group) {

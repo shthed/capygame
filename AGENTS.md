@@ -43,5 +43,5 @@ npm run preview              # Serve dist/ on http://localhost:3000
 npm run test:game            # Run full Playwright 3D E2E test suite
 npm run test:pwa             # Run offline PWA & Service Worker verification
 npm run gallery:capture      # Capture 3D district showcase screenshots
-npm run gallery:capture:zoom # Capture all 25 logarithmic universe scale screenshots
+npm run gallery:capture:zoom # Capture all 21 logarithmic universe scale screenshots
 ```

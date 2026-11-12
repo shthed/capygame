@@ -33,6 +33,9 @@ import {
   UniverseScaleTelemetry,
   WeatherType,
   formatPhysicalScaleMeters,
+  OrbitTelemetry,
+  OrbitTimeScaleId,
+  ORBIT_TIME_SCALES,
 } from '../types';
 import { ProgressionService } from '../services/ProgressionService';
 import {
@@ -308,6 +311,8 @@ export const CapyGameView: React.FC = () => {
   const [selectedLandingIdx, setSelectedLandingIdx] = useState<number>(0);
   const [selectedCapyHeroIdx, setSelectedCapyHeroIdx] = useState<number>(0);
   const [bigBangFlashOpacity, setBigBangFlashOpacity] = useState<number>(0);
+  const [orbitTelemetry, setOrbitTelemetry] = useState<OrbitTelemetry | null>(null);
+  const [selectedTimeScale, setSelectedTimeScale] = useState<OrbitTimeScaleId>('1_orbit_min');
 
   // Live Simulation Performance & Fractal Telemetry
   const [simStats, setSimStats] = useState<{
@@ -590,6 +595,9 @@ export const CapyGameView: React.FC = () => {
         },
         onUniverseScaleChange: (scaleInfo: UniverseScaleTelemetry) => {
           setUniverseScale(scaleInfo);
+        },
+        onOrbitTelemetryChange: (telemetry: OrbitTelemetry) => {
+          setOrbitTelemetry(telemetry);
         },
       });
     } catch (err) {
@@ -1176,8 +1184,25 @@ export const CapyGameView: React.FC = () => {
     activeGalaxy.starSystems[selectedStarIdx] || activeGalaxy.starSystems[0];
   const activePlanet =
     activeStar.planets[selectedPlanetIdx] || activeStar.planets[0];
+  const defaultFallbackSpot = activePlanet.landingSpots[0] || {
+    id: `${activePlanet.id}_probe`,
+    name: `${activePlanet.name} Atmospheric Survey`,
+    subtitle: 'High-altitude probe reconnaissance',
+    lat: 0,
+    lon: 0,
+    biome: {
+      biomeName: `${activePlanet.name} Stratosphere`,
+      skyHex: activePlanet.atmosphereHex,
+      fogHex: activePlanet.colorHex,
+      oceanHex: activePlanet.colorHex,
+      islandGrassHex: activePlanet.continentHex,
+      beachSandHex: activePlanet.continentHex,
+      floraPaletteHexes: [activePlanet.colorHex, activePlanet.continentHex, activePlanet.atmosphereHex],
+      gravityMultiplier: 1.0,
+    },
+  };
   const activeLandingSpot =
-    activePlanet.landingSpots[selectedLandingIdx] || activePlanet.landingSpots[0];
+    activePlanet.landingSpots[selectedLandingIdx] || defaultFallbackSpot;
   const activeCapyHero =
     PLAYABLE_CAPY_HEROES[selectedCapyHeroIdx] || PLAYABLE_CAPY_HEROES[0];
 
@@ -2608,13 +2633,16 @@ export const CapyGameView: React.FC = () => {
             </div>
           )}
 
-          {/* STAGE 4: STAR SYSTEM VIEW */}
+          {/* STAGE 4: STAR SYSTEM VIEW (UNIFIED PLANETARY SYSTEM & ORBITAL TIME CONTROLS) */}
           {cosmicStage === 'star_system_view' && (
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
-                    SCALE 3/4 · {activeStar.name}
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+                    <span>SCALE 3/4 · {activeStar.name}</span>
+                    <span className="px-1 py-0.2 rounded bg-sky-500/20 text-sky-300 text-[8px] font-mono border border-sky-500/30">
+                      STELLAR SYSTEM
+                    </span>
                   </div>
                   <h3 className="text-xs font-semibold text-zinc-100 mt-0.5">
                     {activePlanet.name}
@@ -2630,35 +2658,145 @@ export const CapyGameView: React.FC = () => {
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
-                <div>
-                  <span className="text-zinc-500 block">ORBIT RADIUS</span>
-                  <span className="text-zinc-200">{activePlanet.orbitRadius} AU</span>
+              {/* ORBITAL TIME CONTROLLER DOCK */}
+              <div className="p-2 rounded-lg bg-zinc-900/95 border border-sky-500/30 space-y-1.5 shadow-lg shadow-sky-950/20">
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span className="text-zinc-300 font-medium">SIM CLOCK</span>
+                    <span className="text-sky-300 font-bold" data-testid="sim-clock-readout">
+                      Yr {orbitTelemetry?.simElapsedYears ?? 0} · Day {orbitTelemetry?.simElapsedDays ?? 0}
+                    </span>
+                  </div>
+                  <span className="text-zinc-400 text-[9px]">
+                    {ORBIT_TIME_SCALES.find((s) => s.id === selectedTimeScale)?.shortLabel ?? '1 Orb/min'}
+                  </span>
                 </div>
-                <div>
-                  <span className="text-zinc-500 block">RING SYSTEM</span>
-                  <span className="text-zinc-200">{activePlanet.hasRings ? 'Present' : 'None'}</span>
+
+                {/* Fast-Forward Timescale Preset Steppers */}
+                <div
+                  className="flex items-center gap-1 overflow-x-auto pb-0.5 scrollbar-none"
+                  data-testid="orbit-time-controls"
+                >
+                  {ORBIT_TIME_SCALES.map((scale) => {
+                    const isActive = selectedTimeScale === scale.id;
+                    return (
+                      <button
+                        key={scale.id}
+                        type="button"
+                        data-testid={`orbit-scale-${scale.id}`}
+                        title={scale.description}
+                        onClick={() => {
+                          managerRef.current?.setOrbitTimeScale(scale.id);
+                          setSelectedTimeScale(scale.id);
+                        }}
+                        className={`px-2 py-1 rounded text-[9px] font-mono border transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                          isActive
+                            ? 'bg-sky-500/25 text-sky-200 border-sky-400 font-bold shadow-[0_0_8px_rgba(56,189,248,0.4)] ring-1 ring-sky-400/50'
+                            : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {scale.shortLabel}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="space-y-1">
-                {activeStar.planets.map((planet, idx) => (
-                  <button
-                    key={planet.id}
-                    type="button"
-                    data-testid={`select-planet-${idx}`}
-                    onClick={() => managerRef.current?.selectPlanet(idx)}
-                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-left transition-colors cursor-pointer"
-                  >
+              {/* Active Planet / Body Keplerian Physics Telemetry */}
+              <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block text-[9px]">SEMI-MAJOR</span>
+                  <span className="text-zinc-200 font-semibold">
+                    {activePlanet.semiMajorAu ?? (activePlanet.orbitRadius / 9.0).toFixed(2)} AU
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px]">PERIOD</span>
+                  <span className="text-zinc-200 font-semibold">
+                    {activePlanet.orbitalPeriodYears ?? Math.pow(activePlanet.orbitRadius / 9.0, 1.5).toFixed(2)} yr
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block text-[9px]">TYPE</span>
+                  <span className="text-sky-300 font-semibold uppercase text-[9px]">
+                    {activePlanet.planetType ? activePlanet.planetType.replace('_', ' ') : 'HABITABLE'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Asteroid Belt Interactive Inspector */}
+              {activeStar.asteroidBelt && (
+                <button
+                  type="button"
+                  data-testid="inspect-asteroid-belt"
+                  onClick={() => managerRef.current?.selectAsteroidBelt()}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-950/25 hover:bg-amber-900/35 border border-amber-500/30 text-left transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">🪨</span>
                     <div>
-                      <div className="text-[11px] font-medium text-zinc-100">{planet.name}</div>
-                      <div className="text-[9px] font-mono text-zinc-400 truncate max-w-44">
-                        {planet.subtitle}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-medium text-amber-200">
+                          {activeStar.asteroidBelt.name}
+                        </span>
+                        <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          MAIN BELT
+                        </span>
+                      </div>
+                      <div className="text-[9px] font-mono text-zinc-400 truncate max-w-52">
+                        {activeStar.asteroidBelt.semiMajorAu} AU · {activeStar.asteroidBelt.rockCount} Boulders · T = {activeStar.asteroidBelt.orbitalPeriodYears.toFixed(2)} yr
                       </div>
                     </div>
-                    <span className="text-[10px] font-mono text-sky-400">Orbit →</span>
-                  </button>
-                ))}
+                  </div>
+                  <span className="text-[9px] font-mono text-amber-400 group-hover:translate-x-0.5 transition-transform">
+                    Inspect →
+                  </span>
+                </button>
+              )}
+
+              {/* Planetary Family List (Rocky, Habitable, Gas Giants, Ice Giants) */}
+              <div className="space-y-1 max-h-40 overflow-y-auto scrollbar-none">
+                {activeStar.planets.map((planet, idx) => {
+                  const pType = planet.planetType || 'habitable';
+                  const typeBadgeClass =
+                    pType === 'rocky'
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                      : pType === 'gas_giant'
+                      ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30'
+                      : pType === 'ice_giant'
+                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                      : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
+
+                  return (
+                    <button
+                      key={planet.id}
+                      type="button"
+                      data-testid={`select-planet-${idx}`}
+                      onClick={() => managerRef.current?.selectPlanet(idx)}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                        selectedPlanetIdx === idx
+                          ? 'bg-zinc-800/90 border-sky-500/40'
+                          : 'bg-zinc-900/90 hover:bg-zinc-800 border-white/10'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="text-[11px] font-medium text-zinc-100">{planet.name}</div>
+                          <span
+                            className={`text-[8px] font-mono px-1 py-0.2 rounded border uppercase ${typeBadgeClass}`}
+                          >
+                            {pType.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="text-[9px] font-mono text-zinc-400 truncate max-w-48">
+                          {planet.semiMajorAu ? `${planet.semiMajorAu} AU · ` : ''}{planet.subtitle}
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono text-sky-400 shrink-0">Orbit →</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -2685,40 +2823,66 @@ export const CapyGameView: React.FC = () => {
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
-                <div>
-                  <span className="text-zinc-500 block">COORDINATES</span>
-                  <span className="text-zinc-200">
-                    {activeLandingSpot.lat}°, {activeLandingSpot.lon}°
-                  </span>
-                </div>
-                <div>
-                  <span className="text-zinc-500 block">SURFACE GRAVITY</span>
-                  <span className="text-zinc-200">
-                    {activeLandingSpot.biome.gravityMultiplier.toFixed(2)} G
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-1 max-h-32 overflow-y-auto">
-                {activePlanet.landingSpots.map((spot, idx) => (
-                  <button
-                    key={spot.id}
-                    type="button"
-                    data-testid={`select-landing-${idx}`}
-                    onClick={() => managerRef.current?.selectLandingSpot(idx)}
-                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-left transition-colors cursor-pointer"
-                  >
+              {activePlanet.landingSpots.length > 0 ? (
+                <>
+                  <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
                     <div>
-                      <div className="text-[11px] font-medium text-zinc-100">{spot.name}</div>
-                      <div className="text-[9px] font-mono text-zinc-400">
-                        {spot.lat}°N, {spot.lon}°E
-                      </div>
+                      <span className="text-zinc-500 block">COORDINATES</span>
+                      <span className="text-zinc-200">
+                        {activeLandingSpot.lat}°, {activeLandingSpot.lon}°
+                      </span>
                     </div>
-                    <span className="text-[10px] font-mono text-sky-400">Descend ↓</span>
-                  </button>
-                ))}
-              </div>
+                    <div>
+                      <span className="text-zinc-500 block">SURFACE GRAVITY</span>
+                      <span className="text-zinc-200">
+                        {activeLandingSpot.biome.gravityMultiplier.toFixed(2)} G
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {activePlanet.landingSpots.map((spot, idx) => (
+                      <button
+                        key={spot.id}
+                        type="button"
+                        data-testid={`select-landing-${idx}`}
+                        onClick={() => managerRef.current?.selectLandingSpot(idx)}
+                        className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-left transition-colors cursor-pointer"
+                      >
+                        <div>
+                          <div className="text-[11px] font-medium text-zinc-100">{spot.name}</div>
+                          <div className="text-[9px] font-mono text-zinc-400">
+                            {spot.lat}°N, {spot.lon}°E
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-mono text-sky-400">Descend ↓</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                /* Gas Giant or Deep Vulcan Surface Orbital Survey Mode */
+                <div className="p-2.5 rounded-lg bg-zinc-900/95 border border-amber-500/30 space-y-2">
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-amber-400">
+                    Deep Atmosphere · Extreme Environment
+                  </div>
+                  <p className="text-[10px] font-mono text-zinc-300 leading-relaxed">
+                    Planetary conditions preclude foot landing. Orbital atmospheric survey probe is active.
+                  </p>
+                  <div className="grid grid-cols-2 gap-1.5 text-[9px] font-mono bg-zinc-950/60 p-1.5 rounded border border-white/5">
+                    <div>
+                      <span className="text-zinc-500 block">MASS</span>
+                      <span className="text-zinc-200 font-semibold">{activePlanet.massLabel || 'Colossal'}</span>
+                    </div>
+                    <div>
+                      <span className="text-zinc-500 block">DIAMETER</span>
+                      <span className="text-zinc-200 font-semibold">
+                        {activePlanet.diameterKm ? `${activePlanet.diameterKm.toLocaleString()} km` : '120,000 km'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

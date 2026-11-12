@@ -170,9 +170,29 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   await page.getByTestId('select-star-0').click();
   await page.getByTestId('select-planet-0').waitFor({ state: 'visible', timeout: 5000 });
-  console.log('✓ Stage 4 verified: Zoomed into Star System view');
 
-  await page.getByTestId('select-planet-0').click();
+  // Verify Unified Stellar System: Asteroid Belt is present and inspectable
+  const asteroidBeltBtn = page.getByTestId('inspect-asteroid-belt');
+  await asteroidBeltBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await asteroidBeltBtn.click();
+  console.log('✓ Stage 4A verified: 3D Asteroid Belt present and inspectable in unified stellar system');
+
+  // Verify Orbital Time Controls & Simulation Clock
+  const orbitTimeControls = page.getByTestId('orbit-time-controls');
+  await orbitTimeControls.waitFor({ state: 'visible', timeout: 5000 });
+
+  // Test switching timescales: 1 Orbit/sec (rapid Keplerian whirl) -> 1 Day/sec -> 1 Orbit/min
+  await page.getByTestId('orbit-scale-1_orbit_s').click();
+  await page.waitForTimeout(250);
+  const simClockText = await page.getByTestId('sim-clock-readout').innerText();
+  if (!simClockText.includes('Yr') || !simClockText.includes('Day')) {
+    throw new Error(`Expected sim clock readout to contain 'Yr' and 'Day', got: '${simClockText}'`);
+  }
+  await page.getByTestId('orbit-scale-1_orbit_min').click();
+  console.log(`✓ Stage 4B verified: Orbital time controls and real-time clock active (${simClockText})`);
+
+  // Select habitable planet with landing spots (Capy Haven Alpha)
+  await page.getByTestId('select-planet-1').click();
   await page.getByTestId('select-landing-0').waitFor({ state: 'visible', timeout: 5000 });
   console.log('✓ Stage 5 verified: Entered Planetary Orbit view with 3D surface landing beacons');
 
@@ -1109,10 +1129,6 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       'nebulas',
       'stellar_nurseries',
       'solar_systems',
-      'asteroid_clouds',
-      'gas_giants',
-      'rocky_planets_moons',
-      'habitable_planets',
       'atmosphere',
       'land_masses',
       'ecosystems',
@@ -1172,7 +1188,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   if (
     !multiScaleSweep ||
-    multiScaleSweep.totalCheckpoints !== 25 ||
+    multiScaleSweep.totalCheckpoints !== 21 ||
     !multiScaleSweep.allMatched ||
     !multiScaleSweep.forestSurfaceVerified ||
     multiScaleSweep.woodlandHerdCount < 5 ||
