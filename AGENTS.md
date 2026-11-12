@@ -37,6 +37,7 @@ From the repository root:
 ```bash
 npm ci                       # Clean dependency install
 npm run lint                 # Strict TypeScript check (tsc -p tsconfig.json --noEmit)
+npm run test:unit            # Fast deterministic unit tests (node:test via tsx)
 npm run build                # Compile production bundle into dist/
 npm run dev                  # Start Vite dev server on http://localhost:3000
 npm run preview              # Serve dist/ on http://localhost:3000

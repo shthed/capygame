@@ -9,6 +9,7 @@ import {
   ORBIT_TIME_SCALES,
   OrbitTelemetry,
 } from '../types';
+import { disposeObject3DTree } from './gpu/ThreeDisposal';
 
 const MAX_HARDWARE_PARTICLES = 48000;
 const MAX_SOFTWARE_PARTICLES = 9000;
@@ -1369,6 +1370,14 @@ export class CosmicUniverseBuilder {
   }
 
   public populateGalaxyView(galaxyIndex: number) {
+    this.blackHoleShaderUniforms.length = Math.min(
+      this.blackHoleShaderUniforms.length,
+      COSMIC_GALAXIES.length
+    );
+    this.blackHoleLensingDisps.length = Math.min(
+      this.blackHoleLensingDisps.length,
+      COSMIC_GALAXIES.length
+    );
     this.clearGroup(this.galaxyViewGroup);
     this.starNodes = [];
 
@@ -2654,9 +2663,14 @@ export class CosmicUniverseBuilder {
   }
 
   private clearGroup(group: THREE.Group) {
-    while (group.children.length > 0) {
-      const child = group.children[0];
-      group.remove(child);
-    }
+    disposeObject3DTree(group);
+  }
+
+  public dispose() {
+    this.clickableObjects.length = 0;
+    this.blackHoleShaderUniforms.length = 0;
+    this.blackHoleLensingDisps.length = 0;
+    this.blackHoleAccretionDisks.length = 0;
+    disposeObject3DTree(this.rootGroup);
   }
 }

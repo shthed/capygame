@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "lint": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
+    "test:unit": "npx --yes tsx --test src/capygame/services/ProgressionAndPhysics.test.ts",
     "test:game": "node scripts/test-capygame.mjs",
     "test:pwa": "node scripts/test-pwa-offline.mjs",
     "gallery:capture": "node scripts/capture-capygame-gallery.mjs",

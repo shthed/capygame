@@ -165,11 +165,25 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   // 5. Zoom into a Spiral Galaxy -> Star System -> Orbiting Planet -> Landing Spot
   await page.getByTestId('select-galaxy-1').click();
-  await page.getByTestId('select-star-0').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('select-star-1').waitFor({ state: 'visible', timeout: 5000 });
   console.log('✓ Stage 3 verified: Zoomed into Spiral Galaxy view');
+
+  // Regression guard (BUG-11): selecting star index 1 (Sirius Cyan-B) must select star 1, not default to 0
+  await page.getByTestId('select-star-1').click();
+  await page.getByTestId('select-planet-0').waitFor({ state: 'visible', timeout: 5000 });
+  const selectedStarOneIdx = await page.evaluate(() => window.__capyManager?.selectedStarIndex ?? -1);
+  if (selectedStarOneIdx !== 1) {
+    throw new Error(`Expected select-star-1 to set selectedStarIndex=1, got ${selectedStarOneIdx}`);
+  }
+  await page.evaluate(() => window.__capyManager?.selectGalaxy(1));
+  await page.getByTestId('select-star-0').waitFor({ state: 'visible', timeout: 5000 });
 
   await page.getByTestId('select-star-0').click();
   await page.getByTestId('select-planet-0').waitFor({ state: 'visible', timeout: 5000 });
+  const selectedStarZeroIdx = await page.evaluate(() => window.__capyManager?.selectedStarIndex ?? -1);
+  if (selectedStarZeroIdx !== 0) {
+    throw new Error(`Expected select-star-0 to set selectedStarIndex=0, got ${selectedStarZeroIdx}`);
+  }
 
   // Verify Unified Stellar System: Asteroid Belt is present and inspectable
   const asteroidBeltBtn = page.getByTestId('inspect-asteroid-belt');
@@ -953,6 +967,10 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   }
   await tabBuild.click({ force: true, timeout: 10000 });
   await page.waitForTimeout(100);
+  const econBefore = await page.evaluate(() => ({
+    coins: window.__capyManager?.stats.coins ?? 0,
+    dna: window.__capyManager?.stats.dna ?? 0,
+  }));
   await page.getByTestId('build-btn-hot_spring').waitFor({ state: 'visible', timeout: 5000 });
   await page.getByTestId('build-btn-hot_spring').click({ force: true, timeout: 10000 });
   console.log('✓ Deployed Cozy Onsen in Sanctuary');
@@ -1107,7 +1125,34 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   await page.getByTestId('tab-wardrobe').click({ force: true });
   await page.getByTestId('wardrobe-btn-crown').click({ force: true });
-  console.log('✓ Equipped Gold Diadem in Loadout');
+  console.log('✓ Unlocked & equipped Gold Diadem in Loadout');
+
+  // Verify economy deductions (BUG-02): hot_spring (8c) + zen_pagoda (15c) + crown (15c) = 38c; flippers (4) + glow_tail (8) + speedBoost (5) = 17 DNA
+  const econAfterPurchases = await page.evaluate(() => ({
+    coins: window.__capyManager?.stats.coins ?? 0,
+    dna: window.__capyManager?.stats.dna ?? 0,
+  }));
+  if (
+    econBefore.coins - econAfterPurchases.coins !== 38 ||
+    econBefore.dna - econAfterPurchases.dna !== 17
+  ) {
+    throw new Error(
+      `Expected economy deductions of 38 coins and 17 DNA, got before=${JSON.stringify(econBefore)}, after=${JSON.stringify(econAfterPurchases)}`
+    );
+  }
+
+  // Verify Prestige Ascension button end-to-end when DNA >= 20
+  await page.evaluate(() => {
+    window.__capyManager?.callbacks.onProgressEarned?.(20, 'sanctuary', 10);
+  });
+  await page.getByTestId('tab-upgrades').click({ force: true });
+  await page.getByTestId('prestige-ascend-btn').click({ force: true });
+  const prestigeAfter = await page.evaluate(() => window.__capyManager?.stats.prestigeLevel ?? 1);
+  if (prestigeAfter !== 2) {
+    throw new Error(`Expected prestigeLevel=2 after Prestige Ascension, got ${prestigeAfter}`);
+  }
+  console.log('✓ Economy cost deductions & Prestige Ascension (v2) verified');
+
   await page.getByTestId('toggle-menu-btn').click();
 
   // 14B. Verify 63-Orders-of-Magnitude Seamless Universe Simulator (+28 Big Bang -> +0.8 Capybara Forest -> -35 Single Electron & Photon)
@@ -1234,7 +1279,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     throw new Error(`Expected 'playing' stage after landing in Capybara Forest, got '${stageAfterLand}'`);
   }
   console.log(
-    `✓ Seamless 63-Orders-of-Magnitude Universe Simulator & Auto Surface Handover verified across all 25 bands (10^+28m Big Bang -> Capybara Forest [${multiScaleSweep.woodlandHerdCount} grove nodes] -> 10^-35m Planck Scale)`
+    `✓ Seamless 63-Orders-of-Magnitude Universe Simulator & Auto Surface Handover verified across all 21 bands (10^+28m Big Bang -> Capybara Forest [${multiScaleSweep.woodlandHerdCount} grove nodes] -> 10^-35m Planck Scale)`
   );
 
   // 14C. Verify 1:1 Default Physical Scale, Zero 10^+13.7m Pillar Collision, Unlockable Object Finder Markers & Reality Rescaler!

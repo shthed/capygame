@@ -24,11 +24,13 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/capygame/engine/gpu/HardwareGpuEngine.ts` | WebGL2 `HalfFloatType` `EffectComposer`, PMREM IBL, 3-point lighting, texel-snapped Hero shadow cascade, Bloom, Depth-SSAO, DoF, and CAS. |
 | `src/capygame/engine/gpu/PbrTextureSynthesizer.ts` | Seamless Sobel tangent-space `normalMap`, `roughnessMap`, and Laplacian `aoMap` synthesis across all 5 districts and live texture filter switching. |
 | `src/capygame/engine/gpu/AaaWorldVfxEngine.ts` | Zero-allocation Structure-of-Arrays `InstancedMesh` burst/footstep particles, GPU bokeh sun-motes/fireflies, and solar crepuscular god-rays. |
+| `src/capygame/engine/gpu/ThreeDisposal.ts` | WebGL subtree geometry, material, and texture disposal utility preventing VRAM leaks across stage transitions. |
 | `src/capygame/engine/physics/ContiguousWorldTopology.ts` | Analytic SDF walkability and ground heightfields across all 5 districts and 4 `9.6 m`-wide Grand Promenade Causeways. |
-| `src/capygame/engine/physics/PhysicsWorldBridge.ts` | `SharedArrayBuffer` / transferable `Float32Array` main-thread bridge to `physics.worker.ts`, plus shallow-water buoyancy and XPBD soft-body pads. |
-| `src/capygame/engine/physics/physics.worker.ts` | Dedicated Web Worker stepping `@dimforge/rapier3d-compat` Wasm rigid bodies, swept CCD, `RevoluteJoint` see-saws, and kinematic sweepers. |
-| `src/capygame/services/AudioService.ts` | Procedural Web Audio synthesizer with master `DynamicsCompressorNode`, damped stereo delay reverb bus, and surface-aware paw foley. |
-| `src/capygame/services/ProgressionService.ts` | Persistent `PlayerStats` (`capy_game_save_v3`) and `CapyGameSettings` (`capy_game_settings_v1`) management. |
+| `src/capygame/engine/physics/ColliderMath.ts` | Zero-allocation yaw-rotated 2D circle-vs-OBB collision resolver and star-system index clamping helpers. |
+| `src/capygame/engine/physics/PhysicsWorldBridge.ts` | `SharedArrayBuffer` / transferable `Float32Array` main-thread bridge to `physics.worker.ts`, yaw-aware swept-CCD projection, shallow-water buoyancy, and XPBD soft-body pads. |
+| `src/capygame/engine/physics/physics.worker.ts` | Dedicated Web Worker exclusively bundling `@dimforge/rapier3d-compat` Wasm rigid bodies, swept CCD, `RevoluteJoint` see-saws, and kinematic sweepers. |
+| `src/capygame/services/AudioService.ts` | Procedural Web Audio synthesizer with master `DynamicsCompressorNode`, damped stereo delay reverb bus, surface-aware paw foley, and clean context disposal. |
+| `src/capygame/services/ProgressionService.ts` | Persistent `PlayerStats` (`capy_game_save_v3`), validated DNA/CapyCoin economy & Prestige Ascension, and `CapyGameSettings` (`capy_game_settings_v1`). |
 
 ---
 
@@ -59,7 +61,7 @@ In the planetary surface simulation, `RealisticWorldEnvironment.ts` and `PlaySty
 
 ## 4. Seamless 63-Orders-of-Magnitude `1:1` Universe Simulator (`SeamlessUniverseSimulator.ts`, `UniverseShaders.ts`)
 
-`SeamlessUniverseSimulator.ts` and `UniverseShaders.ts` provide continuous powers-of-10 zooming across 63 orders of magnitude (`logScaleMeters` from `+28.0` down to `-35.0`), spanning 25 physically calibrated scale bands in `UNIVERSE_SCALE_BANDS`:
+`SeamlessUniverseSimulator.ts` and `UniverseShaders.ts` provide continuous powers-of-10 zooming across 63 orders of magnitude (`logScaleMeters` from `+28.0` down to `-35.0`), spanning 21 physically calibrated scale bands in `UNIVERSE_SCALE_BANDS` (with inner rocky planets, habitable worlds, the main asteroid belt, gas/ice giants, Kuiper belt, and spherical 3D Oort Cometary Cloud unified into a single `solar_systems` band):
 
 - **Hubble & SpaceEngine Radiative Shader Pipeline**:
   - Flux-conserving Point-Spread-Function stars (`createStarPsfMaterial`) with Airy cores, 4-vane diffraction spikes, and Planckian blackbody colors (`2,600 K` to `32,000 K`), plus inclined Hubble Deep Field galaxies (`createDeepFieldGalaxyMaterial`).

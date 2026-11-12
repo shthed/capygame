@@ -11,6 +11,7 @@ import {
   ORBIT_TIME_SCALES,
 } from '../types';
 import { CapyMeshGroup, CapyModelGenerator } from './CapyModelGenerator';
+import { disposeObject3DTree } from './gpu/ThreeDisposal';
 import {
   blackbodyKelvinToRgb,
   createAtmosphereScatteringMaterial,
@@ -3063,5 +3064,13 @@ export class SeamlessUniverseSimulator {
 
   public getBandById(id: UniverseScaleBandId): UniverseScaleBandSpec {
     return UNIVERSE_SCALE_BANDS.find((b) => b.id === id) || UNIVERSE_SCALE_BANDS[0];
+  }
+
+  public dispose() {
+    this.markerAnchors.length = 0;
+    this.activeProjectedMarkers.length = 0;
+    disposeObject3DTree(this.forestGroveGroup);
+    disposeObject3DTree(this.celestialBackdropGroup);
+    disposeObject3DTree(this.rootGroup);
   }
 }

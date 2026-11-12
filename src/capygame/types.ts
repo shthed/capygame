@@ -8,6 +8,7 @@ export interface CapyMutation {
   description: string;
   speedBonus: number;
   magnetBonus: number;
+  dnaCost: number;
 }
 
 export const SPORE_MUTATIONS: CapyMutation[] = [
@@ -17,6 +18,7 @@ export const SPORE_MUTATIONS: CapyMutation[] = [
     description: 'Webbed turbo paws for +25% movement speed across all game zones.',
     speedBonus: 0.25,
     magnetBonus: 0,
+    dnaCost: 4,
   },
   {
     id: 'tusks',
@@ -24,6 +26,7 @@ export const SPORE_MUTATIONS: CapyMutation[] = [
     description: 'Prehistoric tusks that widen chomp reach and boost Yuzu collection.',
     speedBonus: 0.08,
     magnetBonus: 0.25,
+    dnaCost: 5,
   },
   {
     id: 'shell',
@@ -31,6 +34,7 @@ export const SPORE_MUTATIONS: CapyMutation[] = [
     description: 'Spiky citrus carapace that protects your herd and stabilizes parkour landings.',
     speedBonus: 0.05,
     magnetBonus: 0.35,
+    dnaCost: 6,
   },
   {
     id: 'wings',
@@ -38,6 +42,7 @@ export const SPORE_MUTATIONS: CapyMutation[] = [
     description: 'Feathered capybara wings that boost jump height and air control.',
     speedBonus: 0.35,
     magnetBonus: 0.4,
+    dnaCost: 8,
   },
   {
     id: 'horn',
@@ -45,6 +50,7 @@ export const SPORE_MUTATIONS: CapyMutation[] = [
     description: 'Mythic crystalline horn that radiates a wide Yuzu & DNA magnet aura.',
     speedBonus: 0.2,
     magnetBonus: 1.0,
+    dnaCost: 10,
   },
   {
     id: 'glow_tail',
@@ -52,6 +58,7 @@ export const SPORE_MUTATIONS: CapyMutation[] = [
     description: 'Apex evolutionary trait boosting dash agility and glowing in the lagoon.',
     speedBonus: 0.3,
     magnetBonus: 0.6,
+    dnaCost: 8,
   },
 ];
 
@@ -68,6 +75,7 @@ export interface BuildingCatalogItem {
   name: string;
   icon: string;
   description: string;
+  coinCost: number;
 }
 
 export const BUILDING_CATALOG: BuildingCatalogItem[] = [
@@ -76,38 +84,53 @@ export const BUILDING_CATALOG: BuildingCatalogItem[] = [
     name: 'Cozy Onsen',
     icon: '♨️',
     description: 'Steaming mineral bath where capybaras soak with yuzu on their heads.',
+    coinCost: 8,
   },
   {
     type: 'yuzu_orchard',
     name: 'Yuzu Orchard',
     icon: '🌳',
     description: 'Fragrant citrus grove that drops collectible golden yuzu around the island.',
+    coinCost: 10,
   },
   {
     type: 'trampoline_pad',
     name: 'Bouncy Mushroom Pad',
     icon: '🍄',
     description: 'Springy giant mushroom pad—jump on it in the Sanctuary for high-altitude bounces!',
+    coinCost: 10,
   },
   {
     type: 'bamboo_grove',
     name: 'Emerald Bamboo Grove',
     icon: '🎋',
     description: 'Tranquil bamboo forest that shelters wandering capybara families.',
+    coinCost: 12,
   },
   {
     type: 'zen_pagoda',
     name: 'Sacred Capy Pagoda',
     icon: '⛩️',
     description: 'Ancient timber temple overlooking the entire 3D Capybara Archipelago.',
+    coinCost: 15,
   },
   {
     type: 'capy_statue',
     name: 'Golden Capy Monument',
     icon: '🗿',
     description: 'Gleaming solid-gold monument celebrating the supreme chill of the Capybara.',
+    coinCost: 20,
   },
 ];
+
+export const COSMETIC_COIN_COSTS: Record<string, number> = {
+  yuzu: 0,
+  flower: 0,
+  party: 12,
+  crown: 15,
+  wizard: 18,
+  halo: 22,
+};
 
 export interface WorldBuilding {
   id: string;
@@ -380,6 +403,7 @@ export interface PlayerStats {
   activeHat: string;
   activeSkin: string;
   activeMutations: MutationId[];
+  unlockedMutations?: MutationId[];
   evolutionStage: number;
 
   highScoreSpore: number;
@@ -405,6 +429,7 @@ export const OBJECT_MARKERS_DNA_COST = 12;
 export const OBJECT_MARKERS_COIN_COST = 30;
 export const REALITY_RESCALER_DNA_COST = 20;
 export const REALITY_RESCALER_COIN_COST = 45;
+export const PRESTIGE_BASE_DNA_COST = 20;
 
 export const INITIAL_PLAYER_STATS: PlayerStats = {
   dna: 30,
@@ -414,6 +439,7 @@ export const INITIAL_PLAYER_STATS: PlayerStats = {
   activeHat: 'yuzu',
   activeSkin: 'classic',
   activeMutations: [],
+  unlockedMutations: [],
   evolutionStage: 1,
   highScoreSpore: 0,
   highScoreBreakout: 0,
@@ -455,7 +481,7 @@ export const INITIAL_PLAYER_STATS: PlayerStats = {
       description: 'Springy giant mushroom pad—jump on it in the Sanctuary for high-altitude bounces!',
     },
   ],
-  unlockedCosmetics: ['yuzu', 'flower', 'crown', 'party', 'wizard', 'halo'],
+  unlockedCosmetics: ['yuzu', 'flower'],
   unlockedObjectMarkers: false,
   unlockedRealityRescaler: false,
 };

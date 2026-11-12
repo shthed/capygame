@@ -72,6 +72,8 @@ import type {
   StaticBoxColliderSpec,
   StaticCircleColliderSpec,
 } from './physics/PhysicsTypes';
+import { clampStarSystemIndex } from './physics/ColliderMath';
+import { disposeObject3DTree } from './gpu/ThreeDisposal';
 
 // Pre-allocated math helpers for zero per-frame garbage collection
 const _tempVec3 = new THREE.Vector3();
@@ -455,6 +457,20 @@ export class PlayStyleManager {
     mesh: THREE.Mesh;
     type: 'multiball' | 'wide';
   }> = [];
+  private readonly sharedBreakoutPowerupGeo = (() => {
+    const geo = new THREE.CylinderGeometry(0.28, 0.28, 0.6, 12);
+    geo.userData.sharedAsset = true;
+    return geo;
+  })();
+  private readonly sharedBreakoutPowerupMat = (() => {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.5,
+    });
+    mat.userData.sharedAsset = true;
+    return mat;
+  })();
   private breakoutScore: number = 0;
   private breakoutWave: number = 1;
   private breakoutCombo: number = 1;
@@ -1636,6 +1652,7 @@ export class PlayStyleManager {
 
   public selectStarSystem(index: number) {
     const galaxy = COSMIC_GALAXIES[this.selectedGalaxyIndex] || COSMIC_GALAXIES[0];
+    this.selectedStarIndex = clampStarSystemIndex(index, galaxy.starSystems.length);
     const star = galaxy.starSystems[this.selectedStarIndex] || galaxy.starSystems[0];
     const habitableIdx = star.planets.findIndex((p) => p.landingSpots.length > 0);
     this.selectedPlanetIndex = habitableIdx >= 0 ? habitableIdx : 0;
@@ -6674,12 +6691,8 @@ export class PlayStyleManager {
             if (blk.hp <= 0) {
               if (playerPresent && (blk.isBonus || Math.random() > 0.82)) {
                 const pMesh = new THREE.Mesh(
-                  new THREE.CylinderGeometry(0.28, 0.28, 0.6, 12),
-                  new THREE.MeshStandardMaterial({
-                    color: 0x38bdf8,
-                    emissive: 0x0284c7,
-                    emissiveIntensity: 0.5,
-                  })
+                  this.sharedBreakoutPowerupGeo,
+                  this.sharedBreakoutPowerupMat
                 );
                 pMesh.rotation.z = Math.PI / 2;
                 pMesh.position.copy(blk.mesh.position);
@@ -7456,9 +7469,15 @@ export class PlayStyleManager {
 
   public dispose() {
     this.cancelBuildingPlacementGhost(true);
+    AudioService.dispose();
     this.physicsBridge?.dispose();
+    this.cosmicBuilder?.dispose();
+    this.seamlessUniverse?.dispose();
     this.vfxEngine?.dispose();
     this.gpuEngine?.dispose();
+    this.sharedBreakoutPowerupGeo.dispose();
+    this.sharedBreakoutPowerupMat.dispose();
+    disposeObject3DTree(this.scene);
     this.renderer.domElement.remove();
     this.renderer.dispose();
   }

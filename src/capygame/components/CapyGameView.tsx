@@ -556,6 +556,11 @@ export const CapyGameView: React.FC = () => {
               z,
               description
             );
+            if (!nextStats) {
+              const cost = ProgressionService.getBuildingCoinCost(type);
+              showToast(`Requires ${cost}c to construct ${name}`);
+              return prev;
+            }
             AudioService.playCoin();
             window.setTimeout(() => {
               managerRef.current?.updateStats(nextStats);
@@ -1089,15 +1094,24 @@ export const CapyGameView: React.FC = () => {
       bz,
       def.description
     );
+    if (!nextStats) {
+      showToast(`Requires ${def.coinCost}c to deploy ${def.name}`);
+      return;
+    }
     AudioService.playCoin();
     setStats(nextStats);
+    managerRef.current?.updateStats(nextStats);
     managerRef.current?.refreshSanctuaryBuildings();
-    showToast(`Deployed ${def.name}`);
+    showToast(`Deployed ${def.name} (-${def.coinCost}c)`);
   };
 
   const handleStartBuildingGhost = (def: BuildingCatalogItem) => {
     if (stats.buildings.length >= 16) {
       showToast('Sector capacity reached (16/16 structures)');
+      return;
+    }
+    if ((stats.coins ?? 0) < def.coinCost) {
+      showToast(`Requires ${def.coinCost}c to place ${def.name}`);
       return;
     }
     if (activeMode !== 'sanctuary') {
@@ -1114,35 +1128,80 @@ export const CapyGameView: React.FC = () => {
   };
 
   const handleUpgradeBuilding = (buildingId: string) => {
+    const target = stats.buildings.find((b) => b.id === buildingId);
     const updated = ProgressionService.upgradeBuilding(stats, buildingId);
-    if (!updated) return;
+    if (!updated) {
+      if (target) {
+        const reqCoins = ProgressionService.getBuildingUpgradeCoinCost(target.type, target.level);
+        showToast(`Requires ${reqCoins}c to upgrade ${target.name}`);
+      }
+      return;
+    }
     AudioService.playCoin();
     setStats(updated);
+    managerRef.current?.updateStats(updated);
     managerRef.current?.refreshSanctuaryBuildings();
     showToast('Structure tier upgraded');
   };
 
   const handleLevelUpAbility = (upgradeKey: keyof PlayerStats['upgrades']) => {
+    const curLevel = stats.upgrades[upgradeKey] || 1;
+    const reqDna = ProgressionService.getAbilityUpgradeDnaCost(curLevel);
     const updated = ProgressionService.buyUpgrade(stats, upgradeKey);
+    if (!updated) {
+      showToast(`Requires ${reqDna} DNA to increment parameter`);
+      return;
+    }
     AudioService.playSplash();
     setStats(updated);
-    showToast('Parameter upgraded');
+    managerRef.current?.updateStats(updated);
+    showToast(`Parameter upgraded (-${reqDna} DNA)`);
   };
 
   const handleToggleMutation = (mutationId: MutationId) => {
+    const mut = SPORE_MUTATIONS.find((m) => m.id === mutationId);
     const res = ProgressionService.unlockOrToggleMutation(stats, mutationId);
-    if (!res) return;
+    if (!res) {
+      if (mut) {
+        showToast(`Requires ${mut.dnaCost} DNA to splice ${mut.name}`);
+      }
+      return;
+    }
     AudioService.playCoin();
     managerRef.current?.updateStats(res.stats);
     setStats(res.stats);
+    if (res.action === 'unlocked' && mut) {
+      showToast(`Unlocked ${mut.name} (-${mut.dnaCost} DNA)`);
+    }
   };
 
   const handleEquipHat = (hatId: string) => {
+    const res = ProgressionService.unlockOrEquipCosmetic(stats, hatId);
+    if (!res) {
+      const cost = ProgressionService.getCosmeticCoinCost(hatId);
+      showToast(`Requires ${cost}c to unlock cosmetic`);
+      return;
+    }
     AudioService.playCoin();
-    const updated: PlayerStats = { ...stats, activeHat: hatId };
-    ProgressionService.saveStats(updated);
-    managerRef.current?.updateStats(updated);
+    managerRef.current?.updateStats(res.stats);
+    setStats(res.stats);
+    if (res.action === 'unlocked') {
+      const cost = ProgressionService.getCosmeticCoinCost(hatId);
+      showToast(`Unlocked & equipped headgear (-${cost}c)`);
+    }
+  };
+
+  const handlePrestigeAscend = () => {
+    const reqDna = ProgressionService.getPrestigeDnaCost(stats.prestigeLevel);
+    const updated = ProgressionService.prestige(stats);
+    if (!updated) {
+      showToast(`Requires ${reqDna} DNA for Prestige Ascension`);
+      return;
+    }
+    AudioService.playPrestigeFanfare();
     setStats(updated);
+    managerRef.current?.updateStats(updated);
+    showToast(`Prestige Tier ${updated.prestigeLevel} Ascended (${updated.prestigeLevel}x Coin Yield)`);
   };
 
   const handleResetProgress = () => {
@@ -3294,8 +3353,8 @@ export const CapyGameView: React.FC = () => {
                                 <span className="text-xs font-semibold text-zinc-100 truncate">
                                   {def.name}
                                 </span>
-                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-zinc-400 border border-white/10 shrink-0">
-                                  {count}
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-amber-300 border border-white/10 shrink-0">
+                                  {def.coinCost}c · #{count}
                                 </span>
                               </div>
                               <p className="text-[10px] text-zinc-400 mt-0.5 line-clamp-1">
@@ -3311,7 +3370,7 @@ export const CapyGameView: React.FC = () => {
                                 className="flex-1 flex items-center justify-center gap-1 py-1 px-1.5 rounded text-[11px] font-medium transition-colors cursor-pointer bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-white/10"
                               >
                                 <Plus className="w-3 h-3" />
-                                <span>Deploy</span>
+                                <span>Deploy ({def.coinCost}c)</span>
                               </button>
                               <button
                                 type="button"
@@ -3334,19 +3393,22 @@ export const CapyGameView: React.FC = () => {
                         <span className="text-[10px] font-mono uppercase text-zinc-500 shrink-0">
                           Deployed ({stats.buildings.length}/16):
                         </span>
-                        {stats.buildings.map((b, idx) => (
-                          <button
-                            key={b.id}
-                            type="button"
-                            onClick={() => handleUpgradeBuilding(b.id)}
-                            className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border bg-zinc-900 border-white/15 text-zinc-300 hover:bg-zinc-800 cursor-pointer"
-                          >
-                            <span>
-                              #{idx + 1} {b.name} L{b.level}
-                            </span>
-                            <span className="text-sky-400">+</span>
-                          </button>
-                        ))}
+                        {stats.buildings.map((b, idx) => {
+                          const upCost = ProgressionService.getBuildingUpgradeCoinCost(b.type, b.level);
+                          return (
+                            <button
+                              key={b.id}
+                              type="button"
+                              onClick={() => handleUpgradeBuilding(b.id)}
+                              className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border bg-zinc-900 border-white/15 text-zinc-300 hover:bg-zinc-800 cursor-pointer"
+                            >
+                              <span>
+                                #{idx + 1} {b.name} L{b.level}
+                              </span>
+                              <span className="text-sky-400">+{upCost}c</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -3356,6 +3418,8 @@ export const CapyGameView: React.FC = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     {SPORE_MUTATIONS.map((mut) => {
                       const isEquipped = stats.activeMutations.includes(mut.id);
+                      const isUnlocked =
+                        isEquipped || Boolean(stats.unlockedMutations?.includes(mut.id));
                       return (
                         <div
                           key={mut.id}
@@ -3366,7 +3430,12 @@ export const CapyGameView: React.FC = () => {
                           }`}
                         >
                           <div>
-                            <span className="text-xs font-semibold text-zinc-100">{mut.name}</span>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-semibold text-zinc-100">{mut.name}</span>
+                              <span className="text-[10px] font-mono text-emerald-300">
+                                {isUnlocked ? 'Spliced' : `${mut.dnaCost} DNA`}
+                              </span>
+                            </div>
                             <p className="text-[10px] text-zinc-400 mt-0.5 line-clamp-2">
                               {mut.description}
                             </p>
@@ -3382,7 +3451,11 @@ export const CapyGameView: React.FC = () => {
                                 : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border border-white/10'
                             }`}
                           >
-                            {isEquipped ? 'Active' : 'Activate'}
+                            {isEquipped
+                              ? 'Active'
+                              : isUnlocked
+                                ? 'Activate'
+                                : `Splice (${mut.dnaCost} DNA)`}
                           </button>
                         </div>
                       );
@@ -3391,35 +3464,57 @@ export const CapyGameView: React.FC = () => {
                 )}
 
                 {activeTab === 'upgrades' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {ABILITY_UPGRADE_LIST.map((up) => {
-                      const level = stats.upgrades[up.id] || 1;
-                      return (
-                        <div
-                          key={up.id}
-                          className="flex flex-col justify-between p-2 rounded-lg bg-zinc-900/80 border border-white/10 gap-1.5"
-                        >
-                          <div>
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="text-xs font-semibold text-zinc-100">{up.name}</span>
-                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-sky-400 border border-white/10">
-                                L{level}
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-zinc-400 mt-0.5">{up.description}</p>
-                          </div>
-
-                          <button
-                            type="button"
-                            data-testid={`upgrade-btn-${up.id}`}
-                            onClick={() => handleLevelUpAbility(up.id)}
-                            className="w-full py-1 px-2 rounded text-xs font-medium transition-colors cursor-pointer bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-white/10"
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {ABILITY_UPGRADE_LIST.map((up) => {
+                        const level = stats.upgrades[up.id] || 1;
+                        const dnaCost = ProgressionService.getAbilityUpgradeDnaCost(level);
+                        return (
+                          <div
+                            key={up.id}
+                            className="flex flex-col justify-between p-2 rounded-lg bg-zinc-900/80 border border-white/10 gap-1.5"
                           >
-                            Increment
-                          </button>
-                        </div>
-                      );
-                    })}
+                            <div>
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-xs font-semibold text-zinc-100">{up.name}</span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-sky-400 border border-white/10">
+                                  L{level}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-zinc-400 mt-0.5">{up.description}</p>
+                            </div>
+
+                            <button
+                              type="button"
+                              data-testid={`upgrade-btn-${up.id}`}
+                              onClick={() => handleLevelUpAbility(up.id)}
+                              className="w-full py-1 px-2 rounded text-xs font-medium transition-colors cursor-pointer bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-white/10"
+                            >
+                              Increment ({dnaCost} DNA)
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-lg bg-zinc-900/90 border border-amber-400/25">
+                      <div>
+                        <span className="text-xs font-semibold text-amber-300 font-mono">
+                          Prestige Tier P{stats.prestigeLevel} · {stats.prestigeLevel}x Coin Multiplier
+                        </span>
+                        <p className="text-[10px] text-zinc-400">
+                          Ascend lineage for +{50 * stats.prestigeLevel}c bonus and permanent coin yield scaling.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="prestige-ascend-btn"
+                        onClick={handlePrestigeAscend}
+                        className="px-3 py-1 rounded text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 cursor-pointer"
+                      >
+                        Ascend ({ProgressionService.getPrestigeDnaCost(stats.prestigeLevel)} DNA)
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -3427,6 +3522,8 @@ export const CapyGameView: React.FC = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                     {WARDROBE_HATS.map((item) => {
                       const isSelected = stats.activeHat === item.id;
+                      const isUnlocked = stats.unlockedCosmetics.includes(item.id);
+                      const hatCost = ProgressionService.getCosmeticCoinCost(item.id);
                       return (
                         <button
                           key={item.id}
@@ -3445,10 +3542,18 @@ export const CapyGameView: React.FC = () => {
                           </div>
                           <span
                             className={`mt-1.5 inline-block text-[10px] font-mono uppercase ${
-                              isSelected ? 'text-sky-400' : 'text-zinc-500'
+                              isSelected
+                                ? 'text-sky-400'
+                                : isUnlocked
+                                  ? 'text-zinc-400'
+                                  : 'text-amber-300'
                             }`}
                           >
-                            {isSelected ? 'EQUIPPED' : 'EQUIP'}
+                            {isSelected
+                              ? 'EQUIPPED'
+                              : isUnlocked
+                                ? 'EQUIP'
+                                : `UNLOCK ${hatCost}c`}
                           </span>
                         </button>
                       );

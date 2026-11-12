@@ -499,6 +499,25 @@ class CapyAudioService {
 
     playNextNote();
   }
+
+  public stopAmbientMusic(): void {
+    this.isMusicPlaying = false;
+    if (this.musicTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(this.musicTimer);
+      this.musicTimer = null;
+    }
+  }
+
+  public dispose(): void {
+    this.stopAmbientMusic();
+    if (this.ctx) {
+      this.ctx.close().catch(() => {});
+      this.ctx = null;
+    }
+    this.masterInput = null;
+    this.reverbInput = null;
+    this.noiseBuffer = null;
+  }
 }
 
 export const AudioService = new CapyAudioService();

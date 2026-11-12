@@ -1,5 +1,8 @@
 {
   "name": "Capy - Color by Number & CapyGame 3D",
-  "description": "Vector color-by-number canvas and 3D procedural Capybara world building and mini-game simulator.",
-  "requestFramePermissions": []
+  "description": "Hardware-accelerated 3D multi-scale universe simulator, contiguous Capybara world builder, and multiphysics mini-game archipelago.",
+  "requestFramePermissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

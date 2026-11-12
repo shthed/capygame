@@ -15,6 +15,7 @@ class PwaServiceClass {
   private deferredPrompt: BeforeInstallPromptEvent | null = null;
   private listeners: Set<PwaListener> = new Set();
   private registration: ServiceWorkerRegistration | null = null;
+  private cacheWarmPromise: Promise<void> | null = null;
   private hasUpdate = false;
 
   constructor() {
@@ -85,26 +86,54 @@ class PwaServiceClass {
       const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
       this.registration = reg;
 
-      // Cache currently active DOM scripts and stylesheets for immediate offline readiness (skipping @vite/client)
+      // Warm scope-isolated cache with active DOM scripts, stylesheets, and loaded module resources
       if ('caches' in window) {
-        try {
-          const cache = await caches.open('capy-cache-v1');
-          const urls: string[] = [];
-          document.querySelectorAll('script[src], link[rel="stylesheet"]').forEach((el) => {
-            const src = 'src' in el ? (el as HTMLScriptElement).src : (el as HTMLLinkElement).href;
-            if (
-              src &&
-              src.startsWith(window.location.origin) &&
-              !src.includes('/@vite/') &&
-              !src.includes('/@fs/')
-            ) {
-              urls.push(src);
+        this.cacheWarmPromise = (async () => {
+          try {
+            await navigator.serviceWorker.ready;
+            const scopePath = new URL('./', window.location.href).pathname;
+            const cacheName = `capygame-cache-v2:${scopePath}`;
+            const cache = await caches.open(cacheName);
+            const urlSet = new Set<string>();
+
+            const shouldCacheUrl = (u: string) =>
+              Boolean(u) &&
+              u.startsWith(window.location.origin) &&
+              !u.includes('/__vite_ping') &&
+              !u.includes('/__aistudio') &&
+              !u.includes('/_aistudio') &&
+              !u.includes('/__cookie_check') &&
+              !u.endsWith('/sw.js') &&
+              !u.endsWith('/warmup.html') &&
+              !u.endsWith('/forbidden.html');
+
+            document.querySelectorAll('script[src], link[rel="stylesheet"]').forEach((el) => {
+              const src = 'src' in el ? (el as HTMLScriptElement).src : (el as HTMLLinkElement).href;
+              if (shouldCacheUrl(src)) urlSet.add(src);
+            });
+
+            if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+              for (const entry of performance.getEntriesByType('resource')) {
+                if (shouldCacheUrl(entry.name)) {
+                  urlSet.add(entry.name);
+                }
+              }
             }
-          });
-          await Promise.allSettled(urls.map((u) => cache.add(u)));
-        } catch {
-          // Ignored
-        }
+
+            await Promise.allSettled(
+              Array.from(urlSet).map(async (u) => {
+                const existing = await cache.match(u);
+                if (existing) return;
+                const resp = await fetch(u, { cache: 'force-cache' });
+                if (resp && resp.status === 200) {
+                  await cache.put(u, resp);
+                }
+              })
+            );
+          } catch {
+            // Ignored
+          }
+        })();
       }
 
       // Handle updates found
@@ -125,6 +154,12 @@ class PwaServiceClass {
       });
     } catch (err) {
       console.warn('[PWA] Service worker registration error:', err);
+    }
+  }
+
+  public async waitUntilOfflineReady(): Promise<void> {
+    if (this.cacheWarmPromise) {
+      await this.cacheWarmPromise;
     }
   }
 

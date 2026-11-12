@@ -142,10 +142,12 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build & typecheck CapyGame 3D
+      - name: Build, lint & unit-test CapyGame 3D
         if: steps.target.outputs.skip != 'true'
         run: |
-          npm install --prefer-offline --no-audit --no-fund
+          npm ci --prefer-offline --no-audit --no-fund
+          npm run lint
+          npm run test:unit
           npm run build
 
       - name: Stage build artifacts
@@ -274,17 +276,19 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
-        continue-on-error: true
         with:
           artifact_name: github-pages-${{ github.run_attempt }}
 
       - name: Comment PR with preview link
         if: needs.build.outputs.pr != ''
         uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ needs.build.outputs.pr }}
+          PREVIEW_URL: ${{ needs.build.outputs.preview_url }}
         with:
           script: |
-            const prNumber = Number('${{ needs.build.outputs.pr }}');
-            const previewUrl = '${{ needs.build.outputs.preview_url }}';
+            const prNumber = Number(process.env.PR_NUMBER);
+            const previewUrl = process.env.PREVIEW_URL || '';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const marker = '<!-- capy-pages-preview -->';
             const body = [

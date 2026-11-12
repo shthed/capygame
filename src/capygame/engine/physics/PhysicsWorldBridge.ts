@@ -1,4 +1,3 @@
-import RAPIER from '@dimforge/rapier3d-compat';
 import { ZONE_LOCATIONS, type PlayStyle } from '../../types';
 import {
   PHYSICS_SAB_BYTE_LENGTH,
@@ -19,8 +18,12 @@ import {
   clampToContiguousWalkableWorld,
   sampleContiguousGroundY,
 } from './ContiguousWorldTopology';
+import {
+  resolveCircleRotatedBox2D,
+  type RotatedBoxCollisionResult,
+} from './ColliderMath';
 
-// Reusable zero-allocation result struct for character CCD stepping
+// Reusable zero-allocation result structs for character CCD stepping
 const _charStepOut: CharacterStepResult = {
   wx: 0,
   wy: 0,
@@ -43,17 +46,34 @@ const _charStepOut: CharacterStepResult = {
   activeDistrict: 'sanctuary',
 };
 
+const _obbScratch: RotatedBoxCollisionResult = {
+  collided: false,
+  wx: 0,
+  wz: 0,
+  nx: 0,
+  nz: 0,
+};
+
+export interface WorkerBallSnapshot {
+  wx: number;
+  wy: number;
+  wz: number;
+  vx: number;
+  vy: number;
+  vz: number;
+}
+
 /**
- * Main-Thread Coordinator & Deterministic Swept-CCD / Wasm Bridge (`PhysicsWorldBridge.ts`)
+ * Main-Thread Coordinator & Deterministic Swept-CCD / Worker Wasm Bridge (`PhysicsWorldBridge.ts`)
  *
  * Architecture:
- * 1. Spawns `physics.worker.ts` off the main thread using `SharedArrayBuffer` + `Atomics` seqlock
- *    when `crossOriginIsolated === true`, automatically falling back to zero-copy transferable
- *    `Float32Array` ping-pong buffers inside cross-origin preview iframes.
- * 2. Initializes `@dimforge/rapier3d-compat` Wasm `KinematicCharacterController` + swept-CCD
- *    collider queries on the main thread for zero-latency, zero-clipping character movement,
- *    while off-thread rigid-body dynamics, torque see-saws, fluid waves, and XPBD soft bodies
- *    stream continuously from the worker (with synchronous deterministic fallback during E2E `tick()`).
+ * 1. Spawns `physics.worker.ts` off the main thread (keeping `@dimforge/rapier3d-compat` Wasm
+ *    bundled once inside the worker chunk rather than duplicated on the main thread) using
+ *    `SharedArrayBuffer` + `Atomics` seqlock when `crossOriginIsolated === true`, falling back
+ *    to zero-copy transferable `Float32Array` ping-pong buffers in cross-origin iframes.
+ * 2. Runs zero-allocation swept-CCD sub-stepping + yaw-aware analytical circle/OBB & shoreline
+ *    projection on the main thread for zero-latency character movement, reconciled continuously
+ *    with off-thread Rapier3D dynamic rigid-body snapshots (See-Saw torque & Breakout ball).
  */
 export class PhysicsWorldBridge {
   private worker: Worker | null = null;
@@ -64,15 +84,9 @@ export class PhysicsWorldBridge {
   private workerInFlight = false;
   private stepEpoch = 0;
 
-  private wasmReady = false;
   private workerReady = false;
-  private transportMode: PhysicsTransportMode = 'main_thread_wasm';
+  private transportMode: PhysicsTransportMode = 'transferable_worker';
 
-  private rapierWorld: RAPIER.World | null = null;
-  private charController: RAPIER.KinematicCharacterController | null = null;
-  private charBody: RAPIER.RigidBody | null = null;
-  private charCollider: RAPIER.Collider | null = null;
-  private colliderIdByHandle = new Map<number, StaticCircleColliderSpec>();
   private staticCircles: StaticCircleColliderSpec[] = [];
   private staticBoxes: StaticBoxColliderSpec[] = [];
 
@@ -91,83 +105,91 @@ export class PhysicsWorldBridge {
   private lastHeroWy = 0;
   private lastHeroWz = 4;
 
+  private readonly workerBallSnapshot: WorkerBallSnapshot = {
+    wx: ZONE_LOCATIONS.breakout.x,
+    wy: 0.5,
+    wz: ZONE_LOCATIONS.breakout.z + 6.5,
+    vx: 4.2,
+    vy: 0,
+    vz: -9.2,
+  };
+
   constructor() {
-    void this.initAsync();
+    this.initWorker();
   }
 
-  private async initAsync(): Promise<void> {
-    // 1. Initialize Rapier3D Wasm for swept character collision & synchronous E2E determinism
+  private initWorker(): void {
+    if (typeof Worker === 'undefined') return;
     try {
-      await RAPIER.init();
-      this.wasmReady = true;
-      this.rapierWorld = new RAPIER.World({ x: 0, y: -24.0, z: 0 });
-      this.charController = this.rapierWorld.createCharacterController(0.035);
-      this.charController.enableAutostep(0.45, 0.35, true);
-      this.charController.enableSnapToGround(0.35);
-      this.charController.setSlideEnabled(true);
+      const canUseSab =
+        typeof globalThis !== 'undefined' &&
+        globalThis.crossOriginIsolated === true &&
+        typeof SharedArrayBuffer !== 'undefined';
 
-      this.charBody = this.rapierWorld.createRigidBody(
-        RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 0.7, 4)
-      );
-      this.charCollider = this.rapierWorld.createCollider(
-        RAPIER.ColliderDesc.capsule(0.22, 0.66),
-        this.charBody
-      );
+      if (canUseSab) {
+        this.sab = new SharedArrayBuffer(PHYSICS_SAB_BYTE_LENGTH);
+        this.sabInt32 = new Int32Array(this.sab);
+        this.sabFloat32 = new Float32Array(this.sab);
+        this.transportMode = 'shared_array_buffer';
+      } else {
+        this.transportMode = 'transferable_worker';
+      }
 
-      this.rebuildLocalRapierStaticColliders();
-    } catch {
-      this.wasmReady = false;
-    }
+      this.worker = new Worker(new URL('./physics.worker.ts', import.meta.url), {
+        type: 'module',
+      });
 
-    // 2. Spawn Multi-Threaded Physics Web Worker with SharedArrayBuffer or Transferable fallback
-    if (typeof Worker !== 'undefined') {
-      try {
-        const canUseSab =
-          typeof globalThis !== 'undefined' &&
-          globalThis.crossOriginIsolated === true &&
-          typeof SharedArrayBuffer !== 'undefined';
+      this.worker.onmessage = (ev: MessageEvent<PhysicsWorkerOutboundMessage>) => {
+        const data = ev.data;
+        this.workerReady = data.wasmReady;
+        this.transportMode = data.transportMode;
+        this.rigidBodyCount = data.rigidBodyCount;
+        this.staticColliderCount = data.staticColliderCount;
+        this.lastStepDurationMs = data.stepDurationMs;
 
-        if (canUseSab) {
-          this.sab = new SharedArrayBuffer(PHYSICS_SAB_BYTE_LENGTH);
-          this.sabInt32 = new Int32Array(this.sab);
-          this.sabFloat32 = new Float32Array(this.sab);
-          this.transportMode = 'shared_array_buffer';
-        } else {
-          this.transportMode = 'transferable_worker';
-        }
-
-        this.worker = new Worker(new URL('./physics.worker.ts', import.meta.url), {
-          type: 'module',
-        });
-
-        this.worker.onmessage = (ev: MessageEvent<PhysicsWorkerOutboundMessage>) => {
-          const data = ev.data;
-          this.workerReady = data.wasmReady;
-          this.transportMode = data.transportMode;
-          this.rigidBodyCount = data.rigidBodyCount;
-          this.staticColliderCount = data.staticColliderCount;
-          this.lastStepDurationMs = data.stepDurationMs;
-
-          if (data.type === 'stepped') {
-            this.workerInFlight = false;
-            this.seeSawTilt0 = this.seeSawTilt0 * 0.35 + data.seeSawTilt0 * 0.65;
-            if (data.transferBuf) {
-              this.pingPongBuf = data.transferBuf;
-            }
-          }
-        };
-
-        this.worker.postMessage({
-          type: 'init',
-          sharedBuffer: this.sab ?? undefined,
-          colliders: {
+        if (
+          data.type === 'ready' &&
+          this.worker &&
+          (this.staticCircles.length > 0 || this.staticBoxes.length > 0)
+        ) {
+          this.worker.postMessage({
+            type: 'rebuild_static',
             circles: this.staticCircles,
             boxes: this.staticBoxes,
-          },
-        });
-      } catch {
-        this.worker = null;
-      }
+          });
+        }
+
+        if (data.type === 'stepped') {
+          this.workerInFlight = false;
+          this.seeSawTilt0 = this.seeSawTilt0 * 0.35 + data.seeSawTilt0 * 0.65;
+          if (data.transferBuf) {
+            this.readBallSnapshotFromBuffer(data.transferBuf);
+            this.pingPongBuf = data.transferBuf;
+          }
+        }
+      };
+
+      this.worker.postMessage({
+        type: 'init',
+        sharedBuffer: this.sab ?? undefined,
+        colliders: {
+          circles: this.staticCircles,
+          boxes: this.staticBoxes,
+        },
+      });
+    } catch {
+      this.worker = null;
+    }
+  }
+
+  private readBallSnapshotFromBuffer(buf: Float32Array): void {
+    if (buf.length >= 54) {
+      this.workerBallSnapshot.wx = buf[48];
+      this.workerBallSnapshot.wy = buf[49];
+      this.workerBallSnapshot.wz = buf[50];
+      this.workerBallSnapshot.vx = buf[51];
+      this.workerBallSnapshot.vy = buf[52];
+      this.workerBallSnapshot.vz = buf[53];
     }
   }
 
@@ -185,56 +207,11 @@ export class PhysicsWorldBridge {
     this.softBodySolver.syncPads(softPads);
     this.staticColliderCount = circles.length + boxes.length + CONTIGUOUS_BRIDGES.length + 1;
 
-    if (this.wasmReady && this.rapierWorld) {
-      this.rebuildLocalRapierStaticColliders();
-    }
     if (this.worker && this.workerReady) {
       this.worker.postMessage({
         type: 'rebuild_static',
         circles,
         boxes,
-      });
-    }
-  }
-
-  private rebuildLocalRapierStaticColliders(): void {
-    const w = this.rapierWorld;
-    if (!w) return;
-
-    for (const handle of this.colliderIdByHandle.keys()) {
-      const col = w.getCollider(handle);
-      if (col) w.removeCollider(col, false);
-    }
-    this.colliderIdByHandle.clear();
-
-    for (let i = 0; i < this.staticCircles.length; i++) {
-      const c = this.staticCircles[i];
-      const col = w.createCollider(
-        RAPIER.ColliderDesc.cylinder(c.height * 0.5, c.radius).setTranslation(
-          c.wx,
-          c.height * 0.5,
-          c.wz
-        )
-      );
-      this.colliderIdByHandle.set(col.handle, c);
-    }
-
-    for (let i = 0; i < this.staticBoxes.length; i++) {
-      const b = this.staticBoxes[i];
-      const halfYaw = (b.rotY ?? 0) * 0.5;
-      const col = w.createCollider(
-        RAPIER.ColliderDesc.cuboid(b.halfX, b.halfY, b.halfZ)
-          .setTranslation(b.wx, b.wy, b.wz)
-          .setRotation({ x: 0, y: Math.sin(halfYaw), z: 0, w: Math.cos(halfYaw) })
-      );
-      this.colliderIdByHandle.set(col.handle, {
-        id: b.id,
-        wx: b.wx,
-        wz: b.wz,
-        radius: Math.max(b.halfX, b.halfZ),
-        height: b.halfY * 2,
-        restitution: b.restitution,
-        kind: 'pillar',
       });
     }
   }
@@ -250,11 +227,23 @@ export class PhysicsWorldBridge {
       const stepMs = this.sabFloat32[24];
       const substeps = this.sabFloat32[25];
       const seeSawTilt = this.sabFloat32[26];
+      const ballWx = this.sabFloat32[48];
+      const ballWy = this.sabFloat32[49];
+      const ballWz = this.sabFloat32[50];
+      const ballVx = this.sabFloat32[51];
+      const ballVy = this.sabFloat32[52];
+      const ballVz = this.sabFloat32[53];
       const seqEnd = Atomics.load(this.sabInt32, 0);
       if (seqStart === seqEnd) {
         this.lastStepDurationMs = stepMs;
         this.lastSubsteps = Math.max(1, Math.round(substeps));
         this.seeSawTilt0 = seeSawTilt;
+        this.workerBallSnapshot.wx = ballWx;
+        this.workerBallSnapshot.wy = ballWy;
+        this.workerBallSnapshot.wz = ballWz;
+        this.workerBallSnapshot.vx = ballVx;
+        this.workerBallSnapshot.vy = ballVy;
+        this.workerBallSnapshot.vz = ballVz;
         this.rigidBodyCount = Atomics.load(this.sabInt32, 2) || this.rigidBodyCount;
         this.staticColliderCount = Atomics.load(this.sabInt32, 3) || this.staticColliderCount;
         break;
@@ -264,10 +253,10 @@ export class PhysicsWorldBridge {
 
   /**
    * Executes a Continuous Collision Detection (CCD) sub-stepped character + world multiphysics tick:
-   * - Subdivides large steps (`maxDisplacement <= 0.35 * radius`) so fast dashes/knockbacks NEVER tunnel or clip
-   * - Queries Rapier3D Wasm `KinematicCharacterController` + analytic SDF obstacle & bridge curbs
-   * - Couples two-way Archimedes fluid buoyancy, XPBD soft-body mushroom pad compression,
-   *   torque-balanced See-Sawplank tilt, and rotating hammer angular-momentum impulses.
+   * - Subdivides large steps (`maxDisplacement <= 0.42 * radius`) so fast dashes/knockbacks never tunnel
+   * - Projects against yaw-rotated OBB colliders (`rotY`), cylindrical trunks/pillars, and shoreline SDF curbs
+   * - Couples Archimedes fluid buoyancy, XPBD soft-body mushroom pad compression,
+   *   torque-balanced See-Saw plank tilt, and rotating hammer angular-momentum impulses.
    */
   public stepContiguousCharacterAndWorld(
     input: CharacterStepInput,
@@ -330,46 +319,10 @@ export class PhysicsWorldBridge {
     }
 
     for (let sub = 0; sub < ccdSubsteps; sub++) {
-      let dx = (input.desiredMoveVx + vx) * subDt;
-      let dz = (input.desiredMoveVz + vz) * subDt;
+      wx += (input.desiredMoveVx + vx) * subDt;
+      wz += (input.desiredMoveVz + vz) * subDt;
 
-      // Rapier3D Wasm KinematicCharacterController swept capsule query when available
-      if (
-        this.wasmReady &&
-        this.rapierWorld &&
-        this.charController &&
-        this.charBody &&
-        this.charCollider
-      ) {
-        this.charBody.setTranslation({ x: wx, y: wy + 0.88, z: wz }, false);
-        this.rapierWorld.timestep = subDt;
-        this.charController.computeColliderMovement(
-          this.charCollider,
-          { x: dx, y: 0, z: dz },
-          RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC
-        );
-        const corr = this.charController.computedMovement();
-        dx = corr.x;
-        dz = corr.z;
-
-        const numCollisions = this.charController.numComputedCollisions();
-        for (let c = 0; c < numCollisions; c++) {
-          const col = this.charController.computedCollision(c);
-          if (col && col.collider) {
-            const spec = this.colliderIdByHandle.get(col.collider.handle);
-            if (spec && spec.kind === 'tree' && !_charStepOut.hitTreeId) {
-              _charStepOut.hitTreeId = spec.id;
-              _charStepOut.hitNormalX = col.normal1.x;
-              _charStepOut.hitNormalZ = col.normal1.z;
-            }
-          }
-        }
-      }
-
-      wx += dx;
-      wz += dz;
-
-      // Exact Analytic Circle & Box Non-Clipping Projection (guarantees 0.000m penetration even pre-Wasm)
+      // Exact Analytic Circle & Yaw-Rotated OBB Non-Clipping Projection
       for (let i = 0; i < this.staticCircles.length; i++) {
         const ob = this.staticCircles[i];
         const rx = wx - ob.wx;
@@ -382,6 +335,11 @@ export class PhysicsWorldBridge {
           const nz = dist > 1e-4 ? rz / safeDist : 0.0;
           wx = ob.wx + nx * minSep;
           wz = ob.wz + nz * minSep;
+          const vDot = vx * nx + vz * nz;
+          if (vDot < 0) {
+            vx -= vDot * nx;
+            vz -= vDot * nz;
+          }
           if (ob.kind === 'tree' && !_charStepOut.hitTreeId) {
             _charStepOut.hitTreeId = ob.id;
             _charStepOut.hitNormalX = -nx;
@@ -393,18 +351,25 @@ export class PhysicsWorldBridge {
       for (let i = 0; i < this.staticBoxes.length; i++) {
         const bx = this.staticBoxes[i];
         if (wy > bx.wy + bx.halfY + 0.15) continue;
-        const relX = wx - bx.wx;
-        const relZ = wz - bx.wz;
-        const clampX = Math.max(-bx.halfX, Math.min(bx.halfX, relX));
-        const clampZ = Math.max(-bx.halfZ, Math.min(bx.halfZ, relZ));
-        const dxB = relX - clampX;
-        const dzB = relZ - clampZ;
-        const distB = Math.hypot(dxB, dzB);
-        if (distB < input.radius && distB > 1e-5) {
-          const nx = dxB / distB;
-          const nz = dzB / distB;
-          wx = bx.wx + clampX + nx * input.radius;
-          wz = bx.wz + clampZ + nz * input.radius;
+        const hit = resolveCircleRotatedBox2D(
+          wx,
+          wz,
+          input.radius,
+          bx.wx,
+          bx.wz,
+          bx.halfX,
+          bx.halfZ,
+          bx.rotY ?? 0,
+          _obbScratch
+        );
+        if (hit.collided) {
+          wx = hit.wx;
+          wz = hit.wz;
+          const vDot = vx * hit.nx + vz * hit.nz;
+          if (vDot < 0) {
+            vx -= vDot * hit.nx;
+            vz -= vDot * hit.nz;
+          }
         }
       }
 
@@ -588,6 +553,10 @@ export class PhysicsWorldBridge {
     return this.seeSawTilt0;
   }
 
+  public getWorkerBreakoutBallState(): WorkerBallSnapshot {
+    return this.workerBallSnapshot;
+  }
+
   public getSoftPadCompression(padId: string): number {
     for (let i = 0; i < this.softBodySolver.pads.length; i++) {
       if (this.softBodySolver.pads[i].id === padId) {
@@ -603,13 +572,9 @@ export class PhysicsWorldBridge {
 
   public getTelemetry(): PhysicsEngineTelemetry {
     return {
-      wasmInitialized: this.wasmReady || this.workerReady,
+      wasmInitialized: this.workerReady,
       workerActive: this.workerReady,
-      transportMode: this.workerReady
-        ? this.transportMode
-        : this.wasmReady
-          ? 'main_thread_wasm'
-          : this.transportMode,
+      transportMode: this.transportMode,
       rigidBodyCount: this.rigidBodyCount,
       staticColliderCount: this.staticColliderCount,
       softBodyNodes: Math.max(12, this.softBodySolver.pads.length * 12),
@@ -629,9 +594,6 @@ export class PhysicsWorldBridge {
       this.worker.terminate();
       this.worker = null;
     }
-    if (this.rapierWorld) {
-      this.rapierWorld.free();
-      this.rapierWorld = null;
-    }
+    this.workerReady = false;
   }
 }

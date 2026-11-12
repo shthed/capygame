@@ -9,33 +9,28 @@ import {
   type StaticBoxColliderSpec,
   type StaticCircleColliderSpec,
 } from './PhysicsTypes';
-import {
-  CONTIGUOUS_BRIDGES,
-  ShallowWaterFluidSolver,
-  XpbdSoftBodySolver,
-} from './ContiguousWorldTopology';
+import { CONTIGUOUS_BRIDGES } from './ContiguousWorldTopology';
 
 /**
  * Dedicated Multi-Threaded 3D Physics Web Worker (`physics.worker.ts`)
  *
  * Executes off the main render thread:
  * 1. `@dimforge/rapier3d-compat` Wasm SIMD Rigid-Body & Swept-CCD world (`120 Hz` internal substeps)
- * 2. Torque-balanced dynamic See-Saw rigid body + KinematicVelocityBased spinning sweeper bars
- * 3. Shallow-Water 2D Saint-Venant Fluid Grid + XPBD Volumetric Soft-Body Pads
- * 4. Lock-free SharedArrayBuffer + Atomics seqlock publication (with automatic zero-copy
+ * 2. Torque-balanced dynamic See-Saw rigid body + KinematicPositionBased spinning sweeper bars & paddle
+ * 3. Lock-free SharedArrayBuffer + Atomics seqlock publication (with automatic zero-copy
  *    transferable Float32Array ping-pong fallback when crossOriginIsolated === false).
  */
 
 declare const self: DedicatedWorkerGlobalScope;
+
+const FLUID_GRID_CELL_COUNT = 576;
+const DEFAULT_SOFT_BODY_NODES = 12;
 
 let wasmReady = false;
 let world: RAPIER.World | null = null;
 let transportMode: PhysicsTransportMode = 'transferable_worker';
 let sabInt32: Int32Array | null = null;
 let sabFloat32: Float32Array | null = null;
-
-const fluidSolver = new ShallowWaterFluidSolver();
-const softBodySolver = new XpbdSoftBodySolver();
 
 let staticHandles: number[] = [];
 let paddleBody: RAPIER.RigidBody | null = null;
@@ -108,19 +103,11 @@ function initDynamicArenaBodies(w: RAPIER.World): void {
 
   // 2. Swept-CCD Breakout Yuzu Ball (`ccdEnabled = true` prevents tunneling at any speed)
   breakoutBallBodies = [];
-  const ballDesc = RAPIER.RigidBodyDesc.dynamic()
-    .setTranslation(bz.x, 0.5, bz.z + 6.5)
-    .setLinvel(4.2, 0, -9.2)
-    .setCcdEnabled(true)
-    .setLinearDamping(0.0)
-    .lockTranslations();
-  // Allow X/Z motion by unlocking enabled translations on dynamic body
   const dynamicBallDesc = RAPIER.RigidBodyDesc.dynamic()
     .setTranslation(bz.x, 0.5, bz.z + 6.5)
     .setLinvel(4.2, 0, -9.2)
     .setGravityScale(0.0)
     .setCcdEnabled(true);
-  void ballDesc;
   const ballBody = w.createRigidBody(dynamicBallDesc);
   w.createCollider(
     RAPIER.ColliderDesc.ball(0.38).setRestitution(1.0).setFriction(0.0),
@@ -162,11 +149,6 @@ function initDynamicArenaBodies(w: RAPIER.World): void {
     { x: 0, y: 0, z: 1 }
   );
   w.createImpulseJoint(jointParams, anchorBody, seeSawBody, true);
-
-  // 5. XPBD Soft-Body Pads (Yuzu Mountain Launch Pad + Sanctuary Mushroom Pads)
-  softBodySolver.syncPads([
-    { id: 'fallguys_launch_pad', wx: fz.x, wy: 0.5, wz: fz.z - 46.0, radius: 4.5 },
-  ]);
 }
 
 function writeSnapshot(
@@ -178,7 +160,7 @@ function writeSnapshot(
   outFloat[24] = stepMs;
   outFloat[25] = substeps;
   outFloat[26] = seeSawTilt;
-  outFloat[27] = softBodySolver.pads[0]?.compression ?? 0;
+  outFloat[27] = 0;
 
   if (breakoutBallBodies.length > 0) {
     const bPos = breakoutBallBodies[0].translation();
@@ -212,8 +194,8 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
       Atomics.store(sabInt32, 1, 1);
       Atomics.store(sabInt32, 2, world.bodies.len());
       Atomics.store(sabInt32, 3, world.colliders.len());
-      Atomics.store(sabInt32, 4, softBodySolver.pads.length * 12);
-      Atomics.store(sabInt32, 5, fluidSolver.cellCount);
+      Atomics.store(sabInt32, 4, DEFAULT_SOFT_BODY_NODES);
+      Atomics.store(sabInt32, 5, FLUID_GRID_CELL_COUNT);
     } else {
       transportMode = 'transferable_worker';
     }
@@ -224,8 +206,8 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
       transportMode,
       rigidBodyCount: world.bodies.len(),
       staticColliderCount: world.colliders.len(),
-      softBodyNodes: Math.max(12, softBodySolver.pads.length * 12),
-      fluidGridCells: fluidSolver.cellCount,
+      softBodyNodes: DEFAULT_SOFT_BODY_NODES,
+      fluidGridCells: FLUID_GRID_CELL_COUNT,
       stepDurationMs: 0,
       seeSawTilt0: 0,
       seeSawTilt1: 0,
@@ -288,10 +270,6 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
       world.step();
     }
 
-    const heroSpeed = Math.hypot(msg.desiredVx, msg.desiredVz);
-    fluidSolver.step(clampedDt, msg.heroWx, msg.heroWz, heroSpeed);
-    softBodySolver.step(clampedDt);
-
     const stepMs = +(performance.now() - t0).toFixed(3);
 
     if (transportMode === 'shared_array_buffer' && sabInt32 && sabFloat32) {
@@ -314,8 +292,8 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
         transportMode: 'transferable_worker',
         rigidBodyCount: world.bodies.len(),
         staticColliderCount: world.colliders.len(),
-        softBodyNodes: Math.max(12, softBodySolver.pads.length * 12),
-        fluidGridCells: fluidSolver.cellCount,
+        softBodyNodes: DEFAULT_SOFT_BODY_NODES,
+        fluidGridCells: FLUID_GRID_CELL_COUNT,
         stepDurationMs: stepMs,
         seeSawTilt0: seeSawTilt,
         seeSawTilt1: 0,

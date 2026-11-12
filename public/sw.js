@@ -1,7 +1,10 @@
-// Capy Service Worker - Offline PWA Caching Engine
+// CapyGame 3D Service Worker - Offline PWA Caching Engine
 // Respects relative subpath hosting across GitHub Pages root, PR previews, and local dev.
 
-const CACHE_NAME = 'capy-cache-v1';
+const SCOPE_PATH = new URL('./', self.location).pathname;
+const CACHE_PREFIX = 'capygame-cache-';
+const CACHE_GENERATION = 'v2';
+const CACHE_NAME = `${CACHE_PREFIX}${CACHE_GENERATION}:${SCOPE_PATH}`;
 
 const PRECACHE_RELATIVE_URLS = [
   './',
@@ -62,12 +65,21 @@ self.addEventListener('install', (event) => {
                     if (bundleResp.ok) {
                       await cache.put(bundleUrl, bundleResp.clone());
 
-                      // If this is the main JS bundle, discover and precache physics Web Worker script
+                      // If this is a JS bundle, discover and precache any referenced worker/chunk/wasm assets
                       if (bundleUrl.endsWith('.js')) {
                         const jsText = await bundleResp.text();
-                        const workerMatches = [...jsText.matchAll(/assets\/(physics\.worker-[^"'\s)]+\.js)/g)];
-                        for (const wm of workerMatches) {
-                          const workerUrl = new URL('./assets/' + wm[1], self.location).href;
+                        const subAssetMatches = [
+                          ...jsText.matchAll(
+                            /(?:\.\/|\/)?assets\/([A-Za-z0-9._-]+\.(?:js|mjs|wasm))/g
+                          ),
+                        ];
+                        const seenSubAssets = new Set();
+                        for (const wm of subAssetMatches) {
+                          const fileName = wm[1];
+                          if (seenSubAssets.has(fileName)) continue;
+                          seenSubAssets.add(fileName);
+                          const workerUrl = new URL('./assets/' + fileName, self.location).href;
+                          if (workerUrl === bundleUrl) continue;
                           const workerResp = await fetch(workerUrl, { cache: 'no-cache' });
                           if (workerResp.ok) {
                             await cache.put(workerUrl, workerResp);
@@ -99,31 +111,18 @@ self.addEventListener('activate', (event) => {
       const cacheKeys = await caches.keys();
       await Promise.all(
         cacheKeys.map((key) => {
-          if (key !== CACHE_NAME) {
+          // Purge legacy un-scoped capy-cache-* entries or older generations of THIS scope only
+          const isLegacyUnscoped = key.startsWith('capy-cache-');
+          const isSameScopeOlderGen =
+            key.startsWith(CACHE_PREFIX) &&
+            key.endsWith(`:${SCOPE_PATH}`) &&
+            key !== CACHE_NAME;
+          if (isLegacyUnscoped || isSameScopeOlderGen) {
             return caches.delete(key);
           }
+          return undefined;
         })
       );
-
-      try {
-        const cache = await caches.open(CACHE_NAME);
-        const requests = await cache.keys();
-        await Promise.all(
-          requests.map((req) => {
-            const reqUrl = new URL(req.url);
-            if (
-              reqUrl.pathname.includes('/@vite/') ||
-              reqUrl.pathname.includes('/@fs/') ||
-              reqUrl.pathname.includes('/@id/') ||
-              reqUrl.search.includes('worker_file')
-            ) {
-              return cache.delete(req);
-            }
-          })
-        );
-      } catch {
-        // Ignored
-      }
 
       await self.clients.claim();
     })()
@@ -139,11 +138,8 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (!url.protocol.startsWith('http')) return;
 
-  // Never intercept Vite internal HMR / client / virtual FS or AI Studio proxy/auth endpoints
+  // Never intercept Vite HMR ping or AI Studio proxy/auth endpoints
   if (
-    url.pathname.includes('/@vite/') ||
-    url.pathname.includes('/@fs/') ||
-    url.pathname.includes('/@id/') ||
     url.pathname.includes('/__vite_ping') ||
     url.pathname.startsWith('/__aistudio') ||
     url.pathname.startsWith('/_aistudio') ||
@@ -189,8 +185,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 2. Vite dev source & dependency modules (/src/, /node_modules/): Network-first with exact query match
+  // 2. Vite dev virtual, source & dependency modules: Network-first online, Cache-fallback offline
   const isDevModule =
+    url.pathname.includes('/@vite/') ||
+    url.pathname.includes('/@react-refresh') ||
+    url.pathname.includes('/@fs/') ||
+    url.pathname.includes('/@id/') ||
     url.pathname.includes('/src/') ||
     url.pathname.includes('/node_modules/') ||
     url.search.includes('worker_file') ||
@@ -214,8 +214,15 @@ self.addEventListener('fetch', (event) => {
           const cached =
             (await cache.match(request)) ||
             (await cache.match(request.url)) ||
-            (await cache.match(request, { ignoreSearch: true }));
+            (await cache.match(request, { ignoreSearch: true })) ||
+            (await cache.match(request.url, { ignoreSearch: true }));
           if (cached) return cached;
+          if (url.pathname.includes('/@vite/client')) {
+            return new Response('export {};', {
+              status: 200,
+              headers: { 'Content-Type': 'application/javascript' },
+            });
+          }
           throw err;
         }
       })()

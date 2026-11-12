@@ -64,6 +64,9 @@ async function runPwaOfflineTest() {
     const swRegistered = await page.evaluate(async () => {
       if (!('serviceWorker' in navigator)) return false;
       const reg = await navigator.serviceWorker.ready;
+      if (window.capyPwa && typeof window.capyPwa.waitUntilOfflineReady === 'function') {
+        await window.capyPwa.waitUntilOfflineReady();
+      }
       return Boolean(reg && reg.active);
     });
     if (!swRegistered) {
@@ -74,19 +77,23 @@ async function runPwaOfflineTest() {
     console.log('3. Inspecting Cache Storage...');
     const cacheDetails = await page.evaluate(async () => {
       const cacheNames = await caches.keys();
-      const hasCapyCache = cacheNames.includes('capy-cache-v1');
-      if (!hasCapyCache) return { hasCapyCache: false, count: 0 };
-      const cache = await caches.open('capy-cache-v1');
+      const expectedName = 'capygame-cache-v2:/';
+      const hasCapyCache = cacheNames.includes(expectedName);
+      if (!hasCapyCache) return { hasCapyCache: false, cacheNames, count: 0 };
+      const cache = await caches.open(expectedName);
       const requests = await cache.keys();
       return {
         hasCapyCache: true,
+        cacheName: expectedName,
         count: requests.length,
       };
     });
     if (!cacheDetails.hasCapyCache || cacheDetails.count === 0) {
-      throw new Error('Expected capy-cache-v1 to contain cached assets.');
+      throw new Error(
+        `Expected capygame-cache-v2:/ to contain cached assets, got: ${JSON.stringify(cacheDetails)}`
+      );
     }
-    console.log(`   Cache Storage populated (${cacheDetails.count} entries).`);
+    console.log(`   Cache Storage populated (${cacheDetails.cacheName}: ${cacheDetails.count} entries).`);
 
     console.log('4. Disconnecting network and reloading completely offline...');
     await context.setOffline(true);

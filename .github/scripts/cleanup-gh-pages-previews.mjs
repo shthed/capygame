@@ -149,11 +149,13 @@ const parseArguments = () => {
   return options;
 };
 
+const PROTECTED_ROOT_DIRS = new Set(['.git', 'pull', 'assets', 'icons', 'docs', '.well-known', 'web1']);
+
 const findLegacyPreviewDirectories = (rootDir) => {
   const entries = fs.readdirSync(rootDir, { withFileTypes: true });
   return entries
     .filter((entry) => entry.isDirectory())
-    .filter((entry) => !['.git', 'pull', 'assets', 'web1'].includes(entry.name))
+    .filter((entry) => !PROTECTED_ROOT_DIRS.has(entry.name))
     .filter((entry) => entry.name === sanitize(entry.name))
     .map((entry) => {
       const absolutePath = path.join(rootDir, entry.name);
@@ -304,11 +306,15 @@ const main = async () => {
 
   const now = Date.now();
   const inventory = previewDirectories.map((entry) => {
-    const prs = entry.kind === 'pull' ? [] : pullIndex.get(entry.name) ?? [];
-    const prNumber = entry.kind === 'pull' ? Number.parseInt(entry.name, 10) : null;
-    const pull = Number.isFinite(prNumber) ? pullNumberIndex.get(prNumber) : null;
+    const parsedPrNumber =
+      entry.kind === 'pull' && /^\d+$/.test(entry.name)
+        ? Number.parseInt(entry.name, 10)
+        : null;
+    const prNumber = Number.isFinite(parsedPrNumber) ? parsedPrNumber : null;
+    const pull = prNumber !== null ? pullNumberIndex.get(prNumber) ?? null : null;
+    const prs = prNumber !== null ? [] : pullIndex.get(entry.name) ?? [];
     const hasLiveBranch = (() => {
-      if (entry.kind === 'pull') {
+      if (prNumber !== null) {
         const headRef = pull?.headRef;
         const slug = sanitize(headRef);
         return slug ? liveBranchSlugs.has(slug) : false;
@@ -351,7 +357,9 @@ const main = async () => {
 
   const deletions = inventory.filter((entry) => {
     const hasOpenPr = entry.pull?.state === 'open' || entry.prs.some((pr) => pr.state === 'open');
-    const matchesTargetPr = options.targetPr !== null && entry.prNumber === options.targetPr;
+    const matchesTargetPr =
+      options.targetPr !== null &&
+      (entry.prNumber === options.targetPr || entry.prs.some((pr) => pr.number === options.targetPr));
 
     if (hasOpenPr) {
       return false;
@@ -362,7 +370,7 @@ const main = async () => {
     }
 
     if (entry.kind === 'legacy') {
-      if (entry.hasLiveBranch) {
+      if (entry.hasLiveBranch || entry.prs.length === 0) {
         return false;
       }
       return options.ignoreRecency || !entry.isRecent;

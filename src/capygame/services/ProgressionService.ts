@@ -1,5 +1,8 @@
 import {
+  BUILDING_CATALOG,
+  BuildingType,
   CapyGameSettings,
+  COSMETIC_COIN_COSTS,
   DEFAULT_CAPY_SETTINGS,
   INITIAL_PLAYER_STATS,
   MutationId,
@@ -7,6 +10,7 @@ import {
   OBJECT_MARKERS_DNA_COST,
   PlayerStats,
   PlayStyle,
+  PRESTIGE_BASE_DNA_COST,
   REALITY_RESCALER_COIN_COST,
   REALITY_RESCALER_DNA_COST,
   SPORE_MUTATIONS,
@@ -38,6 +42,11 @@ export class ProgressionService {
             coins: typeof parsed.coins === 'number' ? parsed.coins : INITIAL_PLAYER_STATS.coins,
             evolutionStage: parsed.evolutionStage || 1,
             activeMutations: Array.isArray(parsed.activeMutations) ? parsed.activeMutations : [],
+            unlockedMutations: Array.isArray(parsed.unlockedMutations)
+              ? parsed.unlockedMutations
+              : Array.isArray(parsed.activeMutations)
+                ? [...parsed.activeMutations]
+                : [],
             upgrades: {
               ...INITIAL_PLAYER_STATS.upgrades,
               ...(parsed.upgrades || {}),
@@ -160,7 +169,8 @@ export class ProgressionService {
     modeScore?: number
   ): PlayerStats {
     const finalDna = Math.max(0, Math.round(dnaAmount));
-    const bonusCoins = finalDna > 0 ? finalDna * 2 : 0;
+    const prestigeMult = Math.max(1, stats.prestigeLevel || 1);
+    const bonusCoins = finalDna > 0 ? finalDna * 2 * prestigeMult : 0;
 
     const next: PlayerStats = {
       ...stats,
@@ -184,9 +194,36 @@ export class ProgressionService {
     return next;
   }
 
+  public static getBuildingCoinCost(type: BuildingType): number {
+    return BUILDING_CATALOG.find((b) => b.type === type)?.coinCost ?? 10;
+  }
+
+  public static getBuildingUpgradeCoinCost(type: BuildingType, currentLevel: number): number {
+    return Math.max(
+      5,
+      Math.round(this.getBuildingCoinCost(type) * 0.75 * Math.max(1, currentLevel))
+    );
+  }
+
+  public static getAbilityUpgradeDnaCost(currentLevel: number): number {
+    return 5 * Math.max(1, currentLevel);
+  }
+
+  public static getCosmeticCoinCost(hatId: string): number {
+    return COSMETIC_COIN_COSTS[hatId] ?? 15;
+  }
+
+  public static getPrestigeDnaCost(prestigeLevel: number): number {
+    return PRESTIGE_BASE_DNA_COST * Math.max(1, prestigeLevel || 1);
+  }
+
   public static upgradeBuilding(stats: PlayerStats, buildingId: string): PlayerStats | null {
     const building = stats.buildings.find((b) => b.id === buildingId);
     if (!building) return null;
+
+    const coinCost = this.getBuildingUpgradeCoinCost(building.type, building.level);
+    const currentCoins = stats.coins ?? 0;
+    if (currentCoins < coinCost) return null;
 
     const updatedBuildings = stats.buildings.map((b) =>
       b.id === buildingId ? { ...b, level: b.level + 1 } : b
@@ -194,6 +231,7 @@ export class ProgressionService {
 
     const updated: PlayerStats = {
       ...stats,
+      coins: currentCoins - coinCost,
       buildings: updatedBuildings,
     };
     this.saveStats(updated);
@@ -207,7 +245,11 @@ export class ProgressionService {
     x: number,
     z: number,
     description: string
-  ): PlayerStats {
+  ): PlayerStats | null {
+    const coinCost = this.getBuildingCoinCost(type);
+    const currentCoins = stats.coins ?? 0;
+    if (currentCoins < coinCost) return null;
+
     const newBuilding: WorldBuilding = {
       id: 'b_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       type,
@@ -219,6 +261,7 @@ export class ProgressionService {
     };
     const updated: PlayerStats = {
       ...stats,
+      coins: currentCoins - coinCost,
       buildings: [...stats.buildings, newBuilding],
     };
     this.saveStats(updated);
@@ -228,10 +271,14 @@ export class ProgressionService {
   public static buyUpgrade(
     stats: PlayerStats,
     upgradeKey: keyof PlayerStats['upgrades']
-  ): PlayerStats {
+  ): PlayerStats | null {
     const currentLevel = stats.upgrades[upgradeKey] || 1;
+    const dnaCost = this.getAbilityUpgradeDnaCost(currentLevel);
+    if (stats.dna < dnaCost) return null;
+
     const updated: PlayerStats = {
       ...stats,
+      dna: stats.dna - dnaCost,
       upgrades: {
         ...stats.upgrades,
         [upgradeKey]: currentLevel + 1,
@@ -248,20 +295,68 @@ export class ProgressionService {
     const mut = SPORE_MUTATIONS.find((m) => m.id === mutationId);
     if (!mut) return null;
 
+    const prevUnlocked = stats.unlockedMutations ?? [...stats.activeMutations];
+
     if (stats.activeMutations.includes(mutationId)) {
+      const ensuredUnlocked = prevUnlocked.includes(mutationId)
+        ? prevUnlocked
+        : [...prevUnlocked, mutationId];
       const updated: PlayerStats = {
         ...stats,
         activeMutations: stats.activeMutations.filter((id) => id !== mutationId),
+        unlockedMutations: ensuredUnlocked,
       };
       this.saveStats(updated);
       return { stats: updated, action: 'toggled' };
     }
 
+    if (prevUnlocked.includes(mutationId)) {
+      const nextMutations = [...stats.activeMutations, mutationId];
+      const updated: PlayerStats = {
+        ...stats,
+        activeMutations: nextMutations,
+        unlockedMutations: prevUnlocked,
+        evolutionStage: Math.max(stats.evolutionStage, prevUnlocked.length + 1),
+      };
+      this.saveStats(updated);
+      return { stats: updated, action: 'toggled' };
+    }
+
+    if (stats.dna < mut.dnaCost) return null;
+
+    const nextUnlocked = [...prevUnlocked, mutationId];
     const nextMutations = [...stats.activeMutations, mutationId];
     const updated: PlayerStats = {
       ...stats,
+      dna: stats.dna - mut.dnaCost,
       activeMutations: nextMutations,
-      evolutionStage: Math.max(stats.evolutionStage, nextMutations.length + 1),
+      unlockedMutations: nextUnlocked,
+      evolutionStage: Math.max(stats.evolutionStage, nextUnlocked.length + 1),
+    };
+    this.saveStats(updated);
+    return { stats: updated, action: 'unlocked' };
+  }
+
+  public static unlockOrEquipCosmetic(
+    stats: PlayerStats,
+    hatId: string
+  ): { stats: PlayerStats; action: 'equipped' | 'unlocked' } | null {
+    const unlocked = stats.unlockedCosmetics ?? ['yuzu'];
+    if (unlocked.includes(hatId)) {
+      const updated: PlayerStats = { ...stats, activeHat: hatId };
+      this.saveStats(updated);
+      return { stats: updated, action: 'equipped' };
+    }
+
+    const coinCost = this.getCosmeticCoinCost(hatId);
+    const currentCoins = stats.coins ?? 0;
+    if (currentCoins < coinCost) return null;
+
+    const updated: PlayerStats = {
+      ...stats,
+      coins: currentCoins - coinCost,
+      activeHat: hatId,
+      unlockedCosmetics: [...unlocked, hatId],
     };
     this.saveStats(updated);
     return { stats: updated, action: 'unlocked' };
@@ -315,12 +410,16 @@ export class ProgressionService {
     return updated;
   }
 
-  public static prestige(stats: PlayerStats): PlayerStats {
+  public static prestige(stats: PlayerStats): PlayerStats | null {
+    const currentPrestige = Math.max(1, stats.prestigeLevel || 1);
+    const reqDna = this.getPrestigeDnaCost(currentPrestige);
+    if (stats.dna < reqDna) return null;
+
     const updated: PlayerStats = {
       ...stats,
-      dna: stats.dna + 25 * stats.prestigeLevel,
-      coins: (stats.coins || 0) + 50 * stats.prestigeLevel,
-      prestigeLevel: stats.prestigeLevel + 1,
+      dna: stats.dna - reqDna,
+      coins: (stats.coins || 0) + 50 * currentPrestige,
+      prestigeLevel: currentPrestige + 1,
     };
     this.saveStats(updated);
     return updated;
