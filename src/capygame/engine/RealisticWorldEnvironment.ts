@@ -4,7 +4,7 @@ import {
   PbrSurfaceMaterialKind,
   PbrTextureSynthesizer,
 } from './gpu/PbrTextureSynthesizer';
-import { evaluatePlayerSightlineCutoutAlpha } from './gpu/FramePerformanceGovernor';
+import { evaluateWholeScreenSightlineClearAlpha } from './gpu/FramePerformanceGovernor';
 
 // Zero-allocation scratch helpers for GPU particle & shader updates
 const _matDummy = new THREE.Object3D();
@@ -23,9 +23,7 @@ const _chartreuseMid = new THREE.Color(0xa3e635);
 // Shared zero-allocation screen-space & linear view-depth uniforms updated once per frame by PlayStyleManager
 export const SHARED_OCCLUDER_VIEWPORT = new THREE.Vector2(1280, 720);
 export const SHARED_OCCLUDER_HEAD_UV = new THREE.Vector2(0.5, 0.5);
-// x = headUvX, y = headUvY, z = headViewDepth (m), w = innerRadiusNorm (fraction of min viewport dim)
 export const SHARED_OCCLUDER_HEAD_CLIP = new THREE.Vector4(0.5, 0.5, 10.0, 0.16);
-// x = tailUvX, y = tailUvY, z = tailViewDepth (m), w = featherNorm (fraction of min viewport dim)
 export const SHARED_OCCLUDER_TAIL_CLIP = new THREE.Vector4(0.5, 0.42, 10.4, 0.08);
 
 export interface OccluderEdgeShaderUniforms {
@@ -39,12 +37,10 @@ export interface OccluderEdgeShaderUniforms {
 
 /**
  * Installs a zero-allocation GLSL shader hook on any Three.js mesh material so that when
- * `uCapyOccBlend` ramps from 0 -> 1 (blocking the camera-to-player sightline):
- * - Visually hides (`discard`) ONLY fragments strictly closer to the camera than the player
- *   (`vCapyViewDepth < playerCutDepth`) inside the smooth aspect-normalized screen capsule
- *   around the player (`[uCapySightHead.xy -> uCapySightTail.xy]`).
- * - Keeps all non-blocking parts of the same tree/building (side branches, upper canopy,
- *   offscreen edges, and back-side foliage behind the player) 100% solid with `depthWrite = true`.
+ * `uCapyOccBlend` ramps from 0 -> 1 (triggered ONLY when the object blocks the camera-to-player sightline):
+ * - Clears >= 95.6% of the entire screen (`boxNorm <= 0.978`, `discard`) so the whole screen is visible
+ *   rather than leaving a cramped keyhole border around the player.
+ * - Leaves at most a faint (`alpha <= 0.18`) translucent whisper on the outermost 2.2% screen border.
  */
 export function installSightlineEdgeFadeShader(
   mat: THREE.Material
@@ -72,13 +68,11 @@ export function installSightlineEdgeFadeShader(
   mat.userData.__occBlend = 0.0;
   mat.userData.__centerScreenOpacity = 1.0;
   mat.userData.__edgeOutlineMaxOpacity = 1.0;
-  // Keep transparent=true and depthWrite=origDepthWrite permanently once installed so Three.js
-  // never recompiles WebGLPrograms and non-occluding fragments retain crisp hardware Z-buffer sorting.
   mat.transparent = true;
   mat.depthWrite = Boolean(mat.userData.__origDepthWrite ?? true);
 
   const baseType = mat.type;
-  mat.customProgramCacheKey = () => `capy_occ_aperture_${baseType}`;
+  mat.customProgramCacheKey = () => `capy_occ_whole96_${baseType}`;
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uCapyOccBlend = uniforms.uCapyOccBlend;
@@ -88,61 +82,44 @@ export function installSightlineEdgeFadeShader(
     shader.uniforms.uCapySightHead = uniforms.uCapySightHead;
     shader.uniforms.uCapySightTail = uniforms.uCapySightTail;
 
-    shader.vertexShader =
-      'varying float vCapyViewDepth;\n' +
-      shader.vertexShader.replace(
-        '#include <project_vertex>',
-        '#include <project_vertex>\n  vCapyViewDepth = -mvPosition.z;'
-      );
-
     shader.fragmentShader =
       'uniform float uCapyOccBlend;\n' +
       'uniform vec2 uCapyViewport;\n' +
-      'uniform vec4 uCapySightHead;\n' +
-      'uniform vec4 uCapySightTail;\n' +
-      'varying float vCapyViewDepth;\n' +
-      'float capyComputePlayerSightlineCutout() {\n' +
+      'float capyComputeWholeScreenClearTargetAlpha() {\n' +
       '  vec2 vp = uCapyViewport;\n' +
-      '  if (uCapyOccBlend <= 0.001 || vp.x < 10.0 || vp.y < 10.0) {\n' +
-      '    return 0.0;\n' +
-      '  }\n' +
-      '  float playerCutDepth = max(uCapySightHead.z, uCapySightTail.z) - 0.12;\n' +
-      '  float depthMask = 1.0 - smoothstep(playerCutDepth - 0.45, playerCutDepth + 0.08, vCapyViewDepth);\n' +
-      '  if (depthMask <= 0.001) {\n' +
+      '  if (vp.x < 10.0 || vp.y < 10.0) {\n' +
       '    return 0.0;\n' +
       '  }\n' +
       '  vec2 sUv = gl_FragCoord.xy / vp;\n' +
-      '  float minDim = max(10.0, min(vp.x, vp.y));\n' +
-      '  vec2 aspectScale = vp / minDim;\n' +
-      '  vec2 pa = (sUv - uCapySightHead.xy) * aspectScale;\n' +
-      '  vec2 ba = (uCapySightTail.xy - uCapySightHead.xy) * aspectScale;\n' +
-      '  float baLenSq = dot(ba, ba);\n' +
-      '  float h = baLenSq > 1e-5 ? clamp(dot(pa, ba) / baLenSq, 0.0, 1.0) : 0.0;\n' +
-      '  float dNorm = length(pa - ba * h);\n' +
-      '  float safeInner = max(0.05, uCapySightHead.w);\n' +
-      '  float safeOuter = safeInner + max(0.02, uCapySightTail.w);\n' +
-      '  float screenMask = 1.0 - smoothstep(safeInner, safeOuter, dNorm);\n' +
-      '  return clamp(uCapyOccBlend * depthMask * screenMask, 0.0, 1.0);\n' +
+      '  vec2 boxNorm = abs(sUv * 2.0 - 1.0);\n' +
+      '  vec2 edgeRamp = max(boxNorm - vec2(0.978), vec2(0.0)) / 0.022;\n' +
+      '  float screenEdgeFade = clamp(length(edgeRamp), 0.0, 1.0);\n' +
+      '  screenEdgeFade = screenEdgeFade * screenEdgeFade * (3.0 - 2.0 * screenEdgeFade);\n' +
+      '  float rimOutline = mix(0.75, 1.0, screenEdgeFade);\n' +
+      '  return screenEdgeFade * rimOutline * 0.18;\n' +
       '}\n' +
       shader.fragmentShader
         .replace(
           '#include <clipping_planes_fragment>',
           `#include <clipping_planes_fragment>
-        float capyOccCutout = uCapyOccBlend > 0.001 ? capyComputePlayerSightlineCutout() : 0.0;
-        if (capyOccCutout > 0.88) {
-          discard;
+        float capyOccTargetAlpha = 1.0;
+        if (uCapyOccBlend > 0.001) {
+          capyOccTargetAlpha = capyComputeWholeScreenClearTargetAlpha();
+          if (uCapyOccBlend > 0.85 && capyOccTargetAlpha < 0.004) {
+            discard;
+          }
         }`
         )
         .replace(
           '#include <dithering_fragment>',
           `#include <dithering_fragment>
-        if (capyOccCutout > 0.004) {
-          float remAlpha = gl_FragColor.a * (1.0 - capyOccCutout);
-          if (remAlpha < 0.02) {
+        if (uCapyOccBlend > 0.001) {
+          float finalAlpha = mix(gl_FragColor.a, capyOccTargetAlpha, uCapyOccBlend);
+          if (uCapyOccBlend > 0.85 && finalAlpha < 0.004) {
             discard;
           }
-          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.86, 0.96, 1.0), 0.20 * capyOccCutout);
-          gl_FragColor.a = remAlpha;
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.84, 0.96, 1.0), 0.28 * uCapyOccBlend);
+          gl_FragColor.a = finalAlpha;
         }`
         );
   };
@@ -151,7 +128,7 @@ export function installSightlineEdgeFadeShader(
 }
 
 /**
- * Pure CPU mirror of the localized player-sightline cutout shader for telemetry & E2E verification.
+ * Pure CPU mirror of the whole-screen sightline clear shader for telemetry & E2E verification.
  */
 export function evaluateSightlineEdgeAlphaAtScreenUv(
   sUvX: number,
@@ -162,27 +139,16 @@ export function evaluateSightlineEdgeAlphaAtScreenUv(
   _boundsR: number,
   viewportW: number,
   viewportH: number,
-  headUvX: number,
-  headUvY: number,
-  fragViewDepth?: number
+  _headUvX: number,
+  _headUvY: number,
+  _fragViewDepth?: number
 ): number {
-  const effectiveDepth =
-    fragViewDepth !== undefined ? fragViewDepth : SHARED_OCCLUDER_HEAD_CLIP.z - 2.0;
-  return evaluatePlayerSightlineCutoutAlpha(
+  return evaluateWholeScreenSightlineClearAlpha(
     sUvX,
     sUvY,
-    effectiveDepth,
     occBlend,
     viewportW,
-    viewportH,
-    headUvX,
-    headUvY,
-    SHARED_OCCLUDER_HEAD_CLIP.z,
-    SHARED_OCCLUDER_HEAD_CLIP.w,
-    SHARED_OCCLUDER_TAIL_CLIP.x,
-    SHARED_OCCLUDER_TAIL_CLIP.y,
-    SHARED_OCCLUDER_TAIL_CLIP.z,
-    SHARED_OCCLUDER_TAIL_CLIP.w
+    viewportH
   );
 }
 

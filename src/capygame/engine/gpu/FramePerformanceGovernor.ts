@@ -59,24 +59,16 @@ export function computeEffectivePixelRatio(
   return Math.min(safeDpr, 2.0);
 }
 
-function smoothstep01(edge0: number, edge1: number, x: number): number {
-  if (edge1 <= edge0) return x >= edge1 ? 1 : 0;
-  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
 /**
- * Preserves hardware Z-buffer writes (`depthWrite = origDepthWrite`) for localized sightline-cutout
- * materials (which `discard` pixels inside the player window while keeping >= 80% of the mesh 100% opaque),
- * or disables `depthWrite` only when full-mesh alpha fading is used.
+ * Restores hardware Z-buffer writes (`depthWrite = origDepthWrite`) whenever `uCapyOccBlend <= 0.02`
+ * so non-blocking trees/structures retain crisp Z-sorted foliage, and disables `depthWrite` while
+ * an active player-blocking occluder clears >= 95% of the screen.
  */
 export function shouldEnableOccluderDepthWrite(
   occBlend: number,
-  origDepthWrite: boolean = true,
-  localizedCutout: boolean = true
+  origDepthWrite: boolean = true
 ): boolean {
   if (!origDepthWrite) return false;
-  if (localizedCutout) return true;
   return occBlend <= 0.02;
 }
 
@@ -132,58 +124,32 @@ export function doesSphereBlockPlayerSightline(
 }
 
 /**
- * Pure CPU mirror of the per-fragment localized player-sightline cutout shader:
- * - Visually hides (`alpha = 0`) ONLY fragments that are BOTH closer to the camera than the player
- *   (`fragViewDepth < playerCutDepth`) AND inside the aspect-normalized screen capsule around the player
- *   (`[headUv -> tailUv]`).
- * - Leaves all non-blocking parts of the same tree/building (sides, upper canopy, offscreen edges, and
- *   geometry behind the player) 100% opaque (`alpha = 1.0`).
+ * Pure CPU mirror of the whole-screen sightline clear shader:
+ * - When an object is NOT blocking the player (`occBlend === 0`), returns `1.0` everywhere (never disappears offscreen).
+ * - When an object DOES block the player (`occBlend -> 1`), clears `>= 95.6%` of the entire viewport (`alpha = 0`,
+ *   making the whole screen visible rather than a small peephole around the player), with only a faint `<= 0.18`
+ *   whisper on the outermost `2.2%` screen rim.
  */
-export function evaluatePlayerSightlineCutoutAlpha(
+export function evaluateWholeScreenSightlineClearAlpha(
   sUvX: number,
   sUvY: number,
-  fragViewDepth: number,
   occBlend: number,
-  viewportW: number,
-  viewportH: number,
-  headUvX: number,
-  headUvY: number,
-  headViewDepth: number,
-  innerRadiusNorm: number,
-  tailUvX: number,
-  tailUvY: number,
-  tailViewDepth: number,
-  featherNorm: number
+  viewportW: number = 1280,
+  viewportH: number = 720
 ): number {
   if (occBlend <= 0.001 || viewportW < 10 || viewportH < 10) return 1.0;
 
-  const playerCutDepth = Math.max(headViewDepth, tailViewDepth) - 0.12;
-  const depthMask =
-    1.0 - smoothstep01(playerCutDepth - 0.45, playerCutDepth + 0.08, fragViewDepth);
-  if (depthMask <= 0.001) return 1.0;
+  const bx = Math.abs(sUvX * 2.0 - 1.0);
+  const by = Math.abs(sUvY * 2.0 - 1.0);
+  const rx = Math.max(bx - 0.978, 0.0) / 0.022;
+  const ry = Math.max(by - 0.978, 0.0) / 0.022;
+  const edgeDist = Math.min(1.0, Math.hypot(rx, ry));
+  const screenEdgeFade = edgeDist * edgeDist * (3.0 - 2.0 * edgeDist);
+  const targetOccAlpha = screenEdgeFade * (0.75 + 0.25 * screenEdgeFade) * 0.18;
 
-  const minDim = Math.max(10, Math.min(viewportW, viewportH));
-  const scaleX = viewportW / minDim;
-  const scaleY = viewportH / minDim;
-
-  const paX = (sUvX - headUvX) * scaleX;
-  const paY = (sUvY - headUvY) * scaleY;
-  const baX = (tailUvX - headUvX) * scaleX;
-  const baY = (tailUvY - headUvY) * scaleY;
-  const baLenSq = baX * baX + baY * baY;
-  const h =
-    baLenSq > 1e-5
-      ? Math.max(0, Math.min(1, (paX * baX + paY * baY) / baLenSq))
-      : 0;
-  const dNorm = Math.hypot(paX - baX * h, paY - baY * h);
-
-  const safeInner = Math.max(0.05, innerRadiusNorm);
-  const safeOuter = safeInner + Math.max(0.02, featherNorm);
-  const screenMask = 1.0 - smoothstep01(safeInner, safeOuter, dNorm);
-
-  const cutout = Math.max(0, Math.min(1, occBlend * depthMask * screenMask));
-  if (cutout > 0.88) return 0.0;
-  return 1.0 - cutout;
+  const finalAlpha = 1.0 + (targetOccAlpha - 1.0) * occBlend;
+  if (occBlend > 0.85 && finalAlpha < 0.004) return 0.0;
+  return Math.max(0.0, Math.min(1.0, finalAlpha));
 }
 
 /**

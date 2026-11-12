@@ -4240,7 +4240,7 @@ export class PlayStyleManager {
           const zx = ZONE_LOCATIONS.sanctuary.x;
           const zz = ZONE_LOCATIONS.sanctuary.z;
 
-          // 1. Procedural Exponential Fruit Trees: only engage localized cutout when strictly between camera and player
+          // 1. Procedural Exponential Fruit Trees: ONLY clear whole screen when tree blocks [camera -> player] or encloses camera lens
           for (let i = 0; i < this.sanctuaryTrees.length; i++) {
             const tr = this.sanctuaryTrees[i];
             const wx = zx + tr.x;
@@ -4250,16 +4250,27 @@ export class PlayStyleManager {
             const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
             const rootedInFrontOfPlayer =
               horizLen > 0.5 && horizProj > -cr && horizProj < horizLen - 0.2;
+            const camCrownDx = wx - camX;
+            const camCrownDy = th * 1.02 - camY;
+            const camCrownDz = wz - camZ;
+            const cameraInsideCanopy =
+              horizLen > 1.8 &&
+              horizProj < horizLen - 1.5 &&
+              camCrownDx * camCrownDx +
+                camCrownDy * camCrownDy +
+                camCrownDz * camCrownDz <=
+                cr * 1.04 * (cr * 1.04);
 
             const blocks =
-              rootedInFrontOfPlayer &&
-              (blocksPlayerCorridor(
-                wx,
-                th * 0.45,
-                wz,
-                Math.max(0.75, tr.trunkRadius * 2.2)
-              ) ||
-                blocksPlayerCorridor(wx, th * 1.02, wz, cr * 0.85));
+              cameraInsideCanopy ||
+              (rootedInFrontOfPlayer &&
+                (blocksPlayerCorridor(
+                  wx,
+                  th * 0.45,
+                  wz,
+                  Math.max(0.75, tr.trunkRadius * 2.2)
+                ) ||
+                  blocksPlayerCorridor(wx, th * 1.02, wz, cr * 0.85)));
 
             if (blocks) {
               this.markObjectHierarchyOccluded(tr.rootGroup);

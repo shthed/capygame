@@ -12,11 +12,11 @@ import {
   computeEffectivePixelRatio,
   computeTexelSnappedShadowOrigin,
   doesSphereBlockPlayerSightline,
-  evaluatePlayerSightlineCutoutAlpha,
+  evaluateWholeScreenSightlineClearAlpha,
   shouldEnableOccluderDepthWrite,
 } from '../engine/gpu/FramePerformanceGovernor';
 
-test('Sightline Occlusion Regression: offscreen objects and trees ahead of player stay 100% visible; only player-blocking fragments hide', () => {
+test('Sightline Occlusion Regression: offscreen/ahead objects stay 100% solid; player-blocking objects clear >=95% of the whole screen', () => {
   // Camera at (0, 6.8, 15.5) looking at Hero at (0, 1.0, 4.0) (distance ~12.88m)
   const camX = 0;
   const camY = 6.8;
@@ -25,43 +25,32 @@ test('Sightline Occlusion Regression: offscreen objects and trees ahead of playe
   const heroY = 1.0;
   const heroZ = 4.0;
 
-  // 1. Tree ahead of / beyond the player (like Screenshot 1 & 2 where player walks toward a tree at z = -0.5 with wide 5m canopy):
-  // Even though canopy radius (5.0m) reaches within z, center is beyond the player -> MUST NOT block!
+  // 1. Tree ahead of / beyond the player (walking toward a tree at z = -0.5 with wide 5m canopy going offscreen at top):
   assert.equal(
     doesSphereBlockPlayerSightline(0, 5.5, -0.5, 5.0, camX, camY, camZ, heroX, heroY, heroZ),
     false
   );
+  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.5, 0.5, 0.0, 390, 844), 1.0);
 
   // 2. Pool / Onsen / Tree off to the bottom-left or side starting to go offscreen (x = -8.5, z = 10.0, r = 3.2):
-  // Closer to camera in Z than player, but off the camera-to-player sightline -> MUST NOT block!
   assert.equal(
     doesSphereBlockPlayerSightline(-8.5, 1.5, 10.0, 3.2, camX, camY, camZ, heroX, heroY, heroZ),
     false
   );
 
-  // 3. Tree genuinely between camera and player along the sightline (x = 0.4, y = 4.2, z = 10.2, r = 3.0) -> MUST trigger localized cutout!
+  // 3. Tree genuinely between camera and player along the sightline (x = 0.4, y = 4.2, z = 10.2, r = 3.0) -> MUST trigger whole-screen clear!
   assert.equal(
     doesSphereBlockPlayerSightline(0.4, 4.2, 10.2, 3.0, camX, camY, camZ, heroX, heroY, heroZ),
     true
   );
 
-  // 4. Per-fragment localized cutout on 390x844 mobile portrait:
-  // Hero head at UV (0.5, 0.48), depth 12.0m; torso at UV (0.52, 0.34), depth 12.4m; innerR = 0.16, feather = 0.085
-  // Fragment at (0.5, 0.48) at depth 7.0m (directly blocking player!) -> alpha === 0.0 (discarded!)
-  assert.equal(
-    evaluatePlayerSightlineCutoutAlpha(0.5, 0.48, 7.0, 1.0, 390, 844, 0.5, 0.48, 12.0, 0.16, 0.52, 0.34, 12.4, 0.085),
-    0.0
-  );
-  // Fragment of the SAME tree off to the upper-left/right canopy (UV 0.15, 0.78) at depth 7.0m -> alpha === 1.0 (stays 100% visible!)
-  assert.equal(
-    evaluatePlayerSightlineCutoutAlpha(0.15, 0.78, 7.0, 1.0, 390, 844, 0.5, 0.48, 12.0, 0.16, 0.52, 0.34, 12.4, 0.085),
-    1.0
-  );
-  // Fragment at the exact same screen UV (0.5, 0.48) BEHIND the player (depth 14.0m > 12.4m) -> alpha === 1.0 (stays 100% visible!)
-  assert.equal(
-    evaluatePlayerSightlineCutoutAlpha(0.5, 0.48, 14.0, 1.0, 390, 844, 0.5, 0.48, 12.0, 0.16, 0.52, 0.34, 12.4, 0.085),
-    1.0
-  );
+  // 4. Whole-screen visibility on 390x844 mobile portrait when blocking player (NOT just a small border around the player!):
+  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.5, 0.48, 1.0, 390, 844), 0.0);
+  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.15, 0.78, 1.0, 390, 844), 0.0);
+  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.85, 0.22, 1.0, 390, 844), 0.0);
+  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.05, 0.92, 1.0, 390, 844), 0.0);
+  const outerRimAlpha = evaluateWholeScreenSightlineClearAlpha(0.996, 0.5, 1.0, 390, 844);
+  assert.ok(outerRimAlpha > 0.02 && outerRimAlpha <= 0.19);
 });
 
 test('60 FPS & Zero-Glitch Governor: shadow azimuth stays invariant across (-75,-75)..(+75,+75) districts and snaps cleanly to texels', () => {
@@ -95,12 +84,12 @@ test('60 FPS & Zero-Glitch Governor: shadow azimuth stays invariant across (-75,
 });
 
 test('60 FPS & Zero-Glitch Governor: occluder depthWrite, bloom scale, HiDPI cap, and distant district stride', () => {
-  // Localized aperture occluders keep depthWrite=true for crisp Z-buffer leaf sorting; full-mesh fades disable while blending
-  assert.equal(shouldEnableOccluderDepthWrite(0.0, true, true), true);
-  assert.equal(shouldEnableOccluderDepthWrite(1.0, true, true), true);
-  assert.equal(shouldEnableOccluderDepthWrite(0.015, true, false), true);
-  assert.equal(shouldEnableOccluderDepthWrite(0.25, true, false), false);
-  assert.equal(shouldEnableOccluderDepthWrite(0.0, false, true), false);
+  // Restores depthWrite=true when unoccluded (<=0.02) and disables while whole-screen clearing
+  assert.equal(shouldEnableOccluderDepthWrite(0.0, true), true);
+  assert.equal(shouldEnableOccluderDepthWrite(0.015, true), true);
+  assert.equal(shouldEnableOccluderDepthWrite(0.25, true), false);
+  assert.equal(shouldEnableOccluderDepthWrite(1.0, true), false);
+  assert.equal(shouldEnableOccluderDepthWrite(0.0, false), false);
 
   // Half-res / 0.65x bloom scale & sensible HiDPI caps
   assert.equal(computeBloomRenderScale('high', false), 0.5);
