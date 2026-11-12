@@ -6,6 +6,114 @@ import {
   clampStarSystemIndex,
   resolveCircleRotatedBox2D,
 } from '../engine/physics/ColliderMath';
+import {
+  computeBloomRenderScale,
+  computeDistrictTickStride,
+  computeEffectivePixelRatio,
+  computeTexelSnappedShadowOrigin,
+  doesSphereBlockPlayerSightline,
+  evaluatePlayerSightlineCutoutAlpha,
+  shouldEnableOccluderDepthWrite,
+} from '../engine/gpu/FramePerformanceGovernor';
+
+test('Sightline Occlusion Regression: offscreen objects and trees ahead of player stay 100% visible; only player-blocking fragments hide', () => {
+  // Camera at (0, 6.8, 15.5) looking at Hero at (0, 1.0, 4.0) (distance ~12.88m)
+  const camX = 0;
+  const camY = 6.8;
+  const camZ = 15.5;
+  const heroX = 0;
+  const heroY = 1.0;
+  const heroZ = 4.0;
+
+  // 1. Tree ahead of / beyond the player (like Screenshot 1 & 2 where player walks toward a tree at z = -0.5 with wide 5m canopy):
+  // Even though canopy radius (5.0m) reaches within z, center is beyond the player -> MUST NOT block!
+  assert.equal(
+    doesSphereBlockPlayerSightline(0, 5.5, -0.5, 5.0, camX, camY, camZ, heroX, heroY, heroZ),
+    false
+  );
+
+  // 2. Pool / Onsen / Tree off to the bottom-left or side starting to go offscreen (x = -8.5, z = 10.0, r = 3.2):
+  // Closer to camera in Z than player, but off the camera-to-player sightline -> MUST NOT block!
+  assert.equal(
+    doesSphereBlockPlayerSightline(-8.5, 1.5, 10.0, 3.2, camX, camY, camZ, heroX, heroY, heroZ),
+    false
+  );
+
+  // 3. Tree genuinely between camera and player along the sightline (x = 0.4, y = 4.2, z = 10.2, r = 3.0) -> MUST trigger localized cutout!
+  assert.equal(
+    doesSphereBlockPlayerSightline(0.4, 4.2, 10.2, 3.0, camX, camY, camZ, heroX, heroY, heroZ),
+    true
+  );
+
+  // 4. Per-fragment localized cutout on 390x844 mobile portrait:
+  // Hero head at UV (0.5, 0.48), depth 12.0m; torso at UV (0.52, 0.34), depth 12.4m; innerR = 0.16, feather = 0.085
+  // Fragment at (0.5, 0.48) at depth 7.0m (directly blocking player!) -> alpha === 0.0 (discarded!)
+  assert.equal(
+    evaluatePlayerSightlineCutoutAlpha(0.5, 0.48, 7.0, 1.0, 390, 844, 0.5, 0.48, 12.0, 0.16, 0.52, 0.34, 12.4, 0.085),
+    0.0
+  );
+  // Fragment of the SAME tree off to the upper-left/right canopy (UV 0.15, 0.78) at depth 7.0m -> alpha === 1.0 (stays 100% visible!)
+  assert.equal(
+    evaluatePlayerSightlineCutoutAlpha(0.15, 0.78, 7.0, 1.0, 390, 844, 0.5, 0.48, 12.0, 0.16, 0.52, 0.34, 12.4, 0.085),
+    1.0
+  );
+  // Fragment at the exact same screen UV (0.5, 0.48) BEHIND the player (depth 14.0m > 12.4m) -> alpha === 1.0 (stays 100% visible!)
+  assert.equal(
+    evaluatePlayerSightlineCutoutAlpha(0.5, 0.48, 14.0, 1.0, 390, 844, 0.5, 0.48, 12.0, 0.16, 0.52, 0.34, 12.4, 0.085),
+    1.0
+  );
+});
+
+test('60 FPS & Zero-Glitch Governor: shadow azimuth stays invariant across (-75,-75)..(+75,+75) districts and snaps cleanly to texels', () => {
+  const sunX = 0.42;
+  const sunY = 0.78;
+  const sunZ = 0.36;
+
+  const originPose = computeTexelSnappedShadowOrigin(0.01, -0.01, sunX, sunY, sunZ, 42, 2048, 96);
+  const originDx = originPose.lightX - originPose.targetX;
+  const originDy = originPose.lightY - originPose.targetY;
+  const originDz = originPose.lightZ - originPose.targetZ;
+
+  // Walk to Yuzu Mountain (+75, +75) and Spore Lagoon (-75, -75): light-to-target vector must stay 100% identical!
+  const nePose = computeTexelSnappedShadowOrigin(75.13, 74.88, sunX, sunY, sunZ, 42, 2048, 96);
+  assert.ok(Math.abs(nePose.lightX - nePose.targetX - originDx) < 1e-9);
+  assert.ok(Math.abs(nePose.lightY - nePose.targetY - originDy) < 1e-9);
+  assert.ok(Math.abs(nePose.lightZ - nePose.targetZ - originDz) < 1e-9);
+
+  const swPose = computeTexelSnappedShadowOrigin(-74.92, -75.04, sunX, sunY, sunZ, 42, 2048, 96);
+  assert.ok(Math.abs(swPose.lightX - swPose.targetX - originDx) < 1e-9);
+  assert.ok(Math.abs(swPose.lightZ - swPose.targetZ - originDz) < 1e-9);
+
+  // Sub-texel micro-jitter within the same texel must produce identical snapped coordinates (zero shadow shimmer)
+  const texel = nePose.texelSizeWorld;
+  const snapA = computeTexelSnappedShadowOrigin(texel * 10.1, texel * -4.1, sunX, sunY, sunZ, 42, 2048, 96);
+  const snapAX = snapA.targetX;
+  const snapAZ = snapA.targetZ;
+  const snapB = computeTexelSnappedShadowOrigin(texel * 10.2, texel * -3.9, sunX, sunY, sunZ, 42, 2048, 96);
+  assert.equal(snapB.targetX, snapAX);
+  assert.equal(snapB.targetZ, snapAZ);
+});
+
+test('60 FPS & Zero-Glitch Governor: occluder depthWrite, bloom scale, HiDPI cap, and distant district stride', () => {
+  // Localized aperture occluders keep depthWrite=true for crisp Z-buffer leaf sorting; full-mesh fades disable while blending
+  assert.equal(shouldEnableOccluderDepthWrite(0.0, true, true), true);
+  assert.equal(shouldEnableOccluderDepthWrite(1.0, true, true), true);
+  assert.equal(shouldEnableOccluderDepthWrite(0.015, true, false), true);
+  assert.equal(shouldEnableOccluderDepthWrite(0.25, true, false), false);
+  assert.equal(shouldEnableOccluderDepthWrite(0.0, false, true), false);
+
+  // Half-res / 0.65x bloom scale & sensible HiDPI caps
+  assert.equal(computeBloomRenderScale('high', false), 0.5);
+  assert.equal(computeBloomRenderScale('ultra', false), 0.65);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false), 1.65);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', false, false), 2.0);
+  assert.equal(computeEffectivePixelRatio(2.5, 'ultra', true, true), 1.0);
+
+  // Background district tick striding
+  assert.equal(computeDistrictTickStride(40 * 40), 1);
+  assert.equal(computeDistrictTickStride(110 * 110), 2);
+  assert.equal(computeDistrictTickStride(160 * 160), 4);
+});
 
 test('BUG-11: clampStarSystemIndex honors non-zero indices and clamps out-of-range values', () => {
   assert.equal(clampStarSystemIndex(0, 3), 0);

@@ -210,7 +210,6 @@ interface TouchDragVisualState {
 
 export const CapyGameView: React.FC = () => {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const wakeBarRef = useRef<HTMLDivElement | null>(null);
   const managerRef = useRef<PlayStyleManager | null>(null);
 
   const [stats, setStats] = useState<PlayerStats>(() =>
@@ -632,31 +631,54 @@ export const CapyGameView: React.FC = () => {
     let lastTime = performance.now();
     let uiSyncAccum = 0;
     let paceTimerId: number | null = null;
-    let wakeParity = 0;
-    const wakeIntervalId: number | null = manager.isSoftwareGl
-      ? window.setInterval(() => {
-          wakeParity = (wakeParity + 1) & 7;
-          if (wakeBarRef.current) {
-            wakeBarRef.current.style.width = `${1 + (wakeParity & 1)}px`;
-            wakeBarRef.current.style.left = `${wakeParity & 1}px`;
-            wakeBarRef.current.style.backgroundColor =
-              wakeParity & 1 ? 'rgba(56,189,248,0.16)' : 'rgba(56,189,248,0.11)';
-            wakeBarRef.current.textContent = String(wakeParity);
-          }
-        }, 45)
+    let activeFenceSync: WebGLSync | null = null;
+    let modalWakeParity = 0;
+    const glCtx = manager.isSoftwareGl
+      ? (manager.renderer.getContext() as WebGL2RenderingContext | null)
       : null;
 
-    const scheduleNextFrame = () => {
+    const scheduleNextFrame = (didDrawGl: boolean) => {
       if (!manager.isSoftwareGl) {
         animFrameId = window.requestAnimationFrame(animate);
         return;
       }
       const delayMs =
         modalOpenRef.current || menuOpenRef.current
-          ? 75
+          ? 45
           : manager.cosmicStage === 'playing'
-            ? 90
-            : 42;
+            ? 80
+            : 45;
+      if (
+        didDrawGl &&
+        glCtx &&
+        typeof glCtx.fenceSync === 'function' &&
+        !glCtx.isContextLost()
+      ) {
+        const sync = glCtx.fenceSync(glCtx.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glCtx.flush();
+        if (sync) {
+          activeFenceSync = sync;
+          const poll = () => {
+            if (glCtx.isContextLost()) {
+              activeFenceSync = null;
+              return;
+            }
+            const state = glCtx.getSyncParameter(sync, glCtx.SYNC_STATUS);
+            if (state === glCtx.UNSIGNALED) {
+              paceTimerId = window.setTimeout(poll, 5);
+            } else {
+              glCtx.deleteSync(sync);
+              if (activeFenceSync === sync) activeFenceSync = null;
+              paceTimerId = window.setTimeout(() => {
+                paceTimerId = null;
+                animFrameId = window.requestAnimationFrame(animate);
+              }, delayMs);
+            }
+          };
+          paceTimerId = window.setTimeout(poll, 5);
+          return;
+        }
+      }
       paceTimerId = window.setTimeout(() => {
         paceTimerId = null;
         animFrameId = window.requestAnimationFrame(animate);
@@ -666,8 +688,20 @@ export const CapyGameView: React.FC = () => {
     const animate = (now: number) => {
       if (manager.isSoftwareGl && (modalOpenRef.current || menuOpenRef.current)) {
         lastTime = now;
-        scheduleNextFrame();
+        modalWakeParity ^= 1;
+        if (mountRef.current) {
+          mountRef.current.style.opacity = modalWakeParity ? '0.999' : '1';
+        }
+        scheduleNextFrame(false);
         return;
+      }
+      if (
+        manager.isSoftwareGl &&
+        mountRef.current &&
+        mountRef.current.style.opacity !== '' &&
+        mountRef.current.style.opacity !== '1'
+      ) {
+        mountRef.current.style.opacity = '1';
       }
 
       const dt = Math.min(0.1, Math.max(0.001, (now - lastTime) / 1000));
@@ -688,7 +722,7 @@ export const CapyGameView: React.FC = () => {
         setSnakeTelemetry(manager.getCapySnakeTelemetry());
       }
 
-      scheduleNextFrame();
+      scheduleNextFrame(true);
     };
     animFrameId = window.requestAnimationFrame(animate);
 
@@ -782,8 +816,9 @@ export const CapyGameView: React.FC = () => {
       if (paceTimerId !== null) {
         window.clearTimeout(paceTimerId);
       }
-      if (wakeIntervalId !== null) {
-        window.clearInterval(wakeIntervalId);
+      if (activeFenceSync && glCtx && !glCtx.isContextLost()) {
+        glCtx.deleteSync(activeFenceSync);
+        activeFenceSync = null;
       }
       containerEl.removeEventListener('touchstart', handleTouchStart);
       containerEl.removeEventListener('touchmove', handleTouchMove);
@@ -1313,11 +1348,6 @@ export const CapyGameView: React.FC = () => {
         onPointerCancel={handleCanvasPointerUpOrCancel}
         style={{ touchAction: 'none' }}
         className="absolute inset-0 w-full h-full cursor-crosshair active:cursor-grabbing"
-      />
-      <div
-        ref={wakeBarRef}
-        aria-hidden="true"
-        className="fixed top-0 left-0 w-px h-2 overflow-hidden z-[60] pointer-events-none text-[6px] leading-none text-sky-400/15 bg-sky-400/15"
       />
 
       {/* WebGL Error Fallback Card */}

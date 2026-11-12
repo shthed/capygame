@@ -2819,6 +2819,7 @@ export class SeamlessUniverseSimulator {
     const hubbleMix = astrophysicsPalette === 'hubble' ? 0.92 : 0.18;
 
     this.rootGroup.visible = true;
+    this.rootGroup.matrixWorldAutoUpdate = true;
     this.rootGroup.position.copy(focalWorldPos);
 
     // 1. Update Persistent 3D Celestial PSF Starfield & Milky Way Band above Troposphere (+4.0m .. +27.5m)
@@ -2826,6 +2827,7 @@ export class SeamlessUniverseSimulator {
       smoothstep01(3.8, 5.8, logScaleMeters) * (1 - smoothstep01(26.4, 27.6, logScaleMeters));
     if (starSkyAlpha > 0.01) {
       this.celestialBackdropGroup.visible = true;
+      this.celestialBackdropGroup.matrixWorldAutoUpdate = true;
       this.celestialBackdropGroup.position.copy(focalWorldPos);
       for (let m = 0; m < this.celestialBackdropMats.length; m++) {
         const entry = this.celestialBackdropMats[m];
@@ -2837,6 +2839,7 @@ export class SeamlessUniverseSimulator {
       }
     } else {
       this.celestialBackdropGroup.visible = false;
+      this.celestialBackdropGroup.matrixWorldAutoUpdate = false;
     }
 
     // 2. Interpolate background sky color smoothly between bracketing scale bands
@@ -2915,6 +2918,7 @@ export class SeamlessUniverseSimulator {
         if (layer.group.visible) {
           layer.group.visible = false;
         }
+        layer.group.matrixWorldAutoUpdate = false;
         continue;
       }
 
@@ -2930,12 +2934,14 @@ export class SeamlessUniverseSimulator {
 
       if (alpha <= 0.008) {
         layer.group.visible = false;
+        layer.group.matrixWorldAutoUpdate = false;
         continue;
       }
 
       // TRUE BASE-10 PHYSICAL SCALE RATIO (exact 10^deltaLog when gamma === 1.0!)
       const visualScale = Math.pow(10, scaledDelta);
       layer.group.visible = true;
+      layer.group.matrixWorldAutoUpdate = true;
       layer.group.scale.setScalar(visualScale);
 
       for (let m = 0; m < layer.materials.length; m++) {
@@ -3051,7 +3057,9 @@ export class SeamlessUniverseSimulator {
 
   public hide() {
     this.rootGroup.visible = false;
+    this.rootGroup.matrixWorldAutoUpdate = false;
     this.celestialBackdropGroup.visible = false;
+    this.celestialBackdropGroup.matrixWorldAutoUpdate = false;
   }
 
   public setOrbitTimeScale(scaleId: OrbitTimeScaleId) {

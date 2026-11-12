@@ -15,11 +15,19 @@ import {
   ExponentialFruitTree,
   HomePoolSystem,
   RealisticWorldEnvironment,
+  SHARED_OCCLUDER_HEAD_CLIP,
   SHARED_OCCLUDER_HEAD_UV,
+  SHARED_OCCLUDER_TAIL_CLIP,
   SHARED_OCCLUDER_VIEWPORT,
   evaluateSightlineEdgeAlphaAtScreenUv,
   installSightlineEdgeFadeShader,
 } from './RealisticWorldEnvironment';
+import {
+  computeDistrictTickStride,
+  computeEffectivePixelRatio,
+  doesSphereBlockPlayerSightline,
+  shouldEnableOccluderDepthWrite,
+} from './gpu/FramePerformanceGovernor';
 import {
   AstrophysicsPaletteMode,
   BuildingType,
@@ -94,7 +102,6 @@ const _camUp = new THREE.Vector3();
 const _rayHits: THREE.Intersection[] = [];
 const _occluderCandidates: THREE.Object3D[] = [];
 const _rendererSizeVec2 = new THREE.Vector2(1280, 720);
-const _occCenterWorld = new THREE.Vector3();
 const _occProjectedNdc = new THREE.Vector3();
 const _pointerNdc = new THREE.Vector2();
 const _colorHelper = new THREE.Color();
@@ -338,12 +345,21 @@ export class PlayStyleManager {
   public pointerTargetX: number | null = null;
   public isJumping: boolean = false;
 
-  // --- Dynamic 60 FPS Capybara Level-of-Detail (LOD) Governor ---
+  // --- Dynamic 60 FPS Capybara Level-of-Detail (LOD) Governor & Frame Budget Pacing ---
   private rollingFps: number = 60;
   private currentCapyLodTier: CapyLodTier = 3;
   private lodGovernorAccum: number = 0;
   private lodHighFpsStreak: number = 0;
   private lodLowFpsStreak: number = 0;
+  private cosmicUiTelemetryAccum: number = 0;
+  private bgDistrictFrameCounter: number = 0;
+  private readonly bgDistrictDtAccum: Record<PlayStyle, number> = {
+    sanctuary: 0,
+    spore: 0,
+    breakout: 0,
+    runner: 0,
+    fallguys: 0,
+  };
 
   // --- 1. Sanctuary, Logarithmic Dachshund Capy-Snake & Home Pool State ---
   private sanctuaryCapys: Array<{
@@ -559,7 +575,12 @@ export class PlayStyleManager {
       });
     }
     this.renderer.setPixelRatio(
-      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2)
+      computeEffectivePixelRatio(
+        window.devicePixelRatio || 1,
+        this.settings.gpuQualityPreset ?? 'high',
+        this.settings.gpuPostProcessing !== false,
+        this.isSoftwareGl
+      )
     );
     this.renderer.setSize(width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -589,13 +610,13 @@ export class PlayStyleManager {
     dirLight.shadow.mapSize.height = shadowRes;
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far = 260;
-    const d = 68;
+    const d = 42;
     dirLight.shadow.camera.left = -d;
     dirLight.shadow.camera.right = d;
     dirLight.shadow.camera.top = d;
     dirLight.shadow.camera.bottom = -d;
-    dirLight.shadow.bias = -0.0004;
-    dirLight.shadow.normalBias = 0.024;
+    dirLight.shadow.bias = -0.00035;
+    dirLight.shadow.normalBias = 0.026;
     this.scene.add(dirLight);
 
     this.gpuEngine = new HardwareGpuEngine(
@@ -698,6 +719,7 @@ export class PlayStyleManager {
     this.scene.add(this.seamlessUniverse.celestialBackdropGroup);
     this.sanctuaryGroup.add(this.seamlessUniverse.forestGroveGroup);
     this.buildSelectableCapyHeroCircle();
+    this.prewarmOccluderShaderPrograms();
 
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.scene, this.camera);
@@ -877,8 +899,8 @@ export class PlayStyleManager {
       roughness: 0.58,
       metalness: 0.06,
       polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
     const promenadeCurbMat = new THREE.MeshStandardMaterial({
       color: 0xb45309,
@@ -914,7 +936,7 @@ export class PlayStyleManager {
         new THREE.BoxGeometry(b.halfWidth * 2, 0.48, b.length + 2.4)
       );
       const deck = new THREE.Mesh(deckGeo, promenadeDeckMat);
-      deck.position.set(0, -0.2, 0);
+      deck.position.set(0, -0.21, 0);
       deck.receiveShadow = true;
       deck.userData.ignoreCameraFade = true;
       bridgeGroup.add(deck);
@@ -966,11 +988,14 @@ export class PlayStyleManager {
         aoMap: sandTex.ao,
         aoMapIntensity: 0.55,
         roughness: 0.72,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
         side: THREE.DoubleSide,
       })
     );
     lagoonRim.rotation.x = -Math.PI / 2;
-    lagoonRim.position.set(ZONE_LOCATIONS.spore.x, -0.02, ZONE_LOCATIONS.spore.z);
+    lagoonRim.position.set(ZONE_LOCATIONS.spore.x, 0.015, ZONE_LOCATIONS.spore.z);
     lagoonRim.receiveShadow = true;
     lagoonRim.userData.ignoreCameraFade = true;
     this.worldBaseGroup.add(lagoonRim);
@@ -982,7 +1007,7 @@ export class PlayStyleManager {
     );
     breakoutApron.position.set(
       ZONE_LOCATIONS.breakout.x,
-      -0.24,
+      -0.205,
       ZONE_LOCATIONS.breakout.z + 15.2
     );
     breakoutApron.receiveShadow = true;
@@ -996,7 +1021,7 @@ export class PlayStyleManager {
     );
     runnerForecourt.position.set(
       ZONE_LOCATIONS.runner.x,
-      -0.24,
+      -0.205,
       ZONE_LOCATIONS.runner.z + 6.5
     );
     runnerForecourt.receiveShadow = true;
@@ -1010,7 +1035,7 @@ export class PlayStyleManager {
       );
       boardwalk.position.set(
         ZONE_LOCATIONS.runner.x + side * 6.3,
-        -0.2,
+        -0.19,
         ZONE_LOCATIONS.runner.z - 44.0
       );
       boardwalk.receiveShadow = true;
@@ -1024,7 +1049,7 @@ export class PlayStyleManager {
     );
     runnerTurnaround.position.set(
       ZONE_LOCATIONS.runner.x,
-      -0.24,
+      -0.205,
       ZONE_LOCATIONS.runner.z - 92.0
     );
     runnerTurnaround.receiveShadow = true;
@@ -1062,13 +1087,22 @@ export class PlayStyleManager {
     this.physicsBridge?.setActiveDistrict(mode);
 
     // Keep all 5 game zones permanently active & visible in the same contiguous world!
+    this.worldBaseGroup.visible = true;
+    this.worldBaseGroup.matrixWorldAutoUpdate = true;
     this.sanctuaryGroup.visible = true;
+    this.sanctuaryGroup.matrixWorldAutoUpdate = true;
     this.sporeGroup.visible = true;
+    this.sporeGroup.matrixWorldAutoUpdate = true;
     this.breakoutGroup.visible = true;
+    this.breakoutGroup.matrixWorldAutoUpdate = true;
     this.runnerGroup.visible = true;
+    this.runnerGroup.matrixWorldAutoUpdate = true;
     this.fallGuysGroup.visible = true;
+    this.fallGuysGroup.matrixWorldAutoUpdate = true;
     if (this.seamlessUniverse) {
-      this.seamlessUniverse.forestGroveGroup.visible = !this.isSoftwareGl;
+      const showGrove = !this.isSoftwareGl;
+      this.seamlessUniverse.forestGroveGroup.visible = showGrove;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showGrove;
     }
 
     this.heroVelocity.set(0, 0, 0);
@@ -1177,6 +1211,9 @@ export class PlayStyleManager {
     } else {
       this.camera.position.set(wx, wy + 7.5 * distScale, wz + 12.0 * distScale);
       this.camera.lookAt(wx, wy + 1.0, wz - 2);
+    }
+    if (this.cosmicStage === 'playing') {
+      this.updateHeadLineOfSightTransparency(1.0);
     }
   }
 
@@ -1459,11 +1496,14 @@ export class PlayStyleManager {
     this.autoZoomDirection = 0;
     if (this.seamlessUniverse) {
       this.seamlessUniverse.hide();
-      this.seamlessUniverse.forestGroveGroup.visible =
+      const showForestGrove =
         stage === 'playing' && this.currentMode === 'sanctuary' && !this.isSoftwareGl;
+      this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
     }
     if (this.cosmicBuilder) {
       this.cosmicBuilder.rootGroup.visible = true;
+      this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = true;
     }
     if (this.camera.near !== 0.1 || this.camera.far !== 1350) {
       this.camera.near = 0.1;
@@ -1484,17 +1524,25 @@ export class PlayStyleManager {
     };
     this.currentLogScaleMeters = stageLogMap[stage];
     this.targetLogScaleMeters = stageLogMap[stage];
+    this.cosmicUiTelemetryAccum = 0;
 
     const isSurfaceStage = stage === 'capy_selection' || stage === 'playing';
 
     this.worldBaseGroup.visible = isSurfaceStage;
+    this.worldBaseGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.sanctuaryGroup.visible = isSurfaceStage;
+    this.sanctuaryGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.sporeGroup.visible = isSurfaceStage;
+    this.sporeGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.breakoutGroup.visible = isSurfaceStage;
+    this.breakoutGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.runnerGroup.visible = isSurfaceStage;
+    this.runnerGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.fallGuysGroup.visible = isSurfaceStage;
+    this.fallGuysGroup.matrixWorldAutoUpdate = isSurfaceStage;
 
     this.selectableCapyGroup.visible = stage === 'capy_selection';
+    this.selectableCapyGroup.matrixWorldAutoUpdate = stage === 'capy_selection';
     this.heroCapy.visible = stage === 'playing';
     this.syncDachshundVisibility();
 
@@ -3876,6 +3924,45 @@ export class PlayStyleManager {
     }
   }
 
+  private prewarmOccluderShaderPrograms() {
+    const roots: THREE.Object3D[] = [];
+    for (let i = 0; i < this.sanctuaryTrees.length; i++) {
+      roots.push(this.sanctuaryTrees[i].rootGroup);
+    }
+    for (let i = 0; i < this.sanctuaryPortals.length; i++) {
+      roots.push(this.sanctuaryPortals[i].mesh);
+    }
+    for (let i = 0; i < this.sanctuaryBuildingMeshes.length; i++) {
+      roots.push(this.sanctuaryBuildingMeshes[i]);
+    }
+    if (this.homePool) {
+      roots.push(this.homePool.tapFixtureGroup);
+    }
+
+    const swappedSamples: THREE.Mesh[] = [];
+    for (let r = 0; r < roots.length; r++) {
+      const meshes = this.getOrBuildOccluderFadeMeshes(roots[r]);
+      for (let m = 0; m < meshes.length; m++) {
+        const mesh = meshes[m];
+        this.prepareMeshForOcclusionFade(mesh);
+        if (!this.isSoftwareGl && r === 0 && mesh.userData.__occMaterial) {
+          mesh.material = mesh.userData.__occMaterial;
+          swappedSamples.push(mesh);
+        }
+      }
+    }
+
+    if (!this.isSoftwareGl && swappedSamples.length > 0) {
+      this.renderer.compile(this.sanctuaryGroup, this.camera);
+      for (let i = 0; i < swappedSamples.length; i++) {
+        const mesh = swappedSamples[i];
+        if (mesh.userData.__origMaterial) {
+          mesh.material = mesh.userData.__origMaterial;
+        }
+      }
+    }
+  }
+
   private prepareMeshForOcclusionFade(mesh: THREE.Mesh) {
     if (mesh.userData.__occluderPrepared) return;
     mesh.userData.__origMaterial = mesh.material;
@@ -3884,6 +3971,7 @@ export class PlayStyleManager {
         const occMat = m.clone();
         delete occMat.userData.__occUniforms;
         occMat.userData.__origOpacity = m.opacity;
+        occMat.userData.__origDepthWrite = m.depthWrite;
         installSightlineEdgeFadeShader(occMat);
         return occMat;
       });
@@ -3892,53 +3980,11 @@ export class PlayStyleManager {
       const occMat = orig.clone();
       delete occMat.userData.__occUniforms;
       occMat.userData.__origOpacity = orig.opacity;
+      occMat.userData.__origDepthWrite = orig.depthWrite;
       installSightlineEdgeFadeShader(occMat);
       mesh.userData.__occMaterial = occMat;
     }
     mesh.userData.__occluderPrepared = true;
-  }
-
-  private updateMeshOccluderScreenBounds(mesh: THREE.Mesh) {
-    const asInstanced = mesh as unknown as THREE.InstancedMesh;
-    let bs: THREE.Sphere | null = null;
-    if (asInstanced.isInstancedMesh && asInstanced.boundingSphere) {
-      bs = asInstanced.boundingSphere;
-    } else {
-      if (!mesh.geometry.boundingSphere) {
-        mesh.geometry.computeBoundingSphere();
-      }
-      bs = mesh.geometry.boundingSphere;
-    }
-
-    if (bs) {
-      _occCenterWorld.copy(bs.center);
-      mesh.localToWorld(_occCenterWorld);
-      const maxScale = Math.max(
-        Math.abs(mesh.scale.x),
-        Math.abs(mesh.scale.y),
-        Math.abs(mesh.scale.z),
-        0.001
-      );
-      const worldRadius = Math.max(0.45, bs.radius * maxScale);
-      const camDist = Math.max(0.6, this.camera.position.distanceTo(_occCenterWorld));
-      const halfFovRad = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
-      const viewHeightWorld =
-        (2.0 * camDist * Math.tan(halfFovRad)) / Math.max(0.25, this.camera.zoom);
-      const rUv = THREE.MathUtils.clamp(worldRadius / Math.max(0.2, viewHeightWorld), 0.06, 2.0);
-
-      _occProjectedNdc.copy(_occCenterWorld).project(this.camera);
-      const cxUv = _occProjectedNdc.x * 0.5 + 0.5;
-      const cyUv = _occProjectedNdc.y * 0.5 + 0.5;
-
-      const occMatProp = mesh.userData.__occMaterial ?? mesh.material;
-      const mats = Array.isArray(occMatProp) ? occMatProp : [occMatProp];
-      for (let i = 0; i < mats.length; i++) {
-        const u = mats[i]?.userData?.__occUniforms;
-        if (u) {
-          u.uCapyOccBounds.value.set(cxUv, cyUv, rUv);
-        }
-      }
-    }
   }
 
   private setMeshOccluderBlend(
@@ -3977,11 +4023,14 @@ export class PlayStyleManager {
       const curBlend = uniforms.uCapyOccBlend.value;
       const nextBlend = curBlend + (targetBlend - curBlend) * rate;
 
+      const origDepthWrite = Boolean(mat.userData.__origDepthWrite ?? true);
+
       if (targetBlend > 0.5) {
         allRestored = false;
         const snapped = nextBlend > 0.985 ? 1.0 : nextBlend;
         uniforms.uCapyOccBlend.value = snapped;
         mat.opacity = origOpacity;
+        mat.depthWrite = shouldEnableOccluderDepthWrite(snapped, origDepthWrite);
         mat.userData.__occBlend = snapped;
         mat.userData.__centerScreenOpacity = +(1.0 - snapped).toFixed(4);
         mat.userData.__edgeOutlineMaxOpacity = +THREE.MathUtils.lerp(
@@ -3992,12 +4041,14 @@ export class PlayStyleManager {
       } else if (nextBlend <= 0.015) {
         uniforms.uCapyOccBlend.value = 0.0;
         mat.opacity = origOpacity;
+        mat.depthWrite = shouldEnableOccluderDepthWrite(0.0, origDepthWrite);
         mat.userData.__occBlend = 0.0;
         mat.userData.__centerScreenOpacity = origOpacity;
         mat.userData.__edgeOutlineMaxOpacity = origOpacity;
       } else {
         allRestored = false;
         uniforms.uCapyOccBlend.value = nextBlend;
+        mat.depthWrite = shouldEnableOccluderDepthWrite(nextBlend, origDepthWrite);
         mat.userData.__occBlend = nextBlend;
         mat.userData.__centerScreenOpacity = +(1.0 - nextBlend).toFixed(4);
         mat.userData.__edgeOutlineMaxOpacity = +THREE.MathUtils.lerp(
@@ -4022,7 +4073,8 @@ export class PlayStyleManager {
   public evaluateOccluderScreenAlpha(
     mesh: THREE.Mesh,
     sUvX: number,
-    sUvY: number
+    sUvY: number,
+    fragViewDepth?: number
   ): number {
     const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     const u = mat?.userData?.__occUniforms;
@@ -4037,7 +4089,8 @@ export class PlayStyleManager {
       SHARED_OCCLUDER_VIEWPORT.x,
       SHARED_OCCLUDER_VIEWPORT.y,
       SHARED_OCCLUDER_HEAD_UV.x,
-      SHARED_OCCLUDER_HEAD_UV.y
+      SHARED_OCCLUDER_HEAD_UV.y,
+      fragViewDepth
     );
   }
 
@@ -4064,16 +4117,23 @@ export class PlayStyleManager {
       this.heroCapy.visible &&
       !this.zoneTransition.active
     ) {
-      this.scene.updateMatrixWorld();
+      this.camera.updateMatrixWorld();
+      this.heroCapy.updateWorldMatrix(true, true);
+      const activeGroup =
+        this.currentMode === 'sanctuary'
+          ? this.sanctuaryGroup
+          : this.currentMode === 'spore'
+            ? this.sporeGroup
+            : this.currentMode === 'breakout'
+              ? this.breakoutGroup
+              : this.currentMode === 'runner'
+                ? this.runnerGroup
+                : this.fallGuysGroup;
+      activeGroup.updateMatrixWorld();
       this.heroCapy.userData.head.getWorldPosition(_headWorldPos);
+      _headWorldPos.y += 0.16;
       this.heroCapy.getWorldPosition(_heroTorsoWorldPos);
-      _heroTorsoWorldPos.y += 0.35;
-
-      _occProjectedNdc.copy(_headWorldPos).project(this.camera);
-      SHARED_OCCLUDER_HEAD_UV.set(
-        _occProjectedNdc.x * 0.5 + 0.5,
-        _occProjectedNdc.y * 0.5 + 0.5
-      );
+      _heroTorsoWorldPos.y += 0.38;
 
       // Extract orthonormal camera basis directly from camera.matrixWorld (zero allocation)
       const me = this.camera.matrixWorld.elements;
@@ -4087,120 +4147,124 @@ export class PlayStyleManager {
 
       _rayDir.subVectors(_headWorldPos, this.camera.position);
       const centerDist = _rayDir.length();
-      const headDepth =
+      const headDepth = Math.max(
+        0.5,
         (_headWorldPos.x - camX) * _camForward.x +
-        (_headWorldPos.y - camY) * _camForward.y +
-        (_headWorldPos.z - camZ) * _camForward.z;
-      const torsoDepth =
-        (_heroTorsoWorldPos.x - camX) * _camForward.x +
-        (_heroTorsoWorldPos.y - camY) * _camForward.y +
-        (_heroTorsoWorldPos.z - camZ) * _camForward.z;
-      const heroCutDepth = Math.max(headDepth, torsoDepth) - 0.25;
-
-      // Exact 4-plane 3D camera frustum cone constants (catches upper/lower/lateral intrusions & overhanging canopies)
-      const halfFovRad = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
-      const tanY =
-        (Math.tan(halfFovRad) / Math.max(0.25, this.camera.zoom)) * 0.9;
-      const cosY = 1 / Math.hypot(1, tanY);
-      const sinY = tanY * cosY;
-      const tanX = Math.min(
-        tanY * Math.max(0.2, this.camera.aspect) * 0.88,
-        0.52
+          (_headWorldPos.y - camY) * _camForward.y +
+          (_headWorldPos.z - camZ) * _camForward.z
       );
-      const cosX = 1 / Math.hypot(1, tanX);
-      const sinX = tanX * cosX;
+      const torsoDepth = Math.max(
+        0.5,
+        (_heroTorsoWorldPos.x - camX) * _camForward.x +
+          (_heroTorsoWorldPos.y - camY) * _camForward.y +
+          (_heroTorsoWorldPos.z - camZ) * _camForward.z
+      );
 
-      const doesSphereIntrudeForegroundFrustum = (
-        wx: number,
-        wy: number,
-        wz: number,
+      _occProjectedNdc.copy(_headWorldPos).project(this.camera);
+      const headUvX = _occProjectedNdc.x * 0.5 + 0.5;
+      const headUvY = _occProjectedNdc.y * 0.5 + 0.5;
+      SHARED_OCCLUDER_HEAD_UV.set(headUvX, headUvY);
+
+      _occProjectedNdc.copy(_heroTorsoWorldPos).project(this.camera);
+      const tailUvX = _occProjectedNdc.x * 0.5 + 0.5;
+      const tailUvY = _occProjectedNdc.y * 0.5 + 0.5;
+
+      // Aspect-invariant world-to-screen aperture radius around the player (~1.25m clearance)
+      const halfFovRad = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
+      const viewHeightWorld =
+        (2.0 * headDepth * Math.tan(halfFovRad)) / Math.max(0.25, this.camera.zoom);
+      const safeAspect = Math.max(
+        0.25,
+        SHARED_OCCLUDER_VIEWPORT.x / Math.max(10, SHARED_OCCLUDER_VIEWPORT.y)
+      );
+      const minDimWorldSpan = Math.max(0.5, viewHeightWorld * Math.min(1.0, safeAspect));
+      const heroScale = Math.max(0.75, this.heroCapy.scale.x || 1.0);
+      const innerRadiusNorm = THREE.MathUtils.clamp(
+        (1.25 * heroScale) / minDimWorldSpan,
+        0.135,
+        0.23
+      );
+      SHARED_OCCLUDER_HEAD_CLIP.set(headUvX, headUvY, headDepth, innerRadiusNorm);
+      SHARED_OCCLUDER_TAIL_CLIP.set(tailUvX, tailUvY, torsoDepth, 0.08);
+
+      const torsoX = _heroTorsoWorldPos.x;
+      const torsoY = _heroTorsoWorldPos.y;
+      const torsoZ = _heroTorsoWorldPos.z;
+      const headX = _headWorldPos.x;
+      const headY = _headWorldPos.y;
+      const headZ = _headWorldPos.z;
+
+      const horizDx = headX - camX;
+      const horizDz = headZ - camZ;
+      const horizLen = Math.hypot(horizDx, horizDz);
+      const horizDirX = horizLen > 0.1 ? horizDx / horizLen : 0;
+      const horizDirZ = horizLen > 0.1 ? horizDz / horizLen : -1;
+
+      const blocksPlayerCorridor = (
+        sx: number,
+        sy: number,
+        sz: number,
         radius: number
-      ): boolean => {
-        const dx = wx - camX;
-        const dy = wy - camY;
-        const dz = wz - camZ;
-        const centerDist = Math.hypot(dx, dy, dz);
-        if (centerDist <= radius + 0.65) return true;
-        const zFwd =
-          dx * _camForward.x + dy * _camForward.y + dz * _camForward.z;
-        // Never fade objects entirely at or behind the Capybara so background scenery remains crisp & opaque
-        if (zFwd - radius >= heroCutDepth) return false;
-        // Must reach in front of the camera near plane (handles giant overhanging canopies from behind lens!)
-        if (zFwd + radius <= 0.14) return false;
-        const effectiveZ = Math.max(0.18, zFwd + radius * 0.45);
-        const yCam = Math.abs(dx * _camUp.x + dy * _camUp.y + dz * _camUp.z);
-        if (yCam * cosY - effectiveZ * sinY >= radius) return false;
-        const xCam = Math.abs(
-          dx * _camRight.x + dy * _camRight.y + dz * _camRight.z
+      ): boolean =>
+        doesSphereBlockPlayerSightline(
+          sx,
+          sy,
+          sz,
+          radius,
+          camX,
+          camY,
+          camZ,
+          headX,
+          headY,
+          headZ,
+          0.35
+        ) ||
+        doesSphereBlockPlayerSightline(
+          sx,
+          sy,
+          sz,
+          radius,
+          camX,
+          camY,
+          camZ,
+          torsoX,
+          torsoY,
+          torsoZ,
+          0.35
         );
-        if (xCam * cosX - effectiveZ * sinX >= radius) return false;
-        return true;
-      };
 
       if (centerDist > 0.45) {
         _occluderCandidates.length = 0;
-        const headX = _headWorldPos.x;
-        const headZ = _headWorldPos.z;
 
         if (this.currentMode === 'sanctuary') {
           const zx = ZONE_LOCATIONS.sanctuary.x;
           const zz = ZONE_LOCATIONS.sanctuary.z;
 
-          // 1. Procedural Exponential Fruit Trees (whole-tree atomic fade: trunk + leaves + hanging fruits!)
+          // 1. Procedural Exponential Fruit Trees: only engage localized cutout when strictly between camera and player
           for (let i = 0; i < this.sanctuaryTrees.length; i++) {
             const tr = this.sanctuaryTrees[i];
             const wx = zx + tr.x;
             const wz = zz + tr.z;
             const cr = tr.crownRadius;
             const th = tr.trunkHeight;
-            const intrudes =
-              doesSphereIntrudeForegroundFrustum(
+            const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
+            const rootedInFrontOfPlayer =
+              horizLen > 0.5 && horizProj > -cr && horizProj < horizLen - 0.2;
+
+            const blocks =
+              rootedInFrontOfPlayer &&
+              (blocksPlayerCorridor(
                 wx,
                 th * 0.45,
                 wz,
-                Math.max(0.85, tr.trunkRadius * 2.5)
+                Math.max(0.75, tr.trunkRadius * 2.2)
               ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                th * 0.98,
-                wz,
-                cr * 1.25
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                th * 1.22,
-                wz,
-                cr * 1.15
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx + cr * 0.55,
-                th * 0.95,
-                wz,
-                cr * 0.7
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx - cr * 0.55,
-                th * 0.95,
-                wz,
-                cr * 0.7
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                th * 0.95,
-                wz + cr * 0.55,
-                cr * 0.7
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                th * 0.95,
-                wz - cr * 0.55,
-                cr * 0.7
-              );
+                blocksPlayerCorridor(wx, th * 1.02, wz, cr * 0.85));
 
-            if (intrudes) {
+            if (blocks) {
               this.markObjectHierarchyOccluded(tr.rootGroup);
             } else {
-              const rLim = cr + 2.5;
+              const rLim = cr + 1.5;
               if (
                 distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
                 rLim * rLim
@@ -4210,123 +4274,95 @@ export class PlayStyleManager {
             }
           }
 
-          // 2. Home Pool Wooden Tap Post & Rim Boulders (water surface & sunken floor have ignoreCameraFade = true)
+          // 2. Home Pool Wooden Tap Post ONLY (rim stones & water surface have ignoreCameraFade = true)
           if (this.homePool) {
             const postWx =
               zx + this.homePool.centerX - this.homePool.basinRadius + 0.72;
             const postWz = zz + this.homePool.centerZ;
+            const postProj =
+              (postWx - camX) * horizDirX + (postWz - camZ) * horizDirZ;
             if (
-              doesSphereIntrudeForegroundFrustum(postWx, 1.55, postWz, 1.35)
+              postProj > 0 &&
+              postProj < horizLen - 0.2 &&
+              blocksPlayerCorridor(postWx, 1.55, postWz, 1.05)
             ) {
               this.markObjectHierarchyOccluded(this.homePool.tapFixtureGroup);
-            }
-            const rPool = this.homePool.basinRadius + 2.4;
-            if (
-              distSqPointToSegment2D(
-                zx + this.homePool.centerX,
-                zz + this.homePool.centerZ,
-                camX,
-                camZ,
-                headX,
-                headZ
-              ) <=
-              rPool * rPool
+            } else if (
+              distSqPointToSegment2D(postWx, postWz, camX, camZ, headX, headZ) <=
+              4.0
             ) {
-              _occluderCandidates.push(this.homePool.group);
+              _occluderCandidates.push(this.homePool.tapFixtureGroup);
             }
           }
 
-          // 3. Sanctuary Buildings (yuzu_orchard, zen_pagoda, bamboo_grove, capy_statue, hot_spring, trampoline_pad)
+          // 3. Tall Sanctuary Buildings ONLY (skip ground-level hot_spring & trampoline_pad!)
           for (let i = 0; i < this.sanctuaryBuildingMeshes.length; i++) {
             const bm = this.sanctuaryBuildingMeshes[i];
+            const bType = bm.userData.buildingType as string | undefined;
+            if (
+              bm.userData?.ignoreCameraFade ||
+              bType === 'hot_spring' ||
+              bType === 'trampoline_pad'
+            ) {
+              continue;
+            }
             const wx = zx + bm.position.x;
             const wz = zz + bm.position.z;
             const s = bm.scale.x || 1.0;
-            const bType = bm.userData.buildingType as string | undefined;
-            const bRadius = bType === 'hot_spring' ? 2.6 * s : 2.4 * s;
-            const bHeight = bType === 'hot_spring' ? 1.4 * s : 3.2 * s;
-            const intrudes =
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                bHeight * 0.45,
-                wz,
-                bRadius
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                bHeight * 0.90,
-                wz,
-                bRadius
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx + bRadius * 0.5,
-                bHeight * 0.7,
-                wz,
-                bRadius * 0.65
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx - bRadius * 0.5,
-                bHeight * 0.7,
-                wz,
-                bRadius * 0.65
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                bHeight * 0.7,
-                wz + bRadius * 0.5,
-                bRadius * 0.65
-              ) ||
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                bHeight * 0.7,
-                wz - bRadius * 0.5,
-                bRadius * 0.65
-              );
+            const bRadius = 2.35 * s;
+            const bHeight = 3.2 * s;
+            const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
+            const rootedInFrontOfPlayer =
+              horizLen > 0.5 && horizProj > -bRadius && horizProj < horizLen - 0.2;
 
-            if (intrudes) {
+            const blocks =
+              rootedInFrontOfPlayer &&
+              (blocksPlayerCorridor(wx, bHeight * 0.45, wz, bRadius * 0.9) ||
+                blocksPlayerCorridor(wx, bHeight * 0.85, wz, bRadius));
+
+            if (blocks) {
               this.markObjectHierarchyOccluded(bm);
             } else if (
               distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
-              (bRadius + 2.5) * (bRadius + 2.5)
+              (bRadius + 1.5) * (bRadius + 1.5)
             ) {
               _occluderCandidates.push(bm);
             }
           }
-          // 4. World Portals
+
+          // 4. World Portals: only when strictly between camera and player
           for (let i = 0; i < this.sanctuaryPortals.length; i++) {
             const p = this.sanctuaryPortals[i];
             const wx = zx + p.x;
             const wz = zz + p.z;
+            const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
             if (
-              doesSphereIntrudeForegroundFrustum(wx, 2.1, wz, 2.65) ||
-              doesSphereIntrudeForegroundFrustum(wx, 3.8, wz, 2.4)
+              horizProj > -2.5 &&
+              horizProj < horizLen - 0.2 &&
+              (blocksPlayerCorridor(wx, 2.1, wz, 2.35) ||
+                blocksPlayerCorridor(wx, 3.6, wz, 2.15))
             ) {
               this.markObjectHierarchyOccluded(p.mesh);
             } else if (
-              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 16.0
+              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 9.0
             ) {
               _occluderCandidates.push(p.mesh);
             }
           }
 
-          // 5. Rolling / Falling 3D Physics Fruits in Foreground Frustum
+          // 5. Large Elevated Physics Fruits directly crossing sightline
           for (let i = 0; i < this.physicsFruits.length; i++) {
             const f = this.physicsFruits[i];
-            if (!f.active || f.radius < 0.28) continue;
+            if (!f.active || f.radius < 0.35) continue;
             const wx = zx + f.x;
             const wz = zz + f.z;
             if (
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                f.y,
-                wz,
-                f.radius * 1.15
-              ) &&
-              (f.radius >= 0.45 || f.y > 0.65)
+              (f.radius >= 0.48 || f.y > 0.75) &&
+              blocksPlayerCorridor(wx, f.y, wz, f.radius * 1.05)
             ) {
               this.markObjectHierarchyOccluded(f.mesh);
             } else {
-              const rF = f.radius + 1.1;
+              const rF = f.radius + 0.8;
               if (
                 distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
                 rF * rF
@@ -4336,22 +4372,13 @@ export class PlayStyleManager {
             }
           }
 
-          // 6. Wandering Sanctuary Capybara Buddies
+          // 6. Wandering Sanctuary Capybara Buddies ONLY if directly crossing head sightline rays
           for (let i = 0; i < this.sanctuaryCapys.length; i++) {
             const buddy = this.sanctuaryCapys[i].capy;
             const wx = zx + buddy.position.x;
             const wz = zz + buddy.position.z;
             if (
-              doesSphereIntrudeForegroundFrustum(
-                wx,
-                buddy.position.y + 0.62,
-                wz,
-                0.95
-              )
-            ) {
-              this.markObjectHierarchyOccluded(buddy);
-            } else if (
-              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 2.56
+              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 1.96
             ) {
               _occluderCandidates.push(buddy);
             }
@@ -4376,14 +4403,6 @@ export class PlayStyleManager {
             }
           }
         } else {
-          const activeGroup =
-            this.currentMode === 'spore'
-              ? this.sporeGroup
-              : this.currentMode === 'breakout'
-              ? this.breakoutGroup
-              : this.currentMode === 'runner'
-              ? this.runnerGroup
-              : this.fallGuysGroup;
           const oz = ZONE_LOCATIONS[this.currentMode];
           for (let i = 0; i < activeGroup.children.length; i++) {
             const child = activeGroup.children[i];
@@ -4398,7 +4417,7 @@ export class PlayStyleManager {
                 camZ,
                 headX,
                 headZ
-              ) <= 16.0
+              ) <= 12.25
             ) {
               if (!child.userData.__occluderRoot) {
                 child.userData.__occluderRoot = child;
@@ -4409,58 +4428,32 @@ export class PlayStyleManager {
         }
 
         if (_occluderCandidates.length > 0) {
-          // Cast rays:
-          // 0-6: Direct head/torso sightline rays (head center, orange stack, left/right shoulders, upper crown, chin & torso)
-          // 7-12: Screen-space view rays (top-center, top-left, top-right, mid-left, mid-right, high-top) to clear any foreground occluders in the player's 95% screen view!
-          const TOTAL_OCCLUDER_RAYS = 13;
-          for (let r = 0; r < TOTAL_OCCLUDER_RAYS; r++) {
-            let maxRayDist = 0;
-            if (r < 7) {
-              if (r === 6) {
-                _rayTargetPos.copy(_heroTorsoWorldPos);
-              } else {
-                _rayTargetPos.copy(_headWorldPos);
-                if (r === 1) {
-                  _rayTargetPos.y += 0.42;
-                } else if (r === 2) {
-                  _rayTargetPos.addScaledVector(_camRight, 0.32);
-                } else if (r === 3) {
-                  _rayTargetPos.addScaledVector(_camRight, -0.32);
-                } else if (r === 4) {
-                  _rayTargetPos.y += 0.85;
-                } else if (r === 5) {
-                  _rayTargetPos.y -= 0.22;
-                }
-              }
-
-              _rayDir.subVectors(_rayTargetPos, this.camera.position);
-              const dist = _rayDir.length();
-              if (dist <= 0.42) continue;
-              _rayDir.multiplyScalar(1 / dist);
-              maxRayDist = Math.max(0.12, dist - 0.34);
+          // Cast ONLY direct camera-to-player rays (0..6): head center, orange stack, left/right cheeks, upper crown, chin & torso.
+          // Rays stop 0.30m strictly BEFORE the player so geometry ahead of or offscreen from the player is NEVER hit.
+          const TOTAL_PLAYER_RAYS = 7;
+          for (let r = 0; r < TOTAL_PLAYER_RAYS; r++) {
+            if (r === 6) {
+              _rayTargetPos.copy(_heroTorsoWorldPos);
             } else {
-              // Screen-space view rays:
-              if (r === 7) {
-                // Top-center view ray
-                _rayDir.copy(_camForward).multiplyScalar(0.85).addScaledVector(_camUp, 0.52).normalize();
-              } else if (r === 8) {
-                // Top-left view ray
-                _rayDir.copy(_camForward).multiplyScalar(0.80).addScaledVector(_camUp, 0.50).addScaledVector(_camRight, -0.38).normalize();
-              } else if (r === 9) {
-                // Top-right view ray
-                _rayDir.copy(_camForward).multiplyScalar(0.80).addScaledVector(_camUp, 0.50).addScaledVector(_camRight, 0.38).normalize();
-              } else if (r === 10) {
-                // Mid-left view ray
-                _rayDir.copy(_camForward).multiplyScalar(0.88).addScaledVector(_camRight, -0.46).normalize();
-              } else if (r === 11) {
-                // Mid-right view ray
-                _rayDir.copy(_camForward).multiplyScalar(0.88).addScaledVector(_camRight, 0.46).normalize();
-              } else {
-                // High-top view ray
-                _rayDir.copy(_camForward).multiplyScalar(0.68).addScaledVector(_camUp, 0.72).normalize();
+              _rayTargetPos.copy(_headWorldPos);
+              if (r === 1) {
+                _rayTargetPos.y += 0.36;
+              } else if (r === 2) {
+                _rayTargetPos.addScaledVector(_camRight, 0.28);
+              } else if (r === 3) {
+                _rayTargetPos.addScaledVector(_camRight, -0.28);
+              } else if (r === 4) {
+                _rayTargetPos.y += 0.68;
+              } else if (r === 5) {
+                _rayTargetPos.y -= 0.22;
               }
-              maxRayDist = Math.max(3.5, headDepth + 1.2);
             }
+
+            _rayDir.subVectors(_rayTargetPos, this.camera.position);
+            const dist = _rayDir.length();
+            if (dist <= 0.45) continue;
+            _rayDir.multiplyScalar(1 / dist);
+            const maxRayDist = Math.max(0.12, dist - 0.3);
 
             _occluderRaycaster.set(this.camera.position, _rayDir);
             _occluderRaycaster.near = 0.05;
@@ -4475,7 +4468,6 @@ export class PlayStyleManager {
               if (hitObj.userData?.ignoreCameraFade) continue;
               if (this.isDescendantOf(hitObj, this.heroCapy)) continue;
               const resolvedRoot = this.resolveOccluderRoot(hitObj);
-              // Own trailing Dachshund segments only fade when blocking direct head rays (r === 0 or 1)
               if (resolvedRoot.userData?.__isDachshundSegment && r > 1) {
                 continue;
               }
@@ -4495,7 +4487,6 @@ export class PlayStyleManager {
         this.fadedOccluderMeshes.push(mesh);
       }
       this.setMeshOccluderBlend(mesh, 1.0, fadeOutRate);
-      this.updateMeshOccluderScreenBounds(mesh);
     });
 
     for (let i = this.fadedOccluderMeshes.length - 1; i >= 0; i--) {
@@ -4569,7 +4560,8 @@ export class PlayStyleManager {
         this.heroCapy.position.z,
         0,
         false,
-        this.worldEnv.currentNightFactor
+        this.worldEnv.currentNightFactor,
+        this.worldEnv.currentSunDir
       );
       this.renderSceneFrame(rawFrameDt);
       return;
@@ -4585,7 +4577,8 @@ export class PlayStyleManager {
         this.heroCapy.position.z,
         0,
         this.cosmicStage === 'capy_selection',
-        this.worldEnv.currentNightFactor
+        this.worldEnv.currentNightFactor,
+        this.worldEnv.currentSunDir
       );
       this.updateHeadLineOfSightTransparency(dt);
       this.renderSceneFrame(rawFrameDt);
@@ -4644,7 +4637,8 @@ export class PlayStyleManager {
         this.heroCapy.position.z,
         glideGroundY,
         true,
-        this.worldEnv.currentNightFactor
+        this.worldEnv.currentNightFactor,
+        this.worldEnv.currentSunDir
       );
       this.updateHeadLineOfSightTransparency(dt);
       this.renderSceneFrame(rawFrameDt);
@@ -4674,7 +4668,8 @@ export class PlayStyleManager {
       this.heroCapy.position.z,
       heroGroundY,
       this.heroCapy.visible,
-      this.worldEnv.currentNightFactor
+      this.worldEnv.currentNightFactor,
+      this.worldEnv.currentSunDir
     );
 
     // AAA Velocity-Reactive Dynamic FOV, Quadratic Camera Trauma & Zero-Allocation GPU VFX Step
@@ -4835,7 +4830,11 @@ export class PlayStyleManager {
         this.seamlessTelemetryAccum = 0;
         this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
       }
-      this.emitCosmicState();
+      this.cosmicUiTelemetryAccum += dt;
+      if (this.cosmicUiTelemetryAccum >= 0.085) {
+        this.cosmicUiTelemetryAccum = 0;
+        this.emitCosmicState();
+      }
       return;
     }
 
@@ -4879,10 +4878,14 @@ export class PlayStyleManager {
       );
       this.camera.position.lerp(_camTarget, 1 - Math.exp(-6.0 * dt));
       this.camera.lookAt(this.cosmicCamLook);
-      if (this.cosmicStage === 'universe_flight') {
-        this.emitCosmicState();
-      } else if (this.cosmicStage === 'star_system_view') {
-        this.callbacks.onOrbitTelemetryChange?.(this.getOrbitTelemetry());
+      this.cosmicUiTelemetryAccum += dt;
+      if (this.cosmicUiTelemetryAccum >= 0.085) {
+        this.cosmicUiTelemetryAccum = 0;
+        if (this.cosmicStage === 'universe_flight') {
+          this.emitCosmicState();
+        } else if (this.cosmicStage === 'star_system_view') {
+          this.callbacks.onOrbitTelemetryChange?.(this.getOrbitTelemetry());
+        }
       }
       return;
     }
@@ -4910,7 +4913,11 @@ export class PlayStyleManager {
       const liveDescentLog = THREE.MathUtils.lerp(4.9, 0.95, ease);
       this.currentLogScaleMeters = liveDescentLog;
       this.targetLogScaleMeters = liveDescentLog;
-      this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+      this.cosmicUiTelemetryAccum += dt;
+      if (this.cosmicUiTelemetryAccum >= 0.085 || t >= 1.0) {
+        this.cosmicUiTelemetryAccum = 0;
+        this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+      }
 
       if (t >= 1.0) {
         this.setCosmicStage('capy_selection');
@@ -6088,22 +6095,37 @@ export class PlayStyleManager {
       }
     }
 
-    // Step background ecosystems for districts where the player is not currently standing
-    if (this.currentMode !== 'sanctuary') {
-      this.tickSanctuaryAmbientOnly(dt);
-    }
-    if (this.currentMode !== 'spore') {
-      this.tickSporeEcosystemOnly(dt);
-    }
-    if (this.currentMode !== 'breakout') {
-      this.tickBreakoutEcosystemOnly(dt);
-    }
-    if (this.currentMode !== 'runner') {
-      this.tickRunnerEcosystemOnly(dt);
-    }
-    if (this.currentMode !== 'fallguys') {
-      this.tickFallGuysEcosystemOnly(dt);
-    }
+    // Step background ecosystems for districts where the player is not currently standing,
+    // striding distant districts (>85m / >135m) with exact accumulated dt to preserve locked 60 FPS!
+    this.bgDistrictFrameCounter = (this.bgDistrictFrameCounter + 1) & 0x3fffffff;
+    const curZone = ZONE_LOCATIONS[this.currentMode];
+    const hWx = curZone.x + this.heroLocalPos.x;
+    const hWz = curZone.z + this.heroLocalPos.z;
+    const camWx = this.camera.position.x;
+    const camWz = this.camera.position.z;
+
+    const stepBgDistrict = (mode: PlayStyle, fn: (stepDt: number) => void) => {
+      if (this.currentMode === mode) {
+        this.bgDistrictDtAccum[mode] = 0;
+        return;
+      }
+      const zLoc = ZONE_LOCATIONS[mode];
+      const dHeroSq = (hWx - zLoc.x) * (hWx - zLoc.x) + (hWz - zLoc.z) * (hWz - zLoc.z);
+      const dCamSq = (camWx - zLoc.x) * (camWx - zLoc.x) + (camWz - zLoc.z) * (camWz - zLoc.z);
+      const stride = computeDistrictTickStride(Math.min(dHeroSq, dCamSq));
+      this.bgDistrictDtAccum[mode] += dt;
+      if (this.bgDistrictFrameCounter % stride === 0) {
+        const stepDt = Math.min(0.25, this.bgDistrictDtAccum[mode]);
+        this.bgDistrictDtAccum[mode] = 0;
+        fn(stepDt);
+      }
+    };
+
+    stepBgDistrict('sanctuary', (sDt) => this.tickSanctuaryAmbientOnly(sDt));
+    stepBgDistrict('spore', (sDt) => this.tickSporeEcosystemOnly(sDt));
+    stepBgDistrict('breakout', (sDt) => this.tickBreakoutEcosystemOnly(sDt));
+    stepBgDistrict('runner', (sDt) => this.tickRunnerEcosystemOnly(sDt));
+    stepBgDistrict('fallguys', (sDt) => this.tickFallGuysEcosystemOnly(sDt));
 
     // Step player + active district gameplay
     if (this.currentMode === 'sanctuary') {
@@ -7032,14 +7054,23 @@ export class PlayStyleManager {
     const inForestWindow = logVal >= -0.85 && logVal <= 3.1;
 
     this.cosmicBuilder.rootGroup.visible = false;
+    this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = false;
     this.worldBaseGroup.visible = inForestWindow;
+    this.worldBaseGroup.matrixWorldAutoUpdate = inForestWindow;
     this.sanctuaryGroup.visible = inForestWindow;
+    this.sanctuaryGroup.matrixWorldAutoUpdate = inForestWindow;
     this.seamlessUniverse.forestGroveGroup.visible = inForestWindow;
+    this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = inForestWindow;
     this.sporeGroup.visible = inForestWindow;
+    this.sporeGroup.matrixWorldAutoUpdate = inForestWindow;
     this.breakoutGroup.visible = inForestWindow;
+    this.breakoutGroup.matrixWorldAutoUpdate = inForestWindow;
     this.runnerGroup.visible = inForestWindow;
+    this.runnerGroup.matrixWorldAutoUpdate = inForestWindow;
     this.fallGuysGroup.visible = inForestWindow;
+    this.fallGuysGroup.matrixWorldAutoUpdate = inForestWindow;
     this.selectableCapyGroup.visible = false;
+    this.selectableCapyGroup.matrixWorldAutoUpdate = false;
     this.heroCapy.visible = inForestWindow;
     if (this.dachshundGroup) {
       this.dachshundGroup.visible = inForestWindow && this.currentMode === 'sanctuary';
@@ -7464,6 +7495,10 @@ export class PlayStyleManager {
     this.renderer.setSize(safeW, safeH);
     this.gpuEngine?.handleResize(safeW, safeH);
     this.vfxEngine?.setPixelRatio(this.renderer.getPixelRatio());
+    this.renderer.getDrawingBufferSize(_rendererSizeVec2);
+    if (_rendererSizeVec2.x > 10 && _rendererSizeVec2.y > 10) {
+      SHARED_OCCLUDER_VIEWPORT.set(_rendererSizeVec2.x, _rendererSizeVec2.y);
+    }
     this.gpuEngine?.render();
   }
 

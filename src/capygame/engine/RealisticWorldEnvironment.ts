@@ -4,6 +4,7 @@ import {
   PbrSurfaceMaterialKind,
   PbrTextureSynthesizer,
 } from './gpu/PbrTextureSynthesizer';
+import { evaluatePlayerSightlineCutoutAlpha } from './gpu/FramePerformanceGovernor';
 
 // Zero-allocation scratch helpers for GPU particle & shader updates
 const _matDummy = new THREE.Object3D();
@@ -19,32 +20,39 @@ const _ripeColor = new THREE.Color();
 
 const _chartreuseMid = new THREE.Color(0xa3e635);
 
-// Shared zero-allocation screen-space uniforms updated once per frame by PlayStyleManager
+// Shared zero-allocation screen-space & linear view-depth uniforms updated once per frame by PlayStyleManager
 export const SHARED_OCCLUDER_VIEWPORT = new THREE.Vector2(1280, 720);
 export const SHARED_OCCLUDER_HEAD_UV = new THREE.Vector2(0.5, 0.5);
+// x = headUvX, y = headUvY, z = headViewDepth (m), w = innerRadiusNorm (fraction of min viewport dim)
+export const SHARED_OCCLUDER_HEAD_CLIP = new THREE.Vector4(0.5, 0.5, 10.0, 0.16);
+// x = tailUvX, y = tailUvY, z = tailViewDepth (m), w = featherNorm (fraction of min viewport dim)
+export const SHARED_OCCLUDER_TAIL_CLIP = new THREE.Vector4(0.5, 0.42, 10.4, 0.08);
 
 export interface OccluderEdgeShaderUniforms {
   uCapyOccBlend: { value: number };
   uCapyOccBounds: { value: THREE.Vector3 };
   uCapyViewport: { value: THREE.Vector2 };
   uCapyHeadUv: { value: THREE.Vector2 };
+  uCapySightHead: { value: THREE.Vector4 };
+  uCapySightTail: { value: THREE.Vector4 };
 }
 
 /**
  * Installs a zero-allocation GLSL shader hook on any Three.js mesh material so that when
- * `uCapyOccBlend` ramps from 0 -> 1 (blocking the camera-to-head sightline):
- * - 95% of the screen goes 100% transparent (`alpha = 0.0`, discarded).
- * - Only a faint, ghostly translucent outline (`alpha <= 0.25`) fades in around the outer
- *   5% screen edges (and around the outermost silhouette perimeter for compact mid-screen
- *   occluders, while keeping the head window & >=95% of the screen 100% clear) so the player
- *   still knows something is there without anything obscuring their view.
+ * `uCapyOccBlend` ramps from 0 -> 1 (blocking the camera-to-player sightline):
+ * - Visually hides (`discard`) ONLY fragments strictly closer to the camera than the player
+ *   (`vCapyViewDepth < playerCutDepth`) inside the smooth aspect-normalized screen capsule
+ *   around the player (`[uCapySightHead.xy -> uCapySightTail.xy]`).
+ * - Keeps all non-blocking parts of the same tree/building (side branches, upper canopy,
+ *   offscreen edges, and back-side foliage behind the player) 100% solid with `depthWrite = true`.
  */
 export function installSightlineEdgeFadeShader(
   mat: THREE.Material
 ): OccluderEdgeShaderUniforms {
   if (
     mat.userData.__occUniforms &&
-    mat.userData.__occUniforms.uCapyViewport?.value === SHARED_OCCLUDER_VIEWPORT
+    mat.userData.__occUniforms.uCapyViewport?.value === SHARED_OCCLUDER_VIEWPORT &&
+    mat.userData.__occUniforms.uCapySightHead?.value === SHARED_OCCLUDER_HEAD_CLIP
   ) {
     return mat.userData.__occUniforms as OccluderEdgeShaderUniforms;
   }
@@ -54,6 +62,8 @@ export function installSightlineEdgeFadeShader(
     uCapyOccBounds: { value: new THREE.Vector3(0.5, 0.5, 0.85) },
     uCapyViewport: { value: SHARED_OCCLUDER_VIEWPORT },
     uCapyHeadUv: { value: SHARED_OCCLUDER_HEAD_UV },
+    uCapySightHead: { value: SHARED_OCCLUDER_HEAD_CLIP },
+    uCapySightTail: { value: SHARED_OCCLUDER_TAIL_CLIP },
   };
 
   mat.userData.__occUniforms = uniforms;
@@ -62,61 +72,77 @@ export function installSightlineEdgeFadeShader(
   mat.userData.__occBlend = 0.0;
   mat.userData.__centerScreenOpacity = 1.0;
   mat.userData.__edgeOutlineMaxOpacity = 1.0;
-  // Keep transparent=true permanently once the edge shader is installed so Three.js never toggles
-  // `#define OPAQUE` (zero runtime WebGLProgram recompilations!). When uCapyOccBlend == 0,
-  // gl_FragColor.a == 1.0 and depthWrite == origDepthWrite, rendering 100% opaque.
+  // Keep transparent=true and depthWrite=origDepthWrite permanently once installed so Three.js
+  // never recompiles WebGLPrograms and non-occluding fragments retain crisp hardware Z-buffer sorting.
   mat.transparent = true;
-  mat.depthWrite = false;
+  mat.depthWrite = Boolean(mat.userData.__origDepthWrite ?? true);
 
   const baseType = mat.type;
-  mat.customProgramCacheKey = () => `capy_occ_edge95_${baseType}`;
+  mat.customProgramCacheKey = () => `capy_occ_aperture_${baseType}`;
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uCapyOccBlend = uniforms.uCapyOccBlend;
     shader.uniforms.uCapyOccBounds = uniforms.uCapyOccBounds;
     shader.uniforms.uCapyViewport = uniforms.uCapyViewport;
     shader.uniforms.uCapyHeadUv = uniforms.uCapyHeadUv;
+    shader.uniforms.uCapySightHead = uniforms.uCapySightHead;
+    shader.uniforms.uCapySightTail = uniforms.uCapySightTail;
+
+    shader.vertexShader =
+      'varying float vCapyViewDepth;\n' +
+      shader.vertexShader.replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\n  vCapyViewDepth = -mvPosition.z;'
+      );
 
     shader.fragmentShader =
       'uniform float uCapyOccBlend;\n' +
-      'uniform vec3 uCapyOccBounds;\n' +
       'uniform vec2 uCapyViewport;\n' +
-      'uniform vec2 uCapyHeadUv;\n' +
-      'float capyComputeEdgeOutlineAlpha() {\n' +
+      'uniform vec4 uCapySightHead;\n' +
+      'uniform vec4 uCapySightTail;\n' +
+      'varying float vCapyViewDepth;\n' +
+      'float capyComputePlayerSightlineCutout() {\n' +
       '  vec2 vp = uCapyViewport;\n' +
-      '  if (vp.x < 10.0 || vp.y < 10.0) {\n' +
+      '  if (uCapyOccBlend <= 0.001 || vp.x < 10.0 || vp.y < 10.0) {\n' +
+      '    return 0.0;\n' +
+      '  }\n' +
+      '  float playerCutDepth = max(uCapySightHead.z, uCapySightTail.z) - 0.12;\n' +
+      '  float depthMask = 1.0 - smoothstep(playerCutDepth - 0.45, playerCutDepth + 0.08, vCapyViewDepth);\n' +
+      '  if (depthMask <= 0.001) {\n' +
       '    return 0.0;\n' +
       '  }\n' +
       '  vec2 sUv = gl_FragCoord.xy / vp;\n' +
-      '  vec2 boxNorm = abs(sUv * 2.0 - 1.0);\n' +
-      '  vec2 edgeRamp = max(boxNorm - vec2(0.978), vec2(0.0)) / 0.022;\n' +
-      '  float screenEdgeFade = clamp(length(edgeRamp), 0.0, 1.0);\n' +
-      '  screenEdgeFade = screenEdgeFade * screenEdgeFade * (3.0 - 2.0 * screenEdgeFade);\n' +
-      '  float rimOutline = mix(0.75, 1.0, screenEdgeFade);\n' +
-      '  return screenEdgeFade * rimOutline * 0.25;\n' +
+      '  float minDim = max(10.0, min(vp.x, vp.y));\n' +
+      '  vec2 aspectScale = vp / minDim;\n' +
+      '  vec2 pa = (sUv - uCapySightHead.xy) * aspectScale;\n' +
+      '  vec2 ba = (uCapySightTail.xy - uCapySightHead.xy) * aspectScale;\n' +
+      '  float baLenSq = dot(ba, ba);\n' +
+      '  float h = baLenSq > 1e-5 ? clamp(dot(pa, ba) / baLenSq, 0.0, 1.0) : 0.0;\n' +
+      '  float dNorm = length(pa - ba * h);\n' +
+      '  float safeInner = max(0.05, uCapySightHead.w);\n' +
+      '  float safeOuter = safeInner + max(0.02, uCapySightTail.w);\n' +
+      '  float screenMask = 1.0 - smoothstep(safeInner, safeOuter, dNorm);\n' +
+      '  return clamp(uCapyOccBlend * depthMask * screenMask, 0.0, 1.0);\n' +
       '}\n' +
       shader.fragmentShader
         .replace(
           '#include <clipping_planes_fragment>',
           `#include <clipping_planes_fragment>
-        float capyOccTargetAlpha = 1.0;
-        if (uCapyOccBlend > 0.001) {
-          capyOccTargetAlpha = capyComputeEdgeOutlineAlpha();
-          if (uCapyOccBlend > 0.85 && capyOccTargetAlpha < 0.004) {
-            discard;
-          }
+        float capyOccCutout = uCapyOccBlend > 0.001 ? capyComputePlayerSightlineCutout() : 0.0;
+        if (capyOccCutout > 0.88) {
+          discard;
         }`
         )
         .replace(
           '#include <dithering_fragment>',
           `#include <dithering_fragment>
-        if (uCapyOccBlend > 0.001) {
-          float finalAlpha = mix(gl_FragColor.a, capyOccTargetAlpha, uCapyOccBlend);
-          if (uCapyOccBlend > 0.85 && finalAlpha < 0.004) {
+        if (capyOccCutout > 0.004) {
+          float remAlpha = gl_FragColor.a * (1.0 - capyOccCutout);
+          if (remAlpha < 0.02) {
             discard;
           }
-          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.82, 0.95, 1.0), 0.40 * uCapyOccBlend);
-          gl_FragColor.a = finalAlpha;
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.86, 0.96, 1.0), 0.20 * capyOccCutout);
+          gl_FragColor.a = remAlpha;
         }`
         );
   };
@@ -125,7 +151,7 @@ export function installSightlineEdgeFadeShader(
 }
 
 /**
- * Pure CPU mirror of the 95% screen-clear + faint peripheral edge outline envelope for telemetry & E2E verification.
+ * Pure CPU mirror of the localized player-sightline cutout shader for telemetry & E2E verification.
  */
 export function evaluateSightlineEdgeAlphaAtScreenUv(
   sUvX: number,
@@ -134,23 +160,30 @@ export function evaluateSightlineEdgeAlphaAtScreenUv(
   _boundsX: number,
   _boundsY: number,
   _boundsR: number,
-  _viewportW: number,
-  _viewportH: number,
-  _headUvX: number,
-  _headUvY: number
+  viewportW: number,
+  viewportH: number,
+  headUvX: number,
+  headUvY: number,
+  fragViewDepth?: number
 ): number {
-  const bx = Math.abs(sUvX * 2 - 1);
-  const by = Math.abs(sUvY * 2 - 1);
-  const rx = Math.max(bx - 0.978, 0) / 0.022;
-  const ry = Math.max(by - 0.978, 0) / 0.022;
-  let screenEdgeFade = Math.min(1, Math.hypot(rx, ry));
-  screenEdgeFade = screenEdgeFade * screenEdgeFade * (3 - 2 * screenEdgeFade);
-
-  const rimOutline = THREE.MathUtils.lerp(0.75, 1.0, screenEdgeFade);
-  const targetOccAlpha = screenEdgeFade * rimOutline * 0.25;
-  const finalAlpha = THREE.MathUtils.lerp(1.0, targetOccAlpha, occBlend);
-  if (occBlend > 0.92 && finalAlpha < 0.004) return 0;
-  return finalAlpha;
+  const effectiveDepth =
+    fragViewDepth !== undefined ? fragViewDepth : SHARED_OCCLUDER_HEAD_CLIP.z - 2.0;
+  return evaluatePlayerSightlineCutoutAlpha(
+    sUvX,
+    sUvY,
+    effectiveDepth,
+    occBlend,
+    viewportW,
+    viewportH,
+    headUvX,
+    headUvY,
+    SHARED_OCCLUDER_HEAD_CLIP.z,
+    SHARED_OCCLUDER_HEAD_CLIP.w,
+    SHARED_OCCLUDER_TAIL_CLIP.x,
+    SHARED_OCCLUDER_TAIL_CLIP.y,
+    SHARED_OCCLUDER_TAIL_CLIP.z,
+    SHARED_OCCLUDER_TAIL_CLIP.w
+  );
 }
 
 export interface PbrTextureSet {
@@ -299,6 +332,7 @@ export class RealisticWorldEnvironment {
   public activeWeather: WeatherType = 'clear';
   public currentNightFactor: number = 0.0;
   public currentDuskFactor: number = 0.0;
+  public readonly currentSunDir = new THREE.Vector3(0.4, 0.8, 0.35).normalize();
   private weatherAutoTimer: number = 0;
   private lightningFlash: number = 0;
   public elapsedSeconds: number = 0;
@@ -323,6 +357,7 @@ export class RealisticWorldEnvironment {
 
   // Track PBR materials whose roughness reacts to rain wetness
   private wettableMaterials: Array<{ mat: THREE.MeshStandardMaterial; dryRoughness: number }> = [];
+  private lastAppliedWetness: number = -1;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -826,6 +861,7 @@ export class RealisticWorldEnvironment {
 
   public registerWettableMaterial(mat: THREE.MeshStandardMaterial, dryRoughness: number) {
     this.wettableMaterials.push({ mat, dryRoughness });
+    this.lastAppliedWetness = -1;
   }
 
   // ============================================================================
@@ -957,6 +993,9 @@ export class RealisticWorldEnvironment {
       normalScale: new THREE.Vector2(0.55, 0.55),
       roughnessMap: sandTex.roughness,
       roughness: 0.55,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
     const floorMesh = new THREE.Mesh(
       PbrTextureSynthesizer.prepareGeometryForPbr(
@@ -1014,6 +1053,7 @@ export class RealisticWorldEnvironment {
       rock.rotation.set(i * 0.4, angle, i * 0.2);
       rock.castShadow = true;
       rock.receiveShadow = true;
+      rock.userData.ignoreCameraFade = true;
       group.add(rock);
 
       rimColliders.push({
@@ -1123,6 +1163,10 @@ export class RealisticWorldEnvironment {
       color: 0xf0f9ff,
       transparent: true,
       opacity: 0.8,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
       side: THREE.DoubleSide,
     });
     const tapFoamRing = new THREE.Mesh(new THREE.RingGeometry(0.14, 0.42, 20), foamMat);
@@ -1648,6 +1692,9 @@ export class RealisticWorldEnvironment {
       emissive: variety.emissiveHex,
       emissiveIntensity: 0.32,
       roughness: 0.45,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
     const collar = new THREE.Mesh(
       new THREE.RingGeometry(trunkRadius * 1.2, trunkRadius * 1.72, 24),
@@ -2239,7 +2286,13 @@ export class RealisticWorldEnvironment {
     const sunAzimuth = Math.cos(sunPhase);
 
     _sunDir.set(sunAzimuth * 0.85, sunElev, 0.38).normalize();
-    this.sunLight.position.set(_sunDir.x * 85, Math.max(6, _sunDir.y * 90), _sunDir.z * 85);
+    this.currentSunDir.copy(_sunDir);
+    const tgt = this.sunLight.target.position;
+    this.sunLight.position.set(
+      tgt.x + _sunDir.x * 96,
+      Math.max(12, _sunDir.y * 96),
+      tgt.z + _sunDir.z * 96
+    );
     this.moonLight.position.set(-_sunDir.x * 75, Math.max(12, -_sunDir.y * 80), -_sunDir.z * 75);
 
     const dayFactor = THREE.MathUtils.smoothstep(sunElev, -0.14, 0.28);
@@ -2324,12 +2377,15 @@ export class RealisticWorldEnvironment {
       scene.fog.far = (fogEnabled ? 340 : 520) * mistPull;
     }
 
-    // Wet surface specular response during rain/storm
+    // Wet surface specular response during rain/storm (dirty-checked so clear frames cost 0 iterations)
     const wetness =
       this.activeWeather === 'storm' ? 0.58 : this.activeWeather === 'rain' ? 0.42 : 0.0;
-    for (let i = 0; i < this.wettableMaterials.length; i++) {
-      const entry = this.wettableMaterials[i];
-      entry.mat.roughness = Math.max(0.12, entry.dryRoughness * (1.0 - wetness));
+    if (Math.abs(wetness - this.lastAppliedWetness) > 0.002) {
+      this.lastAppliedWetness = wetness;
+      for (let i = 0; i < this.wettableMaterials.length; i++) {
+        const entry = this.wettableMaterials[i];
+        entry.mat.roughness = Math.max(0.12, entry.dryRoughness * (1.0 - wetness));
+      }
     }
 
     // Drift volumetric clouds slowly across the sky

@@ -124,6 +124,7 @@ export class AaaWorldVfxEngine {
   private readonly isSoftwareGl: boolean;
   private cursor: number = 0;
   private activeParticleCount: number = 0;
+  private hasLiveBurstParticles: boolean = false;
 
   // Strictly pre-allocated Structure-of-Arrays (SoA) buffers — ZERO per-frame heap allocations!
   private readonly posX: Float32Array;
@@ -299,6 +300,7 @@ export class AaaWorldVfxEngine {
     count: number = 6,
     customHexColor?: number
   ): void {
+    this.hasLiveBurstParticles = true;
     const clampedCount = Math.min(this.isSoftwareGl ? 6 : 18, Math.max(1, count | 0));
     let baseHex = 0xe7e5e4;
     let speed = 2.4;
@@ -474,7 +476,12 @@ export class AaaWorldVfxEngine {
       }
     }
 
-    // 3. Step Pre-Allocated Instanced Particle Pool
+    // 3. Step Pre-Allocated Instanced Particle Pool (O(1) fast-skip when idle!)
+    if (!this.hasLiveBurstParticles) {
+      this.activeParticleCount = 0;
+      return;
+    }
+
     let liveCount = 0;
     let matrixDirty = false;
 
@@ -516,6 +523,7 @@ export class AaaWorldVfxEngine {
     }
 
     this.activeParticleCount = liveCount;
+    this.hasLiveBurstParticles = liveCount > 0;
     if (matrixDirty) {
       this.burstInstancedMesh.instanceMatrix.needsUpdate = true;
     }

@@ -1971,15 +1971,21 @@ export class CosmicUniverseBuilder {
 
   public syncStageVisibility(stage: CosmicStage) {
     this.rootGroup.visible = stage !== 'capy_selection' && stage !== 'playing';
+    this.rootGroup.matrixWorldAutoUpdate = this.rootGroup.visible;
     this.singularityGroup.visible = stage === 'singularity' || stage === 'big_bang';
+    this.singularityGroup.matrixWorldAutoUpdate = this.singularityGroup.visible;
     this.universeGroup.visible =
       stage === 'big_bang' ||
       stage === 'universe_flight' ||
       stage === 'galaxy_view' ||
       stage === 'star_system_view';
+    this.universeGroup.matrixWorldAutoUpdate = this.universeGroup.visible;
     this.galaxyViewGroup.visible = stage === 'galaxy_view';
+    this.galaxyViewGroup.matrixWorldAutoUpdate = this.galaxyViewGroup.visible;
     this.starSystemGroup.visible = stage === 'star_system_view';
+    this.starSystemGroup.matrixWorldAutoUpdate = this.starSystemGroup.visible;
     this.planetOrbitGroup.visible = stage === 'planet_orbit' || stage === 'planet_descent';
+    this.planetOrbitGroup.matrixWorldAutoUpdate = this.planetOrbitGroup.visible;
 
     const showTrackedReticle = stage === 'big_bang' || stage === 'universe_flight';
     this.trackedStarMarker.visible = showTrackedReticle;

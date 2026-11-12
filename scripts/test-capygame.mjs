@@ -563,11 +563,12 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       }
     }
 
-    // 3. Always-Visible Head & View Frustum via 95% Screen-Clear + Whole-Entity Atomic Edge Outline Transparency
-    // 3a. Direct Tree Sightline: verify skeletonMesh, leafInstancedMesh, AND hanging fruitSphere all fade together!
+    // 3. Localized Player-Sightline Cutout ONLY (Offscreen & Ahead-of-Player Geometry Stays 100% Solid!)
+    // 3a. Direct Tree Sightline: verify ONLY the player-blocking capsule window cuts out (`alpha === 0` at headUv),
+    // while non-blocking sides/upper canopy AND geometry behind the player stay 100% solid (`alpha >= 0.98`)!
     mgr.settings.cameraFollowBehind = true;
     mgr.heroLocalPos.set(0.0, 0.0, -2.2);
-    mgr.heroYaw = Math.PI; // Facing -Z -> camera sits around (0, 6.8, +9.3), ray/frustum passes through Tree 0!
+    mgr.heroYaw = Math.PI; // Facing -Z -> camera sits around (0, 6.8, +9.3), Tree 0 at (0, 0.9) is strictly between camera and Hero!
     mgr.resetDachshundTrail();
     for (let step = 0; step < 18; step++) {
       mgr.tick(0.05);
@@ -579,44 +580,52 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     const treeLeafMat = Array.isArray(t0.leafInstancedMesh.material)
       ? t0.leafInstancedMesh.material[0]
       : t0.leafInstancedMesh.material;
+    const headUv = treeLeafMat.userData.__occUniforms?.uCapyHeadUv?.value ?? { x: 0.5, y: 0.5 };
+    const headClipDepth = treeLeafMat.userData.__occUniforms?.uCapySightHead?.value?.z ?? 10.0;
+
     const treeHangingFruitAlpha = mgr.evaluateOccluderScreenAlpha(
       t0.slots[0].fruitSphere,
-      0.5,
-      0.5
+      headUv.x,
+      headUv.y
     );
     const centerScreenOpacityWhenBlocking = Math.max(
       treeSkeletonMat.userData.__centerScreenOpacity ?? 1,
       treeLeafMat.userData.__centerScreenOpacity ?? 1,
       treeHangingFruitAlpha
     );
-    const centerAlphaAtMidScreen = mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, 0.5, 0.5);
-    const outerBorderEdgeOutlineAlpha = mgr.evaluateOccluderScreenAlpha(
-      t0.leafInstancedMesh,
-      0.996,
-      0.5
+    const playerWindowAlpha = Math.max(
+      mgr.evaluateOccluderScreenAlpha(t0.skeletonMesh, headUv.x, headUv.y),
+      mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, headUv.x, headUv.y),
+      treeHangingFruitAlpha
     );
-    // Sample a 40x25 (1,000-point) screen UV grid across the full 100% viewport to verify >= 95% is alpha === 0!
-    let zeroAlphaSamples = 0;
+    const nonBlockingTreeSidesSolid =
+      mgr.evaluateOccluderScreenAlpha(t0.skeletonMesh, 0.08, 0.5) >= 0.98 &&
+      mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, 0.92, 0.5) >= 0.98 &&
+      mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, headUv.x, Math.min(0.96, headUv.y + 0.42)) >= 0.98 &&
+      mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, headUv.x, headUv.y, headClipDepth + 1.8) >= 0.98;
+    const depthWritePreservedOnOccluder =
+      treeSkeletonMat.depthWrite === true && treeLeafMat.depthWrite === true;
+
+    // Sample a 40x25 (1,000-point) screen UV grid across the full 100% viewport to verify >= 75% of the tree stays 100% solid!
+    let solidAlphaSamples = 0;
     const totalScreenSamples = 40 * 25;
     for (let gx = 0; gx < 40; gx++) {
       const u = (gx + 0.5) / 40;
       for (let gy = 0; gy < 25; gy++) {
         const v = (gy + 0.5) / 25;
         if (
-          mgr.evaluateOccluderScreenAlpha(t0.skeletonMesh, u, v) === 0 &&
-          mgr.evaluateOccluderScreenAlpha(t0.slots[0].fruitSphere, u, v) === 0
+          mgr.evaluateOccluderScreenAlpha(t0.skeletonMesh, u, v) >= 0.98 &&
+          mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, u, v) >= 0.98
         ) {
-          zeroAlphaSamples++;
+          solidAlphaSamples++;
         }
       }
     }
-    const zeroAlphaScreenFraction = zeroAlphaSamples / totalScreenSamples;
+    const solidTreeScreenFraction = solidAlphaSamples / totalScreenSamples;
 
-    // 3b. Mobile Screenshot Regression: Lower-frustum yuzu_orchard (below pinpoint head ray!) + overhanging giant Tree 4 canopy!
-    // Place Hero at (1.4, 0, -25.0) facing -Z so Chase Camera sits around (1.4, 6.8, -13.5):
-    // - Tree 4 at (1.4, -17.0) with 6.81m crown overhangs the UPPER camera frustum!
-    // - Temporarily place a yuzu_orchard building at (1.4, 0, -16.8) in the LOWER camera frustum (below the head ray!)
-    // - Meanwhile Breakout/Runner portals ahead of Hero at z = -26.8 are BEYOND Hero and must stay 100% opaque!
+    // 3b. Direct Sightline Building (`yuzu_orchard`) & Giant Canopy (`Tree 4`) strictly between Camera and Hero:
+    // Place Hero at (1.4, 0, -24.2) facing -Z so Chase Camera sits around (1.4, 6.8, -12.7):
+    // - Tree 4 at (1.4, -17.0) and yuzu_orchard at (1.4, 0, -17.6) sit strictly between camera and Hero!
     let yuzuGroup = mgr.sanctuaryBuildingMeshes.find(
       (bm) => bm.userData?.buildingType === 'yuzu_orchard'
     );
@@ -628,7 +637,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       savedYuzuZ = yuzuGroup.position.z;
       yuzuGroup.position.set(1.4, 0, -17.6);
     } else {
-      yuzuGroup = mgr.sanctuaryBuildingMeshes[0];
+      yuzuGroup = mgr.sanctuaryBuildingMeshes.find(
+        (bm) => bm.userData?.buildingType !== 'hot_spring' && bm.userData?.buildingType !== 'trampoline_pad'
+      );
       if (yuzuGroup) {
         savedYuzuX = yuzuGroup.position.x;
         savedYuzuZ = yuzuGroup.position.z;
@@ -643,14 +654,21 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     for (let step = 0; step < 18; step++) {
       mgr.tick(0.05);
     }
-    let yuzuAllChildrenFaded = true;
+    const t4LeafMat = Array.isArray(t4.leafInstancedMesh.material)
+      ? t4.leafInstancedMesh.material[0]
+      : t4.leafInstancedMesh.material;
+    const headUv3b = t4LeafMat.userData.__occUniforms?.uCapyHeadUv?.value ?? { x: 0.5, y: 0.5 };
+    let yuzuAllChildrenCutoutAtPlayer = true;
     let yuzuChildMeshCount = 0;
     if (yuzuGroup) {
       yuzuGroup.traverse((node) => {
         if (node.isMesh && !node.userData?.ignoreCameraFade) {
           yuzuChildMeshCount++;
-          if (mgr.evaluateOccluderScreenAlpha(node, 0.5, 0.3) !== 0) {
-            yuzuAllChildrenFaded = false;
+          if (
+            mgr.evaluateOccluderScreenAlpha(node, headUv3b.x, headUv3b.y) !== 0 ||
+            mgr.evaluateOccluderScreenAlpha(node, 0.08, 0.5) < 0.98
+          ) {
+            yuzuAllChildrenCutoutAtPlayer = false;
           }
         }
       });
@@ -658,20 +676,49 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
         yuzuGroup.position.set(savedYuzuX, 0, savedYuzuZ);
       }
     }
-    const giantTree4AllFaded =
-      mgr.evaluateOccluderScreenAlpha(t4.skeletonMesh, 0.5, 0.8) === 0 &&
-      mgr.evaluateOccluderScreenAlpha(t4.leafInstancedMesh, 0.5, 0.8) === 0 &&
-      mgr.evaluateOccluderScreenAlpha(t4.slots[0].fruitSphere, 0.5, 0.8) === 0;
+    const giantTree4PlayerCutout =
+      mgr.evaluateOccluderScreenAlpha(t4.skeletonMesh, headUv3b.x, headUv3b.y) === 0 &&
+      mgr.evaluateOccluderScreenAlpha(t4.leafInstancedMesh, headUv3b.x, headUv3b.y) === 0 &&
+      mgr.evaluateOccluderScreenAlpha(t4.slots[0].fruitSphere, headUv3b.x, headUv3b.y) === 0 &&
+      mgr.evaluateOccluderScreenAlpha(t4.leafInstancedMesh, 0.08, 0.85) >= 0.98;
     // Tree 0 at (0, 0.9) is >10m behind the camera lens and must NOT be faded
     const distantBehindCameraOpaque =
       mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, 0.5, 0.5) >= 0.98;
 
-    // Move Hero to genuinely open SE shoreline clearing (11.5, 0, 23.5) facing +Z (keeping wandering buddies out of that lane) -> verify full opaque restoration!
+    // 3c. Exact User Mobile Screenshot Regression:
+    // Walking toward Tree 3 (-14.2, -10.8) while Tree 3 is AHEAD of the player (canopy going offscreen at top)
+    // and Home Pool + Cozy Onsen (`hot_spring`) are going offscreen at bottom-left -> ZERO objects may fade!
+    const t3 = trees[3] || trees[0];
     for (let b = 0; b < mgr.sanctuaryCapys.length; b++) {
-      if (mgr.sanctuaryCapys[b].capy.position.x > 6 && mgr.sanctuaryCapys[b].capy.position.z > 10) {
-        mgr.sanctuaryCapys[b].capy.position.set(-15.5, 0, 16.2);
-      }
+      mgr.sanctuaryCapys[b].capy.position.set(16.5, 0, 16.2);
     }
+    mgr.heroLocalPos.set(t3.x + 0.25, 0.0, t3.z + 2.1); // 2.1m in front of Tree 3 walking toward -Z (Tree 3 is ahead!)
+    mgr.heroYaw = Math.PI;
+    mgr.resetDachshundTrail();
+    for (let step = 0; step < 22; step++) {
+      mgr.tick(0.05);
+    }
+    const fadedWhenTreeAheadOffscreen = mgr.getCapySnakeTelemetry().occludedObjectsFaded;
+    const aheadTree3StaysSolid =
+      mgr.evaluateOccluderScreenAlpha(t3.skeletonMesh, 0.5, 0.5) >= 0.98 &&
+      mgr.evaluateOccluderScreenAlpha(t3.leafInstancedMesh, 0.5, 0.85) >= 0.98 &&
+      mgr.evaluateOccluderScreenAlpha(t3.slots[0].fruitSphere, 0.5, 0.85) >= 0.98;
+    let poolAndOnsenRimRocksProtected = true;
+    if (mgr.homePool?.group) {
+      mgr.homePool.group.traverse((n) => {
+        if (n.isMesh && n.geometry?.type === 'DodecahedronGeometry' && !n.userData?.ignoreCameraFade) {
+          poolAndOnsenRimRocksProtected = false;
+        }
+      });
+    }
+    const hotSpringGroup = mgr.sanctuaryBuildingMeshes.find(
+      (bm) => bm.userData?.buildingType === 'hot_spring'
+    );
+    if (hotSpringGroup && !hotSpringGroup.userData?.ignoreCameraFade) {
+      poolAndOnsenRimRocksProtected = false;
+    }
+
+    // Move Hero to genuinely open SE shoreline clearing (11.5, 0, 23.5) facing +Z -> verify full opaque restoration!
     mgr.heroLocalPos.set(11.5, 0.0, 23.5);
     mgr.heroYaw = 0;
     mgr.resetDachshundTrail();
@@ -795,13 +842,17 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       staticClipError,
       fadedCountBehindTree,
       centerScreenOpacityWhenBlocking: +centerScreenOpacityWhenBlocking.toFixed(4),
-      centerAlphaAtMidScreen: +centerAlphaAtMidScreen.toFixed(4),
-      outerBorderEdgeOutlineAlpha: +outerBorderEdgeOutlineAlpha.toFixed(4),
-      zeroAlphaScreenFraction: +zeroAlphaScreenFraction.toFixed(4),
-      yuzuAllChildrenFaded: yuzuAllChildrenFaded && yuzuChildMeshCount >= 8,
+      playerWindowAlpha: +playerWindowAlpha.toFixed(4),
+      nonBlockingTreeSidesSolid,
+      depthWritePreservedOnOccluder,
+      solidTreeScreenFraction: +solidTreeScreenFraction.toFixed(4),
+      yuzuAllChildrenCutoutAtPlayer: yuzuAllChildrenCutoutAtPlayer && yuzuChildMeshCount >= 8,
       yuzuChildMeshCount,
-      giantTree4AllFaded,
+      giantTree4PlayerCutout,
       distantBehindCameraOpaque,
+      fadedWhenTreeAheadOffscreen,
+      aheadTree3StaysSolid,
+      poolAndOnsenRimRocksProtected,
       fadedCountInClear,
       restoredTreeCenterAlpha: +restoredTreeCenterAlpha.toFixed(3),
       reverseFlagObserved,
@@ -827,13 +878,16 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     advancedSimCheck.staticClipError !== null ||
     advancedSimCheck.fadedCountBehindTree < 1 ||
     advancedSimCheck.centerScreenOpacityWhenBlocking !== 0 ||
-    advancedSimCheck.centerAlphaAtMidScreen !== 0 ||
-    advancedSimCheck.zeroAlphaScreenFraction < 0.95 ||
-    advancedSimCheck.outerBorderEdgeOutlineAlpha < 0.05 ||
-    advancedSimCheck.outerBorderEdgeOutlineAlpha > 0.26 ||
-    !advancedSimCheck.yuzuAllChildrenFaded ||
-    !advancedSimCheck.giantTree4AllFaded ||
+    advancedSimCheck.playerWindowAlpha !== 0 ||
+    !advancedSimCheck.nonBlockingTreeSidesSolid ||
+    !advancedSimCheck.depthWritePreservedOnOccluder ||
+    advancedSimCheck.solidTreeScreenFraction < 0.75 ||
+    !advancedSimCheck.yuzuAllChildrenCutoutAtPlayer ||
+    !advancedSimCheck.giantTree4PlayerCutout ||
     !advancedSimCheck.distantBehindCameraOpaque ||
+    advancedSimCheck.fadedWhenTreeAheadOffscreen !== 0 ||
+    !advancedSimCheck.aheadTree3StaysSolid ||
+    !advancedSimCheck.poolAndOnsenRimRocksProtected ||
     advancedSimCheck.fadedCountInClear !== 0 ||
     advancedSimCheck.restoredTreeCenterAlpha < 0.98 ||
     !advancedSimCheck.reverseFlagObserved ||
@@ -847,11 +901,11 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     !advancedSimCheck.resumedWalkingDisplacement
   ) {
     throw new Error(
-      `Advanced procedural botany / occlusion fade / solid reverse gait / foot traction check failed: ${JSON.stringify(advancedSimCheck)}`
+      `Advanced procedural botany / localized sightline cutout / solid reverse gait / foot traction check failed: ${JSON.stringify(advancedSimCheck)}`
     );
   }
   console.log(
-    `✓ Procedural Botany (${advancedSimCheck.branchCount} branches, ${advancedSimCheck.leafCount} V-folded leaves, 4-stage fruit), Zero Static Clipping, Whole-Entity Frustum + Sightline 95% Screen-Clear Edge Shader (center ${advancedSimCheck.centerScreenOpacityWhenBlocking} -> ${advancedSimCheck.restoredTreeCenterAlpha}, ${(advancedSimCheck.zeroAlphaScreenFraction * 100).toFixed(1)}% screen clear, yuzu=${advancedSimCheck.yuzuChildMeshCount} meshes faded, Tree4 canopy+fruit faded, edge=${advancedSimCheck.outerBorderEdgeOutlineAlpha}), Solid Reverse Gait (squash <= ${advancedSimCheck.maxObservedSquash}) & 0-Feet-Touching Stuck Traction verified!`
+    `✓ Procedural Botany (${advancedSimCheck.branchCount} branches, ${advancedSimCheck.leafCount} V-folded leaves, 4-stage fruit), Zero Static Clipping, Localized Player-Sightline Cutout Shader (playerWindow=${advancedSimCheck.playerWindowAlpha}, ${(advancedSimCheck.solidTreeScreenFraction * 100).toFixed(1)}% rest-of-tree solid, offscreenAheadFaded=${advancedSimCheck.fadedWhenTreeAheadOffscreen}, yuzu=${advancedSimCheck.yuzuChildMeshCount} meshes cutout, restored=${advancedSimCheck.restoredTreeCenterAlpha}), Solid Reverse Gait (squash <= ${advancedSimCheck.maxObservedSquash}) & 0-Feet-Touching Stuck Traction verified!`
   );
 
   // 6E. Verify Dynamic 60 FPS Capybara LOD Governor scales detail down under heavy load and back up at 60 FPS

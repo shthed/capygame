@@ -1668,6 +1668,7 @@ export class CapyModelGenerator {
 
   public static createHotSpring(_level: number = 1): THREE.Group {
     const group = new THREE.Group();
+    group.userData.ignoreCameraFade = true;
     const basaltTex = RealisticWorldEnvironment.getTextureSet('basalt');
     const timberTex = RealisticWorldEnvironment.getTextureSet('timber');
     const rockMat = new THREE.MeshStandardMaterial({

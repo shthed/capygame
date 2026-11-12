@@ -15,6 +15,11 @@ import {
   type GpuQualityPreset,
 } from './GpuEngineTypes';
 import { PbrTextureSynthesizer } from './PbrTextureSynthesizer';
+import {
+  computeBloomRenderScale,
+  computeEffectivePixelRatio,
+  computeTexelSnappedShadowOrigin,
+} from './FramePerformanceGovernor';
 
 // Zero-allocation scratch vectors for shadow cascade snapping & rim light positioning
 const _sunOffsetDir = new THREE.Vector3(0.44, 0.82, 0.37).normalize();
@@ -86,17 +91,15 @@ const CapyGpuMasterFilterShader = {
       vec2 centerOffset = vUv - vec2(0.5);
       float radialDist = length(centerOffset);
 
-      // 1. Radial Lens Chromatic Dispersion + Base HDR Color Sample
-      vec3 col;
+      // 1. Radial Lens Chromatic Dispersion + Single-Tap Center Fetch
+      vec4 baseTap = texture2D(tDiffuse, vUv);
+      vec3 col = baseTap.rgb;
+      float alpha = baseTap.a;
       if (uChromatic > 0.00005) {
         vec2 disp = centerOffset * uChromatic * radialDist * 1.8;
         col.r = texture2D(tDiffuse, clamp(vUv - disp, 0.001, 0.999)).r;
-        col.g = texture2D(tDiffuse, vUv).g;
         col.b = texture2D(tDiffuse, clamp(vUv + disp, 0.001, 0.999)).b;
-      } else {
-        col = texture2D(tDiffuse, vUv).rgb;
       }
-      float alpha = texture2D(tDiffuse, vUv).a;
 
       float dCenter = (uHasDepth > 0.5) ? readLinearDepth(vUv) : 18.0;
       float farDofMix = (uHasDepth > 0.5 && dCenter < uCameraFar * 0.90)
@@ -123,7 +126,7 @@ const CapyGpuMasterFilterShader = {
         }
       }
 
-      // 3. Hardware Depth-Buffer Screen-Space Cavity / Contact Ambient Occlusion (SSAO)
+      // 3. Hardware Depth-Buffer Screen-Space Cavity / Contact Ambient Occlusion (Smooth C1 Depth Rejection)
       if (uHasDepth > 0.5 && uSsaoStrength > 0.005) {
         // Skip sky / far cosmic background
         if (dCenter < uCameraFar * 0.65) {
@@ -139,17 +142,17 @@ const CapyGpuMasterFilterShader = {
           float occ = 0.0;
           float scaleNorm = max(0.35, dCenter * 0.045);
           float diff1 = (dCenter - dN) / scaleNorm;
-          if (diff1 > 0.02 && diff1 < 1.35) occ += diff1;
+          occ += max(0.0, diff1) * smoothstep(0.02, 0.12, diff1) * (1.0 - smoothstep(0.70, 1.40, diff1));
           float diff2 = (dCenter - dS) / scaleNorm;
-          if (diff2 > 0.02 && diff2 < 1.35) occ += diff2;
+          occ += max(0.0, diff2) * smoothstep(0.02, 0.12, diff2) * (1.0 - smoothstep(0.70, 1.40, diff2));
           float diff3 = (dCenter - dE) / scaleNorm;
-          if (diff3 > 0.02 && diff3 < 1.35) occ += diff3;
+          occ += max(0.0, diff3) * smoothstep(0.02, 0.12, diff3) * (1.0 - smoothstep(0.70, 1.40, diff3));
           float diff4 = (dCenter - dW) / scaleNorm;
-          if (diff4 > 0.02 && diff4 < 1.35) occ += diff4;
+          occ += max(0.0, diff4) * smoothstep(0.02, 0.12, diff4) * (1.0 - smoothstep(0.70, 1.40, diff4));
           float diff5 = (dCenter - (dNE + dSW) * 0.5) / (scaleNorm * 1.4);
-          if (diff5 > 0.02 && diff5 < 1.35) occ += diff5;
+          occ += max(0.0, diff5) * smoothstep(0.02, 0.12, diff5) * (1.0 - smoothstep(0.70, 1.40, diff5));
 
-          float aoFactor = 1.0 - clamp(occ * 0.24 * uSsaoStrength, 0.0, 0.42);
+          float aoFactor = 1.0 - clamp(occ * 0.24 * uSsaoStrength, 0.0, 0.38);
           col *= aoFactor;
         }
       }
@@ -296,6 +299,8 @@ export class HardwareGpuEngine {
   private contextLost: boolean = false;
   private elapsedTime: number = 0;
   private forceSoftwarePostProcess: boolean = false;
+  private lastSnappedShadowX: number = Number.NaN;
+  private lastSnappedShadowZ: number = Number.NaN;
 
   // Cached event listeners for clean disposal
   private readonly onContextLostHandler: (e: Event) => void;
@@ -331,8 +336,9 @@ export class HardwareGpuEngine {
     if (!this.sunLight.target.parent) {
       this.scene.add(this.sunLight.target);
     }
-    this.sunLight.shadow.normalBias = 0.022;
-    this.sunLight.shadow.radius = 3.0;
+    this.sunLight.shadow.bias = -0.00035;
+    this.sunLight.shadow.normalBias = 0.026;
+    this.sunLight.shadow.radius = 2.6;
 
     // 1. Grazing Rim / Backlight DirectionalLight for crisp 3-point silhouette separation (zero shadow cost)
     this.rimLight = new THREE.DirectionalLight(0xbae6fd, 0.42);
@@ -521,7 +527,7 @@ export class HardwareGpuEngine {
       );
       this.composer.addPass(this.renderPass);
 
-      const bloomScale = this.config.qualityPreset === 'performance' ? 0.5 : 1.0;
+      const bloomScale = computeBloomRenderScale(this.config.qualityPreset, this.isSoftwareGl);
       this.bloomPass = new UnrealBloomPass(
         new THREE.Vector2(
           Math.max(1, Math.floor(this.viewportWidth * bloomScale)),
@@ -719,13 +725,28 @@ export class HardwareGpuEngine {
       this.maxHardwareAnisotropy
     );
 
-    // 4. Rebuild Composer RenderTarget if MSAA / DepthTexture attachment requirements changed,
+    // 4. Cap Device Pixel Ratio smartly to sustain locked 60 FPS on HiDPI displays
+    const desiredPr = computeEffectivePixelRatio(
+      typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
+      this.config.qualityPreset,
+      this.shouldActivateComposer(),
+      this.isSoftwareGl
+    );
+    const prChanged = Math.abs(this.renderer.getPixelRatio() - desiredPr) > 0.01;
+    if (prChanged) {
+      this.renderer.setPixelRatio(desiredPr);
+      this.renderer.setSize(this.viewportWidth, this.viewportHeight);
+    }
+
+    // 5. Rebuild Composer RenderTarget if MSAA / DepthTexture / PixelRatio requirements changed,
     // or lazily initialize on software WebGL when a visual filter is activated.
     if (this.shouldActivateComposer() && !this.composer) {
       this.rebuildComposer();
     } else if (
       this.composer &&
-      (prevSsao !== this.config.ssaoEnabled || prevAa !== this.config.antiAliasing)
+      (prevSsao !== this.config.ssaoEnabled ||
+        prevAa !== this.config.antiAliasing ||
+        prChanged)
     ) {
       this.rebuildComposer();
     }
@@ -733,6 +754,11 @@ export class HardwareGpuEngine {
     if (this.bloomPass) {
       this.bloomPass.enabled = this.config.bloomEnabled;
       this.bloomPass.strength = this.config.bloomStrength;
+      const bloomScale = computeBloomRenderScale(this.config.qualityPreset, this.isSoftwareGl);
+      this.bloomPass.resolution.set(
+        Math.max(1, Math.floor(this.viewportWidth * bloomScale)),
+        Math.max(1, Math.floor(this.viewportHeight * bloomScale))
+      );
     }
     if (this.fxaaPass) {
       this.fxaaPass.enabled = this.config.antiAliasing !== 'none';
@@ -763,7 +789,8 @@ export class HardwareGpuEngine {
     heroWorldZ: number,
     groundY: number,
     isSurfaceVisible: boolean,
-    nightFactor: number
+    nightFactor: number,
+    sunDirection?: THREE.Vector3
   ): void {
     this.elapsedTime += dt;
 
@@ -778,36 +805,52 @@ export class HardwareGpuEngine {
       this.heroContactShadowMat.opacity = opacityFade;
     }
 
-    // 2. Texel-Snapped Directional Shadow Cascade centered on the Hero across the 220m x 220m contiguous world
+    // 2. Texel-Snapped Directional Shadow Cascade centered on the Hero (tight 42m half-extent = 2.6x sharper texels, zero district azimuth warp!)
     if (isSurfaceVisible) {
-      const frustumHalfExtent = 68;
-      const mapRes = Math.max(512, this.activeShadowMapSize || 2048);
-      const worldUnitsPerTexel = (frustumHalfExtent * 2) / mapRes;
-      const snappedX = Math.round(heroWorldX / worldUnitsPerTexel) * worldUnitsPerTexel;
-      const snappedZ = Math.round(heroWorldZ / worldUnitsPerTexel) * worldUnitsPerTexel;
-
-      // Preserve current solar elevation direction computed by RealisticWorldEnvironment while centering on Hero
-      _sunOffsetDir
-        .subVectors(this.sunLight.position, this.sunLight.target.position);
-      if (_sunOffsetDir.lengthSq() < 1.0) {
-        _sunOffsetDir.set(38, 72, 32);
-      } else {
-        _sunOffsetDir.normalize().multiplyScalar(92);
+      const frustumHalfExtent = 42;
+      const shCam = this.sunLight.shadow.camera;
+      if (shCam.right !== frustumHalfExtent) {
+        shCam.left = -frustumHalfExtent;
+        shCam.right = frustumHalfExtent;
+        shCam.top = frustumHalfExtent;
+        shCam.bottom = -frustumHalfExtent;
+        shCam.updateProjectionMatrix();
       }
 
-      this.sunLight.target.position.set(snappedX, 0, snappedZ);
-      this.sunLight.target.updateMatrixWorld();
-      this.sunLight.position.set(
-        snappedX + _sunOffsetDir.x,
-        Math.max(16, _sunOffsetDir.y),
-        snappedZ + _sunOffsetDir.z
+      if (sunDirection && sunDirection.lengthSq() > 0.001) {
+        _sunOffsetDir.copy(sunDirection).normalize();
+      } else {
+        _sunOffsetDir.set(0.44, 0.82, 0.37).normalize();
+      }
+
+      const mapRes = Math.max(512, this.activeShadowMapSize || 2048);
+      const snappedPose = computeTexelSnappedShadowOrigin(
+        heroWorldX,
+        heroWorldZ,
+        _sunOffsetDir.x,
+        _sunOffsetDir.y,
+        _sunOffsetDir.z,
+        frustumHalfExtent,
+        mapRes,
+        96
       );
 
-      // Position grazing Rim/Backlight opposite the sun azimuth relative to Hero for 3-point separation
+      if (
+        snappedPose.targetX !== this.lastSnappedShadowX ||
+        snappedPose.targetZ !== this.lastSnappedShadowZ
+      ) {
+        this.lastSnappedShadowX = snappedPose.targetX;
+        this.lastSnappedShadowZ = snappedPose.targetZ;
+        this.sunLight.target.position.set(snappedPose.targetX, 0, snappedPose.targetZ);
+        this.sunLight.target.updateMatrixWorld();
+      }
+      this.sunLight.position.set(snappedPose.lightX, snappedPose.lightY, snappedPose.lightZ);
+
+      // Position grazing Rim/Backlight opposite the true sun azimuth relative to Hero for 3-point separation
       this.rimLight.position.set(
-        heroWorldX - _sunOffsetDir.x * 0.65,
+        heroWorldX - _sunOffsetDir.x * 58,
         24,
-        heroWorldZ - _sunOffsetDir.z * 0.65
+        heroWorldZ - _sunOffsetDir.z * 58
       );
       this.rimLight.target.position.set(heroWorldX, 1.0, heroWorldZ);
       if (!this.rimLight.target.parent) {
@@ -886,7 +929,7 @@ export class HardwareGpuEngine {
       this.composer.setSize(this.viewportWidth, this.viewportHeight);
     }
     if (this.bloomPass) {
-      const bloomScale = this.config.qualityPreset === 'performance' ? 0.5 : 1.0;
+      const bloomScale = computeBloomRenderScale(this.config.qualityPreset, this.isSoftwareGl);
       this.bloomPass.resolution.set(
         Math.max(1, Math.floor(this.viewportWidth * bloomScale)),
         Math.max(1, Math.floor(this.viewportHeight * bloomScale))
