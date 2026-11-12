@@ -8,9 +8,6 @@ const PRECACHE_RELATIVE_URLS = [
   './index.html',
   './manifest.webmanifest',
   './assets/capybara.webp',
-  './assets/capy_forest.webp',
-  './assets/mushrooms.webp',
-  './assets/snail_guitar.webp',
   './assets/icon-192.png',
   './assets/icon-512.png',
   './assets/icon-maskable-512.png',
@@ -20,6 +17,22 @@ const PRECACHE_RELATIVE_URLS = [
 // Helper to resolve URLs relative to the service worker script location
 function getAbsolutePrecacheUrls() {
   return PRECACHE_RELATIVE_URLS.map((rel) => new URL(rel, self.location).href);
+}
+
+// Guard against Nginx 502->200 /warmup.html pages ever being stored in Cache Storage
+async function isWarmupOrAuthHtml(response) {
+  const ct = response.headers.get('content-type') || '';
+  if (!ct.includes('text/html')) return false;
+  try {
+    const text = await response.clone().text();
+    return (
+      text.includes('__aistudio_warmup_failed') ||
+      text.includes('<title>Starting Server...</title>') ||
+      text.includes('__cookie_check')
+    );
+  } catch {
+    return false;
+  }
 }
 
 // Installation: pre-cache application shell, sample assets, and discovered production bundles
@@ -33,7 +46,7 @@ self.addEventListener('install', (event) => {
         urlsToCache.map(async (url) => {
           try {
             const response = await fetch(url, { cache: 'no-cache' });
-            if (response.ok) {
+            if (response.ok && !(await isWarmupOrAuthHtml(response))) {
               await cache.put(url, response.clone());
 
               // If this is index.html, discover and precache hashed Vite script & style bundles
@@ -49,10 +62,10 @@ self.addEventListener('install', (event) => {
                     if (bundleResp.ok) {
                       await cache.put(bundleUrl, bundleResp.clone());
 
-                      // If this is the main JS bundle, discover and precache Web Worker script
+                      // If this is the main JS bundle, discover and precache physics Web Worker script
                       if (bundleUrl.endsWith('.js')) {
                         const jsText = await bundleResp.text();
-                        const workerMatches = [...jsText.matchAll(/assets\/(puzzle\.worker-[^"'\s)]+\.js)/g)];
+                        const workerMatches = [...jsText.matchAll(/assets\/(physics\.worker-[^"'\s)]+\.js)/g)];
                         for (const wm of workerMatches) {
                           const workerUrl = new URL('./assets/' + wm[1], self.location).href;
                           const workerResp = await fetch(workerUrl, { cache: 'no-cache' });
@@ -79,7 +92,7 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Activation: purge older cache generations and claim clients immediately
+// Activation: purge older cache generations, clean any stale Vite dev entries, and claim clients immediately
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
@@ -91,6 +104,27 @@ self.addEventListener('activate', (event) => {
           }
         })
       );
+
+      try {
+        const cache = await caches.open(CACHE_NAME);
+        const requests = await cache.keys();
+        await Promise.all(
+          requests.map((req) => {
+            const reqUrl = new URL(req.url);
+            if (
+              reqUrl.pathname.includes('/@vite/') ||
+              reqUrl.pathname.includes('/@fs/') ||
+              reqUrl.pathname.includes('/@id/') ||
+              reqUrl.search.includes('worker_file')
+            ) {
+              return cache.delete(req);
+            }
+          })
+        );
+      } catch {
+        // Ignored
+      }
+
       await self.clients.claim();
     })()
   );
@@ -105,13 +139,32 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (!url.protocol.startsWith('http')) return;
 
+  // Never intercept Vite internal HMR / client / virtual FS or AI Studio proxy/auth endpoints
+  if (
+    url.pathname.includes('/@vite/') ||
+    url.pathname.includes('/@fs/') ||
+    url.pathname.includes('/@id/') ||
+    url.pathname.includes('/__vite_ping') ||
+    url.pathname.startsWith('/__aistudio') ||
+    url.pathname.startsWith('/_aistudio') ||
+    url.pathname.startsWith('/__cookie_check') ||
+    url.pathname === '/warmup.html' ||
+    url.pathname === '/forbidden.html'
+  ) {
+    return;
+  }
+
   // 1. Navigation requests (HTML document): Network-first with cache fallback
   if (request.mode === 'navigate') {
     event.respondWith(
       (async () => {
         try {
           const networkResponse = await fetch(request);
-          if (networkResponse && networkResponse.status === 200) {
+          if (
+            networkResponse &&
+            networkResponse.status === 200 &&
+            !(await isWarmupOrAuthHtml(networkResponse))
+          ) {
             try {
               const cache = await caches.open(CACHE_NAME);
               await cache.put(request, networkResponse.clone());
@@ -136,11 +189,47 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 2. Static assets & workers (JS, CSS, images, workers): Cache-first with network fallback & dynamic cache population
+  // 2. Vite dev source & dependency modules (/src/, /node_modules/): Network-first with exact query match
+  const isDevModule =
+    url.pathname.includes('/src/') ||
+    url.pathname.includes('/node_modules/') ||
+    url.search.includes('worker_file') ||
+    url.search.includes('import');
+
+  if (isDevModule) {
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(CACHE_NAME);
+        try {
+          const response = await fetch(request);
+          if (response && response.status === 200) {
+            try {
+              await cache.put(request, response.clone());
+            } catch {
+              // Ignored
+            }
+          }
+          return response;
+        } catch (err) {
+          const cached =
+            (await cache.match(request)) ||
+            (await cache.match(request.url)) ||
+            (await cache.match(request, { ignoreSearch: true }));
+          if (cached) return cached;
+          throw err;
+        }
+      })()
+    );
+    return;
+  }
+
+  // 3. Static assets & production bundles (JS, CSS, images, workers): Cache-first with network fallback
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
       const cached =
+        (await cache.match(request)) ||
+        (await cache.match(request.url)) ||
         (await cache.match(request, { ignoreSearch: true })) ||
         (await cache.match(request.url, { ignoreSearch: true }));
       if (cached) {
@@ -173,3 +262,4 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
   }
 });
+

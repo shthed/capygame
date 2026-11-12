@@ -1,5 +1,4 @@
 // PwaService - Progressive Web App Lifecycle, Service Worker Registration & Install Prompt Management
-import { NativeBridge } from './NativeBridge';
 
 interface BeforeInstallPromptEvent extends Event {
   readonly platforms: string[];
@@ -25,29 +24,58 @@ class PwaServiceClass {
   }
 
   private init() {
-    // 1. Listen for the browser install prompt event
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      // Prevent automatic mini-infobar on mobile Chrome
-      e.preventDefault();
-      this.deferredPrompt = e as BeforeInstallPromptEvent;
-      this.notifyListeners();
-    });
+    try {
+      // 1. Listen for the browser install prompt event
+      window.addEventListener('beforeinstallprompt', (e: Event) => {
+        // Prevent automatic mini-infobar on mobile Chrome
+        e.preventDefault();
+        this.deferredPrompt = e as BeforeInstallPromptEvent;
+        this.notifyListeners();
+      });
 
-    // 2. Listen for successful installation
-    window.addEventListener('appinstalled', () => {
-      this.deferredPrompt = null;
-      this.notifyListeners();
-    });
+      // 2. Listen for successful installation
+      window.addEventListener('appinstalled', () => {
+        this.deferredPrompt = null;
+        this.notifyListeners();
+      });
 
-    // 3. Register Service Worker (web environment only, bypassing native Android wrapper)
-    if ('serviceWorker' in navigator && !NativeBridge.isAndroid) {
-      if (document.readyState === 'complete') {
-        this.registerServiceWorker();
-      } else {
-        window.addEventListener('load', () => {
-          this.registerServiceWorker();
-        });
+      // 3. Register Service Worker (web environment only, bypassing native Android wrapper & Cloud Run preview proxy)
+      let swSupported = false;
+      try {
+        swSupported = 'serviceWorker' in navigator && Boolean(navigator.serviceWorker);
+      } catch {
+        swSupported = false;
       }
+
+      const host = window.location.hostname || '';
+      const isCloudRunPreview = host.endsWith('.run.app');
+      if (isCloudRunPreview) {
+        try {
+          sessionStorage.removeItem('warmup_start_time');
+          sessionStorage.removeItem('warmup_failed_sent');
+        } catch {
+          // Ignore storage restrictions
+        }
+        if (swSupported) {
+          navigator.serviceWorker
+            .getRegistrations()
+            .then((regs) => Promise.allSettled(regs.map((r) => r.unregister())))
+            .catch(() => {});
+        }
+        return;
+      }
+
+      if (swSupported) {
+        if (document.readyState === 'complete') {
+          this.registerServiceWorker();
+        } else {
+          window.addEventListener('load', () => {
+            this.registerServiceWorker();
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[PWA] Initialization skipped due to restricted browser context:', err);
     }
   }
 
@@ -57,14 +85,19 @@ class PwaServiceClass {
       const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
       this.registration = reg;
 
-      // Cache currently active DOM scripts and stylesheets for immediate offline readiness
+      // Cache currently active DOM scripts and stylesheets for immediate offline readiness (skipping @vite/client)
       if ('caches' in window) {
         try {
           const cache = await caches.open('capy-cache-v1');
           const urls: string[] = [];
           document.querySelectorAll('script[src], link[rel="stylesheet"]').forEach((el) => {
             const src = 'src' in el ? (el as HTMLScriptElement).src : (el as HTMLLinkElement).href;
-            if (src && src.startsWith(window.location.origin)) {
+            if (
+              src &&
+              src.startsWith(window.location.origin) &&
+              !src.includes('/@vite/') &&
+              !src.includes('/@fs/')
+            ) {
               urls.push(src);
             }
           });
@@ -80,9 +113,13 @@ class PwaServiceClass {
         if (!newWorker) return;
 
         newWorker.addEventListener('statechange', () => {
-          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-            this.hasUpdate = true;
-            this.notifyListeners();
+          try {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              this.hasUpdate = true;
+              this.notifyListeners();
+            }
+          } catch {
+            // Ignored
           }
         });
       });
@@ -97,11 +134,15 @@ class PwaServiceClass {
 
   public get isStandalone(): boolean {
     if (typeof window === 'undefined') return false;
-    return (
-      window.matchMedia('(display-mode: standalone)').matches ||
-      (navigator as any).standalone === true ||
-      document.referrer.includes('android-app://')
-    );
+    try {
+      return (
+        window.matchMedia('(display-mode: standalone)').matches ||
+        (navigator as any).standalone === true ||
+        document.referrer.includes('android-app://')
+      );
+    } catch {
+      return false;
+    }
   }
 
   public get isUpdateAvailable(): boolean {

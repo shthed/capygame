@@ -1,18 +1,8 @@
 # Node / Web Dependencies & Build Outputs
 node_modules/
-web/node_modules/
-web/dist/
-project/node_modules/
-project/artifacts/
-project/test-results/
-project/playwright-report/
-
-# Gradle / Kotlin / Android Build Artifacts
-.gradle/
-.kotlin/
-**/build/
-app/src/main/assets/www/
-local.properties
+dist/
+test-results/
+playwright-report/
 .artifacts/
 
 # IDE / Editor / System Configuration
@@ -21,9 +11,4 @@ local.properties
 *.iml
 .DS_Store
 Thumbs.db
-
-# Android Build Outputs & Reports
-*.apk
-*.aab
-*.aar
 /inspect/

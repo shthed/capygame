@@ -1,21 +1,20 @@
 {
-  "name": "capy-paint",
+  "name": "capygame",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "tsc -p web/tsconfig.json --noEmit && vite build",
-    "lint": "tsc -p web/tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "lint": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
     "test:game": "node scripts/test-capygame.mjs",
-    "test:gameplay": "node web/scripts/test-full-gameplay.mjs",
-    "test:undo": "node web/scripts/test-undo-timeline.mjs",
-    "test:pwa": "node web/scripts/test-pwa-offline.mjs",
-    "gallery:capture": "node scripts/capture-capygame-gallery.mjs"
+    "test:pwa": "node scripts/test-pwa-offline.mjs",
+    "gallery:capture": "node scripts/capture-capygame-gallery.mjs",
+    "gallery:capture:zoom": "node scripts/capture-all-zoom-levels.mjs"
   },
   "dependencies": {
-    "canvas-confetti": "^1.9.4",
+    "@dimforge/rapier3d-compat": "^0.21.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.70.0",
     "react": "^19.0.0",
@@ -25,7 +24,6 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.5",
-    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^22.20.5",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",

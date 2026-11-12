@@ -1,1141 +1,4067 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import * as THREE from 'three';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  BUILDING_CATALOG,
-  BuildingType,
-  LiveModeTelemetry,
-  MutationId,
+  AstrophysicsPaletteMode,
   PlayStyle,
   PlayerStats,
+  CapyGameSettings,
+  CapyLodTier,
+  CapySnakeTelemetry,
+  LiveModeTelemetry,
+  BUILDING_CATALOG,
+  BuildingCatalogItem,
   SPORE_MUTATIONS,
+  MutationId,
+  ZONE_LOCATIONS,
+  PROGRESSIVE_UNLOCKS,
+  COSMIC_GALAXIES,
+  CosmicStage,
+  GPU_VISUAL_FILTER_PROFILES,
+  GpuEngineTelemetry,
+  GpuQualityPreset,
+  GpuShadowQualityMode,
+  GpuTextureFilterMode,
+  GpuToneMappingMode,
+  GpuVisualFilterPreset,
+  MAX_UNIVERSE_LOG_METERS,
+  MIN_UNIVERSE_LOG_METERS,
+  OBJECT_MARKERS_COIN_COST,
+  OBJECT_MARKERS_DNA_COST,
+  PLAYABLE_CAPY_HEROES,
+  REALITY_RESCALER_COIN_COST,
+  REALITY_RESCALER_DNA_COST,
+  UNIVERSE_SCALE_BANDS,
+  UniverseScaleTelemetry,
+  WeatherType,
+  formatPhysicalScaleMeters,
 } from '../types';
 import { ProgressionService } from '../services/ProgressionService';
-import { AudioService } from '../services/AudioService';
-import { PlayStyleManager } from '../engine/PlayStyleManager';
 import {
+  PlacementGhostStatus,
+  PlayStyleManager,
+} from '../engine/PlayStyleManager';
+import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
+import { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
+import { AudioService } from '../services/AudioService';
+import { NativeBridge } from '../../services/NativeBridge';
+import {
+  Sparkles,
   Volume2,
   VolumeX,
-  ChevronUp,
-  ChevronDown,
-  Sparkles,
+  Dna,
   Hammer,
   Crown,
-  ShoppingBag,
-  Zap,
-  ArrowLeft,
-  Dna,
+  RotateCcw,
+  Plus,
+  Minus,
+  ArrowUpCircle,
+  Trophy,
+  ChevronUp,
+  ChevronDown,
+  Compass,
+  Settings as SettingsIcon,
+  Info,
   Camera,
+  Check,
   X,
+  Menu,
+  Lock,
+  Unlock,
+  AlertTriangle,
+  Crosshair,
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 
-interface CapyGameViewProps {
-  onSwitchToPaint: () => void;
+type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
+
+const PLAY_STYLE_LIST: Array<{
+  id: PlayStyle;
+  title: string;
+  subtitle: string;
+  compass: string;
+  accentColor: string;
+  description: string;
+  requiredDna: number;
+}> = [
+  {
+    id: 'sanctuary',
+    title: 'Capy-Snake Sanctuary',
+    subtitle: 'Dachshund Orange Trail & Island Hub',
+    compass: 'Center (0, 0)',
+    accentColor: '#38bdf8',
+    description:
+      'Collect oranges matching the color perched on your head to grow your Capybara body like a Dachshund snake, place structures, or enter the 4 outer portals.',
+    requiredDna: 0,
+  },
+  {
+    id: 'spore',
+    title: 'Spore Lagoon',
+    subtitle: 'Evolution Atoll & Plankton Hunt',
+    compass: 'NW (-75, -75)',
+    accentColor: '#34d399',
+    description:
+      'Navigate the North-West Lagoon, harvest plankton and DNA helixes, and splice 3D traits.',
+    requiredDna: 5,
+  },
+  {
+    id: 'breakout',
+    title: 'Yuzu Breakout',
+    subtitle: '3D Deflector & Crystal Waves',
+    compass: 'NE (+75, -75)',
+    accentColor: '#fbbf24',
+    description:
+      'Control the deflector in the North-East sector to ricochet spheres into crystal arrays.',
+    requiredDna: 12,
+  },
+  {
+    id: 'runner',
+    title: 'Number Stampede',
+    subtitle: 'Math Gate Herd Multiplier Highway',
+    compass: 'SW (-75, +75)',
+    accentColor: '#60a5fa',
+    description:
+      'Guide a 3D formation down the South-West causeway through arithmetic multiplier gates.',
+    requiredDna: 20,
+  },
+  {
+    id: 'fallguys',
+    title: 'Yuzu Mountain',
+    subtitle: 'Kinetic Obstacles & Ascent Course',
+    compass: 'SE (+75, +75)',
+    accentColor: '#a78bfa',
+    description:
+      'Ascend the South-East gauntlet past rotating kinetic pendulums and tilting platforms.',
+    requiredDna: 30,
+  },
+];
+
+const ABILITY_UPGRADE_LIST: Array<{
+  id: keyof PlayerStats['upgrades'];
+  name: string;
+  description: string;
+}> = [
+  {
+    id: 'speedBoost',
+    name: 'Locomotion Velocity',
+    description: 'Increases surface and aquatic traversal speed across all 5 world sectors.',
+  },
+  {
+    id: 'yuzuMagnet',
+    name: 'Field Attraction Radius',
+    description: 'Expands the collection radius for energy spheres and DNA nodes.',
+  },
+  {
+    id: 'bounciness',
+    name: 'Vertical Impulse Boost',
+    description: 'Increases vertical leap impulse across surface pads and ascent courses.',
+  },
+  {
+    id: 'herdSize',
+    name: 'Initial Formation Count',
+    description: 'Adds starting companion units in the South-West causeway sector.',
+  },
+  {
+    id: 'paddleSize',
+    name: 'Deflector Span',
+    description: 'Widens the horizontal deflector span in the North-East sector.',
+  },
+];
+
+const WARDROBE_HATS: Array<{
+  id: string;
+  name: string;
+  description: string;
+}> = [
+  {
+    id: 'yuzu',
+    name: 'Citrus Crest',
+    description: ' minimal botanical crest.',
+  },
+  {
+    id: 'crown',
+    name: 'Gold Diadem',
+    description: 'Geometric metallic crown.',
+  },
+  {
+    id: 'flower',
+    name: 'Flora Emblem',
+    description: 'Botanical surface specimen.',
+  },
+  {
+    id: 'wizard',
+    name: 'Spire Cone',
+    description: 'Angular spire headgear.',
+  },
+  {
+    id: 'halo',
+    name: 'Orbital Ring',
+    description: 'Suspended luminous ring.',
+  },
+];
+
+interface TouchDragVisualState {
+  active: boolean;
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
 }
 
-export const CapyGameView: React.FC<CapyGameViewProps> = ({ onSwitchToPaint }) => {
-  const mountRef = useRef<HTMLDivElement>(null);
+export const CapyGameView: React.FC = () => {
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const wakeBarRef = useRef<HTMLDivElement | null>(null);
   const managerRef = useRef<PlayStyleManager | null>(null);
-  const isPointerDraggingRef = useRef<boolean>(false);
-  const dragStartPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  const [stats, setStats] = useState<PlayerStats>(() => ProgressionService.loadStats());
-  const [activeTab, setActiveTab] = useState<
-    'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe'
-  >('modes');
+  const [stats, setStats] = useState<PlayerStats>(() =>
+    ProgressionService.loadStats(true)
+  );
+  const [gameSettings, setGameSettings] = useState<CapyGameSettings>(() =>
+    ProgressionService.loadSettings()
+  );
+  const [activeMode, setActiveMode] = useState<PlayStyle>(
+    () => stats.selectedPlayStyle || 'sanctuary'
+  );
+  const [activeTab, setActiveTab] = useState<DockTab>('modes');
+
+  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [isDockCollapsed, setIsDockCollapsed] = useState<boolean>(false);
-  const [isGalleryOpen, setIsGalleryOpen] = useState<boolean>(false);
-  const [notification, setNotification] = useState<string>(
-    'Welcome to CapyGame 3D! Walk into any 3D Portal or choose a Play Style below.'
-  );
+  const [isInfographicExpanded, setIsInfographicExpanded] = useState<boolean>(false);
+  const [allFeaturesUnlocked, setAllFeaturesUnlocked] = useState<boolean>(false);
+
   const [isMuted, setIsMuted] = useState<boolean>(() => AudioService.getMuted());
-  const [cps, setCps] = useState<number>(() =>
-    ProgressionService.calculateTotalCps(stats)
-  );
-  const [telemetry, setTelemetry] = useState<LiveModeTelemetry>({
-    mode: stats.selectedPlayStyle,
-    primaryLabel: 'Structures',
-    primaryValue: stats.buildings.length,
-    secondaryLabel: 'Portals Active',
-    secondaryValue: 4,
-    comboMultiplier: 1.0,
+  const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [webglError, setWebglError] = useState<string | null>(null);
+  const [placementGhost, setPlacementGhost] = useState<PlacementGhostStatus>({
+    active: false,
+    type: null,
+    name: '',
+    x: 0,
+    z: 0,
+    valid: false,
+  });
+  const [physicsTelemetry, setPhysicsTelemetry] = useState<PhysicsEngineTelemetry>({
+    wasmInitialized: false,
+    workerActive: false,
+    transportMode: 'main_thread_wasm',
+    rigidBodyCount: 12,
+    staticColliderCount: 28,
+    softBodyNodes: 12,
+    fluidGridCells: 576,
+    ccdEnabled: true,
+    lastStepSubsteps: 1,
+    stepDurationMs: 0.25,
+    activeDistrict: 'sanctuary',
+    worldX: 0,
+    worldY: 0,
+    worldZ: 4,
+  });
+  const [gpuTelemetry, setGpuTelemetry] = useState<GpuEngineTelemetry>({
+    backendLabel: 'WebGL2 Hardware Accelerated GPU',
+    gpuRenderer: 'WebGL2 GPU',
+    isSoftwareGl: false,
+    contextLost: false,
+    qualityPreset: 'high',
+    postProcessingActive: true,
+    visualFilterPreset: 'natural_pbr',
+    visualFilterLabel: 'Natural PBR',
+    toneMapping: 'agx',
+    exposure: 1.12,
+    textureFilter: 'trilinear_aniso',
+    activeAnisotropy: 8,
+    maxHardwareAnisotropy: 16,
+    maxTextureSize: 4096,
+    shadowQuality: 'pcf_soft',
+    shadowMapSize: 2048,
+    msaaSamples: 0,
+    bloomEnabled: true,
+    ssaoEnabled: true,
+    sharpenAmount: 0.24,
+    drawCalls: 0,
+    triangles: 0,
+    texturesInVram: 0,
+    geometriesInVram: 0,
+    shaderPrograms: 0,
+    registeredPbrTextures: 0,
   });
 
-  const notifTimerRef = useRef<number | null>(null);
-  const showNotification = useCallback((msg: string) => {
-    setNotification(msg);
-    if (notifTimerRef.current) window.clearTimeout(notifTimerRef.current);
-    notifTimerRef.current = window.setTimeout(() => setNotification(''), 4200);
-  }, []);
+  const modalOpenRef = useRef<boolean>(false);
+  modalOpenRef.current = isSettingsOpen || isAboutOpen;
+  const menuOpenRef = useRef<boolean>(false);
+  menuOpenRef.current = isMenuOpen;
 
-  useEffect(() => {
-    setCps(ProgressionService.calculateTotalCps(stats));
-  }, [stats]);
-
-  // Passive Sanctuary CPS income every second across all modes
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      setStats((prev) => {
-        const earned = ProgressionService.calculateTotalCps(prev);
-        if (earned <= 0) return prev;
-        return ProgressionService.addCoins(prev, earned);
-      });
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, []);
-
-  const handleSelectMode = useCallback((mode: PlayStyle) => {
-    if (managerRef.current) {
-      managerRef.current.switchMode(mode);
+  // Cosmic Genesis & Multi-Scale Universe State
+  const [cosmicStage, setCosmicStage] = useState<CosmicStage>(() => {
+    try {
+      if (
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('skip_cosmic') === '1'
+      ) {
+        return 'playing';
+      }
+    } catch {
+      // Ignore URL parsing issues
     }
-    setStats((prev) => {
-      const updated = { ...prev, selectedPlayStyle: mode };
-      ProgressionService.saveStats(updated);
-      return updated;
-    });
-  }, []);
+    return 'singularity';
+  });
+  const [selectedGalaxyIdx, setSelectedGalaxyIdx] = useState<number>(0);
+  const [selectedStarIdx, setSelectedStarIdx] = useState<number>(0);
+  const [selectedPlanetIdx, setSelectedPlanetIdx] = useState<number>(0);
+  const [selectedLandingIdx, setSelectedLandingIdx] = useState<number>(0);
+  const [selectedCapyHeroIdx, setSelectedCapyHeroIdx] = useState<number>(0);
+  const [bigBangFlashOpacity, setBigBangFlashOpacity] = useState<number>(0);
 
-  // Keyboard controls & hotkeys (WASD / Arrows / Space / 1-5 modes / H dock toggle)
+  // Live Simulation Performance & Fractal Telemetry
+  const [simStats, setSimStats] = useState<{
+    activeStars: number;
+    maxStars: number;
+    totalGalaxies: number;
+    fps: number;
+  }>({
+    activeStars: 36000,
+    maxStars: 48000,
+    totalGalaxies: 64,
+    fps: 60,
+  });
+
+  const [cosmicSimInfo, setCosmicSimInfo] = useState<CosmicSimTelemetry>({
+    epoch: 'inflation',
+    epochLabel: 'Relativistic Inflation Fireball',
+    cosmicAgeGyr: 0.0,
+    gravityMultiplier: 1.0,
+    fluidViscosity: 1.0,
+    meanVelocityKmS: 1240,
+    coalescencePercent: 0,
+    activeHalos: 64,
+    stellarColorMode: 'hr_blackbody',
+    stellarColorModeLabel: 'H-R Blackbody (Mass & Age)',
+    meanStellarMassSolar: 1.42,
+    meanStellarAgeGyr: 4.6,
+    meanTempKelvin: 6840,
+    obStarPercent: 18,
+    redGiantPercent: 14,
+    totalSupernovae: 0,
+    meanMetallicitySolar: 0.02,
+    isFollowingTrackedStar: true,
+    trackedStar: {
+      starIndex: 0,
+      catalogId: 'HD-00001-G1',
+      hostGalaxyIndex: 0,
+      hostGalaxyName: 'Andromeda Capy-Alpha',
+      hostStarSystemIndex: 0,
+      hostStarSystemName: 'Helios Yuzu-A',
+      hostPlanetName: 'Terra Capybara',
+      generation: 1,
+      generationLabel: 'Gen 1 (Pop III Primordial)',
+      evolutionaryStageLabel: 'Primordial Protostar',
+      massSolar: 1.08,
+      ageGyr: 0.1,
+      tempKelvin: 5920,
+      spectralClass: 'G2V',
+      metallicityZ: 0.0001,
+      supernovaAncestors: 0,
+      hasProtoplanetaryDisk: false,
+      elements: {
+        hydrogenPct: 75.0,
+        heliumPct: 25.0,
+        carbonOxygenPct: 0.0,
+        siliconMagnesiumPct: 0.0,
+        ironHeavyPct: 0.0,
+      },
+      posX: 0,
+      posY: 0,
+      posZ: 0,
+      velocityKmS: 420,
+    },
+  });
+
+  const [isScaleAtlasOpen, setIsScaleAtlasOpen] = useState<boolean>(false);
+  const [isOpticsOpen, setIsOpticsOpen] = useState<boolean>(false);
+  const [universeScale, setUniverseScale] = useState<UniverseScaleTelemetry>(() => ({
+    active: false,
+    logScaleMeters: 28.0,
+    targetLogScaleMeters: 28.0,
+    scaleFormatted: formatPhysicalScaleMeters(28.0),
+    scientificLabel: '10^+28.0 m',
+    bandId: 'big_bang',
+    bandIndex: 0,
+    totalBands: UNIVERSE_SCALE_BANDS.length,
+    bandTitle: UNIVERSE_SCALE_BANDS[0].title,
+    bandSubtitle: UNIVERSE_SCALE_BANDS[0].subtitle,
+    domain: 'cosmic',
+    quantumFocus: 'auto',
+    autoZoomDir: 0,
+    realityScaleGamma: 1.0,
+    showObjectMarkers: false,
+    markers: [],
+  }));
+
+  // Mobile Touch Virtual Joystick visual state
+  const [touchVisual, setTouchVisual] = useState<TouchDragVisualState>({
+    active: false,
+    originX: 0,
+    originY: 0,
+    currentX: 0,
+    currentY: 0,
+  });
+
+  const pointerGestureRef = useRef<{
+    pointerId: number | null;
+    originX: number;
+    originY: number;
+    startTime: number;
+    maxDist: number;
+    pinchDist: number | null;
+  }>({
+    pointerId: null,
+    originX: 0,
+    originY: 0,
+    startTime: 0,
+    maxDist: 0,
+    pinchDist: null,
+  });
+
+  const [telemetry, setTelemetry] = useState<LiveModeTelemetry>({
+    mode: 'sanctuary',
+    primaryLabel: 'Dachshund Body',
+    primaryValue: '2.3m (1)',
+    secondaryLabel: 'Head Orange',
+    secondaryValue: 'Tangerine',
+    zoneCoordsLabel: 'Center (0, 0)',
+  });
+
+  const [snakeTelemetry, setSnakeTelemetry] = useState<CapySnakeTelemetry>({
+    bodySegments: 1,
+    bestSegments: 1,
+    lengthMeters: 1.65,
+    orangesCollected: 0,
+    fruitsCarried: 1,
+    mouthMaxRadiusCm: 40,
+    groundRollingFruits: 0,
+    pondFruits: 0,
+    pondOverflowing: false,
+    pondMessPercent: 0,
+    headOrangeName: 'Tangerine',
+    headOrangeCss: '#ff7a00',
+    headOrangeHex: 0xff7a00,
+    fps: 60,
+    lodTier: 3,
+    lodLabel: 'Ultra Bristle LOD',
+    trianglesPerCapy: 6480,
+    autoLodEnabled: true,
+    timeOfDayHours: 9.5,
+    dayPhaseLabel: 'Daylight',
+    weather: 'clear',
+    weatherLabel: 'Clear Skies',
+    groundedFeet: 6,
+    totalFeet: 6,
+    isWalkingBackward: false,
+    isStuckNoFooting: false,
+    occludedObjectsFaded: 0,
+  });
+
+  const [statusBanner, setStatusBanner] = useState<string>(
+    'Drag to navigate · Tap to jump · Open Menu for sector transit'
+  );
+  const [toastText, setToastText] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastText(msg);
+    window.setTimeout(() => {
+      setToastText((prev) => (prev === msg ? null : prev));
+    }, 2600);
+  };
+
   useEffect(() => {
+    const anyOpen =
+      isAboutOpen ||
+      isSettingsOpen ||
+      isMenuOpen ||
+      isScaleAtlasOpen ||
+      isOpticsOpen ||
+      isInfographicExpanded;
+    NativeBridge.setBackModalOpen(anyOpen, () => {
+      if (isAboutOpen) setIsAboutOpen(false);
+      else if (isSettingsOpen) setIsSettingsOpen(false);
+      else if (isOpticsOpen) setIsOpticsOpen(false);
+      else if (isScaleAtlasOpen) setIsScaleAtlasOpen(false);
+      else if (isInfographicExpanded) setIsInfographicExpanded(false);
+      else if (isMenuOpen) setIsMenuOpen(false);
+    });
+  }, [
+    isAboutOpen,
+    isSettingsOpen,
+    isMenuOpen,
+    isScaleAtlasOpen,
+    isOpticsOpen,
+    isInfographicExpanded,
+  ]);
+
+  useEffect(() => {
+    if (!mountRef.current) return;
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('simulate_webgl_error') === '1') {
+        setWebglError('Simulated WebGL 3D context initialization failure.');
+        return;
+      }
+    } catch {
+      // Ignore URL parsing issues
+    }
+
+    const initialStats = ProgressionService.loadStats(true);
+    setStats(initialStats);
+    const initialSettings = ProgressionService.loadSettings();
+
+    let manager: PlayStyleManager;
+    try {
+      manager = new PlayStyleManager(mountRef.current, initialStats, initialSettings, {
+        onProgressEarned: (dnaDelta: number, mode: PlayStyle, score: number) => {
+          setStats((prev: PlayerStats) => {
+            return ProgressionService.recordProgress(prev, dnaDelta, mode, score);
+          });
+        },
+        onTelemetryUpdate: (live: LiveModeTelemetry) => {
+          setTelemetry(live);
+        },
+        onSnakeTelemetryUpdate: (snake: CapySnakeTelemetry) => {
+          setSnakeTelemetry(snake);
+        },
+        onModeNotification: (msg: string) => {
+          setStatusBanner(msg);
+        },
+        onPortalEntered: (targetMode: PlayStyle) => {
+          setActiveMode(targetMode);
+          const zone = ZONE_LOCATIONS[targetMode];
+          showToast(`Sector Transit -> ${zone.title}`);
+        },
+        onPlacementGhostChange: (ghost: PlacementGhostStatus) => {
+          setPlacementGhost(ghost);
+        },
+        onBuildingGhostConfirmed: (type, name, x, z, description) => {
+          setStats((prev: PlayerStats) => {
+            if (prev.buildings.length >= 16) {
+              showToast('Sector capacity reached (16/16 structures)');
+              return prev;
+            }
+            const nextStats = ProgressionService.placeBuilding(
+              prev,
+              type,
+              name,
+              x,
+              z,
+              description
+            );
+            AudioService.playCoin();
+            window.setTimeout(() => {
+              managerRef.current?.updateStats(nextStats);
+              managerRef.current?.refreshSanctuaryBuildings();
+            }, 0);
+            showToast(`Constructed ${name} at (${x}, ${z})`);
+            return nextStats;
+          });
+        },
+        onCosmicStateChange: (
+          stage: CosmicStage,
+          gIdx: number,
+          sIdx: number,
+          pIdx: number,
+          lIdx: number,
+          hIdx: number,
+          flashOpacity: number
+        ) => {
+          setCosmicStage(stage);
+          if (stage === 'playing') {
+            setIsInfographicExpanded(false);
+            setIsOpticsOpen(false);
+          }
+          setSelectedGalaxyIdx(gIdx);
+          setSelectedStarIdx(sIdx);
+          setSelectedPlanetIdx(pIdx);
+          setSelectedLandingIdx(lIdx);
+          setSelectedCapyHeroIdx(hIdx);
+          setBigBangFlashOpacity(flashOpacity);
+          if (managerRef.current) {
+            setSnakeTelemetry(managerRef.current.getCapySnakeTelemetry());
+            if (managerRef.current.cosmicBuilder) {
+              setSimStats(managerRef.current.cosmicBuilder.getSimulationStats());
+              setCosmicSimInfo(managerRef.current.cosmicBuilder.getCosmicSimTelemetry());
+            }
+          }
+        },
+        onUniverseScaleChange: (scaleInfo: UniverseScaleTelemetry) => {
+          setUniverseScale(scaleInfo);
+        },
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Unable to initialize WebGL 3D graphics context.';
+      setWebglError(message);
+      return;
+    }
+
+    managerRef.current = manager;
+    (window as unknown as { __capyManager?: PlayStyleManager }).__capyManager = manager;
+    try {
+      if (sessionStorage.getItem('capy_return_to_surface') === '1') {
+        sessionStorage.removeItem('capy_return_to_surface');
+        manager.setCosmicStage('playing');
+      }
+    } catch {
+      // Ignore sessionStorage restrictions
+    }
+    setSimStats(manager.cosmicBuilder.getSimulationStats());
+    setCosmicSimInfo(manager.cosmicBuilder.getCosmicSimTelemetry());
+    setSnakeTelemetry(manager.getCapySnakeTelemetry());
+    setUniverseScale(manager.getUniverseScaleTelemetry());
+    setGpuTelemetry(manager.getGpuEngineTelemetry());
+
+    let animFrameId = 0;
+    let lastTime = performance.now();
+    let uiSyncAccum = 0;
+    let paceTimerId: number | null = null;
+    let wakeParity = 0;
+    const wakeIntervalId: number | null = manager.isSoftwareGl
+      ? window.setInterval(() => {
+          wakeParity = (wakeParity + 1) & 7;
+          if (wakeBarRef.current) {
+            wakeBarRef.current.style.width = `${1 + (wakeParity & 1)}px`;
+            wakeBarRef.current.style.left = `${wakeParity & 1}px`;
+            wakeBarRef.current.style.backgroundColor =
+              wakeParity & 1 ? 'rgba(56,189,248,0.16)' : 'rgba(56,189,248,0.11)';
+            wakeBarRef.current.textContent = String(wakeParity);
+          }
+        }, 45)
+      : null;
+
+    const scheduleNextFrame = () => {
+      if (!manager.isSoftwareGl) {
+        animFrameId = window.requestAnimationFrame(animate);
+        return;
+      }
+      const delayMs =
+        modalOpenRef.current || menuOpenRef.current
+          ? 75
+          : manager.cosmicStage === 'playing'
+            ? 90
+            : 42;
+      paceTimerId = window.setTimeout(() => {
+        paceTimerId = null;
+        animFrameId = window.requestAnimationFrame(animate);
+      }, delayMs);
+    };
+
+    const animate = (now: number) => {
+      if (manager.isSoftwareGl && (modalOpenRef.current || menuOpenRef.current)) {
+        lastTime = now;
+        scheduleNextFrame();
+        return;
+      }
+
+      const dt = Math.min(0.1, Math.max(0.001, (now - lastTime) / 1000));
+      lastTime = now;
+      uiSyncAccum += dt;
+
+      manager.tick(dt, dt);
+
+      if (uiSyncAccum >= 0.35) {
+        uiSyncAccum = 0;
+        if (manager.cosmicStage !== 'playing') {
+          setSimStats(manager.cosmicBuilder.getSimulationStats());
+          setCosmicSimInfo(manager.cosmicBuilder.getCosmicSimTelemetry());
+        } else {
+          setPhysicsTelemetry(manager.getPhysicsTelemetry());
+        }
+        setGpuTelemetry(manager.getGpuEngineTelemetry());
+        setSnakeTelemetry(manager.getCapySnakeTelemetry());
+      }
+
+      scheduleNextFrame();
+    };
+    animFrameId = window.requestAnimationFrame(animate);
+
+    const handleResize = () => {
+      if (!mountRef.current || !managerRef.current) return;
+      managerRef.current.handleResize(
+        mountRef.current.clientWidth,
+        mountRef.current.clientHeight
+      );
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!managerRef.current) return;
       const key = e.key.toLowerCase();
-      if (key === 'a' || key === 'arrowleft') {
-        managerRef.current.pointerTargetX = null;
-        managerRef.current.moveInput.x = -1;
-      } else if (key === 'd' || key === 'arrowright') {
-        managerRef.current.pointerTargetX = null;
-        managerRef.current.moveInput.x = 1;
-      } else if (key === 'w' || key === 'arrowup') {
-        managerRef.current.moveInput.z = -1;
-      } else if (key === 's' || key === 'arrowdown') {
-        managerRef.current.moveInput.z = 1;
-      } else if (key === ' ' || key === 'spacebar') {
-        e.preventDefault();
-        managerRef.current.isJumping = true;
-      } else if (key === 'h') {
-        setIsDockCollapsed((c) => !c);
-      } else if (key === '1') {
-        handleSelectMode('sanctuary');
-      } else if (key === '2') {
-        handleSelectMode('spore');
-      } else if (key === '3') {
-        handleSelectMode('breakout');
-      } else if (key === '4') {
-        handleSelectMode('runner');
-      } else if (key === '5') {
-        handleSelectMode('fallguys');
+      if (key === 'w' || key === 'arrowup') managerRef.current.moveInput.z = -1;
+      if (key === 's' || key === 'arrowdown') managerRef.current.moveInput.z = 1;
+      if (key === 'a' || key === 'arrowleft') managerRef.current.moveInput.x = -1;
+      if (key === 'd' || key === 'arrowright') managerRef.current.moveInput.x = 1;
+      if (key === ' ') managerRef.current.isJumping = true;
+      if (key === '=' || key === '+' || key === ']') {
+        managerRef.current.adjustZoom(0.18);
+      }
+      if (key === '-' || key === '_' || key === '[') {
+        managerRef.current.adjustZoom(-0.18);
+      }
+      if (key === 'escape') {
+        managerRef.current.cancelBuildingPlacementGhost();
+        setIsScaleAtlasOpen(false);
+        setIsOpticsOpen(false);
+        setIsInfographicExpanded(false);
+        setIsAboutOpen(false);
+        setIsSettingsOpen(false);
+        setIsMenuOpen(false);
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (!managerRef.current) return;
       const key = e.key.toLowerCase();
-      if ((key === 'a' || key === 'arrowleft') && managerRef.current.moveInput.x < 0) {
-        managerRef.current.moveInput.x = 0;
-      }
-      if ((key === 'd' || key === 'arrowright') && managerRef.current.moveInput.x > 0) {
-        managerRef.current.moveInput.x = 0;
-      }
-      if ((key === 'w' || key === 'arrowup') && managerRef.current.moveInput.z < 0) {
+      if (key === 'w' || key === 'arrowup' || key === 's' || key === 'arrowdown') {
         managerRef.current.moveInput.z = 0;
       }
-      if ((key === 's' || key === 'arrowdown') && managerRef.current.moveInput.z > 0) {
-        managerRef.current.moveInput.z = 0;
+      if (key === 'a' || key === 'arrowleft' || key === 'd' || key === 'arrowright') {
+        managerRef.current.moveInput.x = 0;
       }
     };
 
+    const containerEl = mountRef.current;
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pointerGestureRef.current.pinchDist = Math.hypot(dx, dy);
+      }
+    };
+    const handleTouchMove = (e: TouchEvent) => {
+      if (
+        e.touches.length === 2 &&
+        pointerGestureRef.current.pinchDist !== null &&
+        managerRef.current
+      ) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const newDist = Math.hypot(dx, dy);
+        const delta = (newDist - pointerGestureRef.current.pinchDist) * 0.004;
+        managerRef.current.adjustZoom(delta);
+        pointerGestureRef.current.pinchDist = newDist;
+      }
+    };
+    const handleTouchEnd = () => {
+      pointerGestureRef.current.pinchDist = null;
+    };
+    const handleWheel = (e: WheelEvent) => {
+      if (!managerRef.current) return;
+      e.preventDefault();
+      const zoomDelta = -e.deltaY * 0.0012;
+      managerRef.current.adjustZoom(zoomDelta);
+    };
+
+    containerEl.addEventListener('touchstart', handleTouchStart, { passive: true });
+    containerEl.addEventListener('touchmove', handleTouchMove, { passive: true });
+    containerEl.addEventListener('touchend', handleTouchEnd, { passive: true });
+    containerEl.addEventListener('wheel', handleWheel, { passive: false });
+
+    window.addEventListener('resize', handleResize);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+
     return () => {
+      window.cancelAnimationFrame(animFrameId);
+      if (paceTimerId !== null) {
+        window.clearTimeout(paceTimerId);
+      }
+      if (wakeIntervalId !== null) {
+        window.clearInterval(wakeIntervalId);
+      }
+      containerEl.removeEventListener('touchstart', handleTouchStart);
+      containerEl.removeEventListener('touchmove', handleTouchMove);
+      containerEl.removeEventListener('touchend', handleTouchEnd);
+      containerEl.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, [handleSelectMode]);
-
-  // Mount Three.js scene & software-WebGL safe frame loop
-  useEffect(() => {
-    if (!mountRef.current) return;
-
-    const manager = new PlayStyleManager(mountRef.current, stats, {
-      onRewardEarned: (coins, dna, mode, score) => {
-        setStats((prev) => {
-          const next = ProgressionService.addRewards(prev, coins, dna, mode, score);
-          manager.updateStats(next);
-          return next;
-        });
-      },
-      onTelemetryUpdate: (t) => {
-        setTelemetry(t);
-      },
-      onModeNotification: (msg) => {
-        showNotification(msg);
-      },
-      onPortalEntered: (targetMode) => {
-        handleSelectMode(targetMode);
-      },
-    });
-    managerRef.current = manager;
-
-    const clock = new THREE.Clock();
-    let frameId = 0;
-    let isDisposed = false;
-
-    const afterDraw = (cb: () => void) => {
-      const gl = manager.renderer.getContext() as WebGL2RenderingContext;
-      const sync = gl.fenceSync ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
-      gl.flush();
-      if (!sync) {
-        frameId = window.setTimeout(() => {
-          if (!isDisposed) frameId = requestAnimationFrame(cb);
-        }, 40);
-        return;
-      }
-      const poll = () => {
-        if (isDisposed) return;
-        const state = gl.getSyncParameter(sync, gl.SYNC_STATUS);
-        if (state === gl.UNSIGNALED) {
-          frameId = window.setTimeout(poll, 5);
-        } else {
-          gl.deleteSync(sync);
-          frameId = window.setTimeout(() => {
-            if (!isDisposed) frameId = requestAnimationFrame(cb);
-          }, 40);
-        }
-      };
-      frameId = window.setTimeout(poll, 5);
-    };
-
-    const tickLoop = () => {
-      if (isDisposed) return;
-      const delta = clock.getDelta();
-      manager.tick(delta);
-      if (manager.isSoftwareGl) {
-        afterDraw(tickLoop);
-      } else {
-        frameId = requestAnimationFrame(tickLoop);
-      }
-    };
-    frameId = requestAnimationFrame(tickLoop);
-
-    const handleResize = () => {
-      if (mountRef.current) {
-        const w = mountRef.current.clientWidth || window.innerWidth;
-        const h = mountRef.current.clientHeight || window.innerHeight;
-        if (w > 0 && h > 0) {
-          manager.handleResize(w, h);
-        }
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    const resizeObserver =
-      typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(() => handleResize())
-        : null;
-    if (resizeObserver && mountRef.current) {
-      resizeObserver.observe(mountRef.current);
-    }
-
-    return () => {
-      isDisposed = true;
-      cancelAnimationFrame(frameId);
-      clearTimeout(frameId);
-      window.removeEventListener('resize', handleResize);
-      resizeObserver?.disconnect();
       manager.dispose();
-      if (mountRef.current) {
-        mountRef.current.innerHTML = '';
-      }
+      managerRef.current = null;
     };
   }, []);
 
-  // Pointer / Touch drag steering on the 3D canvas
+  useEffect(() => {
+    managerRef.current?.updateStats(stats);
+  }, [stats]);
+
+  useEffect(() => {
+    managerRef.current?.setAllFeaturesUnlocked(allFeaturesUnlocked);
+  }, [allFeaturesUnlocked]);
+
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!managerRef.current) return;
-    isPointerDraggingRef.current = true;
-    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
-    const rect = e.currentTarget.getBoundingClientRect();
-    const normX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-
-    if (
-      managerRef.current.currentMode === 'breakout' ||
-      managerRef.current.currentMode === 'runner'
-    ) {
-      managerRef.current.pointerTargetX = normX;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore pointer capture errors on synthetic events
     }
+
+    pointerGestureRef.current.pointerId = e.pointerId;
+    pointerGestureRef.current.originX = e.clientX;
+    pointerGestureRef.current.originY = e.clientY;
+    pointerGestureRef.current.startTime = performance.now();
+    pointerGestureRef.current.maxDist = 0;
+
+    if (managerRef.current.getPlacementGhostState().active) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        managerRef.current.updateBuildingPlacementGhostFromNdc(ndcX, ndcY);
+      }
+    }
+
+    setTouchVisual({
+      active: true,
+      originX: e.clientX,
+      originY: e.clientY,
+      currentX: e.clientX,
+      currentY: e.clientY,
+    });
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isPointerDraggingRef.current || !managerRef.current) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const normX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-
-    if (
-      managerRef.current.currentMode === 'breakout' ||
-      managerRef.current.currentMode === 'runner'
-    ) {
-      managerRef.current.pointerTargetX = normX;
-    } else {
-      // Virtual joystick drag for Sanctuary, Spore, and Fall Guys
-      const dx = (e.clientX - dragStartPosRef.current.x) / 60;
-      const dz = (e.clientY - dragStartPosRef.current.y) / 60;
-      managerRef.current.moveInput.x = THREE.MathUtils.clamp(dx, -1, 1);
-      managerRef.current.moveInput.z = THREE.MathUtils.clamp(dz, -1, 1);
+    if (managerRef.current && managerRef.current.getPlacementGhostState().active) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        managerRef.current.updateBuildingPlacementGhostFromNdc(ndcX, ndcY);
+      }
+      if (pointerGestureRef.current.pointerId !== e.pointerId) return;
+      const gGhost = pointerGestureRef.current;
+      const dGhost = Math.hypot(e.clientX - gGhost.originX, e.clientY - gGhost.originY);
+      if (dGhost > gGhost.maxDist) gGhost.maxDist = dGhost;
+      return;
     }
+
+    const g = pointerGestureRef.current;
+    if (g.pointerId !== e.pointerId || !managerRef.current) return;
+
+    const dx = e.clientX - g.originX;
+    const dy = e.clientY - g.originY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > g.maxDist) {
+      g.maxDist = dist;
+    }
+
+    const maxJoystickRadius = 56;
+    const clampedX = Math.max(-1, Math.min(1, dx / maxJoystickRadius));
+    const clampedZ = Math.max(-1, Math.min(1, dy / maxJoystickRadius));
+
+    if (dist > 6) {
+      managerRef.current.moveInput.x = clampedX;
+      managerRef.current.moveInput.z = clampedZ;
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      if (rect.width > 0) {
+        const normX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        managerRef.current.pointerTargetX = Math.max(-1, Math.min(1, normX));
+      }
+    }
+
+    const clampedVisDist = Math.min(dist, maxJoystickRadius);
+    const angle = Math.atan2(dy, dx);
+    setTouchVisual((prev) =>
+      prev.active
+        ? {
+            ...prev,
+            currentX: prev.originX + Math.cos(angle) * clampedVisDist,
+            currentY: prev.originY + Math.sin(angle) * clampedVisDist,
+          }
+        : prev
+    );
   };
 
-  const handleCanvasPointerUp = () => {
-    isPointerDraggingRef.current = false;
-    if (!managerRef.current) return;
-    if (
-      managerRef.current.currentMode !== 'breakout' &&
-      managerRef.current.currentMode !== 'runner'
-    ) {
+  const handleCanvasPointerUpOrCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    const g = pointerGestureRef.current;
+    if (g.pointerId !== e.pointerId) return;
+
+    const elapsed = performance.now() - g.startTime;
+    const wasQuickTap = g.maxDist < 14 && elapsed < 350;
+
+    g.pointerId = null;
+    if (managerRef.current) {
       managerRef.current.moveInput.x = 0;
       managerRef.current.moveInput.z = 0;
+      managerRef.current.pointerTargetX = null;
+
+      if (wasQuickTap) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+        const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
+        const handledByCosmic = managerRef.current.handleCanvasTapRaycast(ndcX, ndcY);
+        if (!handledByCosmic && managerRef.current.cosmicStage === 'playing') {
+          managerRef.current.isJumping = true;
+        }
+      }
+    }
+
+    setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+  };
+
+  const updateGameSettings = (patch: Partial<CapyGameSettings>) => {
+    setGameSettings((prev: CapyGameSettings) => {
+      const next: CapyGameSettings = { ...prev, ...patch };
+      ProgressionService.saveSettings(next);
+      if (managerRef.current) {
+        managerRef.current.updateSettings(next);
+        setGpuTelemetry(managerRef.current.getGpuEngineTelemetry());
+      }
+      return next;
+    });
+  };
+
+  const isZoneUnlocked = (mode: PlayStyle): boolean => {
+    if (allFeaturesUnlocked || mode === 'sanctuary') return true;
+    const item = PLAY_STYLE_LIST.find((m) => m.id === mode);
+    return stats.dna >= (item?.requiredDna ?? 0);
+  };
+
+  const isTabUnlocked = (tab: DockTab): boolean => {
+    if (allFeaturesUnlocked || tab === 'modes' || tab === 'build') return true;
+    if (tab === 'dna') return stats.dna >= 5;
+    if (tab === 'upgrades') return stats.dna >= 12;
+    if (tab === 'wardrobe') return stats.dna >= 20;
+    return true;
+  };
+
+  const isMarkersUnlocked = Boolean(
+    stats.unlockedObjectMarkers || allFeaturesUnlocked
+  );
+  const isRescalerUnlocked = Boolean(
+    stats.unlockedRealityRescaler || allFeaturesUnlocked
+  );
+
+  const handleUnlockCosmicInstrument = (
+    instrument: 'markers' | 'rescaler',
+    currency: 'dna' | 'coins'
+  ) => {
+    const updated = ProgressionService.unlockCosmicInstrument(
+      stats,
+      instrument,
+      currency
+    );
+    if (!updated) {
+      const needed =
+        instrument === 'markers'
+          ? currency === 'dna'
+            ? `${OBJECT_MARKERS_DNA_COST} DNA`
+            : `${OBJECT_MARKERS_COIN_COST}c`
+          : currency === 'dna'
+            ? `${REALITY_RESCALER_DNA_COST} DNA`
+            : `${REALITY_RESCALER_COIN_COST}c`;
+      showToast(`Requires ${needed} · Collect on surface or use Sandbox Unlock`);
+      return;
+    }
+    AudioService.playPrestigeFanfare();
+    setStats(updated);
+    managerRef.current?.updateStats(updated);
+    if (instrument === 'markers') {
+      updateGameSettings({ showObjectMarkers: true });
+      managerRef.current?.setShowObjectMarkers(true);
+      showToast('Object Finder Markers Unlocked & Active');
+    } else {
+      showToast('Logarithmic Reality Rescaler Unlocked');
     }
   };
 
-  const handleCanvasWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    if (!managerRef.current) return;
-    const delta = e.deltaY < 0 ? 0.08 : -0.08;
-    managerRef.current.adjustZoom(delta);
+  const handleSetRealityGamma = (gamma: number) => {
+    const clamped = Math.max(0.28, Math.min(1.0, gamma));
+    updateGameSettings({ realityScaleGamma: clamped });
+    managerRef.current?.setRealityScaleGamma(clamped);
   };
 
-  const handleSelectHat = (hatId: string) => {
-    const updated = { ...stats, activeHat: hatId };
-    setStats(updated);
-    ProgressionService.saveStats(updated);
-    if (managerRef.current) managerRef.current.updateStats(updated);
-    showNotification(`Equipped ${hatId.toUpperCase()} hat!`);
+  const handleToggleObjectMarkers = () => {
+    const nextVal = !gameSettings.showObjectMarkers;
     AudioService.playCoin();
+    updateGameSettings({ showObjectMarkers: nextVal });
+    managerRef.current?.setShowObjectMarkers(nextVal);
   };
 
-  const handleSelectSkin = (skinId: string) => {
-    const updated = { ...stats, activeSkin: skinId };
-    setStats(updated);
-    ProgressionService.saveStats(updated);
-    if (managerRef.current) managerRef.current.updateStats(updated);
-    showNotification(`Applied ${skinId.toUpperCase()} fur coat!`);
+  const handleSetAstrophysicsPalette = (palette: AstrophysicsPaletteMode) => {
     AudioService.playCoin();
+    updateGameSettings({ astrophysicsPalette: palette });
+    managerRef.current?.setAstrophysicsPalette(palette);
+  };
+
+  const handleUnlockAllFeatures = () => {
+    AudioService.playPrestigeFanfare();
+    setAllFeaturesUnlocked(true);
+    managerRef.current?.setAllFeaturesUnlocked(true);
+    setStats((prev) => {
+      const nextDna = Math.max(prev.dna, 50);
+      const updated: PlayerStats = {
+        ...prev,
+        dna: nextDna,
+        unlockedObjectMarkers: true,
+        unlockedRealityRescaler: true,
+      };
+      ProgressionService.saveStats(updated);
+      managerRef.current?.updateStats(updated);
+      return updated;
+    });
+    showToast('All World Sectors & Optical Instruments Unlocked');
+  };
+
+  const handleSelectMode = (mode: PlayStyle) => {
+    if (!isZoneUnlocked(mode)) {
+      setAllFeaturesUnlocked(true);
+    }
+    if (managerRef.current && managerRef.current.cosmicStage !== 'playing') {
+      managerRef.current.setCosmicStage('playing');
+    }
+    AudioService.playJump();
+    setActiveMode(mode);
+    setStats((prev: PlayerStats) => {
+      const updated = { ...prev, selectedPlayStyle: mode };
+      ProgressionService.saveStats(updated);
+      return updated;
+    });
+    managerRef.current?.switchMode(
+      mode,
+      Boolean(managerRef.current?.isSoftwareGl && isMenuOpen)
+    );
+    const zone = ZONE_LOCATIONS[mode];
+    showToast(`Transiting to ${zone.title}`);
+  };
+
+  const handleSelectTab = (tab: DockTab) => {
+    if (!isTabUnlocked(tab)) {
+      setAllFeaturesUnlocked(true);
+    }
+    setActiveTab(tab);
+    setIsDockCollapsed(false);
+  };
+
+  const handleToggleMute = () => {
+    const nextMuted = !isMuted;
+    AudioService.setMuted(nextMuted);
+    setIsMuted(nextMuted);
+    if (!nextMuted) {
+      AudioService.playCoin();
+    }
+  };
+
+  const handleToggleChaseCamera = () => {
+    const nextFollow = !gameSettings.cameraFollowBehind;
+    AudioService.playCoin();
+    updateGameSettings({ cameraFollowBehind: nextFollow });
+    showToast(nextFollow ? 'Tracking Camera: Active' : 'Fixed Horizon Camera: Active');
+  };
+
+  const syncCosmicTelemetryNow = () => {
+    if (managerRef.current?.cosmicBuilder) {
+      setSimStats(managerRef.current.cosmicBuilder.getSimulationStats());
+      setCosmicSimInfo(managerRef.current.cosmicBuilder.getCosmicSimTelemetry());
+    }
+  };
+
+  const handlePlaceBuilding = (def: BuildingCatalogItem) => {
+    if (stats.buildings.length >= 16) {
+      showToast('Sector capacity reached (16/16 structures)');
+      return;
+    }
+    const idx = stats.buildings.length;
+    const clearSpot = managerRef.current?.findClearBuildingSpot(idx);
+    const angle = (idx * Math.PI * 2) / 10 + 0.4;
+    const radius = 8.5 + (idx % 3) * 3.8;
+    const bx = clearSpot ? clearSpot.x : Math.cos(angle) * radius;
+    const bz = clearSpot ? clearSpot.z : Math.sin(angle) * radius;
+
+    const nextStats = ProgressionService.placeBuilding(
+      stats,
+      def.type,
+      def.name,
+      bx,
+      bz,
+      def.description
+    );
+    AudioService.playCoin();
+    setStats(nextStats);
+    managerRef.current?.refreshSanctuaryBuildings();
+    showToast(`Deployed ${def.name}`);
+  };
+
+  const handleStartBuildingGhost = (def: BuildingCatalogItem) => {
+    if (stats.buildings.length >= 16) {
+      showToast('Sector capacity reached (16/16 structures)');
+      return;
+    }
+    if (activeMode !== 'sanctuary') {
+      setActiveMode('sanctuary');
+      managerRef.current?.switchMode('sanctuary', true);
+    }
+    AudioService.playCoin();
+    managerRef.current?.startBuildingPlacementGhost(
+      def.type,
+      def.name,
+      def.description
+    );
+    setIsMenuOpen(false);
+  };
+
+  const handleUpgradeBuilding = (buildingId: string) => {
+    const updated = ProgressionService.upgradeBuilding(stats, buildingId);
+    if (!updated) return;
+    AudioService.playCoin();
+    setStats(updated);
+    managerRef.current?.refreshSanctuaryBuildings();
+    showToast('Structure tier upgraded');
+  };
+
+  const handleLevelUpAbility = (upgradeKey: keyof PlayerStats['upgrades']) => {
+    const updated = ProgressionService.buyUpgrade(stats, upgradeKey);
+    AudioService.playSplash();
+    setStats(updated);
+    showToast('Parameter upgraded');
   };
 
   const handleToggleMutation = (mutationId: MutationId) => {
     const res = ProgressionService.unlockOrToggleMutation(stats, mutationId);
-    if (res) {
-      setStats(res.stats);
-      if (managerRef.current) managerRef.current.updateStats(res.stats);
-      AudioService.playPrestigeFanfare();
-      showNotification(
-        res.action === 'unlocked'
-          ? `Evolved ${mutationId.toUpperCase()}! Stage ${res.stats.evolutionStage}`
-          : `Toggled ${mutationId.toUpperCase()}`
-      );
-    } else {
-      showNotification('Harvest more DNA (🧬) in Spore Lagoon or mini-games!');
-    }
+    if (!res) return;
+    AudioService.playCoin();
+    managerRef.current?.updateStats(res.stats);
+    setStats(res.stats);
   };
 
-  const handleBuyUpgrade = (key: keyof PlayerStats['upgrades']) => {
-    const updated = ProgressionService.buyUpgrade(stats, key);
-    if (updated) {
-      setStats(updated);
-      if (managerRef.current) managerRef.current.updateStats(updated);
-      showNotification(`Upgraded ${String(key)} to Lvl ${updated.upgrades[key]}!`);
-      AudioService.playCoin();
-    } else {
-      showNotification('Not enough CapyCoins!');
-    }
+  const handleEquipHat = (hatId: string) => {
+    AudioService.playCoin();
+    const updated: PlayerStats = { ...stats, activeHat: hatId };
+    ProgressionService.saveStats(updated);
+    managerRef.current?.updateStats(updated);
+    setStats(updated);
   };
 
-  const handlePlaceBuilding = (
-    type: BuildingType,
-    name: string,
-    baseCost: number,
-    baseCps: number,
-    desc: string
-  ) => {
-    const angle = Math.random() * Math.PI * 2;
-    const radius = 3.5 + Math.random() * 11.5;
-    const x = Math.cos(angle) * radius;
-    const z = Math.sin(angle) * (radius * 0.75) + 2;
-    const updated = ProgressionService.placeBuilding(
-      stats,
-      type,
-      name,
-      baseCost,
-      baseCps,
-      x,
-      z,
-      desc
-    );
-    if (updated) {
-      setStats(updated);
-      if (managerRef.current) {
-        managerRef.current.updateStats(updated);
-        managerRef.current.refreshSanctuaryBuildings();
-      }
-      showNotification(`Built ${name} on Sanctuary Island! (+${baseCps} CPS)`);
-      AudioService.playSplash();
-    } else {
-      showNotification('Need more CapyCoins to construct this structure!');
-    }
+  const handleResetProgress = () => {
+    const fresh = ProgressionService.resetStats();
+    setStats(fresh);
+    managerRef.current?.updateStats(fresh);
+    managerRef.current?.refreshSanctuaryBuildings();
+    AudioService.playSplash();
+    showToast('Simulation state reset');
   };
 
-  const handleUpgradeExistingBuilding = (buildingId: string, name: string) => {
-    const updated = ProgressionService.upgradeBuilding(stats, buildingId);
-    if (updated) {
-      setStats(updated);
-      if (managerRef.current) {
-        managerRef.current.updateStats(updated);
-        managerRef.current.refreshSanctuaryBuildings();
-      }
-      AudioService.playCoin();
-      showNotification(`Upgraded ${name}!`);
-    } else {
-      showNotification('Not enough CapyCoins to upgrade!');
-    }
+  const getHighScoreForMode = (mode: PlayStyle): number => {
+    if (mode === 'spore') return stats.highScoreSpore;
+    if (mode === 'breakout') return stats.highScoreBreakout;
+    if (mode === 'runner') return stats.highScoreRunner;
+    if (mode === 'fallguys') return stats.highScoreFallGuys;
+    return stats.buildings.length;
   };
 
-  const handlePrestige = () => {
-    const req = ProgressionService.getPrestigeRequirement(stats);
-    const updated = ProgressionService.prestige(stats);
-    if (updated) {
-      setStats(updated);
-      if (managerRef.current) managerRef.current.updateStats(updated);
-      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
-      AudioService.playPrestigeFanfare();
-      showNotification(
-        `Ascended to Prestige Level ${updated.prestigeLevel}! Global Multiplier Boosted!`
-      );
-    } else {
-      showNotification(
-        `Need ${req.toLocaleString()} lifetime CapyCoins to Ascend (Current: ${stats.totalCoinsEarned.toLocaleString()})`
-      );
-    }
+  const setVirtualInput = (x: number, z: number) => {
+    if (!managerRef.current) return;
+    managerRef.current.moveInput.x = x;
+    managerRef.current.moveInput.z = z;
   };
 
-  const toggleMute = () => {
-    const next = !isMuted;
-    setIsMuted(next);
-    AudioService.setMuted(next);
-  };
+  const currentModeInfo =
+    PLAY_STYLE_LIST.find((m) => m.id === activeMode) ?? PLAY_STYLE_LIST[0];
+  const currentZone = ZONE_LOCATIONS[activeMode];
 
-  const modeMeta: Record<PlayStyle, { title: string; hint: string; badge: string }> = {
-    sanctuary: {
-      title: 'Capy Sanctuary',
-      hint: 'WASD / Drag to roam • Walk into 3D Portals',
-      badge: '🏝️',
-    },
-    spore: {
-      title: 'Spore Lagoon',
-      hint: 'Eat smaller critters & DNA • Space to Dash',
-      badge: '🧬',
-    },
-    breakout: {
-      title: 'Yuzu Breakout',
-      hint: 'Slide pointer / A-D to bounce Yuzu balls',
-      badge: '🧱',
-    },
-    runner: {
-      title: 'Number Stampede',
-      hint: 'Steer herd through + and × Math Gates',
-      badge: '🏃',
-    },
-    fallguys: {
-      title: 'Yuzu Mountain',
-      hint: 'Dodge hammers & leap to the Golden Crown',
-      badge: '🎪',
-    },
-  };
-  const currentModeInfo = modeMeta[stats.selectedPlayStyle];
+  const unlockedCount = PROGRESSIVE_UNLOCKS.filter(
+    (u) => allFeaturesUnlocked || stats.dna >= u.requiredDna
+  ).length;
+
+  const showTouchDpad =
+    cosmicStage === 'playing' && gameSettings.touchControlsMode === 'always';
+
+  const activeGalaxy = COSMIC_GALAXIES[selectedGalaxyIdx] || COSMIC_GALAXIES[0];
+  const activeStar =
+    activeGalaxy.starSystems[selectedStarIdx] || activeGalaxy.starSystems[0];
+  const activePlanet =
+    activeStar.planets[selectedPlanetIdx] || activeStar.planets[0];
+  const activeLandingSpot =
+    activePlanet.landingSpots[selectedLandingIdx] || activePlanet.landingSpots[0];
+  const activeCapyHero =
+    PLAYABLE_CAPY_HEROES[selectedCapyHeroIdx] || PLAYABLE_CAPY_HEROES[0];
+
+  const infographicStageTag =
+    cosmicStage === 'singularity'
+      ? 'T = 0.00s'
+      : cosmicStage === 'big_bang'
+      ? cosmicSimInfo.epoch === 'inflation'
+        ? 'INFLATION'
+        : cosmicSimInfo.epoch === 'gravitational_collapse'
+        ? 'GRAVITY COLLAPSE'
+        : 'FLUID ACCRETION'
+      : cosmicStage === 'universe_flight'
+      ? 'SCALE 1/4'
+      : cosmicStage === 'galaxy_view'
+      ? 'SCALE 2/4'
+      : cosmicStage === 'star_system_view'
+      ? 'SCALE 3/4'
+      : cosmicStage === 'planet_orbit'
+      ? 'SCALE 4/4'
+      : cosmicStage === 'planet_descent'
+      ? 'DESCENT'
+      : 'SURFACE';
+
+  const infographicTargetTitle =
+    cosmicStage === 'singularity'
+      ? 'Primordial Singularity'
+      : cosmicStage === 'big_bang'
+      ? `${cosmicSimInfo.epochLabel} (${cosmicSimInfo.coalescencePercent}%)`
+      : cosmicStage === 'universe_flight'
+      ? activeGalaxy.name
+      : cosmicStage === 'galaxy_view'
+      ? activeStar.name
+      : cosmicStage === 'star_system_view'
+      ? activePlanet.name
+      : cosmicStage === 'planet_orbit' || cosmicStage === 'planet_descent'
+      ? activeLandingSpot.name
+      : `${activeCapyHero.name} · ${activeCapyHero.title}`;
 
   return (
-    <div className="relative w-full h-full bg-slate-950 overflow-hidden select-none font-sans">
-      {/* 1. 3D WebGL Canvas Viewport (100% Unobstructed Center) */}
+    <div className="relative w-full h-screen overflow-hidden select-none bg-[#000000] font-sans text-zinc-100">
+      {/* Contiguous 3D WebGL World Canvas with Direct Touch, Wheel Zoom & Pointer Steering */}
       <div
         ref={mountRef}
+        data-testid="capygame-canvas-container"
         onPointerDown={handleCanvasPointerDown}
         onPointerMove={handleCanvasPointerMove}
-        onPointerUp={handleCanvasPointerUp}
-        onPointerCancel={handleCanvasPointerUp}
-        onWheel={handleCanvasWheel}
-        className="absolute inset-0 w-full h-full z-0 cursor-grab active:cursor-grabbing"
+        onPointerUp={handleCanvasPointerUpOrCancel}
+        onPointerCancel={handleCanvasPointerUpOrCancel}
+        style={{ touchAction: 'none' }}
+        className="absolute inset-0 w-full h-full cursor-crosshair active:cursor-grabbing"
+      />
+      <div
+        ref={wakeBarRef}
+        aria-hidden="true"
+        className="fixed top-0 left-0 w-px h-2 overflow-hidden z-[60] pointer-events-none text-[6px] leading-none text-sky-400/15 bg-sky-400/15"
       />
 
-      {/* 2. Top Header HUD (Solid/RGBA surfaces without backdrop-filter for WebGL speed) */}
-      <header className="absolute top-0 inset-x-0 z-20 flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 bg-slate-950/90 border-b border-slate-800/80 pointer-events-none">
-        {/* Left: Switch to CapyPaint & CapyGame Title + Active Mode Banner + Live Mode Telemetry */}
-        <div className="flex items-center gap-2 pointer-events-auto">
-          <button
-            onClick={onSwitchToPaint}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-bold transition active:scale-95"
-            title="Switch to CapyPaint Color by Number"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>CapyPaint</span>
-          </button>
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-700">
-            <span className="text-sm">{currentModeInfo.badge}</span>
-            <div className="flex flex-col leading-tight">
-              <span className="font-extrabold text-white text-xs tracking-wide">
-                {currentModeInfo.title}
-              </span>
-              <span className="text-[10px] text-slate-400 hidden md:inline">
-                {currentModeInfo.hint}
-              </span>
+      {/* WebGL Error Fallback Card */}
+      {webglError && (
+        <div
+          data-testid="capygame-webgl-error"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/95"
+        >
+          <div className="max-w-md w-full bg-zinc-900 rounded-xl p-5 shadow-2xl border border-white/15 text-zinc-100 space-y-4">
+            <div className="flex items-center gap-3 text-amber-400">
+              <AlertTriangle className="w-6 h-6 shrink-0" />
+              <div>
+                <h2 className="text-sm font-semibold tracking-wide uppercase text-zinc-100">
+                  WebGL 3D Context Unavailable
+                </h2>
+                <p className="text-[11px] text-zinc-400">
+                  Hardware or software 3D rendering could not be initialized
+                </p>
+              </div>
             </div>
-          </div>
-
-          {/* Live Mode Telemetry Badge */}
-          <div className="hidden sm:flex items-center gap-3 px-3 py-1 rounded-xl bg-slate-900 border border-slate-700/80 text-xs">
-            <div>
-              <span className="text-slate-400 mr-1">{telemetry.primaryLabel}:</span>
-              <span className="font-black text-emerald-400">{telemetry.primaryValue}</span>
+            <p className="text-xs font-mono text-zinc-300 leading-relaxed bg-zinc-950 p-3 rounded-lg border border-white/10">
+              {webglError}
+            </p>
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="flex-1 py-2 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-medium cursor-pointer border border-white/10"
+              >
+                Reinitialize Context
+              </button>
             </div>
-            <span className="text-slate-700">|</span>
-            <div>
-              <span className="text-slate-400 mr-1">{telemetry.secondaryLabel}:</span>
-              <span className="font-bold text-sky-300">{telemetry.secondaryValue}</span>
-            </div>
-            <span className="text-slate-700">|</span>
-            <div className="text-amber-300 font-bold">×{telemetry.comboMultiplier} Mult</div>
           </div>
         </div>
+      )}
 
-        {/* Center Notification Toast */}
-        {notification && (
-          <div className="pointer-events-none px-3.5 py-1 rounded-full bg-amber-400 text-slate-950 text-xs font-extrabold shadow-md border border-amber-200 max-w-md truncate">
-            {notification}
+      {/* Minimal Vector Reticle when Dragging on Screen */}
+      {touchVisual.active && (
+        <div
+          data-testid="touch-joystick-indicator"
+          className="fixed inset-0 pointer-events-none z-10"
+        >
+          <div
+            style={{
+              left: `${touchVisual.originX - 36}px`,
+              top: `${touchVisual.originY - 36}px`,
+            }}
+            className="fixed w-18 h-18 rounded-full border border-white/30 bg-zinc-950/40"
+          />
+          <div
+            style={{
+              left: `${touchVisual.currentX - 12}px`,
+              top: `${touchVisual.currentY - 12}px`,
+            }}
+            className="fixed w-6 h-6 rounded-full bg-sky-400/80 border border-white"
+          />
+        </div>
+      )}
+
+      {/* Subtle White Flash Overlay on Singularity Ignition */}
+      {bigBangFlashOpacity > 0.01 && (
+        <div
+          data-testid="big-bang-flash-overlay"
+          style={{ opacity: bigBangFlashOpacity }}
+          className="fixed inset-0 z-20 pointer-events-none bg-white transition-opacity duration-75"
+        />
+      )}
+
+      {/* =====================================================================
+          UNLOCKABLE 1:1 OBJECT FINDER MARKERS (Screen-Space Reticles & Callouts)
+          Projects crisp HUD diamond brackets onto sub-pixel planets, moons,
+          stellar cores, and atomic nuclei so tiny 1:1 objects can be located
+          and clicked to zoom directly to their physical scale.
+         ===================================================================== */}
+      {universeScale.active &&
+        universeScale.showObjectMarkers &&
+        universeScale.markers.length > 0 && (
+          <div
+            data-testid="object-finder-markers-layer"
+            className="fixed inset-0 z-20 pointer-events-none overflow-hidden"
+          >
+            {universeScale.markers.map((m) => (
+              <div
+                key={m.id}
+                style={{
+                  transform: `translate3d(${m.screenX}px, ${m.screenY}px, 0)`,
+                }}
+                className="absolute top-0 left-0"
+              >
+                <div
+                  aria-hidden="true"
+                  style={{ borderColor: m.colorCss }}
+                  className="w-3.5 h-3.5 -ml-[7px] -mt-[7px] rotate-45 border bg-zinc-950/30"
+                />
+                <button
+                  type="button"
+                  data-testid={`object-marker-${m.id}`}
+                  onClick={() => {
+                    AudioService.playCosmicWarp(1.06);
+                    managerRef.current?.setSeamlessLogScale(m.targetLogMeters, false);
+                  }}
+                  title={`Focus ${m.label} (${m.sublabel})`}
+                  className="pointer-events-auto absolute left-3 -top-2.5 px-1.5 py-0.5 rounded bg-zinc-950/90 hover:bg-zinc-900 border border-white/15 text-left whitespace-nowrap cursor-pointer transition-colors"
+                >
+                  <div
+                    style={{ color: m.colorCss }}
+                    className="text-[10px] font-mono font-semibold leading-tight"
+                  >
+                    {m.label}
+                  </div>
+                  <div className="text-[9px] font-mono text-zinc-400 tabular-nums leading-tight">
+                    {m.sublabel}
+                  </div>
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Right: Unified Currencies (CapyCoins, Spore DNA, Prestige Karma) & Audio */}
-        <div className="flex items-center gap-2 pointer-events-auto">
-          {/* CapyCoins & CPS */}
-          <div
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 border border-amber-500/40"
-            title="CapyCoins & Passive Sanctuary Income"
-          >
-            <span className="text-sm">🍊</span>
-            <div className="flex flex-col leading-none">
-              <span className="text-xs font-black text-amber-400">
-                {Math.floor(stats.coins).toLocaleString()}
-              </span>
-              <span className="text-[10px] text-amber-200/80 font-semibold">
-                +{cps}/s
-              </span>
-            </div>
-          </div>
-
-          {/* Spore DNA Helix Counter */}
-          <div
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-cyan-500/40"
-            title="Spore Evolutionary DNA"
-          >
-            <Dna className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-xs font-black text-cyan-300">{stats.dna}</span>
-          </div>
-
-          {/* Prestige Level */}
-          <div
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-purple-500/40"
-            title="Prestige Level & Global Multiplier"
-          >
-            <Crown className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-xs font-bold text-purple-300">
-              Lvl {stats.prestigeLevel}
-            </span>
-          </div>
-
-          {/* Gallery & Screenshots Button */}
-          <button
-            onClick={() => setIsGalleryOpen(true)}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-200 text-xs font-bold transition active:scale-95"
-            title="Open Screenshot Showcase Gallery"
-          >
-            <Camera className="w-3.5 h-3.5 text-amber-300" />
-            <span className="hidden sm:inline">Gallery</span>
-          </button>
-
-          {/* Mute Toggle */}
-          <button
-            onClick={toggleMute}
-            className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white transition active:scale-95"
-            title={isMuted ? 'Unmute Synthesized Audio' : 'Mute Synthesized Audio'}
-          >
-            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-          </button>
-        </div>
-      </header>
-
-      {/* 3. Mobile & Touch Action Controls */}
-      <div className="absolute inset-x-4 bottom-32 z-10 flex justify-between pointer-events-none md:hidden">
-        <div className="flex flex-col items-center gap-1 pointer-events-auto bg-slate-900/90 p-2 rounded-2xl border border-slate-700">
-          <button
-            onPointerDown={() => {
-              if (managerRef.current) managerRef.current.moveInput.z = -1;
-            }}
-            onPointerUp={() => {
-              if (managerRef.current) managerRef.current.moveInput.z = 0;
-            }}
-            className="w-10 h-10 rounded-xl bg-slate-800 text-white font-bold flex items-center justify-center active:bg-amber-500"
-          >
-            ▲
-          </button>
-          <div className="flex gap-2">
-            <button
-              onPointerDown={() => {
-                if (managerRef.current) {
-                  managerRef.current.pointerTargetX = null;
-                  managerRef.current.moveInput.x = -1;
-                }
-              }}
-              onPointerUp={() => {
-                if (managerRef.current) managerRef.current.moveInput.x = 0;
-              }}
-              className="w-10 h-10 rounded-xl bg-slate-800 text-white font-bold flex items-center justify-center active:bg-amber-500"
-            >
-              ◀
-            </button>
-            <button
-              onPointerDown={() => {
-                if (managerRef.current) {
-                  managerRef.current.pointerTargetX = null;
-                  managerRef.current.moveInput.x = 1;
-                }
-              }}
-              onPointerUp={() => {
-                if (managerRef.current) managerRef.current.moveInput.x = 0;
-              }}
-              className="w-10 h-10 rounded-xl bg-slate-800 text-white font-bold flex items-center justify-center active:bg-amber-500"
-            >
-              ▶
-            </button>
-          </div>
-          <button
-            onPointerDown={() => {
-              if (managerRef.current) managerRef.current.moveInput.z = 1;
-            }}
-            onPointerUp={() => {
-              if (managerRef.current) managerRef.current.moveInput.z = 0;
-            }}
-            className="w-10 h-10 rounded-xl bg-slate-800 text-white font-bold flex items-center justify-center active:bg-amber-500"
-          >
-            ▼
-          </button>
-        </div>
-
-        <div className="flex items-end pointer-events-auto">
-          <button
-            onClick={() => {
-              if (managerRef.current) managerRef.current.isJumping = true;
-            }}
-            className="w-16 h-16 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex flex-col items-center justify-center shadow-lg active:scale-95"
-          >
-            <span>JUMP</span>
-            <span className="text-[9px] font-bold opacity-80">/ DASH</span>
-          </button>
-        </div>
-      </div>
-
-      {/* 4. Unified Collapsible Bottom Control Dock (Zero Viewport Occlusion) */}
-      <div
-        className={`absolute bottom-3 left-1/2 -translate-x-1/2 z-20 w-[95vw] max-w-4xl transition-transform duration-300 ease-out ${
-          isDockCollapsed ? 'translate-y-[calc(100%-2.1rem)]' : 'translate-y-0'
-        }`}
+      {/* =====================================================================
+          SINGLE COMPACT TOP CONTROL, SCALE, STATUS & DROPDOWN BAR (h-10 / 40px)
+          Consolidates all zoom controls, scale scrubber, live status, cosmic/snake
+          inspectors, placement ghost, sector/build/DNA dock, settings & audio
+          into one sleek top line with top-anchored popover dropdowns.
+         ===================================================================== */}
+      <nav
+        data-testid="unified-top-bar"
+        aria-label="Universe Simulator Controls and Status"
+        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1.5 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
       >
-        {/* Collapse / Expand Handle */}
-        <div className="flex justify-center -mb-px">
+        {/* LEFT CLUSTER: Continuous 63-Order Scale & Step Zoom Controls */}
+        <div
+          data-testid="universe-scale-hud"
+          data-scale-band={universeScale.bandId}
+          data-seamless-active={universeScale.active ? 'true' : 'false'}
+          className="flex items-center gap-0.5 sm:gap-1 shrink-0"
+        >
           <button
-            onClick={() => setIsDockCollapsed((c) => !c)}
-            className="flex items-center gap-1.5 px-4 py-1 rounded-t-xl bg-slate-900 border-t border-x border-slate-700 text-slate-300 hover:text-white text-[11px] font-bold shadow-lg"
+            type="button"
+            data-testid="scale-zoom-out-btn"
+            onClick={() => managerRef.current?.stepScaleBand(1)}
+            title="Zoom Out 1 Scale Band (Toward Big Bang 10^+28m)"
+            aria-label="Zoom Out Scale"
+            className="w-6 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
           >
-            {isDockCollapsed ? (
-              <>
-                <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
-                <span>Show Game Dock (H)</span>
-              </>
-            ) : (
-              <>
-                <ChevronDown className="w-3.5 h-3.5 text-amber-400" />
-                <span>Hide Controls (H)</span>
-              </>
-            )}
+            <Minus className="w-3 h-3" />
+          </button>
+
+          <button
+            type="button"
+            data-testid="toggle-scale-atlas-btn"
+            aria-expanded={isScaleAtlasOpen}
+            onClick={() => {
+              AudioService.playCoin();
+              setIsScaleAtlasOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  setIsOpticsOpen(false);
+                  setIsInfographicExpanded(false);
+                  setIsMenuOpen(false);
+                }
+                return next;
+              });
+            }}
+            title="Open 63-Orders-of-Magnitude Universe Scale Scrubber (Big Bang to Photon)"
+            className={`h-7 px-1.5 sm:px-2 rounded border flex items-center gap-1 text-left transition-colors cursor-pointer ${
+              isScaleAtlasOpen
+                ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
+                : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-100'
+            }`}
+          >
+            <span
+              data-testid="compact-scale-exponent"
+              className="text-[10px] font-mono tabular-nums text-sky-400 font-semibold"
+            >
+              {universeScale.scientificLabel}
+            </span>
+            <span className="hidden sm:inline text-zinc-600 text-[10px]">·</span>
+            <span className="hidden sm:inline text-[11px] font-medium text-zinc-200 max-w-[116px] lg:max-w-[155px] truncate">
+              {UNIVERSE_SCALE_BANDS[universeScale.bandIndex]?.shortLabel || 'Scale'}
+            </span>
+            <ChevronDown
+              className={`w-3 h-3 text-zinc-400 shrink-0 transition-transform ${
+                isScaleAtlasOpen ? 'rotate-180 text-sky-400' : ''
+              }`}
+            />
+          </button>
+
+          <input
+            type="range"
+            min={MIN_UNIVERSE_LOG_METERS}
+            max={MAX_UNIVERSE_LOG_METERS}
+            step={0.05}
+            value={universeScale.targetLogScaleMeters}
+            onChange={(e) => {
+              managerRef.current?.setSeamlessLogScale(parseFloat(e.target.value), false);
+            }}
+            aria-label="Inline Universe Scale Slider"
+            title={`Scale: ${universeScale.scientificLabel} (${universeScale.bandTitle})`}
+            className="hidden xl:block w-24 accent-sky-400 cursor-pointer h-1 bg-zinc-800 rounded-lg mx-0.5"
+          />
+
+          <button
+            type="button"
+            data-testid="scale-zoom-in-btn"
+            onClick={() => managerRef.current?.stepScaleBand(-1)}
+            title="Zoom In 1 Scale Band (Toward Electron & Photon 10^-35m)"
+            aria-label="Zoom In Scale"
+            className="w-6 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
+          >
+            <Plus className="w-3 h-3" />
+          </button>
+
+          <button
+            type="button"
+            data-testid="toggle-optics-panel-btn"
+            aria-expanded={isOpticsOpen}
+            onClick={() => {
+              AudioService.playCoin();
+              setIsOpticsOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  setIsScaleAtlasOpen(false);
+                  setIsInfographicExpanded(false);
+                  setIsMenuOpen(false);
+                }
+                return next;
+              });
+            }}
+            title="Cosmic Optics: 1:1 Physical Scale, Object Finder Markers & Reality Rescaler"
+            className={`h-7 px-1.5 rounded border flex items-center gap-1 text-[10px] font-mono tabular-nums transition-colors cursor-pointer shrink-0 ${
+              isOpticsOpen || universeScale.showObjectMarkers || universeScale.realityScaleGamma < 0.99
+                ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
+                : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+            }`}
+          >
+            <Crosshair className="w-3 h-3 text-sky-400 shrink-0" />
+            <span data-testid="compact-scale-ratio-badge">
+              {universeScale.realityScaleGamma >= 0.99
+                ? '1:1'
+                : `γ${universeScale.realityScaleGamma.toFixed(2)}`}
+              {universeScale.showObjectMarkers ? '·M' : ''}
+            </span>
           </button>
         </div>
 
-        {/* Main Dock Panel */}
-        <div className="bg-slate-900/95 border border-slate-700 rounded-2xl p-3 shadow-2xl">
-          {/* Dock Navigation Bar */}
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2.5 gap-2">
-            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-              <button
-                onClick={() => setActiveTab('modes')}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
-                  activeTab === 'modes'
-                    ? 'bg-amber-500 text-slate-950 shadow'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
+        {/* CENTER CLUSTER: Single-Line Live Status, Placement Ghost & Info Dropdown Trigger */}
+        <div className="flex-1 min-w-0 overflow-hidden flex items-center justify-center">
+          {placementGhost.active ? (
+            <div
+              data-testid="placement-ghost-banner"
+              className="flex items-center gap-1.5 bg-zinc-900 border border-emerald-400/50 px-2 h-7 rounded text-[11px] font-mono min-w-0 max-w-full overflow-hidden"
+            >
+              <Hammer className="w-3 h-3 text-emerald-400 shrink-0" />
+              <span className="text-zinc-100 font-sans font-semibold truncate">
+                {placementGhost.name}
+              </span>
+              <span className="hidden md:inline text-zinc-400 tabular-nums">
+                ({placementGhost.x.toFixed(1)}, {placementGhost.z.toFixed(1)})
+              </span>
+              <span
+                data-testid="placement-ghost-validity"
+                className={
+                  placementGhost.valid
+                    ? 'text-emerald-300 font-semibold shrink-0'
+                    : 'text-rose-300 font-semibold shrink-0'
+                }
               >
-                <Zap className="w-3.5 h-3.5" />
-                <span>Play Styles (1-5)</span>
-              </button>
-
+                {placementGhost.valid ? 'Clear · Tap' : 'Blocked'}
+              </span>
               <button
-                onClick={() => setActiveTab('build')}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
-                  activeTab === 'build'
-                    ? 'bg-amber-500 text-slate-950 shadow'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
+                type="button"
+                data-testid="cancel-placement-ghost-btn"
+                onClick={() => managerRef.current?.cancelBuildingPlacementGhost()}
+                className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-white/15 font-sans text-[10px] cursor-pointer shrink-0"
               >
-                <Hammer className="w-3.5 h-3.5" />
-                <span>World Builder ({stats.buildings.length})</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('dna')}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
-                  activeTab === 'dna'
-                    ? 'bg-cyan-400 text-slate-950 shadow'
-                    : 'text-cyan-300 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <Dna className="w-3.5 h-3.5" />
-                <span>Spore DNA Lab ({stats.activeMutations.length}/6)</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('upgrades')}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
-                  activeTab === 'upgrades'
-                    ? 'bg-amber-500 text-slate-950 shadow'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Meta Upgrades</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('wardrobe')}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
-                  activeTab === 'wardrobe'
-                    ? 'bg-amber-500 text-slate-950 shadow'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <ShoppingBag className="w-3.5 h-3.5" />
-                <span>Wardrobe</span>
+                Cancel
               </button>
             </div>
-
-            <button
-              onClick={handlePrestige}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-purple-600/30 hover:bg-purple-600/50 border border-purple-400/50 text-purple-200 text-xs font-bold transition active:scale-95 whitespace-nowrap"
-              title="Ascend Prestige Level for permanent global reward multiplier"
+          ) : (
+            <div
+              data-testid="cosmic-hud"
+              data-cosmic-stage={cosmicStage}
+              data-expanded={isInfographicExpanded ? 'true' : 'false'}
+              className="min-w-0 max-w-full sm:max-w-[360px] lg:max-w-[450px] overflow-hidden flex items-center justify-center"
             >
-              <Crown className="w-3.5 h-3.5 text-purple-300" />
-              <span>Ascend</span>
-            </button>
-          </div>
-
-          {/* TAB 1: 5 SEAMLESS PLAY STYLES */}
-          {activeTab === 'modes' && (
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               <button
-                onClick={() => handleSelectMode('sanctuary')}
-                className={`p-2.5 rounded-xl border text-left transition ${
-                  stats.selectedPlayStyle === 'sanctuary'
-                    ? 'bg-emerald-950 border-emerald-400 text-emerald-200'
-                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-500'
+                type="button"
+                data-testid="toggle-infographic-btn"
+                aria-expanded={isInfographicExpanded}
+                onClick={() => {
+                  AudioService.playCoin();
+                  setIsInfographicExpanded((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      setIsScaleAtlasOpen(false);
+                      setIsOpticsOpen(false);
+                      setIsMenuOpen(false);
+                    }
+                    return next;
+                  });
+                }}
+                title="Open Live Simulation, Cosmic & Capybara Inspector"
+                className={`h-7 px-1.5 sm:px-2 rounded border flex items-center gap-1 sm:gap-1.5 min-w-0 max-w-full overflow-hidden text-[11px] whitespace-nowrap transition-colors cursor-pointer ${
+                  isInfographicExpanded
+                    ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
+                    : 'bg-zinc-900/90 hover:bg-zinc-800 border-white/10 text-zinc-200'
                 }`}
               >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-extrabold text-xs">🏝️ Sanctuary</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">
-                    Key 1
+                {toastText ? (
+                  <span className="font-mono text-[10px] text-sky-300 truncate min-w-0">{toastText}</span>
+                ) : cosmicStage === 'playing' && !universeScale.active && activeMode === 'sanctuary' ? (
+                  <span
+                    data-testid="capy-snake-hud"
+                    className="flex items-center gap-1 sm:gap-1.5 min-w-0 overflow-hidden font-mono tabular-nums whitespace-nowrap"
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{ backgroundColor: snakeTelemetry.headOrangeCss }}
+                      className="w-2.5 h-2.5 rounded-xs border border-white/30 shrink-0"
+                    />
+                    <span
+                      data-testid="snake-head-orange-label"
+                      className="hidden sm:inline font-sans font-medium text-zinc-100 truncate max-w-[96px]"
+                    >
+                      {snakeTelemetry.headOrangeName}
+                    </span>
+                    <span className="sm:hidden sr-only">{snakeTelemetry.headOrangeName}</span>
+                    <span
+                      data-testid="snake-length-label"
+                      className="text-[10px] text-amber-300 font-semibold truncate min-w-0 whitespace-nowrap"
+                    >
+                      {snakeTelemetry.lengthMeters.toFixed(2)}m · {snakeTelemetry.bodySegments}{' '}
+                      {snakeTelemetry.bodySegments === 1 ? 'seg' : 'segs'}
+                    </span>
+                    <span
+                      data-testid="capy-lod-label"
+                      className="sr-only lg:not-sr-only lg:inline text-[10px] text-emerald-400 shrink-0 whitespace-nowrap"
+                    >
+                      {snakeTelemetry.fps} FPS · {snakeTelemetry.lodLabel}
+                    </span>
                   </span>
-                </div>
-                <div className="text-[10px] text-slate-400 leading-tight">
-                  3D Hub, Portals & Idle Builder (+{cps}/s)
-                </div>
-              </button>
-
-              <button
-                onClick={() => handleSelectMode('spore')}
-                className={`p-2.5 rounded-xl border text-left transition ${
-                  stats.selectedPlayStyle === 'spore'
-                    ? 'bg-cyan-950 border-cyan-400 text-cyan-200'
-                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-500'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-extrabold text-xs">🧬 Spore Evo</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold">
-                    Key 2
+                ) : cosmicStage === 'playing' && !universeScale.active ? (
+                  <span className="flex items-center gap-1.5 min-w-0 font-mono text-[10px] tabular-nums">
+                    <span className="font-sans font-semibold text-zinc-100 truncate">
+                      {currentZone.title}
+                    </span>
+                    <span className="text-zinc-600">·</span>
+                    <span className="text-amber-300 truncate">{telemetry.primaryValue}</span>
+                    <span className="hidden md:inline text-sky-300 truncate">
+                      · {telemetry.secondaryValue}
+                    </span>
                   </span>
-                </div>
-                <div className="text-[10px] text-slate-400 leading-tight">
-                  Eat, Grow & Mutate • Best: {stats.highScoreSpore}kg
-                </div>
-              </button>
-
-              <button
-                onClick={() => handleSelectMode('breakout')}
-                className={`p-2.5 rounded-xl border text-left transition ${
-                  stats.selectedPlayStyle === 'breakout'
-                    ? 'bg-blue-950 border-blue-400 text-blue-200'
-                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-500'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-extrabold text-xs">🧱 Breakout</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-bold">
-                    Key 3
+                ) : (
+                  <span className="flex items-center gap-1.5 min-w-0 font-mono text-[10px] tabular-nums">
+                    <span className="hidden md:inline text-emerald-400 font-semibold shrink-0">
+                      {simStats.fps} FPS
+                    </span>
+                    <span className="text-sky-400 shrink-0">
+                      {universeScale.active ? universeScale.scaleFormatted : infographicStageTag}
+                    </span>
+                    <span className="text-zinc-600">·</span>
+                    <span className="font-sans font-medium text-zinc-100 truncate">
+                      {universeScale.active ? universeScale.bandTitle : infographicTargetTitle}
+                    </span>
                   </span>
-                </div>
-                <div className="text-[10px] text-slate-400 leading-tight">
-                  Yuzu Multiball • Best: {stats.highScoreBreakout.toLocaleString()}
-                </div>
-              </button>
-
-              <button
-                onClick={() => handleSelectMode('runner')}
-                className={`p-2.5 rounded-xl border text-left transition ${
-                  stats.selectedPlayStyle === 'runner'
-                    ? 'bg-amber-950 border-amber-400 text-amber-200'
-                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-500'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-extrabold text-xs">🏃 Stampede</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
-                    Key 4
-                  </span>
-                </div>
-                <div className="text-[10px] text-slate-400 leading-tight">
-                  Math Gate Herd • Best: {stats.highScoreRunner.toLocaleString()}
-                </div>
-              </button>
-
-              <button
-                onClick={() => handleSelectMode('fallguys')}
-                className={`p-2.5 rounded-xl border text-left transition col-span-2 sm:col-span-1 ${
-                  stats.selectedPlayStyle === 'fallguys'
-                    ? 'bg-pink-950 border-pink-400 text-pink-200'
-                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-500'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-extrabold text-xs">🎪 Parkour</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 font-bold">
-                    Key 5
-                  </span>
-                </div>
-                <div className="text-[10px] text-slate-400 leading-tight">
-                  Fall Guys Chaos • Crowns: {stats.highScoreFallGuys}
-                </div>
+                )}
+                <ChevronDown
+                  className={`w-3 h-3 text-zinc-400 shrink-0 transition-transform ${
+                    isInfographicExpanded ? 'rotate-180 text-sky-400' : ''
+                  }`}
+                />
               </button>
             </div>
           )}
+        </div>
 
-          {/* TAB 2: SANCTUARY WORLD BUILDER & UPGRADES */}
-          {activeTab === 'build' && (
+        {/* RIGHT CLUSTER: Compact DNA/Coins Readout, World Dropdown, Settings, Overview & Audio */}
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+          <div className="hidden lg:flex items-center gap-1.5 px-2 h-7 rounded bg-zinc-900/75 border border-white/8 text-[10px] font-mono tabular-nums mr-0.5">
+            <span data-testid="stat-dna" className="text-emerald-300 font-semibold">
+              {stats.dna} DNA
+            </span>
+            <span className="text-zinc-600">·</span>
+            <span data-testid="stat-coins" className="text-amber-300 font-semibold">
+              {stats.coins ?? 0}c
+            </span>
+          </div>
+
+          <button
+            type="button"
+            data-testid="toggle-menu-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              setIsMenuOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  setIsScaleAtlasOpen(false);
+                  setIsOpticsOpen(false);
+                  setIsInfographicExpanded(false);
+                }
+                return next;
+              });
+            }}
+            aria-expanded={isMenuOpen}
+            aria-label={isMenuOpen ? 'Close World Menu' : 'Open World Menu'}
+            className={`h-7 px-2 rounded border flex items-center gap-1 text-xs font-medium transition-colors cursor-pointer ${
+              isMenuOpen
+                ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
+                : 'bg-zinc-900 hover:bg-zinc-800 border-white/12 text-zinc-100'
+            }`}
+          >
+            {isMenuOpen ? (
+              <X className="w-3.5 h-3.5 text-sky-400" />
+            ) : (
+              <Menu className="w-3.5 h-3.5 text-sky-400" />
+            )}
+            <span className="hidden sm:inline">World</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="open-settings-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              setIsSettingsOpen(true);
+            }}
+            title="Simulation Settings"
+            aria-label="Open Simulation Settings"
+            className="w-7 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer"
+          >
+            <SettingsIcon className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            type="button"
+            data-testid="open-about-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              setIsAboutOpen(true);
+            }}
+            title="Universe Architecture Overview"
+            aria-label="Open Overview"
+            className="w-7 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer"
+          >
+            <Info className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleToggleMute}
+            title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
+            aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
+            className="hidden sm:flex w-7 h-7 items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer"
+          >
+            {isMuted ? (
+              <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+            ) : (
+              <Volume2 className="w-3.5 h-3.5" />
+            )}
+          </button>
+        </div>
+      </nav>
+
+      {/* =====================================================================
+          TOP-ANCHORED DROPDOWN 1: 63-ORDER UNIVERSE SCALE ATLAS (left-aligned under top bar)
+         ===================================================================== */}
+      {isScaleAtlasOpen && (
+        <div
+          data-testid="universe-scale-atlas-panel"
+          className="fixed top-11 left-2 z-40 pointer-events-auto w-[calc(100vw-16px)] max-w-[368px] bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5"
+        >
+          <div className="flex items-start justify-between gap-2 border-b border-white/10 pb-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[10px] font-mono tabular-nums text-sky-400">
+                <span data-testid="scale-scientific-readout">{universeScale.scientificLabel}</span>
+                <span className="text-zinc-600">·</span>
+                <span data-testid="scale-human-readout" className="text-amber-300 font-semibold">
+                  {universeScale.scaleFormatted}
+                </span>
+              </div>
+              <h3
+                data-testid="scale-band-title"
+                className="text-xs font-semibold text-zinc-100 truncate mt-0.5"
+              >
+                {universeScale.bandTitle}
+              </h3>
+              <p className="text-[10px] text-zinc-400 line-clamp-1 mt-0.5">
+                {universeScale.bandSubtitle}
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="close-scale-atlas-btn"
+              onClick={() => setIsScaleAtlasOpen(false)}
+              className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
+              aria-label="Collapse Universe Scale Atlas"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Continuous Logarithmic Powers-of-10 Scrubber (+28 Big Bang <-> +0.8 Forest <-> -35 Photon) */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[9px] font-mono text-zinc-400 tabular-nums">
+              <span>10^-35m Photon</span>
+              <span className="text-emerald-300">10^+0.8m Capy Forest</span>
+              <span>10^+28m Big Bang</span>
+            </div>
+            <input
+              type="range"
+              data-testid="universe-scale-slider"
+              min={MIN_UNIVERSE_LOG_METERS}
+              max={MAX_UNIVERSE_LOG_METERS}
+              step={0.05}
+              value={universeScale.targetLogScaleMeters}
+              onChange={(e) => {
+                const val = parseFloat(e.target.value);
+                managerRef.current?.setSeamlessLogScale(val, false);
+              }}
+              aria-label="Logarithmic Universe Scale (log10 meters)"
+              className="w-full accent-sky-400 cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
+            />
+          </div>
+
+          {/* Step Zoom, Auto-Journey & Quantum Focus Controls */}
+          <div className="grid grid-cols-4 gap-1 text-[10px] font-mono">
+            <button
+              type="button"
+              data-testid="auto-zoom-quantum-btn"
+              onClick={() => managerRef.current?.toggleAutoZoom(-1)}
+              className={`py-1 px-1.5 rounded border cursor-pointer truncate ${
+                universeScale.autoZoomDir === -1
+                  ? 'bg-sky-500/25 border-sky-400 text-sky-200'
+                  : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+              }`}
+            >
+              {universeScale.autoZoomDir === -1 ? 'Pause ↓' : 'Dive 10⁻³⁵'}
+            </button>
+            <button
+              type="button"
+              data-testid="auto-zoom-cosmic-btn"
+              onClick={() => managerRef.current?.toggleAutoZoom(1)}
+              className={`py-1 px-1.5 rounded border cursor-pointer truncate ${
+                universeScale.autoZoomDir === 1
+                  ? 'bg-amber-500/25 border-amber-400 text-amber-200'
+                  : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+              }`}
+            >
+              {universeScale.autoZoomDir === 1 ? 'Pause ↑' : 'Rise 10⁺²⁸'}
+            </button>
+            <button
+              type="button"
+              data-testid="quantum-focus-electron"
+              onClick={() => managerRef.current?.setQuantumFocusMode('electron')}
+              className={`py-1 px-1.5 rounded border cursor-pointer truncate ${
+                universeScale.bandId === 'single_electron'
+                  ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200'
+                  : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-cyan-300'
+              }`}
+            >
+              Electron e⁻
+            </button>
+            <button
+              type="button"
+              data-testid="quantum-focus-photon"
+              onClick={() => managerRef.current?.setQuantumFocusMode('photon')}
+              className={`py-1 px-1.5 rounded border cursor-pointer truncate ${
+                universeScale.bandId === 'single_photon'
+                  ? 'bg-amber-500/25 border-amber-400 text-amber-200'
+                  : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-amber-300'
+              }`}
+            >
+              Photon γ
+            </button>
+          </div>
+
+          {/* All 25 Scales Quick-Jump Atlas */}
+          <div className="grid grid-cols-3 gap-1 max-h-44 overflow-y-auto pr-0.5">
+            {UNIVERSE_SCALE_BANDS.map((band) => {
+              const isCurrent = band.id === universeScale.bandId;
+              return (
+                <button
+                  key={band.id}
+                  type="button"
+                  data-testid={`scale-band-btn-${band.id}`}
+                  onClick={() => managerRef.current?.jumpToScaleBand(band.id, false)}
+                  className={`px-1.5 py-1 rounded border text-left transition-colors cursor-pointer ${
+                    isCurrent
+                      ? 'bg-sky-500/25 border-sky-400 text-zinc-100'
+                      : 'bg-zinc-900/85 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                  }`}
+                >
+                  <div className="text-[9px] font-mono text-sky-400 tabular-nums leading-none">
+                    10^{band.logMeters >= 0 ? `+${band.logMeters}` : band.logMeters}m
+                  </div>
+                  <div className="text-[10px] font-medium truncate mt-0.5">{band.shortLabel}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            data-testid="enter-capy-forest-play-btn"
+            onClick={() => {
+              managerRef.current?.resumeSurfacePlayFromForest();
+              setIsScaleAtlasOpen(false);
+            }}
+            className="w-full py-1.5 px-2.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 font-semibold text-xs transition-colors cursor-pointer"
+          >
+            Land &amp; Control Capybara in Forest (10⁺⁰·⁸ m)
+          </button>
+        </div>
+      )}
+
+      {/* =====================================================================
+          TOP-ANCHORED DROPDOWN 1B: COSMIC OPTICS (1:1 Scale, Markers & Reality Rescaler)
+         ===================================================================== */}
+      {isOpticsOpen && (
+        <div
+          data-testid="cosmic-optics-panel"
+          className="fixed top-11 left-2 sm:left-32 z-40 pointer-events-auto w-[calc(100vw-16px)] max-w-[360px] bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5"
+        >
+          <div className="flex items-start justify-between gap-2 border-b border-white/10 pb-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[10px] font-mono tabular-nums text-sky-400">
+                <span>COSMIC OPTICS</span>
+                <span className="text-zinc-600">·</span>
+                <span data-testid="optics-active-law-label" className="text-emerald-300 font-semibold">
+                  {universeScale.realityScaleGamma >= 0.99
+                    ? '1:1 True Physics'
+                    : `Rescaled (γ = ${universeScale.realityScaleGamma.toFixed(2)})`}
+                </span>
+              </div>
+              <p className="text-[10px] text-zinc-400 mt-0.5 leading-snug whitespace-normal">
+                Default universe renders at strict 1:1 physical ratios. Unlock optical instruments to locate sub-pixel bodies or compress scale ratios.
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="close-optics-panel-btn"
+              onClick={() => setIsOpticsOpen(false)}
+              className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
+              aria-label="Close Cosmic Optics Panel"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* 1. UNLOCKABLE OBJECT FINDER MARKERS */}
+          <div className="p-2.5 rounded-lg bg-zinc-900/85 border border-white/10 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold text-zinc-100">
+                Object Finder Markers
+              </div>
+              {isMarkersUnlocked ? (
+                <button
+                  type="button"
+                  data-testid="toggle-object-markers-btn"
+                  onClick={handleToggleObjectMarkers}
+                  className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold border cursor-pointer ${
+                    gameSettings.showObjectMarkers
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
+                      : 'bg-zinc-950 text-zinc-400 border-white/10 hover:text-zinc-200'
+                  }`}
+                >
+                  {gameSettings.showObjectMarkers ? 'MARKERS ON' : 'MARKERS OFF'}
+                </button>
+              ) : (
+                <span className="text-[10px] font-mono text-amber-300 flex items-center gap-1">
+                  <Lock className="w-3 h-3" /> Locked
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-zinc-400 leading-snug whitespace-normal">
+              Projects Keplerian orbit hairlines and clickable HUD target reticles onto tiny 1:1 planets, moons, protostars, and atomic nuclei.
+            </p>
+            {!isMarkersUnlocked && (
+              <div className="grid grid-cols-2 gap-1.5 pt-1">
+                <button
+                  type="button"
+                  data-testid="unlock-markers-dna-btn"
+                  onClick={() => handleUnlockCosmicInstrument('markers', 'dna')}
+                  className="py-1 px-2 rounded bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-[10px] font-mono font-semibold cursor-pointer"
+                >
+                  Unlock · {OBJECT_MARKERS_DNA_COST} DNA
+                </button>
+                <button
+                  type="button"
+                  data-testid="unlock-markers-coins-btn"
+                  onClick={() => handleUnlockCosmicInstrument('markers', 'coins')}
+                  className="py-1 px-2 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[10px] font-mono font-semibold cursor-pointer"
+                >
+                  Unlock · {OBJECT_MARKERS_COIN_COST}c
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 2. UNLOCKABLE LOGARITHMIC / EXPONENTIAL REALITY RESCALER */}
+          <div className="p-2.5 rounded-lg bg-zinc-900/85 border border-white/10 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold text-zinc-100">
+                Reality Rescaler
+              </div>
+              {isRescalerUnlocked ? (
+                <span
+                  data-testid="reality-rescaler-readout"
+                  className="text-[10px] font-mono tabular-nums text-sky-300 font-semibold"
+                >
+                  γ = {gameSettings.realityScaleGamma.toFixed(2)}
+                </span>
+              ) : (
+                <span className="text-[10px] font-mono text-amber-300 flex items-center gap-1">
+                  <Lock className="w-3 h-3" /> Locked (1:1)
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-zinc-400 leading-snug whitespace-normal">
+              Logarithmically / exponentially compresses size &amp; orbital ratios (r&prime; &prop; r^&gamma;) so giant stars, tiny planets, moons, and nuclei appear together intuitively.
+            </p>
+            {isRescalerUnlocked ? (
+              <div className="space-y-1.5 pt-0.5">
+                <input
+                  type="range"
+                  data-testid="reality-rescaler-slider"
+                  min={0.28}
+                  max={1.0}
+                  step={0.02}
+                  value={gameSettings.realityScaleGamma}
+                  onChange={(e) => handleSetRealityGamma(parseFloat(e.target.value))}
+                  aria-label="Reality Rescaler Exponent Gamma"
+                  className="w-full accent-sky-400 cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
+                />
+                <div className="grid grid-cols-3 gap-1 text-[10px] font-mono">
+                  <button
+                    type="button"
+                    data-testid="rescaler-preset-1to1"
+                    onClick={() => handleSetRealityGamma(1.0)}
+                    className={`py-1 px-1.5 rounded border cursor-pointer ${
+                      gameSettings.realityScaleGamma >= 0.99
+                        ? 'bg-sky-500/25 border-sky-400 text-sky-200'
+                        : 'bg-zinc-950 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                    }`}
+                  >
+                    1:1 True
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="rescaler-preset-log"
+                    onClick={() => handleSetRealityGamma(0.5)}
+                    className={`py-1 px-1.5 rounded border cursor-pointer ${
+                      Math.abs(gameSettings.realityScaleGamma - 0.5) < 0.03
+                        ? 'bg-sky-500/25 border-sky-400 text-sky-200'
+                        : 'bg-zinc-950 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                    }`}
+                  >
+                    Log-Sqrt 0.50
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="rescaler-preset-atlas"
+                    onClick={() => handleSetRealityGamma(0.3)}
+                    className={`py-1 px-1.5 rounded border cursor-pointer ${
+                      gameSettings.realityScaleGamma <= 0.33
+                        ? 'bg-sky-500/25 border-sky-400 text-sky-200'
+                        : 'bg-zinc-950 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                    }`}
+                  >
+                    Atlas 0.30
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-1.5 pt-1">
+                <button
+                  type="button"
+                  data-testid="unlock-rescaler-dna-btn"
+                  onClick={() => handleUnlockCosmicInstrument('rescaler', 'dna')}
+                  className="py-1 px-2 rounded bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-[10px] font-mono font-semibold cursor-pointer"
+                >
+                  Unlock · {REALITY_RESCALER_DNA_COST} DNA
+                </button>
+                <button
+                  type="button"
+                  data-testid="unlock-rescaler-coins-btn"
+                  onClick={() => handleUnlockCosmicInstrument('rescaler', 'coins')}
+                  className="py-1 px-2 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[10px] font-mono font-semibold cursor-pointer"
+                >
+                  Unlock · {REALITY_RESCALER_COIN_COST}c
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 3. ASTROPHYSICS SPECTRAL FILTER (Natural Eye vs Hubble Narrowband SHO) */}
+          <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-zinc-900/85 border border-white/10">
+            <span className="text-[11px] font-medium text-zinc-200">Spectral Filter</span>
+            <div className="flex items-center gap-1 text-[10px] font-mono">
+              <button
+                type="button"
+                data-testid="palette-btn-natural"
+                onClick={() => handleSetAstrophysicsPalette('natural')}
+                className={`px-2 py-0.5 rounded border cursor-pointer ${
+                  gameSettings.astrophysicsPalette === 'natural'
+                    ? 'bg-sky-500/25 border-sky-400 text-sky-200'
+                    : 'bg-zinc-950 text-zinc-400 border-white/10'
+                }`}
+              >
+                Natural Eye
+              </button>
+              <button
+                type="button"
+                data-testid="palette-btn-hubble"
+                onClick={() => handleSetAstrophysicsPalette('hubble')}
+                className={`px-2 py-0.5 rounded border cursor-pointer ${
+                  gameSettings.astrophysicsPalette === 'hubble'
+                    ? 'bg-amber-500/25 border-amber-400 text-amber-200'
+                    : 'bg-zinc-950 text-zinc-400 border-white/10'
+                }`}
+              >
+                Hubble SHO
+              </button>
+            </div>
+          </div>
+
+          {(!isMarkersUnlocked || !isRescalerUnlocked) && (
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10 text-[10px] font-mono">
+              <span className="text-zinc-400 tabular-nums">
+                Balance: <span className="text-emerald-300">{stats.dna} DNA</span> ·{' '}
+                <span className="text-amber-300">{stats.coins ?? 0}c</span>
+              </span>
+              <button
+                type="button"
+                data-testid="optics-sandbox-unlock-btn"
+                onClick={handleUnlockAllFeatures}
+                className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-white/15 cursor-pointer"
+              >
+                Sandbox Unlock All
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* =====================================================================
+          TOP-ANCHORED DROPDOWN 2: UNIT SELECTOR ON PLANET SURFACE (`capy_selection`)
+         ===================================================================== */}
+      {cosmicStage === 'capy_selection' && !isMenuOpen && !isScaleAtlasOpen && !isOpticsOpen && (
+        <div
+          data-testid="capy-selector-bar"
+          data-expanded="true"
+          className="fixed top-11 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:w-80 z-40 pointer-events-auto bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5"
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-1.5">
+            <div className="min-w-0">
+              <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                SURFACE · {activeLandingSpot.name}
+              </div>
+              <h3 className="text-xs font-semibold text-zinc-100 truncate">
+                {activeCapyHero.name} · {activeCapyHero.title}
+              </h3>
+            </div>
+            <button
+              type="button"
+              data-testid="cosmic-back-btn"
+              onClick={() => managerRef.current?.stepCosmicBack()}
+              className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-mono text-[10px] border border-white/10 cursor-pointer shrink-0"
+            >
+              ← Orbit
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+            <div>
+              <span className="text-zinc-500 block">SPECIFICATION</span>
+              <span className="text-sky-300 truncate block">{activeCapyHero.perkLabel}</span>
+            </div>
+            <div>
+              <span className="text-zinc-500 block">VELOCITY / LEAP</span>
+              <span className="text-zinc-200">
+                {activeCapyHero.speedMultiplier.toFixed(2)}x /{' '}
+                {activeCapyHero.jumpMultiplier.toFixed(2)}x
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1">
+            {PLAYABLE_CAPY_HEROES.map((hero, idx) => {
+              const isSelected = idx === selectedCapyHeroIdx;
+              return (
+                <button
+                  key={hero.id}
+                  type="button"
+                  data-testid={`select-capy-${idx}`}
+                  onClick={() => managerRef.current?.selectCapyHero(idx, false)}
+                  className={`px-2 py-1.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                    isSelected
+                      ? 'bg-zinc-800 text-zinc-100 border-sky-400/60'
+                      : 'bg-zinc-900/80 text-zinc-400 border-white/10 hover:bg-zinc-800/60'
+                  }`}
+                >
+                  <div className="text-[10px] font-medium truncate">{hero.name}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            data-testid="confirm-capy-btn"
+            onClick={() => {
+              setIsInfographicExpanded(false);
+              managerRef.current?.confirmSelectedCapyHero();
+            }}
+            className="w-full py-1.5 px-3 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs transition-colors cursor-pointer"
+          >
+            Deploy {activeCapyHero.name} →
+          </button>
+        </div>
+      )}
+
+      {/* =====================================================================
+          TOP-ANCHORED DROPDOWN 3: LIVE COSMIC, QUANTUM & SURFACE TELEMETRY INSPECTOR
+         ===================================================================== */}
+      {isInfographicExpanded && cosmicStage !== 'capy_selection' && (
+        <div
+          data-testid="top-info-dropdown"
+          className="fixed top-11 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:w-[340px] z-40 pointer-events-auto bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5 max-h-[80vh] overflow-y-auto"
+        >
+          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 border-b border-white/10 pb-1.5 gap-1 tabular-nums">
+            <span className="text-emerald-400 font-semibold">
+              {cosmicStage === 'playing' ? snakeTelemetry.fps : simStats.fps} FPS
+            </span>
+            <span>{universeScale.scientificLabel}</span>
+            <span className="truncate">{universeScale.bandTitle}</span>
+            <button
+              type="button"
+              data-testid="close-infographic-btn"
+              onClick={() => setIsInfographicExpanded(false)}
+              title="Close Inspector"
+              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 cursor-pointer shrink-0"
+            >
+              <X className="w-3 h-3 text-zinc-400" />
+            </button>
+          </div>
+
+          {/* STAGE 0: SINGULARITY */}
+          {cosmicStage === 'singularity' && (
             <div className="space-y-2">
-              <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
-                {BUILDING_CATALOG.map((item) => {
-                  const count = stats.buildings.filter((b) => b.type === item.type).length;
-                  const nextCost = Math.round(item.baseCost * Math.pow(1.35, count));
-                  return (
-                    <div
-                      key={item.type}
-                      className="min-w-[210px] p-2 rounded-xl bg-slate-800/90 border border-slate-700 flex items-center justify-between gap-2"
-                    >
-                      <div>
-                        <div className="text-xs font-bold text-white flex items-center gap-1">
-                          <span>{item.icon}</span>
-                          <span>{item.name}</span>
-                          <span className="text-[10px] text-emerald-400">({count})</span>
-                        </div>
-                        <div className="text-[10px] text-slate-400">
-                          +{item.baseCps} Coins/s
-                        </div>
-                      </div>
-                      <button
-                        onClick={() =>
-                          handlePlaceBuilding(
-                            item.type,
-                            item.name,
-                            item.baseCost,
-                            item.baseCps,
-                            item.description
-                          )
-                        }
-                        className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow active:scale-95 whitespace-nowrap"
-                      >
-                        {nextCost} 🍊
-                      </button>
-                    </div>
-                  );
-                })}
+              <div>
+                <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                  T = 0.00s · INITIAL STATE
+                </div>
+                <h2 className="text-xs font-semibold text-zinc-100 mt-0.5">
+                  Primordial Singularity
+                </h2>
+                <p className="text-[11px] text-zinc-400 leading-snug mt-0.5">
+                  Click the central white point or zoom continuously from Big Bang (10^+28m) to Capybara Forest (10^+0.8m) and Quantum Photon (10^-35m).
+                </p>
               </div>
 
-              {/* Existing Buildings Quick-Upgrade Row */}
-              {stats.buildings.length > 0 && (
-                <div className="flex items-center gap-2 overflow-x-auto pt-1 border-t border-slate-800 no-scrollbar">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap">
-                    Upgrade Built:
+              <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block">TRACKED SEED</span>
+                  <span data-testid="tracked-star-id" className="text-sky-300 font-semibold">
+                    {cosmicSimInfo.trackedStar.catalogId}
                   </span>
-                  {stats.buildings.map((b) => {
-                    const upgCost = Math.round(b.cost * Math.pow(1.55, b.level));
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">BARYON NODES</span>
+                  <span className="text-zinc-200">4.8×10⁴ Persistent</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  data-testid="trigger-big-bang-btn"
+                  onClick={() => managerRef.current?.triggerBigBang()}
+                  className="flex-1 py-1.5 px-3 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Ignite Big Bang
+                </button>
+                <button
+                  type="button"
+                  data-testid="pick-random-tracked-star-btn"
+                  onClick={() => managerRef.current?.pickRandomTrackedStar()}
+                  title="Pick a random persistent star seed to follow from T=0"
+                  className="py-1.5 px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-sky-300 font-mono text-[10px] border border-sky-400/30 cursor-pointer"
+                >
+                  Random Star
+                </button>
+                <button
+                  type="button"
+                  data-testid="skip-cosmic-to-world-btn"
+                  onClick={() => managerRef.current?.setCosmicStage('playing')}
+                  className="py-1.5 px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-medium text-[11px] border border-white/10 cursor-pointer"
+                >
+                  Surface
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* STAGE 1: N-BODY GRAVITY, SUPERNOVA NUCLEOSYNTHESIS & PERSISTENT STAR TRACKER */}
+          {cosmicStage === 'big_bang' && (
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                    N-BODY GRAVITY &amp; NUCLEOSYNTHESIS
+                  </div>
+                  <h3 className="text-xs font-semibold text-zinc-100 mt-0.5 truncate">
+                    {cosmicSimInfo.epochLabel}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    data-testid="gravity-boost-btn"
+                    onClick={() => {
+                      managerRef.current?.adjustGravityConstant(0.25);
+                      syncCosmicTelemetryNow();
+                    }}
+                    title="Increase Gravitational Constant G"
+                    className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/12 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="gravity-damp-btn"
+                    onClick={() => {
+                      managerRef.current?.adjustGravityConstant(-0.25);
+                      syncCosmicTelemetryNow();
+                    }}
+                    title="Decrease Gravitational Constant G"
+                    className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/12 cursor-pointer"
+                  >
+                    <Minus className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block">GRAVITY G</span>
+                  <span data-testid="gravity-g-label" className="text-zinc-200">
+                    {cosmicSimInfo.gravityMultiplier.toFixed(2)} G₀
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">SUPERNOVAE</span>
+                  <span
+                    data-testid="supernova-count-label"
+                    className="text-amber-300 truncate block"
+                  >
+                    {cosmicSimInfo.totalSupernovae.toLocaleString()} SNe
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">METALS (Z)</span>
+                  <span
+                    data-testid="metallicity-z-label"
+                    className="text-emerald-300 truncate block"
+                  >
+                    {cosmicSimInfo.meanMetallicitySolar.toFixed(2)} Z☉
+                  </span>
+                </div>
+              </div>
+
+              <div className="bg-zinc-900/85 p-2 rounded-lg border border-sky-400/25 space-y-1.5">
+                <div className="flex items-center justify-between gap-1 text-[9px] font-mono">
+                  <span className="text-sky-300 font-semibold truncate" data-testid="tracked-star-id">
+                    ★ {cosmicSimInfo.trackedStar.catalogId} · {cosmicSimInfo.trackedStar.generationLabel}
+                  </span>
+                  <span className="text-amber-300 shrink-0" data-testid="tracked-star-sn-ancestors">
+                    {cosmicSimInfo.trackedStar.supernovaAncestors} SNe
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-1 text-[9px] font-mono text-zinc-300">
+                  <div>
+                    <span className="text-zinc-500 block">MASS</span>
+                    <span data-testid="stellar-mass-label">
+                      {cosmicSimInfo.trackedStar.massSolar.toFixed(2)}M☉
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">TEMP</span>
+                    <span>{cosmicSimInfo.trackedStar.tempKelvin}K</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">H / He</span>
+                    <span>
+                      {cosmicSimInfo.trackedStar.elements.hydrogenPct.toFixed(0)}/
+                      {cosmicSimInfo.trackedStar.elements.heliumPct.toFixed(0)}%
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">C·O·Si·Fe</span>
+                    <span data-testid="tracked-star-heavy-elements" className="text-emerald-300">
+                      {(
+                        cosmicSimInfo.trackedStar.elements.carbonOxygenPct +
+                        cosmicSimInfo.trackedStar.elements.siliconMagnesiumPct +
+                        cosmicSimInfo.trackedStar.elements.ironHeavyPct
+                      ).toFixed(2)}
+                      %
+                    </span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-1 pt-0.5">
+                  <button
+                    type="button"
+                    data-testid="toggle-follow-star-btn"
+                    onClick={() => {
+                      managerRef.current?.toggleFollowTrackedStar();
+                      syncCosmicTelemetryNow();
+                    }}
+                    className={`px-1.5 py-1 rounded text-[9px] font-mono border cursor-pointer truncate ${
+                      cosmicSimInfo.isFollowingTrackedStar
+                        ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                        : 'bg-zinc-950 border-white/10 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {cosmicSimInfo.isFollowingTrackedStar ? 'Cam: Locked' : 'Cam: Free'}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="pick-random-tracked-star-btn"
+                    onClick={() => {
+                      managerRef.current?.pickRandomTrackedStar();
+                      syncCosmicTelemetryNow();
+                    }}
+                    className="px-1.5 py-1 rounded text-[9px] font-mono bg-zinc-950 hover:bg-zinc-800 border border-white/12 text-zinc-200 cursor-pointer truncate"
+                  >
+                    Random Star
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="trigger-supernova-btn"
+                    onClick={() => {
+                      managerRef.current?.triggerSupernovaOnTrackedStar();
+                      syncCosmicTelemetryNow();
+                    }}
+                    className="px-1.5 py-1 rounded text-[9px] font-mono bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-200 cursor-pointer truncate"
+                  >
+                    Supernova
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-zinc-900/80 p-1.5 rounded-lg border border-white/8 space-y-1">
+                <div className="grid grid-cols-3 gap-1">
+                  <button
+                    type="button"
+                    data-testid="stellar-color-mode-hr_blackbody"
+                    onClick={() => {
+                      managerRef.current?.setStellarColorMode('hr_blackbody');
+                      syncCosmicTelemetryNow();
+                    }}
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-mono border cursor-pointer truncate ${
+                      cosmicSimInfo.stellarColorMode === 'hr_blackbody'
+                        ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                        : 'bg-zinc-950 border-white/10 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    H-R Blackbody
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="stellar-color-mode-mass_spectrum"
+                    onClick={() => {
+                      managerRef.current?.setStellarColorMode('mass_spectrum');
+                      syncCosmicTelemetryNow();
+                    }}
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-mono border cursor-pointer truncate ${
+                      cosmicSimInfo.stellarColorMode === 'mass_spectrum'
+                        ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                        : 'bg-zinc-950 border-white/10 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Mass (M/M☉)
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="stellar-color-mode-age_gradient"
+                    onClick={() => {
+                      managerRef.current?.setStellarColorMode('age_gradient');
+                      syncCosmicTelemetryNow();
+                    }}
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-mono border cursor-pointer truncate ${
+                      cosmicSimInfo.stellarColorMode === 'age_gradient'
+                        ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                        : 'bg-zinc-950 border-white/10 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Age (Gyr)
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  data-testid="follow-star-to-planet-btn"
+                  onClick={() => managerRef.current?.followTrackedStarToPlanet()}
+                  className="flex-1 py-1.5 px-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-semibold text-[11px] transition-colors cursor-pointer truncate"
+                >
+                  Follow Star → Planet
+                </button>
+                <button
+                  type="button"
+                  data-testid="skip-big-bang-btn"
+                  onClick={() => managerRef.current?.skipToUniverseFlight()}
+                  className="py-1.5 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-medium text-[11px] border border-white/12 cursor-pointer shrink-0"
+                >
+                  Galaxies →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* STAGE 2: UNIVERSE FLIGHT */}
+          {cosmicStage === 'universe_flight' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                    SCALE 1/4 · {cosmicSimInfo.trackedStar.catalogId}
+                  </div>
+                  <h3 className="text-xs font-semibold text-zinc-100 mt-0.5">
+                    {activeGalaxy.name}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    data-testid="cycle-stellar-color-btn"
+                    onClick={() => {
+                      managerRef.current?.cycleStellarColorMode();
+                      syncCosmicTelemetryNow();
+                    }}
+                    className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-sky-300 font-mono text-[10px] border border-sky-400/30 cursor-pointer"
+                  >
+                    Spectrum
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="skip-cosmic-to-world-btn"
+                    onClick={() => managerRef.current?.setCosmicStage('playing')}
+                    className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-mono text-[10px] border border-white/10 cursor-pointer"
+                  >
+                    Surface
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-zinc-900/85 p-2 rounded-lg border border-sky-400/25 space-y-1.5">
+                <div className="flex items-center justify-between text-[9px] font-mono">
+                  <span className="text-sky-300 font-semibold truncate" data-testid="tracked-star-id">
+                    ★ {cosmicSimInfo.trackedStar.catalogId} ({cosmicSimInfo.trackedStar.generationLabel})
+                  </span>
+                  <span className="text-emerald-300 shrink-0">
+                    Z={cosmicSimInfo.trackedStar.metallicityZ.toFixed(4)}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  <button
+                    type="button"
+                    data-testid="pick-random-tracked-star-btn"
+                    onClick={() => {
+                      managerRef.current?.pickRandomTrackedStar();
+                      syncCosmicTelemetryNow();
+                    }}
+                    className="px-1.5 py-1 rounded text-[9px] font-mono bg-zinc-950 hover:bg-zinc-800 border border-white/12 text-zinc-200 cursor-pointer truncate"
+                  >
+                    Random Star
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="trigger-supernova-btn"
+                    onClick={() => {
+                      managerRef.current?.triggerSupernovaOnTrackedStar();
+                      syncCosmicTelemetryNow();
+                    }}
+                    className="px-1.5 py-1 rounded text-[9px] font-mono bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-200 cursor-pointer truncate"
+                  >
+                    Supernova
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="follow-star-to-planet-btn"
+                    onClick={() => managerRef.current?.followTrackedStarToPlanet()}
+                    className="px-1.5 py-1 rounded text-[9px] font-mono bg-sky-500 hover:bg-sky-400 text-zinc-950 font-semibold cursor-pointer truncate"
+                  >
+                    To Planet →
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1 max-h-28 overflow-y-auto pr-0.5">
+                {COSMIC_GALAXIES.map((gal, idx) => (
+                  <button
+                    key={gal.id}
+                    type="button"
+                    data-testid={`select-galaxy-${idx}`}
+                    onClick={() => managerRef.current?.selectGalaxy(idx)}
+                    className={`flex items-center justify-between px-2 py-1.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                      idx === selectedGalaxyIdx
+                        ? 'bg-zinc-800 border-sky-400/60 text-zinc-100'
+                        : 'bg-zinc-900/80 border-white/10 text-zinc-300 hover:bg-zinc-800/60'
+                    }`}
+                  >
+                    <span className="text-[10px] font-medium truncate">{gal.name}</span>
+                    <span className="text-[9px] font-mono text-sky-400 shrink-0 ml-1">→</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* STAGE 3: GALAXY VIEW */}
+          {cosmicStage === 'galaxy_view' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                    SCALE 2/4 · {activeGalaxy.name}
+                  </div>
+                  <h3 className="text-xs font-semibold text-zinc-100 mt-0.5">{activeStar.name}</h3>
+                </div>
+                <button
+                  type="button"
+                  data-testid="cosmic-back-btn"
+                  onClick={() => managerRef.current?.stepCosmicBack()}
+                  className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-mono text-[10px] border border-white/10 cursor-pointer shrink-0"
+                >
+                  ← Back
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block">SPECTRAL CLASS</span>
+                  <span className="text-zinc-200">{activeStar.spectralClass}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">BODIES</span>
+                  <span className="text-zinc-200">{activeStar.planets.length} Planets</span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                {activeGalaxy.starSystems.map((star, idx) => (
+                  <button
+                    key={star.id}
+                    type="button"
+                    data-testid={`select-star-${idx}`}
+                    onClick={() => managerRef.current?.selectStarSystem(idx)}
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-left transition-colors cursor-pointer"
+                  >
+                    <div>
+                      <div className="text-[11px] font-medium text-zinc-100">{star.name}</div>
+                      <div className="text-[9px] font-mono text-zinc-400">{star.spectralClass}</div>
+                    </div>
+                    <span className="text-[10px] font-mono text-sky-400">Enter →</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* STAGE 4: STAR SYSTEM VIEW */}
+          {cosmicStage === 'star_system_view' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                    SCALE 3/4 · {activeStar.name}
+                  </div>
+                  <h3 className="text-xs font-semibold text-zinc-100 mt-0.5">
+                    {activePlanet.name}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  data-testid="cosmic-back-btn"
+                  onClick={() => managerRef.current?.stepCosmicBack()}
+                  className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-mono text-[10px] border border-white/10 cursor-pointer shrink-0"
+                >
+                  ← Back
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block">ORBIT RADIUS</span>
+                  <span className="text-zinc-200">{activePlanet.orbitRadius} AU</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">RING SYSTEM</span>
+                  <span className="text-zinc-200">{activePlanet.hasRings ? 'Present' : 'None'}</span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                {activeStar.planets.map((planet, idx) => (
+                  <button
+                    key={planet.id}
+                    type="button"
+                    data-testid={`select-planet-${idx}`}
+                    onClick={() => managerRef.current?.selectPlanet(idx)}
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-left transition-colors cursor-pointer"
+                  >
+                    <div>
+                      <div className="text-[11px] font-medium text-zinc-100">{planet.name}</div>
+                      <div className="text-[9px] font-mono text-zinc-400 truncate max-w-44">
+                        {planet.subtitle}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono text-sky-400">Orbit →</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* STAGE 5: PLANETARY ORBIT */}
+          {cosmicStage === 'planet_orbit' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                    SCALE 4/4 · {activePlanet.name}
+                  </div>
+                  <h3 className="text-xs font-semibold text-zinc-100 mt-0.5">
+                    {activeLandingSpot.name}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  data-testid="cosmic-back-btn"
+                  onClick={() => managerRef.current?.stepCosmicBack()}
+                  className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-mono text-[10px] border border-white/10 cursor-pointer shrink-0"
+                >
+                  ← Back
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block">COORDINATES</span>
+                  <span className="text-zinc-200">
+                    {activeLandingSpot.lat}°, {activeLandingSpot.lon}°
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">SURFACE GRAVITY</span>
+                  <span className="text-zinc-200">
+                    {activeLandingSpot.biome.gravityMultiplier.toFixed(2)} G
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {activePlanet.landingSpots.map((spot, idx) => (
+                  <button
+                    key={spot.id}
+                    type="button"
+                    data-testid={`select-landing-${idx}`}
+                    onClick={() => managerRef.current?.selectLandingSpot(idx)}
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-left transition-colors cursor-pointer"
+                  >
+                    <div>
+                      <div className="text-[11px] font-medium text-zinc-100">{spot.name}</div>
+                      <div className="text-[9px] font-mono text-zinc-400">
+                        {spot.lat}°N, {spot.lon}°E
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono text-sky-400">Descend ↓</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* STAGE 5B: ATMOSPHERIC DESCENT */}
+          {cosmicStage === 'planet_descent' && (
+            <div className="space-y-1">
+              <div className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
+                ATMOSPHERIC ENTRY · {activePlanet.name}
+              </div>
+              <div className="text-xs font-medium text-zinc-100">
+                Descending to {activeLandingSpot.name}...
+              </div>
+            </div>
+          )}
+
+          {/* SURFACE PLAYING DETAILED INSPECTOR */}
+          {cosmicStage === 'playing' && (
+            <div className="space-y-2 text-[10px] font-mono tabular-nums">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span
+                    aria-hidden="true"
+                    style={{ backgroundColor: snakeTelemetry.headOrangeCss }}
+                    className="w-3 h-3 rounded-sm border border-white/30 shrink-0"
+                  />
+                  <span className="font-sans text-xs font-semibold text-zinc-100 truncate">
+                    {snakeTelemetry.headOrangeName} · {currentZone.title}
+                  </span>
+                </div>
+                <span data-testid="snake-fruits-carried" className="text-amber-200 shrink-0">
+                  Stack: {snakeTelemetry.fruitsCarried}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block">BODY</span>
+                  <span className="text-amber-300">
+                    {snakeTelemetry.lengthMeters.toFixed(2)}m ({snakeTelemetry.bodySegments})
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">MOUTH MAX</span>
+                  <span data-testid="snake-mouth-limit" className="text-sky-300">
+                    &le;{snakeTelemetry.mouthMaxRadiusCm}cm
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">EATEN</span>
+                  <span data-testid="snake-oranges-count" className="text-zinc-200">
+                    {snakeTelemetry.orangesCollected}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+                <div>
+                  <span className="text-zinc-500 block">SOLAR / WEATHER</span>
+                  <span data-testid="world-weather-label" className="text-zinc-200 truncate block">
+                    {snakeTelemetry.dayPhaseLabel} · {snakeTelemetry.weatherLabel}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-500 block">HOME POOL</span>
+                  <span data-testid="pond-status-label" className="text-sky-300 truncate block">
+                    {snakeTelemetry.pondOverflowing
+                      ? `Mess ${snakeTelemetry.pondMessPercent}% (${snakeTelemetry.pondFruits})`
+                      : `${snakeTelemetry.pondFruits} fruits`}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                data-testid="capy-footing-label"
+                className="flex items-center justify-between text-zinc-300 px-0.5"
+              >
+                <span>
+                  {snakeTelemetry.isStuckNoFooting
+                    ? `STUCK (0/${snakeTelemetry.totalFeet} feet)`
+                    : snakeTelemetry.isWalkingBackward
+                      ? `Reverse (${snakeTelemetry.groundedFeet}/${snakeTelemetry.totalFeet} feet)`
+                      : `Feet: ${snakeTelemetry.groundedFeet}/${snakeTelemetry.totalFeet} grounded`}
+                </span>
+                <span className="text-zinc-400">{snakeTelemetry.lodLabel}</span>
+              </div>
+
+              <div
+                data-testid="physics-telemetry-readout"
+                className="bg-zinc-900/90 p-2 rounded-lg border border-white/8 space-y-1"
+              >
+                <div className="flex items-center justify-between text-[9px] text-emerald-300">
+                  <span>
+                    PHYSICS: Rapier3D Wasm{physicsTelemetry.workerActive ? ' + Worker' : ''} · CCD
+                  </span>
+                  <span className="text-zinc-400">
+                    ({physicsTelemetry.worldX}, {physicsTelemetry.worldZ})m
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[9px] text-zinc-400">
+                  <span>
+                    Bodies: {physicsTelemetry.rigidBodyCount}R/{physicsTelemetry.staticColliderCount}S · XPBD {physicsTelemetry.softBodyNodes}n
+                  </span>
+                  <span>
+                    Fluid {physicsTelemetry.fluidGridCells}c · {physicsTelemetry.transportMode === 'shared_array_buffer' ? 'SAB' : 'Worker'}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                data-testid="gpu-telemetry-readout"
+                className="bg-zinc-900/90 p-2 rounded-lg border border-white/8 space-y-1 tabular-nums"
+              >
+                <div className="flex items-center justify-between text-[9px] text-sky-300">
+                  <span className="truncate pr-2">
+                    GPU: {gpuTelemetry.backendLabel} · {gpuTelemetry.toneMapping.toUpperCase()}
+                  </span>
+                  <span className="text-zinc-400 shrink-0">
+                    {gpuTelemetry.activeAnisotropy}x Aniso
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[9px] text-zinc-400">
+                  <span className="truncate pr-2">
+                    Filter: {gpuTelemetry.visualFilterLabel} · {gpuTelemetry.postProcessingActive ? 'HDR PostFX' : 'Direct'}
+                  </span>
+                  <span className="shrink-0">
+                    {gpuTelemetry.drawCalls} dc · {(gpuTelemetry.triangles / 1000).toFixed(1)}k tri
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-zinc-400 text-[10px] font-sans border-t border-white/10 pt-1.5">
+                {statusBanner}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* =====================================================================
+          TOP-ANCHORED DROPDOWN 4: WORLD SECTORS, STRUCTURES, BIO-TRAITS & LOADOUT
+         ===================================================================== */}
+      {isMenuOpen && (
+        <header
+          data-testid="capygame-top-header"
+          className="fixed top-11 right-2 left-2 sm:left-auto sm:w-[720px] z-40 pointer-events-auto bg-zinc-950/96 border border-white/15 rounded-xl shadow-2xl p-2.5 flex flex-col gap-2"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-white/10 pb-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex items-center gap-1.5 bg-zinc-900 border border-white/10 px-2.5 py-1 rounded-md text-xs">
+                <Compass className="w-3 h-3 text-sky-400 shrink-0" />
+                <span className="font-semibold text-zinc-100">{currentZone.title}</span>
+                <span className="text-[10px] font-mono text-zinc-400">
+                  {currentModeInfo.compass}
+                </span>
+              </div>
+
+              <div className="flex lg:hidden items-center gap-1.5 bg-zinc-900 border border-white/10 px-2 py-1 rounded-md text-[11px] font-mono tabular-nums">
+                <span className="text-emerald-300 font-semibold">{stats.dna} DNA</span>
+                <span className="text-zinc-600">·</span>
+                <span className="text-amber-300 font-semibold">{stats.coins ?? 0}c</span>
+              </div>
+
+              <div
+                data-testid="progressive-unlock-bar"
+                className="flex items-center gap-1.5 bg-zinc-900 border border-white/10 px-2 py-1 rounded-md text-[11px] font-mono text-zinc-300"
+              >
+                <span>
+                  SECTORS {unlockedCount}/{PROGRESSIVE_UNLOCKS.length}
+                </span>
+                {unlockedCount < PROGRESSIVE_UNLOCKS.length && (
+                  <button
+                    type="button"
+                    data-testid="unlock-all-features-btn"
+                    onClick={handleUnlockAllFeatures}
+                    className="ml-1 px-1.5 py-0.5 rounded bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-300 font-sans font-medium text-[10px] cursor-pointer"
+                  >
+                    Unlock All
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                type="button"
+                data-testid="open-cosmic-map-btn"
+                onClick={() => {
+                  AudioService.playCosmicWarp(1.0);
+                  managerRef.current?.setCosmicStage('universe_flight');
+                  setIsMenuOpen(false);
+                }}
+                className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-sky-300 font-medium text-[11px] px-2 py-1 rounded-md border border-sky-500/30 transition-colors cursor-pointer"
+              >
+                <Sparkles className="w-3 h-3 text-sky-400" />
+                <span>Cosmic Map</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="open-capy-select-btn"
+                onClick={() => {
+                  AudioService.playCoin();
+                  managerRef.current?.setCosmicStage('capy_selection');
+                  setIsMenuOpen(false);
+                }}
+                className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-medium text-[11px] px-2 py-1 rounded-md border border-white/12 transition-colors cursor-pointer"
+              >
+                <Crown className="w-3 h-3 text-amber-400" />
+                <span>Select Unit</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="toggle-chase-camera-btn"
+                onClick={handleToggleChaseCamera}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium text-[11px] transition-colors cursor-pointer border ${
+                  gameSettings.cameraFollowBehind
+                    ? 'bg-sky-500/20 text-sky-200 border-sky-400/40'
+                    : 'bg-zinc-900 text-zinc-300 border-white/12 hover:bg-zinc-800'
+                }`}
+              >
+                <Camera className="w-3 h-3" />
+                <span>{gameSettings.cameraFollowBehind ? 'Chase Cam: ON' : 'Fixed Cam'}</span>
+              </button>
+            </div>
+          </div>
+
+          <section data-testid="capygame-top-dock" className="w-full overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between pb-2 border-b border-white/10 gap-1">
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  data-testid="tab-modes"
+                  onClick={() => handleSelectTab('modes')}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    activeTab === 'modes'
+                      ? 'bg-zinc-800 text-zinc-100 border border-white/15'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                  <span>Sectors (5)</span>
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="tab-build"
+                  onClick={() => handleSelectTab('build')}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    activeTab === 'build'
+                      ? 'bg-zinc-800 text-zinc-100 border border-white/15'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                >
+                  <Hammer className="w-3.5 h-3.5" />
+                  <span>Structures</span>
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="tab-dna"
+                  onClick={() => handleSelectTab('dna')}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    activeTab === 'dna'
+                      ? 'bg-zinc-800 text-zinc-100 border border-white/15'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                >
+                  {isTabUnlocked('dna') ? (
+                    <Dna className="w-3.5 h-3.5" />
+                  ) : (
+                    <Lock className="w-3 h-3 text-zinc-500" />
+                  )}
+                  <span>Bio-Traits</span>
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="tab-upgrades"
+                  onClick={() => handleSelectTab('upgrades')}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    activeTab === 'upgrades'
+                      ? 'bg-zinc-800 text-zinc-100 border border-white/15'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                >
+                  {isTabUnlocked('upgrades') ? (
+                    <ArrowUpCircle className="w-3.5 h-3.5" />
+                  ) : (
+                    <Lock className="w-3 h-3 text-zinc-500" />
+                  )}
+                  <span>Parameters</span>
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="tab-wardrobe"
+                  onClick={() => handleSelectTab('wardrobe')}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    activeTab === 'wardrobe'
+                      ? 'bg-zinc-800 text-zinc-100 border border-white/15'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                  }`}
+                >
+                  {isTabUnlocked('wardrobe') ? (
+                    <Crown className="w-3.5 h-3.5" />
+                  ) : (
+                    <Lock className="w-3 h-3 text-zinc-500" />
+                  )}
+                  <span>Loadout</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {activeMode !== 'sanctuary' && (
+                  <button
+                    type="button"
+                    onClick={() => managerRef.current?.switchMode(activeMode, true)}
+                    className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 px-2 py-1 rounded text-[11px] font-medium border border-white/10 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span className="hidden sm:inline">Reset Sector</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  data-testid="toggle-dock-collapse"
+                  onClick={() => setIsDockCollapsed((prev) => !prev)}
+                  className="flex items-center gap-1 px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 text-[11px] font-medium border border-white/10 cursor-pointer"
+                >
+                  <span>{isDockCollapsed ? 'Expand' : 'Hide'}</span>
+                  {isDockCollapsed ? (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {!isDockCollapsed && (
+              <div className="pt-2 max-h-[54vh] sm:max-h-[62vh] overflow-y-auto">
+                {activeTab === 'modes' && (
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {PLAY_STYLE_LIST.map((mode) => {
+                      const isSelected = mode.id === activeMode;
+                      const unlocked = isZoneUnlocked(mode.id);
+                      const best = getHighScoreForMode(mode.id);
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          data-testid={`mode-btn-${mode.id}`}
+                          onClick={() => handleSelectMode(mode.id)}
+                          className={`flex flex-col justify-between p-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-zinc-800/90 border-sky-400/60'
+                              : 'bg-zinc-900/70 border-white/10 hover:bg-zinc-800/60'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-semibold text-zinc-100 truncate flex items-center gap-1">
+                                {!unlocked && <Lock className="w-3 h-3 text-zinc-500 shrink-0" />}
+                                {mode.title}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-zinc-400 mt-0.5 line-clamp-1">
+                              {mode.subtitle}
+                            </p>
+                          </div>
+
+                          <div className="mt-1.5 pt-1 border-t border-white/10 flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                            <span className="text-sky-400 flex items-center gap-0.5">
+                              {isSelected ? (
+                                'ACTIVE'
+                              ) : unlocked ? (
+                                'TRANSIT ->'
+                              ) : (
+                                <>
+                                  <Unlock className="w-2.5 h-2.5" />
+                                  <span>{mode.requiredDna} DNA</span>
+                                </>
+                              )}
+                            </span>
+                            <span className="flex items-center gap-0.5 text-zinc-300">
+                              <Trophy className="w-2.5 h-2.5" /> {best}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {activeTab === 'build' && (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {BUILDING_CATALOG.map((def) => {
+                        const count = stats.buildings.filter((b) => b.type === def.type).length;
+                        return (
+                          <div
+                            key={def.type}
+                            className="flex flex-col justify-between p-2 rounded-lg bg-zinc-900/80 border border-white/10"
+                          >
+                            <div>
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-xs font-semibold text-zinc-100 truncate">
+                                  {def.name}
+                                </span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-zinc-400 border border-white/10 shrink-0">
+                                  {count}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-zinc-400 mt-0.5 line-clamp-1">
+                                {def.description}
+                              </p>
+                            </div>
+
+                            <div className="mt-1.5 flex items-center gap-1">
+                              <button
+                                type="button"
+                                data-testid={`build-btn-${def.type}`}
+                                onClick={() => handlePlaceBuilding(def)}
+                                className="flex-1 flex items-center justify-center gap-1 py-1 px-1.5 rounded text-[11px] font-medium transition-colors cursor-pointer bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-white/10"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>Deploy</span>
+                              </button>
+                              <button
+                                type="button"
+                                data-testid={`ghost-btn-${def.type}`}
+                                onClick={() => handleStartBuildingGhost(def)}
+                                title="Aim & place on exact 3D Sanctuary turf"
+                                className="flex items-center justify-center gap-1 py-1 px-2 rounded text-[11px] font-medium transition-colors cursor-pointer bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-400/35"
+                              >
+                                <Compass className="w-3 h-3" />
+                                <span>Place</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {stats.buildings.length > 0 && (
+                      <div className="flex items-center gap-1.5 overflow-x-auto pt-1">
+                        <span className="text-[10px] font-mono uppercase text-zinc-500 shrink-0">
+                          Deployed ({stats.buildings.length}/16):
+                        </span>
+                        {stats.buildings.map((b, idx) => (
+                          <button
+                            key={b.id}
+                            type="button"
+                            onClick={() => handleUpgradeBuilding(b.id)}
+                            className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border bg-zinc-900 border-white/15 text-zinc-300 hover:bg-zinc-800 cursor-pointer"
+                          >
+                            <span>
+                              #{idx + 1} {b.name} L{b.level}
+                            </span>
+                            <span className="text-sky-400">+</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'dna' && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {SPORE_MUTATIONS.map((mut) => {
+                      const isEquipped = stats.activeMutations.includes(mut.id);
+                      return (
+                        <div
+                          key={mut.id}
+                          className={`flex flex-col justify-between p-2 rounded-lg border ${
+                            isEquipped
+                              ? 'bg-zinc-800 border-emerald-400/50'
+                              : 'bg-zinc-900/80 border-white/10'
+                          }`}
+                        >
+                          <div>
+                            <span className="text-xs font-semibold text-zinc-100">{mut.name}</span>
+                            <p className="text-[10px] text-zinc-400 mt-0.5 line-clamp-2">
+                              {mut.description}
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            data-testid={`mutation-btn-${mut.id}`}
+                            onClick={() => handleToggleMutation(mut.id)}
+                            className={`mt-1.5 w-full py-1 px-2 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                              isEquipped
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40'
+                                : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border border-white/10'
+                            }`}
+                          >
+                            {isEquipped ? 'Active' : 'Activate'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {activeTab === 'upgrades' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {ABILITY_UPGRADE_LIST.map((up) => {
+                      const level = stats.upgrades[up.id] || 1;
+                      return (
+                        <div
+                          key={up.id}
+                          className="flex flex-col justify-between p-2 rounded-lg bg-zinc-900/80 border border-white/10 gap-1.5"
+                        >
+                          <div>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-semibold text-zinc-100">{up.name}</span>
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-sky-400 border border-white/10">
+                                L{level}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-zinc-400 mt-0.5">{up.description}</p>
+                          </div>
+
+                          <button
+                            type="button"
+                            data-testid={`upgrade-btn-${up.id}`}
+                            onClick={() => handleLevelUpAbility(up.id)}
+                            className="w-full py-1 px-2 rounded text-xs font-medium transition-colors cursor-pointer bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-white/10"
+                          >
+                            Increment
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {activeTab === 'wardrobe' && (
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {WARDROBE_HATS.map((item) => {
+                      const isSelected = stats.activeHat === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          data-testid={`wardrobe-btn-${item.id}`}
+                          onClick={() => handleEquipHat(item.id)}
+                          className={`flex flex-col justify-between p-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-zinc-800 border-sky-400/50'
+                              : 'bg-zinc-900/80 border-white/10 hover:bg-zinc-800/60'
+                          }`}
+                        >
+                          <div>
+                            <span className="text-xs font-semibold text-zinc-100">{item.name}</span>
+                            <p className="text-[10px] text-zinc-400 mt-0.5">{item.description}</p>
+                          </div>
+                          <span
+                            className={`mt-1.5 inline-block text-[10px] font-mono uppercase ${
+                              isSelected ? 'text-sky-400' : 'text-zinc-500'
+                            }`}
+                          >
+                            {isSelected ? 'EQUIPPED' : 'EQUIP'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </header>
+      )}
+
+      {/* Optional On-Screen Steering Pad (Hidden unless explicitly set to 'always' in Settings) */}
+      {showTouchDpad && (
+        <div
+          data-testid="touch-dpad-controls"
+          className="fixed bottom-3 right-3 z-20 flex flex-col items-center gap-1 pointer-events-auto"
+        >
+          <button
+            type="button"
+            onPointerDown={() => setVirtualInput(0, -1)}
+            onPointerUp={() => setVirtualInput(0, 0)}
+            onPointerLeave={() => setVirtualInput(0, 0)}
+            className="w-10 h-10 rounded-lg bg-zinc-950/90 active:bg-zinc-800 border border-white/15 text-zinc-200 text-xs font-mono shadow-lg flex items-center justify-center"
+            aria-label="Move Forward"
+          >
+            N
+          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onPointerDown={() => setVirtualInput(-1, 0)}
+              onPointerUp={() => setVirtualInput(0, 0)}
+              onPointerLeave={() => setVirtualInput(0, 0)}
+              className="w-10 h-10 rounded-lg bg-zinc-950/90 active:bg-zinc-800 border border-white/15 text-zinc-200 text-xs font-mono shadow-lg flex items-center justify-center"
+              aria-label="Turn Left"
+            >
+              W
+            </button>
+            <button
+              type="button"
+              onPointerDown={() => setVirtualInput(0, 1)}
+              onPointerUp={() => setVirtualInput(0, 0)}
+              onPointerLeave={() => setVirtualInput(0, 0)}
+              className="w-10 h-10 rounded-lg bg-zinc-950/90 active:bg-zinc-800 border border-white/15 text-zinc-200 text-xs font-mono shadow-lg flex items-center justify-center"
+              aria-label="Move Backward"
+            >
+              S
+            </button>
+            <button
+              type="button"
+              onPointerDown={() => setVirtualInput(1, 0)}
+              onPointerUp={() => setVirtualInput(0, 0)}
+              onPointerLeave={() => setVirtualInput(0, 0)}
+              className="w-10 h-10 rounded-lg bg-zinc-950/90 active:bg-zinc-800 border border-white/15 text-zinc-200 text-xs font-mono shadow-lg flex items-center justify-center"
+              aria-label="Turn Right"
+            >
+              E
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* OVERVIEW / ABOUT MODAL */}
+      {isAboutOpen && (
+        <div
+          data-testid="capygame-about-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/85"
+        >
+          <div className="relative w-full max-w-2xl bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100">
+            <div className="bg-zinc-950 px-5 py-4 border-b border-white/10 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm sm:text-base font-semibold tracking-wider uppercase text-zinc-100">
+                  Capy Universe 3D · System Architecture
+                </h2>
+                <p className="text-xs font-mono text-zinc-400 mt-0.5">
+                  63-Order Seamless Zoom (10^+28m to 10^-35m) · N-Body Galaxies · 5 Surface Sectors
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAboutOpen(false)}
+                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
+                aria-label="Close Overview Modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                The simulation initializes at a pitch-black 0D singularity. Triggering the Big Bang
+                rapidly expands a blinding white radiation fireball that condenses into 48,000
+                simulated star and baryon particles. Real-time softened Newtonian gravity, fluid
+                viscous damping, and angular momentum conservation coalesce the stars into 64
+                rotating spiral galaxies with relativistic supermassive black hole cores.
+              </p>
+
+              <div>
+                <h3 className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-2">
+                  Surface Sectors (Click to Transit)
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {PLAY_STYLE_LIST.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => {
+                        handleSelectMode(m.id);
+                        setIsAboutOpen(false);
+                      }}
+                      className="flex items-start justify-between p-2.5 rounded-lg bg-zinc-950/80 border border-white/10 hover:border-sky-400/50 text-left transition-colors cursor-pointer"
+                    >
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-semibold text-zinc-100">{m.title}</span>
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-sky-400 border border-white/10">
+                            {m.compass}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-zinc-400 mt-0.5">{m.description}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2 border-t border-white/10">
+                <button
+                  type="button"
+                  data-testid="close-about-btn"
+                  onClick={() => {
+                    AudioService.playCoin();
+                    setIsAboutOpen(false);
+                  }}
+                  className="flex items-center gap-1.5 bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Resume Simulation</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SETTINGS MODAL */}
+      {isSettingsOpen && (
+        <div
+          data-testid="capygame-settings-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-zinc-950/85"
+        >
+          <div className="relative w-full max-w-lg bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100">
+            <div className="bg-zinc-950 px-4 sm:px-5 py-3 sm:py-4 border-b border-white/10 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <SettingsIcon className="w-4 h-4 text-sky-400" />
+                <div>
+                  <h2 className="text-sm font-semibold tracking-wider uppercase">
+                    Simulation Settings
+                  </h2>
+                  <p className="text-[11px] font-mono text-zinc-400">
+                    Camera kinematics, field of view & audio synthesis
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                data-testid="close-settings-btn"
+                onClick={() => setIsSettingsOpen(false)}
+                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
+                aria-label="Close Settings Modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 sm:p-5 space-y-2 sm:space-y-3.5 max-h-[88vh] overflow-y-auto">
+              <div className="flex items-center justify-between gap-4 p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                <div>
+                  <div className="text-xs font-semibold text-zinc-100">
+                    Tracking Chase Camera
+                  </div>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    Aligns camera azimuth behind the active unit during surface traversal
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="settings-toggle-chase-cam"
+                  onClick={() =>
+                    updateGameSettings({
+                      cameraFollowBehind: !gameSettings.cameraFollowBehind,
+                    })
+                  }
+                  className={`px-3 py-1 rounded text-xs font-mono cursor-pointer shrink-0 border ${
+                    gameSettings.cameraFollowBehind
+                      ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
+                      : 'bg-zinc-900 text-zinc-400 border-white/10'
+                  }`}
+                >
+                  {gameSettings.cameraFollowBehind ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <div
+                data-testid="settings-gpu-engine-panel"
+                className="p-3 rounded-lg bg-zinc-950/90 border border-sky-400/20 space-y-3"
+              >
+                <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-zinc-100">
+                      3D Hardware GPU Engine, Lighting, Textures &amp; Filters
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
+                      {gpuTelemetry.backendLabel} · {gpuTelemetry.registeredPbrTextures} PBR maps · Shadow {gpuTelemetry.shadowMapSize || 'OFF'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="settings-toggle-postfx"
+                    onClick={() =>
+                      updateGameSettings({
+                        gpuPostProcessing: !gameSettings.gpuPostProcessing,
+                      })
+                    }
+                    className={`px-2.5 py-1 rounded text-xs font-mono cursor-pointer shrink-0 border ${
+                      gameSettings.gpuPostProcessing
+                        ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
+                    }`}
+                  >
+                    {gameSettings.gpuPostProcessing ? 'POST-FX ON' : 'DIRECT PASS'}
+                  </button>
+                </div>
+
+                {/* GPU Quality Presets */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">GPU Quality Preset</span>
+                    <span className="font-mono text-sky-300 uppercase">
+                      {gameSettings.gpuQualityPreset}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {(['performance', 'balanced', 'high', 'ultra'] as GpuQualityPreset[]).map(
+                      (preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          data-testid={`settings-gpu-quality-${preset}`}
+                          onClick={() =>
+                            updateGameSettings(
+                              PlayStyleManager.getPresetPatchForGpuQuality(preset)
+                            )
+                          }
+                          className={`px-2 py-1 rounded text-[10px] font-mono uppercase cursor-pointer border ${
+                            gameSettings.gpuQualityPreset === preset
+                              ? 'bg-zinc-800 text-sky-300 border-sky-400/40'
+                              : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                          }`}
+                        >
+                          {preset === 'performance' ? 'Perf' : preset}
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+
+                {/* Visual Filter & Color Grading Presets */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">Visual Filter &amp; Color Grade</span>
+                    <span className="font-mono text-amber-300">
+                      {GPU_VISUAL_FILTER_PROFILES[gameSettings.gpuVisualFilter]?.label}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        { id: 'natural_pbr', short: 'Natural PBR' },
+                        { id: 'cinema_filmic', short: 'Cinema' },
+                        { id: 'vibrant_hdr', short: 'Vibrant HDR' },
+                        { id: 'golden_hour', short: 'Golden Hour' },
+                        { id: 'noir_contrast', short: 'Noir Silver' },
+                        { id: 'retro_crt', short: 'Retro CRT' },
+                      ] as Array<{ id: GpuVisualFilterPreset; short: string }>
+                    ).map(({ id, short }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        data-testid={`settings-gpu-filter-${id}`}
+                        onClick={() =>
+                          updateGameSettings({
+                            gpuVisualFilter: id,
+                            gpuPostProcessing: id !== 'natural_pbr' ? true : gameSettings.gpuPostProcessing,
+                          })
+                        }
+                        className={`px-2 py-1 rounded text-[10px] font-mono cursor-pointer border truncate ${
+                          gameSettings.gpuVisualFilter === id
+                            ? 'bg-amber-500/20 text-amber-200 border-amber-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {short}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* HDR Tone Mapping + Exposure */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">HDR Tone Mapping &amp; Exposure</span>
+                    <span className="font-mono text-sky-300 tabular-nums">
+                      {gameSettings.gpuToneMapping.toUpperCase()} · {gameSettings.gpuExposure.toFixed(2)} EV
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {(['agx', 'aces', 'neutral', 'reinhard'] as GpuToneMappingMode[]).map((tm) => (
+                      <button
+                        key={tm}
+                        type="button"
+                        data-testid={`settings-tonemap-${tm}`}
+                        onClick={() => updateGameSettings({ gpuToneMapping: tm })}
+                        className={`px-2 py-1 rounded text-[10px] font-mono uppercase cursor-pointer border ${
+                          gameSettings.gpuToneMapping === tm
+                            ? 'bg-zinc-800 text-sky-300 border-sky-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {tm}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="range"
+                    data-testid="settings-exposure-slider"
+                    min={0.6}
+                    max={1.8}
+                    step={0.04}
+                    value={gameSettings.gpuExposure}
+                    onChange={(e) =>
+                      updateGameSettings({ gpuExposure: parseFloat(e.target.value) })
+                    }
+                    className="w-full accent-sky-400 cursor-pointer"
+                  />
+                </div>
+
+                {/* PBR Texture Filtering & Hardware Anisotropy */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">PBR Texture Sampling &amp; Anisotropy</span>
+                    <span className="font-mono text-emerald-300 tabular-nums">
+                      {gpuTelemetry.activeAnisotropy}x / {gpuTelemetry.maxHardwareAnisotropy}x Max
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        { id: 'trilinear_aniso', label: 'Trilinear' },
+                        { id: 'bilinear', label: 'Bilinear' },
+                        { id: 'nearest_retro', label: 'Nearest Crisp' },
+                      ] as Array<{ id: GpuTextureFilterMode; label: string }>
+                    ).map(({ id, label }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        data-testid={`settings-texfilter-${id}`}
+                        onClick={() => updateGameSettings({ gpuTextureFilter: id })}
+                        className={`px-2 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                          gameSettings.gpuTextureFilter === id
+                            ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {([1, 4, 8, 16] as Array<1 | 4 | 8 | 16>).map((aniso) => (
+                      <button
+                        key={aniso}
+                        type="button"
+                        data-testid={`settings-aniso-${aniso}`}
+                        onClick={() => updateGameSettings({ gpuAnisotropy: aniso })}
+                        className={`px-2 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                          gameSettings.gpuAnisotropy === aniso
+                            ? 'bg-zinc-800 text-emerald-300 border-emerald-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {aniso}x AF
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Directional Solar Shadow Cascade + Post-FX Passes */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">Solar Shadow Cascade</span>
+                    <span className="font-mono text-zinc-400 uppercase">
+                      {gameSettings.gpuShadowQuality}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {(
+                      [
+                        { id: 'pcf_soft', label: 'PCF Soft' },
+                        { id: 'pcf', label: 'PCF' },
+                        { id: 'vsm', label: 'VSM' },
+                        { id: 'off', label: 'Off' },
+                      ] as Array<{ id: GpuShadowQualityMode; label: string }>
+                    ).map(({ id, label }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        data-testid={`settings-shadow-${id}`}
+                        onClick={() => updateGameSettings({ gpuShadowQuality: id })}
+                        className={`px-2 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                          gameSettings.gpuShadowQuality === id
+                            ? 'bg-zinc-800 text-sky-300 border-sky-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Bloom, Depth SSAO & CAS Texture Sharpening */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    data-testid="settings-toggle-bloom"
+                    onClick={() =>
+                      updateGameSettings({
+                        gpuBloomEnabled: !gameSettings.gpuBloomEnabled,
+                        gpuPostProcessing: true,
+                      })
+                    }
+                    className={`px-2.5 py-1.5 rounded text-[11px] font-mono cursor-pointer border flex items-center justify-between ${
+                      gameSettings.gpuBloomEnabled
+                        ? 'bg-sky-500/15 text-sky-200 border-sky-400/35'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
+                    }`}
+                  >
+                    <span>HDR Bloom</span>
+                    <span>{gameSettings.gpuBloomEnabled ? 'ON' : 'OFF'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="settings-toggle-ssao"
+                    onClick={() =>
+                      updateGameSettings({
+                        gpuSsaoEnabled: !gameSettings.gpuSsaoEnabled,
+                        gpuPostProcessing: true,
+                      })
+                    }
+                    className={`px-2.5 py-1.5 rounded text-[11px] font-mono cursor-pointer border flex items-center justify-between ${
+                      gameSettings.gpuSsaoEnabled
+                        ? 'bg-sky-500/15 text-sky-200 border-sky-400/35'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
+                    }`}
+                  >
+                    <span>Depth SSAO</span>
+                    <span>{gameSettings.gpuSsaoEnabled ? 'ON' : 'OFF'}</span>
+                  </button>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">CAS Texture Sharpening</span>
+                    <span className="font-mono text-sky-300 tabular-nums">
+                      {Math.round(gameSettings.gpuSharpenAmount * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    data-testid="settings-sharpen-slider"
+                    min={0}
+                    max={1}
+                    step={0.04}
+                    value={gameSettings.gpuSharpenAmount}
+                    onChange={(e) =>
+                      updateGameSettings({
+                        gpuSharpenAmount: parseFloat(e.target.value),
+                        gpuPostProcessing: true,
+                      })
+                    }
+                    className="w-full accent-sky-400 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-zinc-100">
+                      Capybara Mesh Detail (60 FPS Governor)
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
+                      Active: {snakeTelemetry.lodLabel} (~{snakeTelemetry.trianglesPerCapy.toLocaleString()} tris · {snakeTelemetry.fps} FPS)
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="settings-toggle-auto-lod"
+                    onClick={() =>
+                      updateGameSettings({
+                        autoCapyLod: !gameSettings.autoCapyLod,
+                      })
+                    }
+                    className={`min-w-[98px] text-center px-2.5 py-1 rounded text-xs font-mono cursor-pointer shrink-0 border ${
+                      gameSettings.autoCapyLod
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
+                    }`}
+                  >
+                    {gameSettings.autoCapyLod ? 'AUTO 60 FPS' : 'MANUAL'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {(
+                    [
+                      { tier: 0 as CapyLodTier, label: 'Perf' },
+                      { tier: 1 as CapyLodTier, label: 'Balanced' },
+                      { tier: 2 as CapyLodTier, label: 'High' },
+                      { tier: 3 as CapyLodTier, label: 'Ultra' },
+                    ] as const
+                  ).map(({ tier, label }) => {
+                    const activeTier = gameSettings.autoCapyLod
+                      ? snakeTelemetry.lodTier
+                      : gameSettings.manualCapyLodTier;
+                    const isSelected = activeTier === tier;
                     return (
                       <button
-                        key={b.id}
-                        onClick={() => handleUpgradeExistingBuilding(b.id, b.name)}
-                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-[11px] text-slate-200 font-semibold whitespace-nowrap transition active:scale-95"
+                        key={tier}
+                        type="button"
+                        data-testid={`settings-lod-tier-${tier}`}
+                        onClick={() =>
+                          updateGameSettings({
+                            autoCapyLod: false,
+                            manualCapyLodTier: tier,
+                          })
+                        }
+                        className={`px-2 py-1 rounded text-[10px] font-mono uppercase cursor-pointer border ${
+                          isSelected
+                            ? 'bg-zinc-800 text-sky-300 border-sky-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
                       >
-                        {b.name} Lvl {b.level} → {upgCost} 🍊
+                        {label}
                       </button>
                     );
                   })}
                 </div>
-              )}
-            </div>
-          )}
+              </div>
 
-          {/* TAB 3: SPORE EVOLUTION DNA MUTATION LAB */}
-          {activeTab === 'dna' && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {SPORE_MUTATIONS.map((mut) => {
-                const isEquipped = stats.activeMutations.includes(mut.id);
-                return (
-                  <div
-                    key={mut.id}
-                    className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${
-                      isEquipped
-                        ? 'bg-cyan-950/80 border-cyan-400'
-                        : 'bg-slate-800/80 border-slate-700'
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-zinc-100">
+                      Day / Night Solar Cycle
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
+                      {snakeTelemetry.dayPhaseLabel} ({snakeTelemetry.timeOfDayHours.toFixed(1)}h / 24h)
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="settings-toggle-daynight"
+                    onClick={() =>
+                      updateGameSettings({
+                        dayNightAutoCycle: !gameSettings.dayNightAutoCycle,
+                      })
+                    }
+                    className={`min-w-[104px] text-center px-2.5 py-1 rounded text-xs font-mono cursor-pointer shrink-0 border ${
+                      gameSettings.dayNightAutoCycle
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-400/40'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
                     }`}
                   >
-                    <div className="min-w-0">
-                      <div className="text-xs font-bold text-white truncate">
-                        {mut.name}
-                      </div>
-                      <div className="text-[10px] text-slate-400 truncate">
-                        {mut.description}
-                      </div>
-                    </div>
+                    {gameSettings.dayNightAutoCycle ? 'AUTO CYCLE' : 'MANUAL HOUR'}
+                  </button>
+                </div>
+                <input
+                  type="range"
+                  data-testid="settings-time-slider"
+                  min={0}
+                  max={24}
+                  step={0.25}
+                  value={
+                    gameSettings.dayNightAutoCycle
+                      ? snakeTelemetry.timeOfDayHours
+                      : gameSettings.timeOfDayHours
+                  }
+                  onChange={(e) =>
+                    updateGameSettings({
+                      dayNightAutoCycle: false,
+                      timeOfDayHours: parseFloat(e.target.value),
+                    })
+                  }
+                  className="w-full accent-amber-400 cursor-pointer"
+                />
+              </div>
+
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-zinc-100">Weather System</span>
+                  <span className="text-[11px] font-mono text-sky-300">
+                    {snakeTelemetry.weatherLabel}
+                  </span>
+                </div>
+                <div className="grid grid-cols-6 gap-1">
+                  {(['auto', 'clear', 'rain', 'storm', 'mist', 'snow'] as Array<
+                    'auto' | WeatherType
+                  >).map((wMode) => (
                     <button
-                      onClick={() => handleToggleMutation(mut.id)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-extrabold whitespace-nowrap transition active:scale-95 ${
-                        isEquipped
-                          ? 'bg-emerald-400 text-slate-950'
-                          : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+                      key={wMode}
+                      type="button"
+                      data-testid={`settings-weather-${wMode}`}
+                      onClick={() => updateGameSettings({ weatherMode: wMode })}
+                      className={`px-1.5 py-1 rounded text-[10px] font-mono uppercase cursor-pointer border ${
+                        gameSettings.weatherMode === wMode
+                          ? 'bg-zinc-800 text-sky-300 border-sky-400/40'
+                          : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
                       }`}
                     >
-                      {isEquipped ? 'Active ✓' : `${mut.costDna} 🧬`}
+                      {wMode}
                     </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* TAB 4: UNIFIED META UPGRADES */}
-          {activeTab === 'upgrades' && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {(
-                [
-                  { key: 'speedBoost', label: '⚡ Speed & Agility' },
-                  { key: 'coinMagnet', label: '🧲 Yuzu & DNA Magnet' },
-                  { key: 'herdSize', label: '🦫 Starting Herd Size' },
-                  { key: 'paddleSize', label: '🧱 Breakout Paddle Size' },
-                  { key: 'bounciness', label: '🎪 Jump & Spring Power' },
-                  { key: 'idleMultiplier', label: '✨ Sanctuary Yield' },
-                ] as const
-              ).map((u) => {
-                const lvl = stats.upgrades[u.key];
-                const cost = Math.round(90 * Math.pow(1.7, lvl - 1));
-                return (
-                  <div
-                    key={u.key}
-                    className="p-2 rounded-xl bg-slate-800/80 border border-slate-700 flex justify-between items-center gap-2"
-                  >
-                    <div>
-                      <div className="text-xs font-bold text-white">{u.label}</div>
-                      <div className="text-[10px] text-slate-400">Level {lvl}</div>
-                    </div>
-                    <button
-                      onClick={() => handleBuyUpgrade(u.key)}
-                      className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow active:scale-95 whitespace-nowrap"
-                    >
-                      {cost} 🍊
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* TAB 5: WARDROBE (HATS & FUR COAT SKINS) */}
-          {activeTab === 'wardrobe' && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Hats:
-                </span>
-                {[
-                  { id: 'yuzu', name: 'Onsen Yuzu', icon: '🍊' },
-                  { id: 'crown', name: 'Royal Crown', icon: '👑' },
-                  { id: 'flower', name: 'Lotus Blossom', icon: '🌸' },
-                  { id: 'party', name: 'Party Cone', icon: '🎉' },
-                  { id: 'wizard', name: 'Star Wizard', icon: '🧙' },
-                  { id: 'halo', name: 'Angel Halo', icon: '😇' },
-                ].map((hat) => (
-                  <button
-                    key={hat.id}
-                    onClick={() => handleSelectHat(hat.id)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold whitespace-nowrap transition ${
-                      stats.activeHat === hat.id
-                        ? 'bg-amber-500/30 border-amber-400 text-amber-200'
-                        : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
-                    }`}
-                  >
-                    <span>{hat.icon}</span>
-                    <span>{hat.name}</span>
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex items-center gap-2 overflow-x-auto pt-1 border-t border-slate-800 no-scrollbar">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Fur Coat:
-                </span>
-                {[
-                  { id: 'classic', name: 'Warm Cocoa', dot: 'bg-amber-700' },
-                  { id: 'golden', name: 'Golden Sun', dot: 'bg-yellow-400' },
-                  { id: 'sakura', name: 'Sakura Pink', dot: 'bg-pink-400' },
-                  { id: 'matcha', name: 'Zen Matcha', dot: 'bg-emerald-400' },
-                  { id: 'cosmic', name: 'Cosmic Indigo', dot: 'bg-indigo-500' },
-                ].map((skin) => (
-                  <button
-                    key={skin.id}
-                    onClick={() => handleSelectSkin(skin.id)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold whitespace-nowrap transition ${
-                      stats.activeSkin === skin.id
-                        ? 'bg-amber-500/30 border-amber-400 text-amber-200'
-                        : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
-                    }`}
-                  >
-                    <span className={`w-2.5 h-2.5 rounded-full ${skin.dot}`} />
-                    <span>{skin.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 5. Interactive Screenshot & Play Style Showcase Modal */}
-      {isGalleryOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-5xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800">
-              <div>
-                <h2 className="text-base sm:text-lg font-extrabold text-white flex items-center gap-2">
-                  <Camera className="w-5 h-5 text-amber-400" />
-                  <span>Capy Suite Visual Showcase & Screenshots</span>
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Live WebGL captures across all 5 endless Play Styles, Spore DNA Lab, and CapyPaint Studio
-                </p>
-              </div>
-              <button
-                onClick={() => setIsGalleryOpen(false)}
-                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-5 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                {
-                  src: './gallery/capygame_sanctuary.png',
-                  title: '1. Capy Sanctuary (3D World Builder Hub)',
-                  desc: 'Tropical island hub with 4 physical 3D World Portals, Cozy Onsens, Yuzu Orchards, Bouncy Mushroom Pads, and Sacred Capy Pagodas.',
-                  mode: 'sanctuary' as PlayStyle,
-                },
-                {
-                  src: './gallery/capygame_spore.png',
-                  title: '2. Spore Lagoon (Evolution Simulator)',
-                  desc: 'Swim, eat glowing plankton and DNA helixes, chomp smaller AI critters, and dynamically grow your Capybara in 3D.',
-                  mode: 'spore' as PlayStyle,
-                },
-                {
-                  src: './gallery/capygame_dna_lab.png',
-                  title: '3. Spore DNA Mutation Lab',
-                  desc: 'Equip 6 visible 3D body mutations: Aqua Flippers, Mighty Chomp Tusks, Armored Yuzu Shell, Celestial Glide Wings, Unicorn Prism Horn, and Bioluminescent Tail.',
-                  mode: 'spore' as PlayStyle,
-                },
-                {
-                  src: './gallery/capygame_breakout.png',
-                  title: '4. Yuzu Breakout (3D Arcade Bumper)',
-                  desc: 'Ricochet Golden Yuzu balls across endless 3D brick waves with Multi-Yuzu and Wide-Capy powerup capsules.',
-                  mode: 'breakout' as PlayStyle,
-                },
-                {
-                  src: './gallery/capygame_runner.png',
-                  title: '5. Number Stampede (Math Gate Herd Runner)',
-                  desc: 'Steer your visible 3D Capybara herd through + and x math gates and smash obstacle barrels.',
-                  mode: 'runner' as PlayStyle,
-                },
-                {
-                  src: './gallery/capygame_fallguys.png',
-                  title: '6. Yuzu Mountain (Fall Guys Chaos Parkour)',
-                  desc: 'Dodge spinning wipeout hammers, cross tilting see-saw bridges, and race AI rivals to the Golden Crown.',
-                  mode: 'fallguys' as PlayStyle,
-                },
-              ].map((item) => (
-                <div
-                  key={item.src}
-                  className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden flex flex-col"
-                >
-                  <img
-                    src={item.src}
-                    alt={item.title}
-                    className="w-full h-48 object-cover bg-slate-900"
-                  />
-                  <div className="p-3 flex-1 flex flex-col justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-extrabold text-white">{item.title}</h3>
-                      <p className="text-xs text-slate-400 mt-0.5">{item.desc}</p>
-                    </div>
-                    <div className="flex items-center gap-2 pt-1">
-                      <button
-                        onClick={() => {
-                          handleSelectMode(item.mode);
-                          setIsGalleryOpen(false);
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold transition"
-                      >
-                        Launch Mode
-                      </button>
-                      <a
-                        href={item.src}
-                        download
-                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition"
-                      >
-                        Download PNG
-                      </a>
-                    </div>
-                  </div>
+                  ))}
                 </div>
-              ))}
+              </div>
+
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-zinc-200">Camera Follow Distance</span>
+                  <span className="text-xs font-mono text-sky-400 tabular-nums">
+                    {gameSettings.cameraDistance.toFixed(2)}x
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.6}
+                  max={1.5}
+                  step={0.05}
+                  value={gameSettings.cameraDistance}
+                  onChange={(e) =>
+                    updateGameSettings({ cameraDistance: parseFloat(e.target.value) })
+                  }
+                  className="w-full accent-sky-400 cursor-pointer"
+                />
+              </div>
+
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-zinc-200">
+                    Angular Turn Sensitivity
+                  </span>
+                  <span className="text-xs font-mono text-sky-400 tabular-nums">
+                    {gameSettings.turnSensitivity.toFixed(2)}x
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={2.0}
+                  step={0.1}
+                  value={gameSettings.turnSensitivity}
+                  onChange={(e) =>
+                    updateGameSettings({ turnSensitivity: parseFloat(e.target.value) })
+                  }
+                  className="w-full accent-sky-400 cursor-pointer"
+                />
+              </div>
+
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-zinc-200">Field of View (FOV)</span>
+                  <span className="text-xs font-mono text-sky-400 tabular-nums">
+                    {gameSettings.fov}°
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={45}
+                  max={75}
+                  step={1}
+                  value={gameSettings.fov}
+                  onChange={(e) => updateGameSettings({ fov: parseInt(e.target.value, 10) })}
+                  className="w-full accent-sky-400 cursor-pointer"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                  <div>
+                    <div className="text-xs font-medium text-zinc-200">Atmospheric Fog</div>
+                    <div className="text-[10px] text-zinc-500">Horizon attenuation</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateGameSettings({ worldFogEnabled: !gameSettings.worldFogEnabled })
+                    }
+                    className={`px-2.5 py-1 rounded text-xs font-mono border cursor-pointer ${
+                      gameSettings.worldFogEnabled
+                        ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
+                    }`}
+                  >
+                    {gameSettings.worldFogEnabled ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                  <div>
+                    <div className="text-xs font-medium text-zinc-200">Audio Synthesis</div>
+                    <div className="text-[10px] text-zinc-500">WebAudio harmonic output</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleToggleMute}
+                    className={`px-2.5 py-1 rounded text-xs font-mono border cursor-pointer ${
+                      !isMuted
+                        ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
+                    }`}
+                  >
+                    {!isMuted ? 'ON' : 'MUTED'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-medium text-zinc-200">On-Screen D-Pad</div>
+                  <div className="text-[10px] text-zinc-500">Directional pad visibility</div>
+                </div>
+                <div className="flex items-center gap-1">
+                  {(['auto', 'always', 'hidden'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => updateGameSettings({ touchControlsMode: mode })}
+                      className={`px-2 py-1 rounded text-[10px] font-mono uppercase cursor-pointer border ${
+                        gameSettings.touchControlsMode === mode
+                          ? 'bg-zinc-800 text-sky-300 border-sky-400/40'
+                          : 'bg-zinc-900 text-zinc-400 border-white/10'
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={handleUnlockAllFeatures}
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                >
+                  Unlock All Sectors
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetProgress}
+                  className="px-3 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 text-xs font-medium border border-rose-500/30 cursor-pointer"
+                >
+                  Reset State
+                </button>
+              </div>
             </div>
           </div>
         </div>

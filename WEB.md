@@ -1,463 +1,129 @@
-# Web Architecture & Technical Design: Capy Web (`web/`)
+# Technical Architecture & Engine Reference: CapyGame 3D
 
-This document provides a comprehensive technical reference for the updated Capy Web application located in [`web/`](./web/). It covers the architectural design, component hierarchy, rendering pipeline, gesture handling, state management, background worker engine, native Android bridge, and persistence systems.
-
----
-
-## 1. Architectural Overview & Design Principles
-
-Capy Web is a high-performance, client-side, color-by-number generator and interactive canvas player built with **React 19**, **TypeScript**, **Vite 6**, and **Tailwind CSS 4**.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             Application Shell                               │
-│                         (App.tsx — State & Layout)                          │
-├────────────────────────────────┬────────────────────────────────────────────┤
-│ Viewport & Presentation        │ Engine & Background Services               │
-│  ├─ GameTopBar                 │  ├─ PuzzleWorkerService (Web Worker)       │
-│  ├─ PuzzleCanvas (2D Canvas)   │  │    └─ 5-Strategy Segmentation Engine    │
-│  ├─ FloatingActions            │  ├─ StorageService (IndexedDB + LS)        │
-│  ├─ PaletteDock                │  └─ NativeBridge (Android / WebKit / Web)  │
-│  ├─ ColorPickerPopover         │                                            │
-│  ├─ SettingsModal (4 Tabs)     │                                            │
-│  ├─ ReplayControls             │                                            │
-│  └─ LoadingOverlay             │                                            │
-└────────────────────────────────┴────────────────────────────────────────────┘
-```
-
-### Core Tenets
-1. **Zero Server Dependency**: All image processing, quantization, vector segmentation, and progress storage run 100% on the client. Puzzles can be generated and played completely offline.
-2. **60 FPS Canvas Rendering**: Instead of rendering thousands of individual DOM or SVG elements, Capy utilizes an **offscreen-cached HTML5 2D Canvas pipeline** that selectively repaints only modified regions.
-3. **Responsive Non-Blocking UI**: Compute-intensive computer-vision algorithms run inside a dedicated **Web Worker**, providing continuous progress feedback without dropping frames or freezing UI threads.
-4. **Single Source of Truth**: The code in `web/` powers both the web deployment ([`https://shthed.github.io/capy/`](https://shthed.github.io/capy/)) and the native Android app ([`app/`](./app/)) via an extensible, low-overhead native bridge.
-5. **Edge-to-Edge Responsive Layout**: Full hardware safe area inset management (`--sat`, `--sab`, `--sal`, `--sar`) ensures seamless layouts across mobile notches, tablets, foldable devices, and widescreen desktops.
+This document details the architecture, multi-scale astrophysical simulation, contiguous multiphysics engine, hardware-accelerated GPU rendering pipeline, and persistent settings of **CapyGame 3D** (`src/`).
 
 ---
 
-## 2. Directory & Module Structure
+## 1. Directory & Module Structure
 
-```
-web/
-├── index.html                 # HTML host document with mobile viewport & safe-area meta
-├── package.json               # React 19, Vite 6, Tailwind CSS 4, Lucide icons, canvas-confetti
-├── tsconfig.json              # Strict TypeScript configuration
-├── vite.config.ts             # Vite configuration with relative asset base ('./')
-└── src/
-    ├── main.tsx               # React DOM bootstrap
-    ├── App.tsx                # Master container, state orchestration, keyboard shortcuts
-    ├── index.css              # Tailwind CSS 4 imports, safe area utilities, touch reset
-    ├── types/
-    │   └── index.ts           # Central TypeScript interfaces, enums, defaults, sample gallery
-    ├── components/
-    │   ├── PuzzleCanvas.tsx   # Offscreen cached 2D canvas, pan/zoom gestures, hit testing, live generation FX
-    │   ├── GameTopBar.tsx     # Progress indicator, title, preview toggle, settings button
-    │   ├── PaletteDock.tsx    # Scrollable color palette, remaining count, sort modes
-    │   ├── FloatingActions.tsx# Undo, Replay, drag-to-color Paint Mode toggle, zoom +/-, view reset
-    │   ├── SettingsModal.tsx  # 4-tab configuration sheet (Settings, Hints, Create, Saves)
-    │   ├── ReplayControls.tsx # Floating playback HUD for chronological region completion replays
-    │   ├── ColorPickerPopover.tsx # Custom color picker & palette presets for Free Colour mode
-    │   └── LoadingOverlay.tsx # Bottom-anchored progress HUD with expandable 6-stage pipeline inspector
-    ├── services/
-    │   ├── NativeBridge.ts    # Android `@JavascriptInterface` & WebKit bridge (haptics, back button)
-    │   ├── PwaService.ts      # PWA install prompt, standalone detection & service worker lifecycle
-    │   ├── PuzzleWorkerService.ts # Worker lifecycle, job cancellation, promise dispatch
-    │   └── StorageService.ts  # IndexedDB (large blobs) + LocalStorage (settings/snapshots)
-    └── engine/
-        ├── puzzle.worker.ts   # Web Worker message handler
-        ├── PuzzleGenerator.ts # Multi-strategy coordinator & monotonic progress emitter
-        ├── ImageAnalyzer.ts   # Heuristic classifier (variance ratio, line art presence)
-        ├── LineArtExtractor.ts# Luminance & Sobel gradient ink outline extractor
-        ├── ColorQuantizer.ts  # Perceptual Red-Mean K-Means++ color clustering
-        └── RegionSegmenter.ts # 4-connected flood fill, slender merging, watershed border absorption
-```
+| Path | Responsibility |
+| :--- | :--- |
+| `src/App.tsx` | Minimal root React component mounting `CapyGameView`. |
+| `src/main.tsx` | React 19 entry point wrapping `App` in `AppErrorBoundary` and initializing `PwaService`. |
+| `src/components/AppErrorBoundary.tsx` | Diagnostic crash and WebGL recovery boundary with cache-reset controls. |
+| `src/services/NativeBridge.ts` | Web vibration haptics (`navigator.vibrate`) and modal Escape/back handler registration. |
+| `src/services/PwaService.ts` | Offline Service Worker registration (`./sw.js`) and PWA install prompt lifecycle. |
+| `src/capygame/types.ts` | Scale band definitions (`UNIVERSE_SCALE_BANDS`), `PlayStyle` zones, `CapyGameSettings`, `PlayerStats`, and mutation/building catalogs. |
+| `src/capygame/components/CapyGameView.tsx` | Single `40px` (`h-10`) top HUD (`unified-top-bar`), top-anchored Scale Atlas, Cosmic Optics, Live Inspector, World Dock, and GPU Settings modal. |
+| `src/capygame/engine/PlayStyleManager.ts` | Contiguous 5-district simulation loop, bidirectional PBD spine solver, 95% screen-clear sightline transparency, and camera feel. |
+| `src/capygame/engine/CapyModelGenerator.ts` | Procedural *Hydrochoerus hydrochaeris* 4-tier 60 FPS LOD meshes, mutations, hats, and Sanctuary structures. |
+| `src/capygame/engine/RealisticWorldEnvironment.ts` | Rayleigh/Mie sky dome, 360-degree Alpine mountains, 24-hour solar/lunar cycle, weather, sunken Home Pool, and exponential fruit trees. |
+| `src/capygame/engine/CosmicUniverseBuilder.ts` | Singularity ignition, N-Body/SPH galaxy coalescence, supernova nucleosynthesis, and planetary descent stages. |
+| `src/capygame/engine/SeamlessUniverseSimulator.ts` | Continuous 63-order-of-magnitude (`10^+28 m` to `10^-35 m`) `1:1` scale hierarchy, Object Finder Markers, and Reality Rescaler. |
+| `src/capygame/engine/UniverseShaders.ts` | Flux-conserving PSF stars, Hubble narrowband/natural volumetric nebulae, spiral galaxies, and Rayleigh planetary atmospheres. |
+| `src/capygame/engine/gpu/HardwareGpuEngine.ts` | WebGL2 `HalfFloatType` `EffectComposer`, PMREM IBL, 3-point lighting, texel-snapped Hero shadow cascade, Bloom, Depth-SSAO, DoF, and CAS. |
+| `src/capygame/engine/gpu/PbrTextureSynthesizer.ts` | Seamless Sobel tangent-space `normalMap`, `roughnessMap`, and Laplacian `aoMap` synthesis across all 5 districts and live texture filter switching. |
+| `src/capygame/engine/gpu/AaaWorldVfxEngine.ts` | Zero-allocation Structure-of-Arrays `InstancedMesh` burst/footstep particles, GPU bokeh sun-motes/fireflies, and solar crepuscular god-rays. |
+| `src/capygame/engine/physics/ContiguousWorldTopology.ts` | Analytic SDF walkability and ground heightfields across all 5 districts and 4 `9.6 m`-wide Grand Promenade Causeways. |
+| `src/capygame/engine/physics/PhysicsWorldBridge.ts` | `SharedArrayBuffer` / transferable `Float32Array` main-thread bridge to `physics.worker.ts`, plus shallow-water buoyancy and XPBD soft-body pads. |
+| `src/capygame/engine/physics/physics.worker.ts` | Dedicated Web Worker stepping `@dimforge/rapier3d-compat` Wasm rigid bodies, swept CCD, `RevoluteJoint` see-saws, and kinematic sweepers. |
+| `src/capygame/services/AudioService.ts` | Procedural Web Audio synthesizer with master `DynamicsCompressorNode`, damped stereo delay reverb bus, and surface-aware paw foley. |
+| `src/capygame/services/ProgressionService.ts` | Persistent `PlayerStats` (`capy_game_save_v3`) and `CapyGameSettings` (`capy_game_settings_v1`) management. |
 
 ---
 
-## 3. Component Hierarchy & Layering
+## 2. Procedural Capybara Anatomy & 4-Tier Dynamic 60 FPS LOD Governor
 
-The UI uses a fixed, layered viewport stack where pointer events pass through empty spaces to the canvas below (`pointer-events-none` on overlay containers, `pointer-events-auto` on interactive controls):
+`CapyModelGenerator.ts` constructs anatomically detailed *Hydrochoerus hydrochaeris* models using contoured `LatheGeometry` barrels, beveled `ExtrudeGeometry` flat-topped skulls, directional bristle-fur albedo and Sobel normal maps, 4-front / 3-hind webbed toes with keratin claws, blinking eyelids, 16 tapered vibrissae whiskers, and 96 instanced 3D bristle-fur tufts (`InstancedMesh`). `PlayStyleManager.ingestFpsSample()` continuously monitors frame times and adjusts detail across four zero-allocation tiers to maintain a smooth 60 FPS:
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ [Z-30] GameTopBar: [ Title • Progress % ]      [ Eye ] [ + ] [ Gear ]  │
-├────────────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│                                                                        │
-│                     [Z-0] PuzzleCanvas                                 │
-│                   (Interactive Pan & Zoom)                             │
-│                                                                        │
-│                                                                        │
-│                                                [Z-20] FloatingActions  │
-│                                                       [ Replay ]       │
-│                                                       [ Fit to Screen ]│
-│                                                       [ Zoom In (+) ]  │
-│                                                       [ Zoom Out (-) ] │
-│                                                       [ Undo ]         │
-│                                                       [ Paint Brush ]  │
-├────────────────────────────────────────────────────────────────────────┤
-│ [Z-20] PaletteDock: [Color] (1)  (2)  (3)  (4)  (5) ... [Hint]         │
-└────────────────────────────────────────────────────────────────────────┘
-  [Z-30] ReplayControls (Floating bottom HUD during chronological replay)
-  [Z-40] LoadingOverlay (Bottom-anchored HUD with expandable pipeline drawer)
-  [Z-50] SettingsModal / ColorPickerPopover
-```
-
-### Component Breakdown
-
-| Component | Responsibility | Key Interactions |
-| :--- | :--- | :--- |
-| [**`PuzzleCanvas`**](file:///home/antigravity/shthed/capy/web/src/components/PuzzleCanvas.tsx) | Renders the puzzle with 3-tier offscreen caching, handles gestures, hit-tests pixel taps, and cleanly displays artwork during generation. | Single-finger drag (pan), pinch (zoom), Google Maps-style one-finger double-tap-and-drag zoom, smooth pan momentum gliding, tap (color region), drag (continuous paint mode), animated fit-to-screen zoom-out, and clean zero-overhead artwork stage during puzzle generation. |
-| [**`GameTopBar`**](file:///home/antigravity/shthed/capy/web/src/components/GameTopBar.tsx) | Displays puzzle title, overall completion percentage, quick actions. | Tap title to open Saves tab; toggle preview mode; enter/exit fullscreen; import image; open settings. |
-| [**`PaletteDock`**](file:///home/antigravity/shthed/capy/web/src/components/PaletteDock.tsx) | Horizontal scrolling list of numbered color swatches with completion badges. | Tap swatch to select active color; tap active swatch again to trigger hint; tap custom color button to open picker. Guarantees persistent active color selection even when 0 matching regions remain on-screen. Supports dynamic sorting (Number, Remaining, Hue, Lightness) and viewport culling. |
-| [**`FloatingActions`**](file:///home/antigravity/shthed/capy/web/src/components/FloatingActions.tsx) | Secondary floating action buttons positioned above the palette dock. | Undo last completed region (`Ctrl+Z` / `Cmd+Z`, disabled by default for standard puzzles, enabled automatically for free colour puzzles or via Settings toggle); long-press Undo (>=450ms) to open Replay timeline scrubber; conditional Redo button positioned above Undo (`Ctrl+Y` / `Ctrl+Shift+Z`) to re-apply undone regions (hidden until an action is undone); trigger Replay when completed; toggle continuous Paint Mode; zoom in/out; reset view to fit screen. |
-| [**`SettingsModal`**](file:///home/antigravity/shthed/capy/web/src/components/SettingsModal.tsx) | Full modal sheet with 4 tabbed sections and automatic active tab persistence. | Automatically restores the last active tab index from `localStorage` (`capy_last_settings_tab`).<br>**Settings**: Preferences, difficulty, auto-advance, replay speed (`0.5x`–`10x`), minimal `Replay on Load` toggle, pan momentum toggle, canvas background (preset circular swatches + `<Pipette>` custom hex/color picker), dock elevation, label sizing controls (Minimum Label Size, Maximum Label Size, and Overall Scale), and Android APK direct download link.<br>**Hints**: Highlight styles (`CENTROID_GLOW`, `NUMBER_ONLY` [changes label text colour without circles], `FULL_REGION`, `BOUNDARY_ONLY`), hint highlight colour (circular swatches + `<Pipette>`), hint intensity, animated hint pulse.<br>**Create**: Algorithm selection, color counts, min region area, line handling, sample artwork picker, device photo upload.<br>**Saves**: Unified sticky top control region combining all options, view switches, selected save actions, and library utilities (Sort dropdown, minimal `Replay on Load` toggle, Detail/Thumbnails view switcher, named save action buttons [Pin/Unpin, Load/Resume, Replay, Rename, Export `.capy`, Delete], and library buttons [Import, Export All, Delete All Saves]) into a single region always visible at the top above the scrolling gallery; single-tap save selection; double-tap/double-click save loading; pin save capability to lock saves at top; view modes between **Detail** (single vertical list with 64–72px thumbnails, percentage, file size, and progress bar) and **Thumbnails** (responsive 2–3 column grid with 4:3 rectangular preview artwork, floating pin badge, completion badge, and progress line). |
-| [**`ReplayControls`**](file:///home/antigravity/shthed/capy/web/src/components/ReplayControls.tsx) | Non-blocking bottom HUD shown during chronological puzzle replays and upon 100% completion. | Play/Pause/Replay toggle; interactive timeline range scrubber; "Resume Play From Here" button to rewind active gameplay to any scrubbed step; speed selector (`0.5x`, `1x`, `2x`, `5x`, `10x`); Restart and Skip-to-End controls; post-completion `Save PNG` and `Next` puzzle quick actions. |
-| [**`ColorPickerPopover`**](file:///home/antigravity/shthed/capy/web/src/components/ColorPickerPopover.tsx) | Palette customization panel for Free Colour / Coloring Page mode. | Select from 5 preset palettes (Vibrant, Mushroom, Pastels, Earthy, Neon); pick custom HSL/Hex swatches; update palette colors in real time. |
-| [**`LoadingOverlay`**](file:///home/antigravity/shthed/capy/web/src/components/LoadingOverlay.tsx) | Non-blocking bottom-anchored HUD card keeping the background canvas visible during puzzle creation. | Supports two generation progress modes with live toggle control directly on the HUD:<br>1. **Simple Progress (Fast Mode, Default)**: Minimalist, ultra-low-overhead progress HUD showing an amber-to-yellow gradient progress bar and percentage. In Simple mode, the high-frequency canvas animation loop is completely disabled on the main thread, and worker IPC progress events are throttled with payload construction skipped, dedicating maximum CPU and memory bandwidth to the puzzle generation engine for the fastest possible load times.<br>2. **Detailed Progress**: Displays strictly monotonic progress (`0%` to `100%`), `Step X/6` badge, live sub-status, real-time pipeline parameters (detected style, chosen strategy, target regions), live K-Means clustered palette swatches, and an expandable **Generation Details** drawer listing all 6 stages alongside auto-detected style, chosen strategy rationale, color count, region targets, working resolution, and estimated save file size (`KB`). |
-
-
----
-
-## 4. State Management & Lifecycle (`App.tsx`)
-
-`App.tsx` serves as the centralized state orchestrator. State is divided into five main domains:
-
-### 1. Active Session, Undo & Redo State
-- `puzzle: PuzzleData | null`: The current puzzle model containing dimensions, palette, region array, region map, and border map.
-- `sourceImage: HTMLImageElement | null`: Cached HTML image element of the original artwork, set immediately before worker execution begins so the background canvas displays the artwork during generation.
-- `activeColorId: number`: The ID of the currently selected palette color.
-- `filledRegionIds: Set<number>`: Set of region IDs that have been colored, preserving exact chronological insertion order across saves and reloads.
-- `paintedRegionColors: Map<number, number>`: Region ID $\rightarrow$ Color ID mapping for Free Colour Mode.
-- `undoStack: UndoHistoryEntry[]`: History stack recording each region completion (`regionId`, `paintedColorId`, `prevColorId`, `wasAlreadyFilled`) so players can undo completions one by one via the Undo button or `Ctrl+Z` / `Cmd+Z`. Long-pressing the Undo button (>=450ms) opens the interactive Replay timeline scrubber.
-- `redoStack: UndoHistoryEntry[]`: Redo stack storing undone paint actions. Stepped forward sequentially using the Redo button stacked above Undo (`FloatingActions.tsx`) or keyboard shortcuts (`Ctrl+Y` / `Ctrl+Shift+Z`). Hidden unless actions have been undone and redo is enabled. Cleared when a new region is actively painted.
-- `hintRegionId: number | null`: Region ID currently targeted by hint guidance.
-- `isPreviewMode: boolean`: Toggles display between the interactive puzzle and the unmasked original artwork.
-
-### 2. Chronological Replay & Historical Resumption State
-- `isReplaying: boolean`, `isReplayPlaying: boolean`, `replayStep: number`, `replaySequence: number[]`: Controls chronological playback of `filledRegionIds`.
-- During replay, `PuzzleCanvas` receives `displayedFilledRegionIds = new Set(replaySequence.slice(0, replayStep))`, leveraging incremental dirty-rect updates on `baseCanvasRef` to animate both forward filling and backward scrubbing at 60 FPS.
-- **Resume Play From Step**: Clicking "Resume Here" in the Replay HUD header restores active gameplay to step $K$, updating `filledRegionIds` to match the scrubbed point, and placing the rewound actions into `redoStack` in reverse order so players can immediately redo actions forward or diverge with new colors.
-
-### 3. Viewport & Spatial Culling
-- `visibleColorIds: Set<number>` / `visibleRegionIds: Set<number>`: Calculated by `PuzzleCanvas` on each pan/zoom change. Allows `PaletteDock` to dynamically prioritize swatches currently on-screen (`prioritizeOnScreen`).
-
-### 4. Generation Sequence Tracking (`generationSeqRef`)
-To prevent asynchronous race conditions when switching sample artwork or uploading files while a generator worker is running:
-- Every generation request increments a sequence counter (`generationSeqRef.current`).
-- If a newer request begins, any earlier in-flight worker execution is terminated via `PuzzleWorkerService.cancelActive()`.
-- Responses from stale sequence IDs are discarded automatically.
-
-### 5. Auto-Advance, Completion Zoom-Out & Auto-Replay Flow
-- When `filledRegionIds` completes all regions for `activeColorId`, and `settings.autoAdvance` is enabled, the game automatically advances to the next incomplete color (with a light haptic tick).
-- When `filledRegionIds.size === puzzle.regions.length`, completion is triggered without any blocking modal popup:
-  - Victory haptic sequence fired and confetti burst dispatched via `canvas-confetti`.
-  - Preview thumbnail and save file size (`fileSizeBytes`) calculated and persisted in `StorageService`.
-  - Canvas smoothly animates a 280ms cubic ease-out zoom-out to fit the entire puzzle (`resetViewTrigger`).
-  - Chronological puzzle replay starts automatically via `ReplayControls`, painting every region in the exact order the player completed it.
-- When loading a previously saved puzzle with completed regions (`filledRegionIds.length > 0`) and `settings.autoReplayOnLoad` enabled, the canvas fits to screen, replays the saved progress chronologically, and automatically resumes active gameplay once playback finishes.
-
----
-
-## 5. Rendering Pipeline & Gesture Engine (`PuzzleCanvas.tsx`)
-
-Rendering thousands of intricate vector regions at 60 FPS during continuous touch-drag or high-speed replay requires avoiding full canvas redraws. `PuzzleCanvas` employs a **three-tier offscreen caching strategy**:
-
-```
-Offscreen Buffer 1: Base Canvas (baseCanvasRef)
-  ├── Static background color
-  ├── Translucent white mask for unfilled regions
-  └── Incrementally painted solid / original color for filled regions
-          │
-Offscreen Buffer 2: Border Canvas (borderCanvasRef)
-  └── Pre-baked 1-pixel border lines (Uint8Array borderMap)
-          │
-Offscreen Buffer 3: Highlight Canvas (highlightCanvasRef)
-  └── Transient glow / pattern overlay for matching or hinted regions
-          │
-          ▼
-Composite Render to Onscreen Canvas (canvasRef)
-  ├── 1. Draw baseCanvas with current pan/zoom transformation
-  ├── 2. Draw borderCanvas (if enabled / not preview mode)
-  ├── 3. Draw highlightCanvas (centroid glow, boundary, full fill)
-  ├── 4. Render Region Centroid Labels (culled to visible viewport)
-  └── 5. Render interactive feedback (tap ripple dot, pulse animation, or live generation FX)
-```
-
-### Live Background Artwork Display & Real Generation Metrics
-When `isGenerating` is `true` and `sourceImage` is loaded:
-- `PuzzleCanvas` immediately centers and renders the clean `sourceImage` with shadow framing on the stage, completely avoiding artificial geometric animations (such as scanlines, circles, or synthetic wireframes) so the artwork remains unobscured.
-- `LoadingOverlay` presents real data directly from the active generation pipeline:
-  - **Live Pipeline Metadata Badges**: Style classification (`Photograph / Realism`, `Line Art / Illustration`, `Flat Vector / Graphic`), selected strategy (`LINE_ART`, `PAINTERLY`, `POSTERIZED`, `MOSAIC_CEL`), color count target, and max region target.
-  - **Live Clustered Palette Swatches**: During Step 4 (`Perceptual Color Palette Clustering`), renders the authentic color swatches extracted at each iteration of K-Means clustering.
-  - **Detailed Drawer**: Expandable inspection of variance, edge coverage, target resolution, and estimated file size.
-
-### Incremental Base Layer Painting (Fill, Undo & Replay Scrubbing)
-When regions are filled or unfilled (via gameplay, Undo, or Replay scrubbing), `baseCanvas` does not repaint the entire canvas. Instead:
-- It compares the new `filledRegionIds` set against `paintedCacheRef.current`.
-- For both newly filled and newly unfilled regions, it retrieves the region's `pixels: Int32Array` containing exact 1D pixel coordinates, updates `baseImageDataRef`, and calls `baseCtx.putImageData(..., minX, minY, ...)` restricted strictly to the combined dirty bounding box.
-
-### Dynamic Active Colour & Highlight Overlays
-`PuzzleCanvas` dynamically renders visual cues for active and hinted regions without redrawing base layers:
-- **Active Colour Highlighting**: When `highlightStyle` is set to `FULL_REGION` (default) or `BOUNDARY_ONLY`, unfilled regions matching `activeColorId` are filled directly with the **active palette colour** (extracted from `palette[activeColorId].rgb`). This creates an immediate visual connection between the selected palette swatch and the target puzzle shapes.
-- **Hint Highlighting**: When a hint is triggered, the target region is highlighted using `settings.hintColorArgb` (default gold `#FBBF24`), rendering a distinct checkerboard, pulse, or border pattern to avoid visual confusion with the active colour.
-- **Label Hint & Highlight Effect (`NUMBER_ONLY`)**: Rather than drawing distracting circles or pills around numbers, the label hint effect changes the label text colour directly to the vibrant hint colour (pulsing when `animateHint` is enabled) or active colour `#D97706` with a crisp white stroke halo for contrast. Centroid circles are reserved strictly for `CENTROID_GLOW` mode.
-
-### Centroid Label Placement & Bounds Guarantee
-Labels are drawn at each region's **Pole of Inaccessibility** (deepest interior point computed via BFS distance transform in the engine), avoiding thin concave edges:
-- **Spatial Culling**: Labels outside the visible viewport bounding box are discarded before font measurement.
-- **Inscribed Circle Geometry Fitting**: Label font sizes are calculated from the region's inscribed circle radius (`maxRadius`) divided by a character-count corner factor `sqrt((0.3 * charCount)^2 + 0.1444)` with a 10% safety cushion. This guarantees that 1-digit, 2-digit, and 3-digit label bounding boxes always fit inside the region.
-- **Minimum and Maximum Size Constraints**: Labels are constrained between `minLabelSize` (range 2–14px, default 6px) and `maxLabelSize` (range 10–36px, default 18px). Lowering `minLabelSize` allows very tiny, crisp numbers to remain visible on high-resolution displays before zooming in, while `maxLabelSize` prevents numbers in large open regions from becoming oversized.
-- **Clean Stroke Contrast**: Label text is rendered with a proportional semi-transparent white stroke outline (`strokeText`) scaled down for tiny fonts, providing high contrast against dark artwork lines without drawing background circle badges.
-
-### Viewport Pan & Zoom Clamping (`clampCanvasOffset`)
-[`clampCanvasOffset`](file:///home/antigravity/shthed/capy/web/src/components/PuzzleCanvas.tsx) keeps the artwork bounded while providing full viewport navigation:
-- **Zoom Range**: Smooth clamping between **0.5×** and **12.0×**.
-- **Animated Fit-to-Screen Reset**: When `resetViewTrigger` increments (via the Fit-to-Screen button or upon puzzle completion), `PuzzleCanvas` smoothly interpolates `scale` to `1` and `offset` to `{x: 0, y: 0}` over 280ms using a cubic ease-out curve.
-- **Dynamic Corner Panning Margins**: When zoomed in (`effScale >= fitScale`), margin caps scale dynamically with viewport size (`containerWidth * 0.72` horizontally and `containerHeight * 0.72` vertically) rather than fixed pixel offsets. This ensures players can pan all four corners of the puzzle comfortably past the center of the viewport, well clear of the bottom `PaletteDock` (~120px) and top `GameTopBar` (~60px).
-- **Centering Elasticity**: When the artwork is smaller than the container, it smoothly snaps to center.
-
-### Gesture Engine & Interaction Paradigms
-`PuzzleCanvas` orchestrates 5 distinct touch, mouse, and gesture interactions:
-
-1. **Tap Hit-Testing**:
-   - Converts client screen $(x, y)$ to canvas coordinates using the inverse transform matrix: `puzzleX = (clientX - rect.left - panX) / effScale`.
-   - Looks up `regionId = regionMap[y * width + x]` directly in the `Int32Array` region map.
-   - If `isFreeColorMode`: paints the region with `activeColorId`.
-   - If matching `activeColorId`: marks region filled and triggers light haptic feedback.
-   - If mismatch: triggers subtle error haptic and tap ripple feedback dot.
-   - In **Easy Mode**: automatically selects the tapped region's color and fills it immediately.
-
-2. **Google Maps-Style One-Finger Double-Tap-and-Drag Zoom & Pan**:
-   - Quick tap followed by a second tap-and-hold within 350ms (`timeSinceTapUp < 350ms`, `distFromLastTap < 40px`).
-   - **Zooming (Vertical Drag)**: By default, dragging **DOWN** (`dy > 0`) zooms **IN**; dragging **UP** (`dy < 0`) zooms **OUT**. Reversible via `settings.reverseDoubleTapZoom` (`Invert Double-Tap Zoom Direction`).
-   - Continuous exponential scale tracking: `zoomFactor = Math.pow(Math.E, (directionMultiplier * dy) / 220)`.
-   - Centers zoom smoothly on the double-tap anchor point on the canvas without step-jumps.
-   - **One-Finger Panning in Paint Mode (Horizontal Drag)**: Dragging left or right (`Math.abs(dx) >= Math.abs(dy)`) while in continuous Paint Mode seamlessly pans the canvas without painting any strokes or requiring two-finger pinches.
-
-3. **Background Touch Drag Panning**:
-   - Touching the canvas background outside the artwork bounds (`x < 0`, `y < 0`, `x >= width`, or `y >= height`) always pans the canvas, even when continuous Paint Mode is toggled on, allowing effortless viewport repositioning from anywhere on the screen.
-
-4. **Smooth Pan Momentum (Inertial Gliding)**:
-   - Tracks pointer movement history over a sliding 100ms window (`pointerHistoryRef`).
-   - On pointer release, calculates the flick velocity vector $(v_x, v_y)$ in pixels per millisecond.
-   - If velocity magnitude $\ge 0.18\text{ px/ms}$, kicks off an inertial animation loop via `requestAnimationFrame`.
-   - Applies exponential friction decay: $v_{t} = v_0 \cdot 0.92^{\Delta t / 16}$.
-   - Clamps offsets on every glide tick via `clampCanvasOffset`.
-   - Halts animation once glide velocity drops below $0.02\text{ px/ms}$ or reaches boundaries.
-   - **Zero-Latency Touch Cancellation**: Any subsequent pointer touch immediately cancels active momentum gliding with zero lag, ensuring instant tactile control.
-   - Toggleable via `settings.panMomentum` (enabled by default).
-
-5. **Multi-Touch Pinch-to-Zoom**:
-   - Two-finger touch tracking with real-time midpoint focal tracking and scale clamping between $0.5\times$ and $12.0\times$.
-
-6. **Drag-to-Color (Continuous Paint Mode)**:
-   - When `isPaintMode` is active and touch begins inside the image, pointer drag samples points along the interpolated stroke path and batch-fills intersecting matching regions via `onBatchRegionsClicked`.
-   - Automatically disabled while watching chronological replays.
-
-
----
-
-## 6. Background Engine & Worker Protocol
-
-Image quantization and segmentation are handled in [`puzzle.worker.ts`](file:///home/antigravity/shthed/capy/web/src/engine/puzzle.worker.ts) via [`PuzzleWorkerService.ts`](file:///home/antigravity/shthed/capy/web/src/services/PuzzleWorkerService.ts):
-
-### Message Passing Protocol
-
-```typescript
-// Main -> Worker (Request)
-interface WorkerGenerateRequest {
-  type: 'GENERATE';
-  id: string;
-  width: number;
-  height: number;
-  rgbaBuffer: ArrayBuffer; // Transferred zero-copy
-  config: GeneratorConfig;
-}
-
-// Worker -> Main (Progress Updates)
-interface WorkerProgressMessage {
-  type: 'PROGRESS';
-  id: string;
-  progress: number; // Strictly monotonic 0.0 to 1.0
-  status: string;   // e.g. "Clustering perceptual color palette (2/4)..."
-  payload: GenerationProgressPayload; // 6-stage step index, description & inspection telemetry
-}
-
-// Worker -> Main (Completion)
-interface WorkerSuccessMessage {
-  type: 'SUCCESS';
-  id: string;
-  puzzleData: SerializedPuzzleData; // ArrayBuffers for region pixels
-}
-```
-
-Detailed documentation of the 5 segmentation strategies (`AUTO`, `LINE_ART`, `PAINTERLY`, `POSTERIZED`, `MOSAIC_CEL`) and line absorption mechanics is maintained in [**`PUZZLE.md`**](./PUZZLE.md).
-
----
-
-## 7. Native Android Bridge (`NativeBridge.ts`)
-
-When running inside the Android wrapper (`app/`), `NativeBridge` connects the web runtime to native hardware features exposed by `CapyAndroidBridge.kt` via `@JavascriptInterface`:
-
-| Bridge Method | Web Fallback | Native Android Implementation |
-| :--- | :--- | :--- |
-| `haptic(type)` | `navigator.vibrate(10)` | Native `Vibrator` / `VibrationEffect` with pre-baked feedback constants (`tick`, `success`, `warning`, `error`). |
-| `setBackModalOpen(isOpen, onClose)` | Adds `popstate` history listener | Registers callback on Android's `OnBackPressedCallback`, closing modals on back swipe before exiting the app. |
-| `saveBackup(key, data)` | No-op (localStorage only) | Persists JSON snapshots directly to private internal disk (`context.filesDir/capy_saves`). |
-| `loadBackup(key)` | Returns `null` | Reads persisted backup from internal disk if localStorage is cleared or fresh install. |
-| `applySafeAreaInsets()` | CSS `env(safe-area-inset-*)` | Queries `WindowInsetsCompat` and injects exact pixel values into `--safe-area-top`, `--safe-area-bottom`, etc. |
-| `consumePendingSharedImage()` | File `<input>` upload | Consumes incoming images sent to Capy via Android's `Intent.ACTION_SEND` (Share menu). |
-
----
-
-## 8. Persistence & Snapshot Storage (`StorageService.ts`)
-
-Capy uses a hybrid storage model to manage performance and browser storage quotas:
-
-1. **IndexedDB (`capy_game_storage_v8`)**:
-   - `STORE_PUZZLES`: Serialized heavy `PuzzleData` (region maps, border maps, typed arrays).
-   - `STORE_IMAGES`: Full-resolution source image blobs.
-2. **LocalStorage (`capy_snapshots_v8`) + Native Disk**:
-   - Stores lightweight snapshot metadata (`SavedSnapshot`): ordered `filledRegionIds` array (preserving chronological completion sequence), active color, zoom/pan coordinates, estimated storage footprint (`fileSizeBytes`), and a compressed **aspect-ratio preserved JPEG preview data URL** (max 320px).
-   - Enables instant rendering of the Saves gallery tab across Detail and Thumbnails modes (including human-readable `KB` file size badges and unified Selected Save Action Bar actions) without reading megabytes of raw image data from IndexedDB. Sample artwork automatically falls back to pristine sample asset images.
-3. **Settings Persistence (`capy_user_settings_v8`) & Tab Memory**:
-   - User preferences survive app updates and browser restarts.
-   - Reopening `SettingsModal` remembers the last active tab index via `localStorage.getItem('capy_last_settings_tab')` (integer index `'0'` [Settings], `'1'` [Hints], `'2'` [Create], or `'3'` [Saves]).
-4. **Save Export, Import & TypedArray Serialization**:
-   - `StorageService.exportSnapshot(id)`: Downloads a single save snapshot along with its serialized puzzle model as `<snapshot_name>.capy` (formatted JSON).
-   - `StorageService.exportAllSnapshots()`: Bundles all user saves, puzzle data, and metadata into a portable backup `capy_all_saves_<timestamp>.capy`.
-   - `StorageService.importSnapshotBundle(jsonString)`: Validates bundle schema (`version: 8`, `type: 'CAPY_SAVE_BUNDLE'`), checks integrity, restores snapshots into `localStorage`, deserializes TypedArrays, and stores puzzles into IndexedDB.
-   - **TypedArray Base64 Buffer Encoding**: Large `Int32Array` (`regionMap`, `Region.pixels`) and `Uint8Array` (`borderMap`) are serialized to compact base64 byte chunks (`bufferToBase64` / `base64ToUint8Array` / `base64ToInt32Array`) to prevent precision loss and maintain compact export file sizes.
-
-### 8.1 Comprehensive User Settings Reference (`UserSettings`)
-
-| Setting Key | Type | Default | Description |
+| LOD Tier | Label | Approximate Triangles | Active Anatomical Features |
 | :--- | :--- | :--- | :--- |
-| `autoAdvance` | `boolean` | `true` | Automatically switches to the next incomplete color when all regions for the active color are filled. |
-| `difficulty` | `'EASY' \| 'NORMAL' \| 'HARD'` | `'NORMAL'` | **EASY**: Auto-selects color upon clicking any region.<br>**NORMAL**: Requires matching active color.<br>**HARD**: Mismatches trigger error penalty feedback. |
-| `isPaintMode` | `boolean` | `false` | Enables drag-to-color continuous stroke painting. |
-| `isFreeColorMode` | `boolean` | `false` | Enables Coloring Page / Free Color mode allowing arbitrary color assignment. |
-| `raisePaletteDock` | `boolean` | `true` | Lifts the floating palette dock above navigation bars and Android gestures. |
-| `regionColorMode` | `'SOLID' \| 'ORIGINAL'` | `'SOLID'` | Renders filled regions with flat quantized palette color (`SOLID`) or sampled photographic detail (`ORIGINAL`). |
-| `canvasBgColor` | `'BLACK' \| 'DARK_SLATE' \| 'CHARCOAL' \| 'LIGHT_GRAY' \| 'PURE_WHITE' \| 'CUSTOM'` | `'CHARCOAL'` | Background fill color for the canvas viewport surrounding the artwork. |
-| `canvasBgArgb` | `number` (32-bit ARGB) | `0xff18181b` (`#18181B`) | Custom background color when `canvasBgColor` is set to `'CUSTOM'` (configured via `<Pipette>` picker). |
-| `saveSortOrder` | `'LAST_ACTIVE' \| 'NAME' \| 'PROGRESS'` | `'LAST_ACTIVE'` | Sorting order for saved game snapshots in the Saves tab. |
-| `showSavePreviews` | `boolean` | `true` | Displays 240×240 thumbnails in the Saves gallery tab. |
-| `highlightStyle` | `'CENTROID_GLOW' \| 'NUMBER_ONLY' \| 'FULL_REGION' \| 'BOUNDARY_ONLY'` | `'FULL_REGION'` | Visual overlay style for matching active regions. `FULL_REGION` and `BOUNDARY_ONLY` fill regions in the active palette colour; `NUMBER_ONLY` highlights label text colour directly without drawing circles; `CENTROID_GLOW` draws a pulsing circle at the region centroid. |
-| `hintFillStyle` | `'SOLID' \| 'CHECKER' \| 'STRIPED'` | `'CHECKER'` | Texture pattern applied to the active hint target region. |
-| `hintColorArgb` | `number` (32-bit ARGB) | `0xfffbbf24` (`#FBBF24`) | Custom highlight color for hint targets (configured via `<Pipette>` picker). |
-| `showRegionLabels` | `boolean` | `true` | Displays number labels at interior poles of inaccessibility. |
-| `showPreviewLabels` | `boolean` | `false` | Shows number labels even when in artwork preview mode. |
-| `showPreviewBorders` | `boolean` | `false` | Shows border lines when in artwork preview mode. |
-| `highlightMatching` | `boolean` | `true` | Toggles dynamic glow and fill overlays for matching active regions. |
-| `animateHint` | `boolean` | `true` | Enables pulsing / breathing animation for hinted region. |
-| `showNextRegionHint` | `boolean` | `true` | Highlights the next closest matching region when requesting hints. |
-| `hintIntensity` | `number` (0.0 – 1.0) | `0.65` | Opacity of hint overlays and glow animations. |
-| `minLabelSize` | `number` (2 – 14 px) | `6` | Minimum label font size on screen; regions where labels cannot fit at this size are suppressed until zoomed in. Lower values reveal tiny labels on high-DPI displays. Configured in Settings under Label Sizing & Bounds. |
-| `maxLabelSize` | `number` (10 – 36 px) | `18` | Maximum label font size on screen; prevents numbers in large open regions from becoming oversized. Configured in Settings under Label Sizing & Bounds. |
-| `labelScale` | `number` (0.5 – 2.0) | `1.0` | Global scaling multiplier for number label font size. Configured in Settings under Label Sizing & Bounds. |
-| `showZoomButtons` | `boolean` | `false` | Displays onscreen `+` / `-` floating zoom buttons. |
-| `showResetViewButton` | `boolean` | `false` | Displays onscreen fit-to-screen view reset button. |
-| `paletteSort` | `'NUMBER' \| 'REMAINING' \| 'HUE' \| 'LIGHTNESS'` | `'NUMBER'` | Dynamic sorting order for palette swatches in `PaletteDock`. |
-| `prioritizeOnScreen`| `boolean` | `true` | Dynamically floats colors visible in current viewport to front of `PaletteDock`. |
-| `hapticsEnabled` | `boolean` | `true` | Enables native Android vibration / web vibration feedback on taps and victory. |
-| `panMomentum` | `boolean` | `true` | Enables Google Maps-style inertial gliding with friction decay on canvas pan flicks. |
-| `enableCustomColorForAllPuzzles` | `boolean` | `false` | Unlocks the palette color editor across all standard puzzle modes. |
-| `enableUndo` | `boolean` | `false` | Enables the Undo action button above the palette dock and keyboard shortcuts (`Ctrl+Z`). Disabled by default for standard puzzles and enabled automatically for free colour puzzles. |
-| `replaySpeed` | `number` (`0.5`, `1`, `2`, `5`, `10`) | `1` | Playback speed multiplier for chronological puzzle completion replays (`1x` $\approx$ 3.5s baseline duration). |
-| `autoReplayOnLoad` | `boolean` | `true` | Automatically zooms out and replays completed regions chronologically when opening a saved puzzle, then resumes active play. Configurable via minimal `Replay on Load` toggle switch in Settings and the Saves tab. |
-| `reverseDoubleTapZoom` | `boolean` | `false` | Inverts one-finger double-tap zoom direction. By default (`false`), dragging down zooms in and dragging up zooms out. When `true`, dragging up zooms in and dragging down zooms out. |
-| `detailedLoadingProgress` | `boolean` | `false` | Toggles between Simple Progress (Fast Mode, default: minimalist, low-overhead progress bar with worker IPC throttled for maximum generation speed) and Detailed Generation Progress (real-time 6-stage pipeline inspector, auto-detected metrics, and live emerging palette swatches). Can also be toggled directly from the loading card HUD. |
-| `generatorConfig` | `GeneratorConfig` | *(See PUZZLE.md)* | Engine tuning: algorithm, color count, min region area, max regions, resolution. |
+| `0` | `Performance LOD` | `~760` | Contoured barrel torso, flat-topped head, blunt snout, cupped pinna ears, articulated limbs, dimpled Head Orange |
+| `1` | `Balanced LOD` | `~1,840` | Adds cream underbelly, shoulder/thigh haunches, lower mandible, moist rhinarium nose pad, corneal eye catchlights, webbed paw pads |
+| `2` | `High Anatomy LOD` | `~3,420` | Adds 4-front / 3-hind webbed toes and claws, cheek jowls, supraorbital brow ridges, animated blinking eyelids, 5-sepal citrus calyx and stem |
+| `3` | `Ultra Bristle LOD` | `~6,480` | Adds 16 tapered muzzle/brow vibrissae whiskers and 96 instanced 3D layered bristle-fur coat tufts |
 
 ---
 
-## 9. Styling & Design Tokens (`index.css`)
+## 3. Dachshund Capy-Snake, Articulated Spine, Sightline Transparency & Botany
 
-Capy Web uses **Tailwind CSS 4** with CSS custom properties for hardware insets:
+In the planetary surface simulation, `RealisticWorldEnvironment.ts` and `PlayStyleManager.ts` run a zero-allocation biomechanical and botanical loop:
 
-```css
-:root {
-  --sat: max(env(safe-area-inset-top, 0px), var(--safe-area-top, 0px));
-  --sab: max(env(safe-area-inset-bottom, 0px), var(--safe-area-bottom, 0px));
-  --sal: max(env(safe-area-inset-left, 0px), var(--safe-area-left, 0px));
-  --sar: max(env(safe-area-inset-right, 0px), var(--safe-area-right, 0px));
-}
-```
-
-- **Touch Prevention**: `touch-action: none; overscroll-behavior: none; user-select: none;` prevents accidental page zooming, pull-to-refresh gestures, or text selection during gameplay.
-- **Theme Tokens**: Dark slate base (`#0f172a`, `#1e293b`) accented with bright amber (`#fbbf24`, `#f59e0b`) for active swatches, completion badges, and victory highlights.
+- **Always-Visible Head & Foreground View Frustum (`95%` Screen-Clear Transparency)**: `PlayStyleManager.updateHeadLineOfSightTransparency()` runs an analytic 4-plane 3D camera-frustum cone check (`doesSphereIntrudeForegroundFrustum`) paired with a 13-ray sightline and screen-view fan (`_occluderRaycaster`). Whenever any foreground entity (`__occluderRoot`: procedural trees, Sanctuary buildings, Home Pool fixtures, portals, fruits, wandering buddies, or coiled Dachshund segments on direct head rays) intrudes in front of the Hero, `markObjectHierarchyOccluded()` swaps its meshes onto pre-cloned `installSightlineEdgeFadeShader()` materials so `>= 95%` of the 2D screen (`boxNorm <= 0.978`) becomes 100% transparent (`alpha = 0.0`, `discard`) while background objects beyond the Hero remain 100% opaque.
+- **Solid Slightly-Compressible Spine & Coordinated Backward Walking**: Impact squash is clamped to `+-6%` (`MAX_SOLID_SQUASH = 0.06`). `solveArticulatedSpineAndSolidCollisions()` steps explicit spine nodes (`spineX`, `spineY`, `spineZ`, `spineYaw`) through a 4-iteration Bidirectional Position-Based Dynamics (PBD) rod solver enforcing inextensible link spacing, anti-jackknife bend limits (`MAX_SPINE_BEND_RAD = 0.52 rad`), pairwise non-adjacent separation (`|i - j| >= 2`), and solid obstacle pushback during both forward and reverse walking.
+- **2-Joint Foot Kinematics & Ground-Contact Traction**: `evaluateFootContactsAndTraction()` measures sole-to-ground clearance across all active feet; if `groundedFeet === 0` outside water, `isStuckNoFooting` drops horizontal propulsion to `0` while legs paddle in air until footing is restored.
+- **Procedural Botanical Morphogenesis & Interactive Placement Ghost**: `RealisticWorldEnvironment.createExponentialTree()` builds fluted trunks, 5 buttress roots, 3-tier Da Vinci pipe-model branches (`1.48^tier`), instanced V-folded citrus leaves, and 4-stage fruit growth (`blossom -> ovary_bud -> swelling -> ripe`). `startBuildingPlacementGhost()` raycasts pointer hover coordinates against `_sanctuaryGroundPlane` with emerald (`Clear`) vs rose (`Blocked`) turf validation.
+- **Dynamic Bioluminescent Night Cycle**: `updateBioluminescentNightGlow()` modulates `glow_tail` plumes, `zen_pagoda` shoji lanterns, 3D portal beacons, Grand Promenade Causeway lantern bollards, and `Spore Lagoon` bio-orbs smoothly from dusk through midnight without recompiling WebGL point-light shaders.
 
 ---
 
-## 10. Progressive Web App (PWA) & Offline Caching Architecture
+## 4. Seamless 63-Orders-of-Magnitude `1:1` Universe Simulator (`SeamlessUniverseSimulator.ts`, `UniverseShaders.ts`)
 
-Capy is an installable, 100% offline-first Progressive Web App. It operates without an internet connection after the initial visit, delivering native-like standalone desktop and mobile experiences.
+`SeamlessUniverseSimulator.ts` and `UniverseShaders.ts` provide continuous powers-of-10 zooming across 63 orders of magnitude (`logScaleMeters` from `+28.0` down to `-35.0`), spanning 25 physically calibrated scale bands in `UNIVERSE_SCALE_BANDS`:
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Capy PWA Architecture                           │
-├──────────────────────────┬─────────────────────────────────────────────┤
-│ Install & Manifest Layer │ Offline Service Worker (`sw.js`)            │
-│  ├─ manifest.webmanifest │  ├─ Pre-cache: HTML, manifest, sample assets│
-│  ├─ PwaService.ts        │  ├─ Auto-discovery: Vite JS/CSS bundles     │
-│  ├─ Standalone detection │  ├─ Cache-First: Scripts, styles, workers   │
-│  └─ In-app install card  │  └─ Network-First / Cache Fallback: Document │
-└──────────────────────────┴─────────────────────────────────────────────┘
-```
-
-1. **Web App Manifest (`manifest.webmanifest`)**:
-   - Configures standalone display mode (`display: "standalone"`, `display_override: ["standalone", "minimal-ui"]`) and zero-margin immersion with `#000000` theme and background colors.
-   - Provides responsive application icons (192x192, 512x512, and 512x512 maskable for adaptive Android icons) and Apple touch icons.
-   - Uses relative scoping (`start_url: "./"`, `scope: "./"`) to preserve host independence across GitHub Pages root (`/capy/`), PR branch previews (`/capy/pull/<number>/`), and local environments.
-
-2. **Offline Service Worker (`web/public/sw.js`)**:
-   - Pre-caches core application shell (`./`, `./index.html`, `./manifest.webmanifest`), sample puzzle images (`capybara.webp`, `mushrooms.webp`, `capy_forest.webp`, `snail_guitar.webp`), and application icons.
-   - Dynamically parses `index.html` during the `install` phase to discover and pre-cache hashed Vite script and CSS bundles (`assets/index-*.js`, `assets/index-*.css`) and Web Worker scripts (`assets/puzzle.worker-*.js`).
-   - Implements cache-first strategy for static assets and network-first with offline cache fallback for document navigation.
-   - Uses URL-string matching in addition to `Request` object matching to prevent CORS mode discrepancies when fetching module scripts.
-   - Skips waiting and claims active clients immediately upon installation to ensure immediate offline readiness.
-
-3. **Application Lifecycle Bridge (`PwaService.ts`)**:
-   - Detects standalone execution via `display-mode: standalone` media query and `navigator.standalone`.
-   - Captures `beforeinstallprompt` events and surfaces a direct "Install Web App" action card in the Settings modal under Platforms & Applications.
-   - Bypasses service worker registration when running inside the native Android launcher wrapper (`NativeBridge.isAndroid`), allowing AndroidX `WebViewAssetLoader` to manage APK assets directly.
+- **Hubble & SpaceEngine Radiative Shader Pipeline**:
+  - Flux-conserving Point-Spread-Function stars (`createStarPsfMaterial`) with Airy cores, 4-vane diffraction spikes, and Planckian blackbody colors (`2,600 K` to `32,000 K`), plus inclined Hubble Deep Field galaxies (`createDeepFieldGalaxyMaterial`).
+  - Self-shielded 5-octave FBM volumetric nebulae and absorptive Bok-globule dust pillars (`createVolumetricNebulaMaterial`, `createDustPillarMaterial`) with in-shader ACES filmic tone mapping and Natural vs Hubble `SHO` narrowband palettes.
+  - Sersic spiral galaxy discs, Gaussian WHIM cosmic web filaments, convective solar photospheres, Rayleigh/Mie planetary atmospheres, Kelvin-Helmholtz gas-giant bands, Cassini/Encke rings with cylindrical planet shadows, and cratered lunar regolith.
+- **Strict `1:1` Default Scale Law & Unlockable Cosmic Instruments**:
+  - Defaults strictly to `realityScaleGamma = 1.0` (`1:1` physical ratios) and `showObjectMarkers = false`.
+  - **Object Finder Markers** (`12 DNA` or `30` CapyCoins) project 3D Keplerian orbit hairlines and clickable screen-space diamond reticles (`object-finder-markers-layer`) onto sub-pixel `1:1` planets, moons, stellar cores, and atomic nuclei.
+  - **Reality Rescaler** (`20 DNA` or `45` CapyCoins) exposes `realityScaleGamma` (`0.28` to `1.00`), logarithmically/exponentially compressing inter-band (`10^(gamma * deltaLog)`) and intra-system (`r' ~ r^gamma`) size ratios while preserving exact physical `logScaleMeters` telemetry.
+- **Single-Line `40px` Unified Top Bar (`unified-top-bar`)**: Consolidates scale steppers, Scale Atlas dropdown (`toggle-scale-atlas-btn`), Cosmic Optics (`toggle-optics-panel-btn`), Live Inspector (`toggle-infographic-btn`), placement ghost controls, DNA/CapyCoin readouts, World Dock (`toggle-menu-btn`), Settings, Overview, and Audio Mute at `y = 0` with zero bottom HUD clutter.
 
 ---
 
-## 11. Development & Build Verification
+## 5. Contiguous Single-World Causeways & Multi-Threaded Physics (`src/capygame/engine/physics/`)
 
-From the `web/` directory:
+All 5 minigames run simultaneously inside one contiguous walkable world connected by 4 paved `9.6 m`-wide **Grand Promenade Causeways** (`CONTIGUOUS_BRIDGES`):
 
-```bash
-# Install dependencies
-npm ci
+| Promenade Causeway | Origin (`Sanctuary`) | Destination District | Seamless Walk-In / Walk-Out Mechanics |
+| :--- | :--- | :--- | :--- |
+| **NW Promenade** | `(-20.5, -20.5)` | `Spore Lagoon` (`-75, -75`) | Sandy beach rim (`33.2 m` to `42.0 m`) slopes into shallow bioluminescent water; walk back SE onto the causeway anytime. |
+| **NE Promenade** | `(+20.5, -20.5)` | `Yuzu Breakout` (`+75, -75`) | Open south forecourt (`localZ` `+9.8` to `+19.5`) couples Hero X movement to the Breakout deflector paddle while keeping the south exit open. |
+| **SW Promenade** | `(-20.5, +20.5)` | `Number Stampede` (`-75, +75`) | Bounded 4-segment circuit (`localZ` `0` to `-86`) with east/west wooden return boardwalks (`x = +-6.3 m`) and turnaround deck (`z = -92 m`). |
+| **SE Promenade** | `(+20.5, +20.5)` | `Yuzu Mountain` (`+75, +75`) | Entry ramp (`localZ` `+8.5` to `+4.5`), continuous safety promenade, rigid-body sweeper hammers, torque-balanced see-saw, and XPBD launch pad. |
 
-# Type-check TypeScript without emitting output
-npm run lint
+- **Rapier3D Wasm + Worker Architecture**: Offloads `@dimforge/rapier3d-compat` rigid bodies, swept CCD (`ccdEnabled = true`), and `RevoluteJoint` see-saws to `physics.worker.ts` using lock-free `SharedArrayBuffer` + `Atomics` when `crossOriginIsolated === true` (with zero-allocation transferable `Float32Array` fallback in cross-origin iframes), paired with a `24x24` Saint-Venant shallow-water buoyancy solver and 4-substep XPBD soft-body pad solver.
 
-# Compile production bundle into web/dist/
-npm run build
+---
 
-# Run Playwright interaction test suite
-npm run test:game
+## 6. Hardware-Accelerated 3D GPU Engine, AAA VFX & Studio Audio (`src/capygame/engine/gpu/`)
 
-# Run comprehensive end-to-end full gameplay test suite
-npm run test:gameplay
+- **3-Point Lighting, PMREM IBL & Texel-Snapped Shadow Cascade (`HardwareGpuEngine.ts`)**: Pairs solar `DirectionalLight` and `HemisphereLight` with a counter-azimuth `rimLight`, `RectAreaLight` specular softbox, procedural Sky + Studio `PMREMGenerator` environment map, Hero Contact Shadow decal, and texel-snapped `(heroWorldX, heroWorldZ)` shadow cascade across `+-75 m`.
+- **Full 5-District Sobel Tangent-Space PBR (`PbrTextureSynthesizer.ts`)**: Generates periodic seamless `DataTexture` heightfields baked via 3x3 Sobel gradients into `NoColorSpace` `normalMap`, `roughnessMap`, and Laplacian `aoMap` sets across all 5 districts, 4 causeways, dual-octave clearcoat ocean waves, Capybara bristle fur, and dimpled citrus peel, with live `1x..16x` anisotropic and `trilinear_aniso` / `bilinear` / `nearest_retro` switching.
+- **Zero-Allocation GPU VFX & Studio Audio (`AaaWorldVfxEngine.ts`, `AudioService.ts`)**: Steps SoA `InstancedMesh` burst/footstep particles, GPU bokeh sun-motes/fireflies, solar crepuscular god-rays, velocity-reactive FOV, quadratic camera trauma, and compressed stereo-reverb surface footsteps (`turf`, `cobble`, `water`).
+- **Multi-Pass HDR Post-Processing (`EffectComposer` + `CapyGpuMasterFilterShader`)**: Runs `RenderPass` (`HalfFloatType` + `DepthTexture`) -> `UnrealBloomPass` -> fused single-pass Depth-SSAO + foreground CAS sharpening + far-field optical Depth-of-Field + chromatic dispersion + color-grading filter profiles (`natural_pbr`, `cinema_filmic`, `vibrant_hdr`, `golden_hour`, `noir_contrast`, `retro_crt`) -> `OutputPass` (`AgX` / `ACESFilmic` / `Neutral` / `Reinhard`) -> `FXAAShader`.
 
-# Capture showcase screenshots for gallery
-npm run gallery:capture
+---
 
-# Launch Vite development server on http://localhost:3000
-npm run dev
-```
+## 7. CapyGame 3D Settings Reference (`localStorage` key: `capy_game_settings_v1`)
 
-From the repository root:
-
-```bash
-# Compile web/ bundle and sync into Android assets (app/src/main/assets/www)
-./gradlew app:buildWeb
-
-# Build complete Android debug APK using the web bundle
-./gradlew app:assembleDebug
-```
+| Setting Property | TypeScript Type | Default | UI Location & Behavior |
+| :--- | :--- | :--- | :--- |
+| `cameraFollowBehind` | `boolean` | `true` | World Dock & Simulation Settings Modal; aligns chase camera azimuth behind the Capybara heading. |
+| `autoCapyLod` | `boolean` | `true` | Simulation Settings Modal; dynamically steps Capybara LOD (`0` to `3`) to maintain 60 FPS. |
+| `manualCapyLodTier` | `0 \| 1 \| 2 \| 3` | `3` | Simulation Settings Modal (`Perf`, `Balanced`, `High`, `Ultra`); locks Capybara LOD when `autoCapyLod` is `false`. |
+| `dayNightAutoCycle` | `boolean` | `true` | Simulation Settings Modal; advances solar/lunar time continuously across 24 hours. |
+| `timeOfDayHours` | `number` (`0` – `24`) | `9.5` | Simulation Settings Modal; sets manual solar hour (`0.0` to `24.0`). |
+| `weatherMode` | `'auto' \| 'clear' \| 'rain' \| 'storm' \| 'mist' \| 'snow'` | `'auto'` | Simulation Settings Modal; selects automatic weather progression or locks a specific state. |
+| `cameraDistance` | `number` | `1.0` | Simulation Settings Modal; scales camera follow distance (`0.6x` to `1.5x`). |
+| `turnSensitivity` | `number` | `1.0` | Simulation Settings Modal; scales angular steering rate (`0.5x` to `2.0x`). |
+| `fov` | `number` | `58` | Simulation Settings Modal; adjusts baseline vertical perspective field of view (`45` to `75` degrees). |
+| `worldFogEnabled` | `boolean` | `true` | Simulation Settings Modal; toggles atmospheric horizon fog attenuation. |
+| `touchControlsMode` | `'auto' \| 'always' \| 'hidden'` | `'auto'` | Simulation Settings Modal; controls visibility of the directional touch pad. |
+| `showObjectMarkers` | `boolean` | `false` | Cosmic Optics Popover; projects clickable diamond reticles onto sub-pixel `1:1` cosmic/atomic bodies once unlocked. |
+| `realityScaleGamma` | `number` (`0.28` – `1.00`) | `1.0` | Cosmic Optics Popover; defaults to `1.0` (`1:1` scale) and compresses scale ratios once Reality Rescaler is unlocked. |
+| `astrophysicsPalette` | `'natural' \| 'hubble'` | `'natural'` | Cosmic Optics Popover; switches emission nebulae between Natural broadband and Hubble `SHO` narrowband palettes. |
+| `gpuQualityPreset` | `'performance' \| 'balanced' \| 'high' \| 'ultra'` | `'high'` | Simulation Settings Modal; configures shadows, anisotropy, bloom, SSAO, and CAS sharpening in one click. |
+| `gpuPostProcessing` | `boolean` | `true` | Simulation Settings Modal; toggles `HalfFloatType` `EffectComposer` post-processing vs direct rendering. |
+| `gpuVisualFilter` | `'natural_pbr' \| 'cinema_filmic' \| 'vibrant_hdr' \| 'golden_hour' \| 'noir_contrast' \| 'retro_crt'` | `'natural_pbr'` | Simulation Settings Modal; selects active GPU color-grading and lens profile. |
+| `gpuToneMapping` | `'agx' \| 'aces' \| 'neutral' \| 'reinhard'` | `'agx'` | Simulation Settings Modal; selects hardware HDR tone mapping curve. |
+| `gpuExposure` | `number` (`0.50` – `2.00`) | `1.12` | Simulation Settings Modal; scales linear HDR scene exposure. |
+| `gpuTextureFilter` | `'trilinear_aniso' \| 'bilinear' \| 'nearest_retro'` | `'trilinear_aniso'` | Simulation Settings Modal; live-switches registered PBR texture sampling modes. |
+| `gpuAnisotropy` | `1 \| 2 \| 4 \| 8 \| 16` | `8` | Simulation Settings Modal; sets hardware anisotropic filtering level. |
+| `gpuShadowQuality` | `'pcf_soft' \| 'pcf' \| 'vsm' \| 'off'` | `'pcf_soft'` | Simulation Settings Modal; selects directional solar shadow filtering mode. |
+| `gpuBloomEnabled` | `boolean` | `true` | Simulation Settings Modal; toggles `UnrealBloomPass` HDR emissive glow. |
+| `gpuBloomStrength` | `number` (`0.00` – `1.50`) | `0.36` | Persisted in `capy_game_settings_v1`; controls baseline HDR bloom strength. |
+| `gpuSsaoEnabled` | `boolean` | `true` | Simulation Settings Modal; toggles linearized depth-buffer cavity ambient occlusion. |
+| `gpuSharpenAmount` | `number` (`0.00` – `1.00`) | `0.28` | Simulation Settings Modal; controls foreground Contrast-Adaptive Unsharp Mask (CAS) crispness. |

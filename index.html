@@ -20,6 +20,64 @@
   </head>
   <body class="bg-black text-slate-100 overflow-hidden select-none">
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (function () {
+        function renderBootError(title, detail) {
+          if (window.__capyBooted) return;
+          var root = document.getElementById('root');
+          if (!root) return;
+          root.innerHTML =
+            '<div data-testid="boot-error-fallback" role="alert" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#020617;color:#f8fafc;padding:16px;font-family:system-ui,-apple-system,sans-serif;z-index:9999;">' +
+            '<div style="max-width:420px;width:100%;background:#0f172a;border:1px solid rgba(244,63,94,0.4);border-radius:20px;padding:24px;box-shadow:0 20px 40px rgba(0,0,0,0.6);">' +
+            '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#fb7185;margin-bottom:4px;">Startup Diagnostic</div>' +
+            '<h1 style="font-size:18px;font-weight:900;margin:0 0 10px 0;color:#ffffff;">' +
+            title +
+            '</h1>' +
+            '<p style="font-size:13px;line-height:1.5;color:#cbd5e1;margin:0 0 14px 0;">CapyGame encountered an error while loading application scripts on your device. Try reloading or clearing cached offline data.</p>' +
+            '<pre style="font-size:11px;background:#020617;border:1px solid #1e293b;border-radius:10px;padding:10px;color:#fda4af;white-space:pre-wrap;word-break:break-word;max-height:110px;overflow:auto;margin:0 0 16px 0;">' +
+            detail +
+            '</pre>' +
+            '<div style="display:flex;flex-direction:column;gap:8px;">' +
+            '<button type="button" onclick="window.location.reload()" style="padding:11px 16px;border-radius:12px;border:none;background:#10b981;color:#020617;font-weight:800;font-size:13px;cursor:pointer;">Reload Application</button>' +
+            '</div></div></div>';
+        }
+        function shouldAutoRetryBoot(msg) {
+          if (!msg) return false;
+          var lower = String(msg).toLowerCase();
+          if (
+            lower.indexOf('dynamically imported module') !== -1 ||
+            lower.indexOf('module script failed') !== -1 ||
+            lower.indexOf('outdated optimize dep') !== -1 ||
+            lower.indexOf('failed to fetch') !== -1
+          ) {
+            try {
+              if (!sessionStorage.getItem('__capy_cold_boot_retry')) {
+                sessionStorage.setItem('__capy_cold_boot_retry', '1');
+                setTimeout(function () {
+                  window.location.reload();
+                }, 400);
+                return true;
+              }
+            } catch (err) {}
+          }
+          return false;
+        }
+        window.addEventListener('error', function (e) {
+          if (!window.__capyBooted && e && e.message) {
+            if (shouldAutoRetryBoot(e.message)) return;
+            renderBootError('Application Failed to Start', e.message);
+          }
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          if (!window.__capyBooted && e && e.reason) {
+            var msg = e.reason.message || String(e.reason);
+            if (shouldAutoRetryBoot(msg)) return;
+            renderBootError('Startup Promise Rejected', msg);
+          }
+        });
+      })();
+    </script>
+    <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>
+
