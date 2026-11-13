@@ -574,13 +574,13 @@ export class CapyModelGenerator {
     const fruitMat = new THREE.MeshStandardMaterial({
       color: orangeColorHex,
       emissive: emissiveHex,
-      emissiveIntensity: 0.18,
+      emissiveIntensity: 0.0,
       normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
       normalScale: new THREE.Vector2(0.52, 0.52),
       bumpMap: this.getCitrusPeelBumpTexture(),
       bumpScale: 0.025,
       roughness: 0.24,
-      metalness: 0.06,
+      metalness: 0.04,
     });
 
     const orangeGeo = new THREE.SphereGeometry(0.255, 22, 18);
@@ -1343,13 +1343,13 @@ export class CapyModelGenerator {
     const fruitMat = new THREE.MeshStandardMaterial({
       color: colorHex,
       emissive: emissiveHex,
-      emissiveIntensity: 0.2,
+      emissiveIntensity: 0.0,
       normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
       normalScale: new THREE.Vector2(0.52, 0.52),
       bumpMap: this.getCitrusPeelBumpTexture(),
       bumpScale: 0.028,
       roughness: 0.22,
-      metalness: 0.06,
+      metalness: 0.04,
     });
 
     const sphereGeo = new THREE.SphereGeometry(radius, 20, 16);
@@ -1486,8 +1486,9 @@ export class CapyModelGenerator {
     } else if (hatType === 'crown') {
       const crownMat = new THREE.MeshStandardMaterial({
         color: 0xffd700,
-        metalness: 0.88,
-        roughness: 0.16,
+        metalness: 0.92,
+        roughness: 0.13,
+        envMapIntensity: 1.35,
       });
       // Golden crown ring encircling the base of the Head Orange
       const crownGeo = new THREE.CylinderGeometry(0.31, 0.28, 0.14, 8, 1, true);
@@ -1878,8 +1879,9 @@ export class CapyModelGenerator {
     });
     const goldMat = new THREE.MeshStandardMaterial({
       color: 0xfacc15,
-      metalness: 0.85,
-      roughness: 0.2,
+      metalness: 0.92,
+      roughness: 0.14,
+      envMapIntensity: 1.35,
     });
 
     const lanternMat = new THREE.MeshStandardMaterial({

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as THREE_WEBGPU from 'three/webgpu';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -20,6 +21,7 @@ import {
   computeEffectivePixelRatio,
   computeTexelSnappedShadowOrigin,
 } from './FramePerformanceGovernor';
+import type { WebGpuPostAndComputePipeline, WebGpuProbeResult } from './WebGpuPipeline';
 
 // Zero-allocation scratch vectors for shadow cascade snapping & rim light positioning
 const _sunOffsetDir = new THREE.Vector3(0.44, 0.82, 0.37).normalize();
@@ -264,23 +266,27 @@ class SceneDepthCapturePass extends Pass {
  *   6 Color Grading Filters] + `OutputPass` + `FXAAShader`)
  */
 export class HardwareGpuEngine {
-  public readonly renderer: THREE.WebGLRenderer;
+  public readonly renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer;
   public readonly scene: THREE.Scene;
   public readonly camera: THREE.PerspectiveCamera;
   public readonly isSoftwareGl: boolean;
+  public readonly isWebGpu: boolean;
+  public readonly webGpuPipeline: WebGpuPostAndComputePipeline | null;
+  public readonly webGpuProbe: WebGpuProbeResult | null;
   public readonly gpuRendererString: string;
   public readonly maxHardwareAnisotropy: number;
   public readonly maxTextureSize: number;
 
   // Upgraded Studio + Outdoor Lighting Rig & IBL Environment
   public readonly sunLight: THREE.DirectionalLight;
+  public moonLight: THREE.DirectionalLight | null = null;
   public readonly rimLight: THREE.DirectionalLight;
   public readonly studioAreaLight: THREE.RectAreaLight | null;
   public readonly iblEnvironmentTexture: THREE.Texture | null;
   public readonly heroContactShadowMesh: THREE.Mesh;
   private readonly heroContactShadowMat: THREE.MeshBasicMaterial;
 
-  // Multi-Pass Post-Processing Composer & Render Targets
+  // Multi-Pass Post-Processing Composer & Render Targets (WebGL2 fallback path)
   private composer: EffectComposer | null = null;
   private renderTarget: THREE.WebGLRenderTarget | null = null;
   private sceneCaptureTarget: THREE.WebGLRenderTarget | null = null;
@@ -302,55 +308,80 @@ export class HardwareGpuEngine {
   private lastSnappedShadowX: number = Number.NaN;
   private lastSnappedShadowZ: number = Number.NaN;
 
+  // Cached Day/Night & Compute state for render/telemetry
+  private lastDeltaDt: number = 0.016;
+  private lastHeroX: number = 0;
+  private lastHeroY: number = 0;
+  private lastHeroZ: number = 4;
+  private lastNightFactor: number = 0;
+  private lastSurfaceVisible: boolean = true;
+  private lastShadowCasterMode: 'sun' | 'moon' = 'sun';
+  private lastDayPhaseLabel: string = 'Daylight';
+  private lastTimeOfDayHours: number = 9.5;
+
   // Cached event listeners for clean disposal
   private readonly onContextLostHandler: (e: Event) => void;
   private readonly onContextRestoredHandler: () => void;
 
   constructor(
-    renderer: THREE.WebGLRenderer,
+    renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     sunLight: THREE.DirectionalLight,
     isSoftwareGl: boolean,
     initialWidth: number,
     initialHeight: number,
-    initialConfig?: Partial<GpuPipelineConfig>
+    initialConfig?: Partial<GpuPipelineConfig>,
+    webGpuOptions?: {
+      webGpuPipeline?: WebGpuPostAndComputePipeline | null;
+      webGpuProbe?: WebGpuProbeResult | null;
+      moonLight?: THREE.DirectionalLight | null;
+    }
   ) {
     this.renderer = renderer;
     this.scene = scene;
     this.camera = camera;
     this.sunLight = sunLight;
+    this.moonLight = webGpuOptions?.moonLight ?? null;
     this.isSoftwareGl = isSoftwareGl;
+    this.webGpuPipeline = webGpuOptions?.webGpuPipeline ?? null;
+    this.webGpuProbe = webGpuOptions?.webGpuProbe ?? null;
+    this.isWebGpu = Boolean(this.webGpuPipeline);
     this.viewportWidth = Math.max(1, initialWidth);
     this.viewportHeight = Math.max(1, initialHeight);
 
-    // Probe real hardware GPU limits and renderer string
-    this.gpuRendererString = this.queryGpuRendererString();
-    this.maxHardwareAnisotropy = Math.max(
-      1,
-      Math.min(16, this.renderer.capabilities.getMaxAnisotropy() || 1)
-    );
-    this.maxTextureSize = this.renderer.capabilities.maxTextureSize || 4096;
+    // Probe real hardware GPU limits and renderer string safely across WebGPU & WebGL2
+    this.gpuRendererString = this.isWebGpu
+      ? (this.webGpuProbe?.adapterName || 'WebGPU Hardware GPU')
+      : this.queryGpuRendererString();
+    const caps = (renderer as THREE.WebGLRenderer).capabilities;
+    const rendererAny = renderer as unknown as { getMaxAnisotropy?: () => number };
+    const rawAniso =
+      typeof rendererAny.getMaxAnisotropy === 'function'
+        ? rendererAny.getMaxAnisotropy()
+        : caps?.getMaxAnisotropy?.() ?? 8;
+    this.maxHardwareAnisotropy = Math.max(1, Math.min(16, rawAniso || 1));
+    this.maxTextureSize = caps?.maxTextureSize || 8192;
 
     // Ensure sunLight.target is added to the scene so hero-tracking shadow cascades move cleanly
     if (!this.sunLight.target.parent) {
       this.scene.add(this.sunLight.target);
     }
-    this.sunLight.shadow.bias = -0.00035;
-    this.sunLight.shadow.normalBias = 0.026;
+    this.sunLight.shadow.bias = -0.0003;
+    this.sunLight.shadow.normalBias = 0.024;
     this.sunLight.shadow.radius = 2.6;
 
-    // 1. Grazing Rim / Backlight DirectionalLight for crisp 3-point silhouette separation (zero shadow cost)
-    this.rimLight = new THREE.DirectionalLight(0xbae6fd, 0.42);
+    // 1. Subtle atmospheric grazing sky bounce (zero artificial shadow blowout)
+    this.rimLight = new THREE.DirectionalLight(0xbae6fd, 0.16);
     this.rimLight.position.set(-42, 28, -46);
     this.rimLight.castShadow = false;
     this.scene.add(this.rimLight);
 
-    // 2. Studio Specular Softbox (`RectAreaLight`) on hardware GPUs for luxury specular bevels on crowns & water
-    if (!this.isSoftwareGl) {
+    // 2. Subtle front bounce fill (`RectAreaLight`, WebGL2 only when hardware accelerated)
+    if (!this.isSoftwareGl && !this.isWebGpu) {
       try {
         RectAreaLightUniformsLib.init();
-        this.studioAreaLight = new THREE.RectAreaLight(0xfff7ed, 1.35, 14, 8);
+        this.studioAreaLight = new THREE.RectAreaLight(0xfff7ed, 0.22, 12, 6);
         this.studioAreaLight.position.set(0, 9.5, 12.5);
         this.studioAreaLight.lookAt(0, 0.8, 2.0);
         this.scene.add(this.studioAreaLight);
@@ -361,7 +392,7 @@ export class HardwareGpuEngine {
       this.studioAreaLight = null;
     }
 
-    // 3. Soft Gaussian Hero Contact Shadow Grounding Decal (grounds the Hero even on software GL or in shade)
+    // 3. Soft Gaussian Hero Contact Shadow Grounding Decal
     const contactTex = PbrTextureSynthesizer.getContactShadowTexture();
     this.heroContactShadowMat = new THREE.MeshBasicMaterial({
       map: contactTex,
@@ -382,7 +413,7 @@ export class HardwareGpuEngine {
     this.heroContactShadowMesh.userData.ignoreCameraFade = true;
     this.scene.add(this.heroContactShadowMesh);
 
-    // 4. Procedural Sky + Studio Environment Map (PMREM cubemap on hardware GPUs; fast Analytic Rim+Hemi on Software GL to avoid WebGLEnvironments 20-pass CubeUV stall)
+    // 4. Procedural Sky + Studio Environment Map (PMREM cubemap on WebGL2 HW & WebGPU!)
     this.iblEnvironmentTexture = PbrTextureSynthesizer.createStudioAndSkyEnvironmentMap(
       this.renderer,
       this.isSoftwareGl
@@ -391,37 +422,46 @@ export class HardwareGpuEngine {
       this.scene.environment = this.iblEnvironmentTexture;
     }
 
-    // 5. WebGL Context Loss & Restoration Resilience
+    // 5. WebGL Context Loss & Restoration Resilience (only on WebGLRenderer)
     this.onContextLostHandler = (e: Event) => {
       e.preventDefault();
       this.contextLost = true;
     };
     this.onContextRestoredHandler = () => {
       this.contextLost = false;
-      if (!this.isSoftwareGl || this.shouldActivateComposer()) {
+      if (!this.isWebGpu && (!this.isSoftwareGl || this.shouldActivateComposer())) {
         this.rebuildComposer();
       }
     };
-    this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLostHandler, false);
-    this.renderer.domElement.addEventListener(
-      'webglcontextrestored',
-      this.onContextRestoredHandler,
-      false
-    );
+    if (!this.isWebGpu) {
+      this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLostHandler, false);
+      this.renderer.domElement.addEventListener(
+        'webglcontextrestored',
+        this.onContextRestoredHandler,
+        false
+      );
+    }
 
     // 6. Initialize Post-Processing Pipeline & Apply Initial Config
     if (initialConfig) {
       this.config = { ...this.config, ...initialConfig };
     }
-    if (!this.isSoftwareGl || this.shouldActivateComposer()) {
+    if (!this.isWebGpu && (!this.isSoftwareGl || this.shouldActivateComposer())) {
       this.rebuildComposer();
     }
     this.applyConfig(this.config);
   }
 
+  public setMoonLight(moonLight: THREE.DirectionalLight | null): void {
+    this.moonLight = moonLight;
+    if (this.moonLight && !this.moonLight.target.parent) {
+      this.scene.add(this.moonLight.target);
+    }
+  }
+
   private queryGpuRendererString(): string {
     try {
-      const gl = this.renderer.getContext();
+      const gl = (this.renderer as THREE.WebGLRenderer).getContext();
       const ext = gl.getExtension('WEBGL_debug_renderer_info');
       if (ext) {
         const raw = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '');
@@ -441,20 +481,21 @@ export class HardwareGpuEngine {
     pingPongTarget: THREE.WebGLRenderTarget;
     sceneCaptureTarget: THREE.WebGLRenderTarget | null;
   } {
-    const pixelRatio = this.renderer.getPixelRatio();
+    const glRenderer = this.renderer as THREE.WebGLRenderer;
+    const pixelRatio = glRenderer.getPixelRatio();
     const rtW = Math.max(1, Math.floor(width * pixelRatio));
     const rtH = Math.max(1, Math.floor(height * pixelRatio));
 
-    const canDepthTex = this.renderer.capabilities.isWebGL2;
+    const canDepthTex = Boolean(glRenderer.capabilities?.isWebGL2);
     const useDepthCapture = canDepthTex && this.config.ssaoEnabled;
     const effectiveSamples =
-      !this.isSoftwareGl && this.renderer.capabilities.isWebGL2 && !useDepthCapture
+      !this.isSoftwareGl && canDepthTex && !useDepthCapture
         ? samples
         : 0;
     this.activeMsaaSamples = effectiveSamples;
 
     const rtType =
-      !this.isSoftwareGl && this.renderer.capabilities.isWebGL2
+      !this.isSoftwareGl && canDepthTex
         ? THREE.HalfFloatType
         : THREE.UnsignedByteType;
 
@@ -495,7 +536,9 @@ export class HardwareGpuEngine {
   }
 
   private rebuildComposer(): void {
+    if (this.isWebGpu) return;
     try {
+      const glRenderer = this.renderer as THREE.WebGLRenderer;
       this.renderPass?.dispose();
       this.composer?.dispose();
       this.renderTarget?.dispose();
@@ -516,8 +559,8 @@ export class HardwareGpuEngine {
       this.renderTarget = targets.pingPongTarget;
       this.sceneCaptureTarget = targets.sceneCaptureTarget;
 
-      this.composer = new EffectComposer(this.renderer, this.renderTarget);
-      this.composer.setPixelRatio(this.renderer.getPixelRatio());
+      this.composer = new EffectComposer(glRenderer, this.renderTarget);
+      this.composer.setPixelRatio(glRenderer.getPixelRatio());
       this.composer.setSize(this.viewportWidth, this.viewportHeight);
 
       this.renderPass = new SceneDepthCapturePass(
@@ -534,8 +577,8 @@ export class HardwareGpuEngine {
           Math.max(1, Math.floor(this.viewportHeight * bloomScale))
         ),
         this.config.bloomStrength,
-        0.42,
-        0.84
+        0.32,
+        1.18
       );
       this.bloomPass.enabled = this.config.bloomEnabled;
       this.composer.addPass(this.bloomPass);
@@ -680,15 +723,19 @@ export class HardwareGpuEngine {
     this.renderer.toneMappingExposure = THREE.MathUtils.clamp(this.config.exposure, 0.4, 2.2);
 
     // 2. Shadow Map Mode & Resolution
-    if (this.isSoftwareGl || this.config.shadowQuality === 'off') {
+    if (this.config.shadowQuality === 'off') {
       this.renderer.shadowMap.enabled = false;
       this.sunLight.castShadow = false;
+      if (this.moonLight) this.moonLight.castShadow = false;
       this.activeShadowMapSize = 0;
     } else {
       const prevEnabled = this.renderer.shadowMap.enabled;
       const prevType = this.renderer.shadowMap.type;
       this.renderer.shadowMap.enabled = true;
-      this.sunLight.castShadow = true;
+      this.sunLight.castShadow = this.lastShadowCasterMode === 'sun';
+      if (this.moonLight) {
+        this.moonLight.castShadow = this.lastShadowCasterMode === 'moon';
+      }
 
       if (this.config.shadowQuality === 'vsm') {
         this.renderer.shadowMap.type = THREE.VSMShadowMap;
@@ -698,8 +745,9 @@ export class HardwareGpuEngine {
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       }
 
-      const desiredMapSize =
-        this.config.qualityPreset === 'ultra'
+      const desiredMapSize = this.isSoftwareGl
+        ? 1024
+        : this.config.qualityPreset === 'ultra'
           ? Math.min(4096, this.maxTextureSize)
           : this.config.qualityPreset === 'balanced'
             ? 1024
@@ -713,9 +761,16 @@ export class HardwareGpuEngine {
         this.sunLight.shadow.mapSize.set(desiredMapSize, desiredMapSize);
         this.sunLight.shadow.map?.dispose();
         this.sunLight.shadow.map = null;
+        if (this.moonLight) {
+          this.moonLight.shadow.mapSize.set(desiredMapSize, desiredMapSize);
+          this.moonLight.shadow.map?.dispose();
+          this.moonLight.shadow.map = null;
+        }
       }
       this.activeShadowMapSize = desiredMapSize;
-      this.renderer.shadowMap.needsUpdate = true;
+      if (!this.isWebGpu) {
+        (this.renderer as THREE.WebGLRenderer).shadowMap.needsUpdate = true;
+      }
     }
 
     // 3. Global Texture Filtering & Hardware Anisotropy across all PBR DataTextures & CanvasTextures
@@ -738,7 +793,12 @@ export class HardwareGpuEngine {
       this.renderer.setSize(this.viewportWidth, this.viewportHeight);
     }
 
-    // 5. Rebuild Composer RenderTarget if MSAA / DepthTexture / PixelRatio requirements changed,
+    if (this.webGpuPipeline) {
+      this.webGpuPipeline.applyConfig(this.config);
+      return;
+    }
+
+    // 5. Rebuild WebGL2 Composer RenderTarget if MSAA / DepthTexture / PixelRatio requirements changed,
     // or lazily initialize on software WebGL when a visual filter is activated.
     if (this.shouldActivateComposer() && !this.composer) {
       this.rebuildComposer();
@@ -769,7 +829,7 @@ export class HardwareGpuEngine {
 
   public setForceSoftwarePostProcess(force: boolean): void {
     this.forceSoftwarePostProcess = force;
-    if (force && !this.composer) {
+    if (!this.isWebGpu && force && !this.composer) {
       this.rebuildComposer();
     }
   }
@@ -779,8 +839,8 @@ export class HardwareGpuEngine {
   }
 
   /**
-   * Updates the texel-snapped hero-centered shadow cascade, rim light counter-azimuth,
-   * studio softbox anchor, and soft Gaussian contact shadow decal every frame with ZERO allocations.
+   * Updates the texel-snapped hero-centered Sun/Moon shadow cascade, rim light counter-azimuth,
+   * studio softbox anchor, dynamic IBL intensity, and soft Gaussian contact shadow decal every frame.
    */
   public updateLightingAndShadowCascade(
     dt: number,
@@ -790,25 +850,53 @@ export class HardwareGpuEngine {
     groundY: number,
     isSurfaceVisible: boolean,
     nightFactor: number,
-    sunDirection?: THREE.Vector3
+    sunDirection?: THREE.Vector3,
+    moonDirection?: THREE.Vector3,
+    activeShadowCaster: 'sun' | 'moon' = 'sun',
+    dayPhaseLabel: string = 'Daylight',
+    timeOfDayHours: number = 9.5,
+    iblEnvIntensity: number = 1.15
   ): void {
     this.elapsedTime += dt;
+    this.lastDeltaDt = dt;
+    this.lastHeroX = heroWorldX;
+    this.lastHeroY = heroWorldY;
+    this.lastHeroZ = heroWorldZ;
+    this.lastNightFactor = nightFactor;
+    this.lastSurfaceVisible = isSurfaceVisible;
+    this.lastShadowCasterMode = activeShadowCaster;
+    this.lastDayPhaseLabel = dayPhaseLabel;
+    this.lastTimeOfDayHours = timeOfDayHours;
 
     // 1. Hero Contact Shadow Grounding Decal
     this.heroContactShadowMesh.visible = isSurfaceVisible;
     if (isSurfaceVisible) {
       const heightAboveGround = Math.max(0, heroWorldY - groundY);
       const scaleFade = 1.0 + Math.min(1.2, heightAboveGround * 0.22);
-      const opacityFade = Math.max(0.06, 0.46 * Math.exp(-heightAboveGround * 0.45)) * (1.0 - nightFactor * 0.45);
+      const opacityFade =
+        Math.max(0.06, 0.46 * Math.exp(-heightAboveGround * 0.45)) *
+        (1.0 - nightFactor * 0.28);
       this.heroContactShadowMesh.position.set(heroWorldX, groundY + 0.025, heroWorldZ);
       this.heroContactShadowMesh.scale.set(scaleFade, scaleFade, 1.0);
       this.heroContactShadowMat.opacity = opacityFade;
     }
 
-    // 2. Texel-Snapped Directional Shadow Cascade centered on the Hero (tight 42m half-extent = 2.6x sharper texels, zero district azimuth warp!)
+    // Dynamic Sky IBL scaling across Day / Golden Hour / Starlight Night
+    this.scene.environmentIntensity = isSurfaceVisible ? iblEnvIntensity : 0.78;
+
+    // 2. Texel-Snapped Dual Sun + Moon Directional Shadow Cascade (tight 38m half-extent)
     if (isSurfaceVisible) {
-      const frustumHalfExtent = 42;
-      const shCam = this.sunLight.shadow.camera;
+      const shadowsAllowed = this.config.shadowQuality !== 'off';
+      const casterLight =
+        activeShadowCaster === 'moon' && this.moonLight ? this.moonLight : this.sunLight;
+
+      this.sunLight.castShadow = shadowsAllowed && casterLight === this.sunLight;
+      if (this.moonLight) {
+        this.moonLight.castShadow = shadowsAllowed && casterLight === this.moonLight;
+      }
+
+      const frustumHalfExtent = 32;
+      const shCam = casterLight.shadow.camera;
       if (shCam.right !== frustumHalfExtent) {
         shCam.left = -frustumHalfExtent;
         shCam.right = frustumHalfExtent;
@@ -817,8 +905,12 @@ export class HardwareGpuEngine {
         shCam.updateProjectionMatrix();
       }
 
-      if (sunDirection && sunDirection.lengthSq() > 0.001) {
-        _sunOffsetDir.copy(sunDirection).normalize();
+      const chosenDir =
+        activeShadowCaster === 'moon' && moonDirection && moonDirection.lengthSq() > 0.001
+          ? moonDirection
+          : sunDirection;
+      if (chosenDir && chosenDir.lengthSq() > 0.001) {
+        _sunOffsetDir.copy(chosenDir).normalize();
       } else {
         _sunOffsetDir.set(0.44, 0.82, 0.37).normalize();
       }
@@ -841,12 +933,15 @@ export class HardwareGpuEngine {
       ) {
         this.lastSnappedShadowX = snappedPose.targetX;
         this.lastSnappedShadowZ = snappedPose.targetZ;
-        this.sunLight.target.position.set(snappedPose.targetX, 0, snappedPose.targetZ);
-        this.sunLight.target.updateMatrixWorld();
+        casterLight.target.position.set(snappedPose.targetX, 0, snappedPose.targetZ);
+        if (!casterLight.target.parent) {
+          this.scene.add(casterLight.target);
+        }
+        casterLight.target.updateMatrixWorld();
       }
-      this.sunLight.position.set(snappedPose.lightX, snappedPose.lightY, snappedPose.lightZ);
+      casterLight.position.set(snappedPose.lightX, snappedPose.lightY, snappedPose.lightZ);
 
-      // Position grazing Rim/Backlight opposite the true sun azimuth relative to Hero for 3-point separation
+      // Position grazing Rim/Backlight opposite active key light azimuth for 3-point separation
       this.rimLight.position.set(
         heroWorldX - _sunOffsetDir.x * 58,
         24,
@@ -857,17 +952,18 @@ export class HardwareGpuEngine {
         this.scene.add(this.rimLight.target);
       }
       this.rimLight.target.updateMatrixWorld();
-      this.rimLight.intensity = THREE.MathUtils.lerp(0.42, 0.62, nightFactor);
+      this.rimLight.intensity = THREE.MathUtils.lerp(0.14, 0.24, nightFactor);
 
       if (this.studioAreaLight) {
         this.studioAreaLight.position.set(heroWorldX + 4.5, heroWorldY + 8.5, heroWorldZ + 9.5);
         this.studioAreaLight.lookAt(heroWorldX, heroWorldY + 0.6, heroWorldZ);
+        this.studioAreaLight.intensity = 0.16 * (1.0 - nightFactor * 0.7);
       }
     }
 
-    // 3. Modulate HDR Bloom gently between luminous Cosmic Space & Nighttime Bioluminescence vs Bright Daylight
+    // 3. Keep HDR Bloom restrained strictly to solar/lunar water/metal glints & cosmic stars
     if (this.bloomPass && this.config.bloomEnabled) {
-      const cosmicOrNightBoost = !isSurfaceVisible ? 1.28 : 1.0 + nightFactor * 0.35;
+      const cosmicOrNightBoost = !isSurfaceVisible ? 1.15 : 1.0 + nightFactor * 0.2;
       this.bloomPass.strength = this.config.bloomStrength * cosmicOrNightBoost;
     }
 
@@ -882,6 +978,7 @@ export class HardwareGpuEngine {
     if (!this.config.postProcessingEnabled || this.contextLost) {
       return false;
     }
+    if (this.isWebGpu) return true;
     if (
       this.isSoftwareGl &&
       !this.forceSoftwarePostProcess &&
@@ -893,6 +990,9 @@ export class HardwareGpuEngine {
   }
 
   public isPostProcessingRunning(): boolean {
+    if (this.webGpuPipeline) {
+      return this.config.postProcessingEnabled;
+    }
     if (!this.shouldActivateComposer()) return false;
     if (!this.composer) {
       this.rebuildComposer();
@@ -902,6 +1002,17 @@ export class HardwareGpuEngine {
 
   public render(): void {
     if (this.contextLost) return;
+    if (this.webGpuPipeline) {
+      this.webGpuPipeline.stepComputeAndRender(
+        this.lastDeltaDt,
+        this.lastHeroX,
+        this.lastHeroY,
+        this.lastHeroZ,
+        this.lastNightFactor,
+        this.lastSurfaceVisible
+      );
+      return;
+    }
     if (this.isPostProcessingRunning() && this.composer) {
       this.composer.render();
     } else {
@@ -917,6 +1028,11 @@ export class HardwareGpuEngine {
     }
     this.viewportWidth = nextW;
     this.viewportHeight = nextH;
+
+    if (this.webGpuPipeline) {
+      this.webGpuPipeline.setSize(nextW, nextH, this.renderer.getPixelRatio());
+      return;
+    }
 
     if (this.sceneCaptureTarget) {
       const pr = this.renderer.getPixelRatio();
@@ -943,18 +1059,21 @@ export class HardwareGpuEngine {
     const profile =
       GPU_VISUAL_FILTER_PROFILES[this.config.visualFilterPreset] ||
       GPU_VISUAL_FILTER_PROFILES.natural_pbr;
-    const renderInfo = this.renderer.info.render;
-    const memInfo = this.renderer.info.memory;
-    const programsCount = this.renderer.info.programs ? this.renderer.info.programs.length : 0;
+    const renderInfo = this.renderer.info?.render ?? { calls: 0, triangles: 0 };
+    const memInfo = this.renderer.info?.memory ?? { textures: 0, geometries: 0 };
+    const glPrograms = (this.renderer.info as { programs?: unknown[] } | undefined)?.programs;
+    const programsCount = glPrograms ? glPrograms.length : 0;
     const activeAniso =
       this.config.textureFilter === 'trilinear_aniso'
         ? Math.min(this.maxHardwareAnisotropy, this.config.anisotropyLevel)
         : 1;
 
     return {
-      backendLabel: this.isSoftwareGl
-        ? 'WebGL2 Software Rasterizer'
-        : 'WebGL2 Hardware Accelerated GPU',
+      backendLabel: this.webGpuPipeline
+        ? 'WebGPU WGSL + TSL PostFX + Compute'
+        : this.isSoftwareGl
+          ? 'WebGL2 Software Rasterizer'
+          : 'WebGL2 Hardware Accelerated GPU',
       gpuRenderer: this.gpuRendererString,
       isSoftwareGl: this.isSoftwareGl,
       contextLost: this.contextLost,
@@ -972,7 +1091,9 @@ export class HardwareGpuEngine {
       shadowMapSize: this.activeShadowMapSize,
       msaaSamples: this.activeMsaaSamples,
       bloomEnabled: this.config.bloomEnabled,
-      ssaoEnabled: this.config.ssaoEnabled && Boolean(this.depthTexture),
+      ssaoEnabled: this.webGpuPipeline
+        ? this.config.ssaoEnabled
+        : this.config.ssaoEnabled && Boolean(this.depthTexture),
       sharpenAmount: +this.config.sharpenAmount.toFixed(2),
       drawCalls: renderInfo.calls,
       triangles: renderInfo.triangles,
@@ -980,15 +1101,28 @@ export class HardwareGpuEngine {
       geometriesInVram: memInfo.geometries,
       shaderPrograms: programsCount,
       registeredPbrTextures: PbrTextureSynthesizer.getRegisteredTextureCount(),
+      webGpuActive: this.isWebGpu,
+      webGpuSupported: Boolean(this.webGpuProbe?.supported),
+      webGpuAdapterName: this.webGpuProbe?.adapterName || this.gpuRendererString,
+      computeParticlesActive: this.isWebGpu,
+      shadowCasterMode:
+        this.isSoftwareGl || this.config.shadowQuality === 'off'
+          ? 'off'
+          : this.lastShadowCasterMode,
+      dayPhaseLabel: this.lastDayPhaseLabel,
+      timeOfDayHours: +this.lastTimeOfDayHours.toFixed(2),
     };
   }
 
   public dispose(): void {
-    this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLostHandler);
-    this.renderer.domElement.removeEventListener(
-      'webglcontextrestored',
-      this.onContextRestoredHandler
-    );
+    if (!this.isWebGpu) {
+      this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLostHandler);
+      this.renderer.domElement.removeEventListener(
+        'webglcontextrestored',
+        this.onContextRestoredHandler
+      );
+    }
+    this.webGpuPipeline?.dispose();
     this.renderPass?.dispose();
     this.composer?.dispose();
     this.renderTarget?.dispose();

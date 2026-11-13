@@ -239,14 +239,19 @@ export type {
   GpuEngineTelemetry,
   GpuPipelineConfig,
   GpuQualityPreset,
+  GpuRenderBackendMode,
   GpuShadowQualityMode,
   GpuTextureFilterMode,
   GpuToneMappingMode,
   GpuVisualFilterPreset,
+  PerformanceLogEntry,
+  PerformanceLogSeverity,
+  PerformanceLogSnapshot,
 } from './engine/gpu/GpuEngineTypes';
 
 import type {
   GpuQualityPreset,
+  GpuRenderBackendMode,
   GpuShadowQualityMode,
   GpuTextureFilterMode,
   GpuToneMappingMode,
@@ -263,12 +268,14 @@ export interface CapyGameSettings {
   showAboutOnStartup: boolean;
   autoCapyLod: boolean;
   manualCapyLodTier: CapyLodTier;
+  lock60FpsGovernor: boolean;
   dayNightAutoCycle: boolean;
   timeOfDayHours: number;
   weatherMode: 'auto' | WeatherType;
   showObjectMarkers: boolean;
   realityScaleGamma: number;
   astrophysicsPalette: AstrophysicsPaletteMode;
+  gpuBackendPreference: GpuRenderBackendMode;
   gpuQualityPreset: GpuQualityPreset;
   gpuPostProcessing: boolean;
   gpuVisualFilter: GpuVisualFilterPreset;
@@ -293,24 +300,26 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   showAboutOnStartup: false,
   autoCapyLod: true,
   manualCapyLodTier: 3,
+  lock60FpsGovernor: true,
   dayNightAutoCycle: true,
   timeOfDayHours: 9.5,
   weatherMode: 'auto',
   showObjectMarkers: false,
   realityScaleGamma: 1.0, // Strict 1:1 physical reality by default
   astrophysicsPalette: 'natural',
+  gpuBackendPreference: 'auto',
   gpuQualityPreset: 'high',
   gpuPostProcessing: true,
   gpuVisualFilter: 'natural_pbr',
   gpuToneMapping: 'agx',
-  gpuExposure: 1.12,
+  gpuExposure: 1.02,
   gpuTextureFilter: 'trilinear_aniso',
   gpuAnisotropy: 8,
   gpuShadowQuality: 'pcf_soft',
   gpuBloomEnabled: true,
-  gpuBloomStrength: 0.36,
+  gpuBloomStrength: 0.24,
   gpuSsaoEnabled: true,
-  gpuSharpenAmount: 0.28,
+  gpuSharpenAmount: 0.26,
 };
 
 export interface ProgressiveUnlockMilestone {

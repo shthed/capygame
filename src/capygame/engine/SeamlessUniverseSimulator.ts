@@ -29,6 +29,8 @@ import {
   createStarPsfMaterial,
   createVolumetricNebulaMaterial,
 } from './UniverseShaders';
+import { computeSolarPlanetFocusOffset } from './gpu/FramePerformanceGovernor';
+import { convertLegacyShaderMaterialsToTsl } from './gpu/WebGpuPipeline';
 
 interface TrackedMaterialEntry {
   mat: THREE.Material;
@@ -127,6 +129,7 @@ export class SeamlessUniverseSimulator {
   public readonly celestialBackdropGroup: THREE.Group = new THREE.Group();
 
   private readonly isSoftwareGl: boolean;
+  private readonly isWebGpu: boolean;
   private readonly layers: ScaleLayerRuntime[] = [];
   private readonly woodlandCapys: WoodlandCapyEntry[] = [];
   private readonly markerAnchors: WorldMarkerAnchor[] = [];
@@ -146,8 +149,12 @@ export class SeamlessUniverseSimulator {
 
   // Dynamic Solar, Planetary, Lunar, Atomic & Quantum references updated in-place
   private solarPlanets: SolarPlanetEntry[] = [];
+  private solarFocusContainer: THREE.Group | null = null;
+  private solarEclipticGroup: THREE.Group | null = null;
+  private capyEarthPlanet: SolarPlanetEntry | null = null;
   private solarSunMesh: THREE.Mesh | null = null;
   private solarCoronaSprite: THREE.Sprite | null = null;
+  private sunStarBeacon: THREE.Points | null = null;
   private solarBeltPoints: THREE.Points | null = null;
   private solarBeltBaseAu: Float32Array | null = null;
   private solarOortPoints: THREE.Points | null = null;
@@ -202,8 +209,9 @@ export class SeamlessUniverseSimulator {
     waterColorHex?: number;
   } | null = null;
 
-  constructor(isSoftwareGl: boolean = false) {
+  constructor(isSoftwareGl: boolean = false, isWebGpu: boolean = false) {
     this.isSoftwareGl = isSoftwareGl;
+    this.isWebGpu = isWebGpu;
     this.rootGroup.name = 'SeamlessUniverseSimulatorRoot';
     this.rootGroup.visible = false;
     this.rootGroup.userData.ignoreCameraFade = true;
@@ -234,6 +242,10 @@ export class SeamlessUniverseSimulator {
     }
   }
 
+  public getSharedSunDir(): THREE.Vector3 {
+    return _sharedSunDir;
+  }
+
   public ensureWoodlandGroveBuilt() {
     if (this.groveBuilt) return;
     this.groveBuilt = true;
@@ -245,6 +257,10 @@ export class SeamlessUniverseSimulator {
     if (this.layersBuilt) return;
     this.layersBuilt = true;
     this.buildCelestialStarBackdrop();
+    if (this.isWebGpu) {
+      convertLegacyShaderMaterialsToTsl(this.celestialBackdropGroup);
+      this.celestialBackdropMats = this.collectLayerMaterials(this.celestialBackdropGroup);
+    }
     this.buildAllScaleLayers();
   }
 
@@ -504,6 +520,9 @@ export class SeamlessUniverseSimulator {
           break;
       }
 
+      if (this.isWebGpu) {
+        convertLegacyShaderMaterialsToTsl(group);
+      }
       const materials = this.collectLayerMaterials(group);
       this.rootGroup.add(group);
       this.layers.push({
@@ -532,7 +551,8 @@ export class SeamlessUniverseSimulator {
         seen.add(mat);
         mat.transparent = true;
         const shaderMat = mat as THREE.ShaderMaterial;
-        const uOpacity = shaderMat.uniforms?.uOpacity;
+        const tslOpacity = mat.userData?.__tslOpacityUniform as { value: number } | undefined;
+        const uOpacity = shaderMat.uniforms?.uOpacity ?? tslOpacity;
         const uTime = shaderMat.uniforms?.uTime;
         const uHubbleMix = shaderMat.uniforms?.uHubbleMix;
         const baseOpacity = uOpacity
@@ -1253,9 +1273,15 @@ export class SeamlessUniverseSimulator {
     group: THREE.Group,
     glowWarm: THREE.CanvasTexture
   ): (dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void {
+    const solarFocusContainer = new THREE.Group();
+    solarFocusContainer.rotation.x = 0.34;
+    group.add(solarFocusContainer);
+    this.solarFocusContainer = solarFocusContainer;
+
     const ecliptic = new THREE.Group();
-    ecliptic.rotation.x = 0.34;
-    group.add(ecliptic);
+    solarFocusContainer.add(ecliptic);
+    this.solarEclipticGroup = ecliptic;
+    this.capyEarthPlanet = null;
 
     // Canonical scale: 22.0 world units === 30.07 AU (Neptune semi-major axis)
     // True 1:1 Sun radius = 0.00465047 AU => 22.0 * (0.00465047 / 30.07) = 0.003402 world units!
@@ -1268,6 +1294,7 @@ export class SeamlessUniverseSimulator {
 
     // Flux-conserving G2V solar PSF diffraction beacon + HDR solar corona
     const sunStarBeacon = this.createSinglePointGlint(0xfff7ed, 22.0, 0.85);
+    this.sunStarBeacon = sunStarBeacon;
     ecliptic.add(sunStarBeacon);
 
     this.solarCoronaSprite = new THREE.Sprite(
@@ -1497,7 +1524,7 @@ export class SeamlessUniverseSimulator {
       bodyMesh.add(glintPoint);
       pivot.add(bodyMesh);
 
-      this.solarPlanets.push({
+      const planetEntry: SolarPlanetEntry = {
         name: def.name,
         semiMajorAu: def.aAu,
         radiusAu: def.rAu,
@@ -1511,7 +1538,11 @@ export class SeamlessUniverseSimulator {
         baseOrbitPoints: unitCoords,
         targetLogMeters: def.targetLog,
         colorCss: def.colorCss,
-      });
+      };
+      this.solarPlanets.push(planetEntry);
+      if (def.id === 'capy_earth') {
+        this.capyEarthPlanet = planetEntry;
+      }
 
       this.registerMarkerAnchor({
         id: `marker_planet_${def.id}`,
@@ -2988,11 +3019,11 @@ export class SeamlessUniverseSimulator {
       // Neighbor-aware visibility bounds:
       // At strict 1:1 (gamma = 1.0): parent layers fade out cleanly by 10^+1.18x (15x viewport) so giant
       // dust pillars at +16.63 NEVER slice through Solar System orbits at +13.7!
-      // When viewing within the unified planetary stellar system (+6.8 to +14.5 m), keep the solar system
-      // structure (rocky planets, main asteroid belt, gas giants) visible together in the same system!
-      const isPlanetaryScaleBand = logScaleMeters >= 6.8 && logScaleMeters <= 14.5;
+      // When viewing within the unified planetary stellar system (+5.2 to +14.5 m), keep Capy-Earth opaque
+      // and solid until atmospheric entry at +4.9 takes over seamlessly.
+      const isPlanetaryScaleBand = logScaleMeters >= 5.2 && logScaleMeters <= 14.5;
       const isSolarSystem = layer.spec.id === 'solar_systems';
-      const maxExpandDex = (isSolarSystem && isPlanetaryScaleBand) ? 6.2 : 1.16;
+      const maxExpandDex = isSolarSystem && isPlanetaryScaleBand ? 7.9 : 1.16;
       const maxShrinkDex = -2.35;
 
       if (scaledDelta > maxExpandDex || scaledDelta < maxShrinkDex) {
@@ -3005,7 +3036,7 @@ export class SeamlessUniverseSimulator {
 
       let alpha = 1.0;
       if (isSolarSystem && isPlanetaryScaleBand) {
-        alpha = Math.max(0.42, 1.0 - smoothstep01(4.2, maxExpandDex, scaledDelta));
+        alpha = 1.0 - smoothstep01(6.8, maxExpandDex, scaledDelta);
       } else if (scaledDelta < 0) {
         alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
       } else {
@@ -3061,6 +3092,50 @@ export class SeamlessUniverseSimulator {
 
       if (layer.tickFn) {
         layer.tickFn(dt, this.elapsed, gamma, showObjectMarkers);
+      }
+
+      if (layer.spec.id === 'solar_systems' && this.solarEclipticGroup && this.capyEarthPlanet) {
+        let focusBlend = 0;
+        if (logScaleMeters >= 3.2 && logScaleMeters <= 14.5) {
+          const orbitR = Math.hypot(
+            this.capyEarthPlanet.bodyMesh.position.x,
+            this.capyEarthPlanet.bodyMesh.position.z
+          );
+          const tiltX = this.solarFocusContainer?.rotation.x ?? 0.34;
+          const focus = computeSolarPlanetFocusOffset(
+            logScaleMeters,
+            orbitR,
+            this.capyEarthPlanet.pivot.rotation.y,
+            tiltX
+          );
+          focusBlend = focus.focusBlend;
+          this.solarEclipticGroup.position.set(
+            focus.eclipticOffsetX,
+            focus.eclipticOffsetY,
+            focus.eclipticOffsetZ
+          );
+          if (focus.focusBlend > 0.05) {
+            _sharedSunDir.set(focus.sunDirX, focus.sunDirY, focus.sunDirZ).normalize();
+          }
+        } else {
+          this.solarEclipticGroup.position.set(0, 0, 0);
+        }
+
+        // Suppress unresolved Pale-Blue-Dot glints & giant solar corona billboard once zoomed near planets
+        const showPointGlints = focusBlend < 0.25 && logScaleMeters >= 11.2;
+        for (let pIdx = 0; pIdx < this.solarPlanets.length; pIdx++) {
+          this.solarPlanets[pIdx].glintPoint.visible = showPointGlints;
+        }
+        const sunGlareFade =
+          (1.0 - smoothstep01(1.4, 3.6, scaledDelta)) * (1.0 - focusBlend * 0.9);
+        if (this.solarCoronaSprite) {
+          this.solarCoronaSprite.visible = sunGlareFade > 0.02;
+          const cMat = this.solarCoronaSprite.material as THREE.SpriteMaterial;
+          cMat.opacity *= THREE.MathUtils.clamp(sunGlareFade, 0, 1);
+        }
+        if (this.sunStarBeacon) {
+          this.sunStarBeacon.visible = sunGlareFade > 0.02;
+        }
       }
     }
 

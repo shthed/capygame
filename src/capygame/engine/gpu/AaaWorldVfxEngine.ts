@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import * as THREE_WEBGPU from 'three/webgpu';
+import { abs, dot, float, normalize, normalView, positionViewDirection, pow, smoothstep, uniform, uv } from 'three/tsl';
 
 export type VfxBurstKind = 'turf_dust' | 'cobble_spark' | 'water_splash' | 'citrus_burst' | 'xpbd_launch';
 
@@ -148,12 +150,21 @@ export class AaaWorldVfxEngine {
   private readonly _upVec = new THREE.Vector3(0, 1, 0);
   private readonly _sunDirNorm = new THREE.Vector3(0.4, 0.8, 0.3);
 
-  private readonly motesMat: THREE.ShaderMaterial;
-  private readonly godRayMat: THREE.ShaderMaterial;
+  private readonly motesMat: THREE.ShaderMaterial | null;
+  private readonly godRayMat: THREE.ShaderMaterial | THREE_WEBGPU.MeshBasicNodeMaterial;
+  private readonly godRayTslColor: { value: THREE.Color } | null = null;
+  private readonly godRayTslOpacity: { value: number } | null = null;
+  private readonly isWebGpu: boolean;
   private footstepAccumDist: number = 0;
 
-  constructor(scene: THREE.Scene, isSoftwareGl: boolean, pixelRatio: number = 1) {
+  constructor(
+    scene: THREE.Scene,
+    isSoftwareGl: boolean,
+    pixelRatio: number = 1,
+    isWebGpu: boolean = false
+  ) {
     this.isSoftwareGl = isSoftwareGl;
+    this.isWebGpu = isWebGpu;
     this.maxParticles = isSoftwareGl ? MAX_BURST_PARTICLES_SW : MAX_BURST_PARTICLES_HW;
 
     this.posX = new Float32Array(this.maxParticles);
@@ -234,39 +245,69 @@ export class AaaWorldVfxEngine {
     motesGeo.setAttribute('aScale', new THREE.BufferAttribute(moteScales, 1));
     motesGeo.setAttribute('aOrbit', new THREE.BufferAttribute(moteOrbits, 3));
 
-    this.motesMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 },
-        uNightFactor: { value: 0 },
-        uFocusCenter: { value: new THREE.Vector3(0, 0, 0) },
-        uPixelRatio: { value: Math.max(1, pixelRatio) },
-      },
-      vertexShader: ATMOSPHERIC_MOTES_VERT,
-      fragmentShader: ATMOSPHERIC_MOTES_FRAG,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    this.motesPoints = new THREE.Points(motesGeo, this.motesMat);
-    this.motesPoints.frustumCulled = false;
+    if (this.isWebGpu) {
+      this.motesMat = null;
+      this.motesPoints = new THREE.Points(
+        motesGeo,
+        new THREE_WEBGPU.PointsNodeMaterial({ transparent: true, opacity: 0, depthWrite: false })
+      );
+      this.motesPoints.visible = false;
+    } else {
+      this.motesMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uNightFactor: { value: 0 },
+          uFocusCenter: { value: new THREE.Vector3(0, 0, 0) },
+          uPixelRatio: { value: Math.max(1, pixelRatio) },
+        },
+        vertexShader: ATMOSPHERIC_MOTES_VERT,
+        fragmentShader: ATMOSPHERIC_MOTES_FRAG,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      this.motesPoints = new THREE.Points(motesGeo, this.motesMat);
+      this.motesPoints.frustumCulled = false;
+      this.motesPoints.visible = false; // Disabled: sparkles only come from physical sun reflections on water/metal
+    }
     this.motesPoints.userData.ignoreCameraFade = true;
     this.rootGroup.add(this.motesPoints);
 
     // 3. Crepuscular Solar God-Ray Shafts (Fresnel-softened open-ended cones aligned to Sun)
     this.godRayGroup = new THREE.Group();
     this.godRayGroup.name = 'CrepuscularGodRays';
-    this.godRayMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uRayColor: { value: new THREE.Color(0xfff3c4) },
-        uRayOpacity: { value: isSoftwareGl ? 0.0 : 0.055 },
-      },
-      vertexShader: GOD_RAY_VERT,
-      fragmentShader: GOD_RAY_FRAG,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
+    if (this.isWebGpu) {
+      const tslRayCol = uniform(new THREE.Color(0xfff3c4));
+      const tslRayOp = uniform(isSoftwareGl ? 0.0 : 0.055);
+      const tslMat = new THREE_WEBGPU.MeshBasicNodeMaterial();
+      tslMat.transparent = true;
+      tslMat.blending = THREE.AdditiveBlending;
+      tslMat.depthWrite = false;
+      tslMat.side = THREE.DoubleSide;
+      tslMat.colorNode = tslRayCol;
+      tslMat.opacityNode = (() => {
+        const fresnel = pow(abs(dot(normalize(normalView), normalize(positionViewDirection))), 1.85);
+        const vUv = uv().y;
+        const verticalFade = smoothstep(0.0, 0.28, vUv).mul(float(1.0).sub(smoothstep(0.55, 1.0, vUv)));
+        return fresnel.mul(verticalFade).mul(tslRayOp);
+      })();
+      this.godRayMat = tslMat;
+      this.godRayTslColor = tslRayCol as unknown as { value: THREE.Color };
+      this.godRayTslOpacity = tslRayOp as unknown as { value: number };
+    } else {
+      this.godRayMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uRayColor: { value: new THREE.Color(0xfff3c4) },
+          uRayOpacity: { value: isSoftwareGl ? 0.0 : 0.055 },
+        },
+        vertexShader: GOD_RAY_VERT,
+        fragmentShader: GOD_RAY_FRAG,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+    }
 
     const rayOffsets: ReadonlyArray<[number, number, number, number]> = [
       [-11.5, 4.5, 3.6, 26.0],
@@ -321,13 +362,13 @@ export class AaaWorldVfxEngine {
         drag = 4.2;
         break;
       case 'cobble_spark':
-        baseHex = 0xfef3c7;
-        speed = 1.85;
-        upBias = 1.5;
-        life = 0.36;
-        scale = 0.52;
-        grav = 4.8;
-        drag = 3.5;
+        baseHex = 0xa8a29e; // Subtle matte stone dust instead of bright sparks
+        speed = 1.15;
+        upBias = 0.85;
+        life = 0.3;
+        scale = 0.36;
+        grav = 3.8;
+        drag = 4.4;
         break;
       case 'water_splash':
         baseHex = 0x7dd3fc;
@@ -440,14 +481,16 @@ export class AaaWorldVfxEngine {
     this.rootGroup.visible = visible;
     if (!visible) return;
 
-    // 1. Update Atmospheric Sun-Motes / Bioluminescent Fireflies Uniforms
-    this.motesMat.uniforms.uTime.value = elapsedTime;
-    this.motesMat.uniforms.uNightFactor.value = nightFactor;
-    (this.motesMat.uniforms.uFocusCenter.value as THREE.Vector3).set(
-      heroWorldX,
-      heroWorldY,
-      heroWorldZ
-    );
+    // 1. Update Atmospheric Sun-Motes / Bioluminescent Fireflies Uniforms (WebGL2 only)
+    if (this.motesMat) {
+      this.motesMat.uniforms.uTime.value = elapsedTime;
+      this.motesMat.uniforms.uNightFactor.value = nightFactor;
+      (this.motesMat.uniforms.uFocusCenter.value as THREE.Vector3).set(
+        heroWorldX,
+        heroWorldY,
+        heroWorldZ
+      );
+    }
 
     // 2. Align Crepuscular Solar God-Rays to Live Sun Vector (Hardware GPUs)
     if (!this.isSoftwareGl) {
@@ -457,7 +500,7 @@ export class AaaWorldVfxEngine {
       // Peak crepuscular scattering during golden hour (0.12 <= sunElev <= 0.65)
       const goldenBoost =
         sunElev > 0.05 ? Math.min(1.35, 0.55 + (1.0 - Math.abs(sunElev - 0.36)) * 0.75) : 0.0;
-      const rayOpacity = 0.052 * dayClear * goldenBoost;
+      const rayOpacity = 0.024 * dayClear * goldenBoost;
 
       this.godRayGroup.visible = rayOpacity > 0.004;
       if (this.godRayGroup.visible) {
@@ -466,13 +509,22 @@ export class AaaWorldVfxEngine {
         for (let i = 0; i < this.godRayGroup.children.length; i++) {
           this.godRayGroup.children[i].quaternion.copy(this._quat);
         }
-        this.godRayMat.uniforms.uRayOpacity.value = rayOpacity;
-        // Warm amber rays at low solar angle, crisp ivory-gold at noon
-        (this.godRayMat.uniforms.uRayColor.value as THREE.Color).setRGB(
-          1.0,
-          0.82 + Math.min(0.15, sunElev * 0.22),
-          0.56 + Math.min(0.32, sunElev * 0.45)
-        );
+        if (this.godRayTslOpacity && this.godRayTslColor) {
+          this.godRayTslOpacity.value = rayOpacity;
+          this.godRayTslColor.value.setRGB(
+            1.0,
+            0.82 + Math.min(0.15, sunElev * 0.22),
+            0.56 + Math.min(0.32, sunElev * 0.45)
+          );
+        } else if ((this.godRayMat as THREE.ShaderMaterial).uniforms) {
+          const gMat = this.godRayMat as THREE.ShaderMaterial;
+          gMat.uniforms.uRayOpacity.value = rayOpacity;
+          (gMat.uniforms.uRayColor.value as THREE.Color).setRGB(
+            1.0,
+            0.82 + Math.min(0.15, sunElev * 0.22),
+            0.56 + Math.min(0.32, sunElev * 0.45)
+          );
+        }
       }
     }
 
@@ -534,14 +586,20 @@ export class AaaWorldVfxEngine {
   }
 
   public setPixelRatio(pixelRatio: number): void {
-    this.motesMat.uniforms.uPixelRatio.value = Math.max(1, pixelRatio);
+    if (this.motesMat) {
+      this.motesMat.uniforms.uPixelRatio.value = Math.max(1, pixelRatio);
+    }
   }
 
   public dispose(): void {
     this.burstInstancedMesh.geometry.dispose();
     (this.burstInstancedMesh.material as THREE.Material).dispose();
     this.motesPoints.geometry.dispose();
-    this.motesMat.dispose();
+    if (this.motesMat) {
+      this.motesMat.dispose();
+    } else {
+      (this.motesPoints.material as THREE.Material).dispose();
+    }
     this.godRayGroup.children.forEach((c) => {
       if ((c as THREE.Mesh).geometry) {
         (c as THREE.Mesh).geometry.dispose();

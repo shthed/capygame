@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import * as THREE_WEBGPU from 'three/webgpu';
 import {
   AstrophysicsPaletteMode,
   PlayStyle,
@@ -19,6 +20,7 @@ import {
   GPU_VISUAL_FILTER_PROFILES,
   GpuEngineTelemetry,
   GpuQualityPreset,
+  GpuRenderBackendMode,
   GpuShadowQualityMode,
   GpuTextureFilterMode,
   GpuToneMappingMode,
@@ -28,6 +30,7 @@ import {
   OBJECT_MARKERS_COIN_COST,
   OBJECT_MARKERS_DNA_COST,
   PLAYABLE_CAPY_HEROES,
+  PerformanceLogSnapshot,
   REALITY_RESCALER_COIN_COST,
   REALITY_RESCALER_DNA_COST,
   UNIVERSE_SCALE_BANDS,
@@ -45,6 +48,7 @@ import {
 } from '../engine/PlayStyleManager';
 import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
 import { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
+import { probeWebGpuBackend } from '../engine/gpu/WebGpuPipeline';
 import { AudioService } from '../services/AudioService';
 import { NativeBridge } from '../../services/NativeBridge';
 import { PwaService } from '../../services/PwaService';
@@ -95,6 +99,10 @@ import {
   Play,
   Copy,
   Download,
+  Activity,
+  Trash2,
+  Sun,
+  Moon,
 } from 'lucide-react';
 
 type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
@@ -318,6 +326,13 @@ export const CapyGameView: React.FC = () => {
     backendLabel: 'WebGL2 Hardware Accelerated GPU',
     gpuRenderer: 'WebGL2 GPU',
     isSoftwareGl: false,
+    webGpuActive: false,
+    webGpuSupported: false,
+    webGpuAdapterName: 'Probing GPU...',
+    computeParticlesActive: false,
+    shadowCasterMode: 'sun',
+    dayPhaseLabel: 'Daylight',
+    timeOfDayHours: 9.5,
     contextLost: false,
     qualityPreset: 'high',
     postProcessingActive: true,
@@ -341,6 +356,21 @@ export const CapyGameView: React.FC = () => {
     geometriesInVram: 0,
     shaderPrograms: 0,
     registeredPbrTextures: 0,
+  });
+  const [isPerfLogOpen, setIsPerfLogOpen] = useState<boolean>(false);
+  const [perfLog, setPerfLog] = useState<PerformanceLogSnapshot>({
+    liveFps: 60,
+    avgFps: 60,
+    minFps: 60,
+    avgFrameMs: 16.7,
+    p95FrameMs: 16.7,
+    maxFrameMs: 16.7,
+    droppedFramesCount: 0,
+    alertCount: 0,
+    activeAlert: false,
+    lastAlertSummary: null,
+    lock60FpsEnabled: true,
+    entries: [],
   });
 
   const modalOpenRef = useRef<boolean>(false);
@@ -555,11 +585,13 @@ export const CapyGameView: React.FC = () => {
       isMenuOpen ||
       isScaleAtlasOpen ||
       isOpticsOpen ||
-      isInfographicExpanded;
+      isInfographicExpanded ||
+      isPerfLogOpen;
     NativeBridge.setBackModalOpen(anyOpen, () => {
       if (isAboutOpen) setIsAboutOpen(false);
       else if (isSettingsOpen) setIsSettingsOpen(false);
       else if (isJsonEditorOpen) setIsJsonEditorOpen(false);
+      else if (isPerfLogOpen) setIsPerfLogOpen(false);
       else if (isOpticsOpen) setIsOpticsOpen(false);
       else if (isScaleAtlasOpen) setIsScaleAtlasOpen(false);
       else if (isInfographicExpanded) setIsInfographicExpanded(false);
@@ -573,10 +605,12 @@ export const CapyGameView: React.FC = () => {
     isScaleAtlasOpen,
     isOpticsOpen,
     isInfographicExpanded,
+    isPerfLogOpen,
   ]);
 
   useEffect(() => {
-    if (!mountRef.current) return;
+    const containerEl = mountRef.current;
+    if (!containerEl) return;
 
     try {
       const params = new URLSearchParams(window.location.search);
@@ -592,9 +626,63 @@ export const CapyGameView: React.FC = () => {
     setStats(initialStats);
     const initialSettings = ProgressionService.loadSettings();
 
-    let manager: PlayStyleManager;
-    try {
-      manager = new PlayStyleManager(mountRef.current, initialStats, initialSettings, {
+    let cancelled = false;
+    let cleanupFn: (() => void) | null = null;
+
+    const bootEngine = async () => {
+      let swGl = false;
+      try {
+        const probeGl =
+          document.createElement('canvas').getContext('webgl2') ||
+          document.createElement('canvas').getContext('webgl');
+        if (!probeGl) {
+          swGl = true;
+        } else {
+          const ext = probeGl.getExtension('WEBGL_debug_renderer_info');
+          const param = ext ? ext.UNMASKED_RENDERER_WEBGL : probeGl.RENDERER;
+          const gpuStr = String(probeGl.getParameter(param));
+          probeGl.getExtension('WEBGL_lose_context')?.loseContext();
+          swGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuStr);
+        }
+      } catch {
+        swGl = true;
+      }
+
+      const webGpuProbe = await probeWebGpuBackend(
+        initialSettings.gpuBackendPreference ?? 'auto',
+        swGl
+      );
+      if (cancelled || !mountRef.current) return;
+
+      let webGpuInit: {
+        renderer: THREE_WEBGPU.WebGPURenderer;
+        probe: typeof webGpuProbe;
+      } | null = null;
+
+      if (webGpuProbe.shouldUseWebGpu) {
+        try {
+          const wgpuRenderer = new THREE_WEBGPU.WebGPURenderer({
+            antialias: true,
+            powerPreference: 'high-performance',
+          });
+          await wgpuRenderer.init();
+          if (cancelled) {
+            wgpuRenderer.dispose();
+            return;
+          }
+          webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe };
+        } catch {
+          webGpuInit = null;
+        }
+      }
+
+      let manager: PlayStyleManager;
+      try {
+        manager = new PlayStyleManager(
+          mountRef.current,
+          initialStats,
+          initialSettings,
+          {
         onProgressEarned: (dnaDelta: number, mode: PlayStyle, score: number) => {
           setStats((prev: PlayerStats) => {
             return ProgressionService.recordProgress(
@@ -687,237 +775,258 @@ export const CapyGameView: React.FC = () => {
         onOrbitTelemetryChange: (telemetry: OrbitTelemetry) => {
           setOrbitTelemetry(telemetry);
         },
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Unable to initialize WebGL 3D graphics context.';
-      setWebglError(message);
-      return;
-    }
-
-    managerRef.current = manager;
-    (window as unknown as { __capyManager?: PlayStyleManager }).__capyManager = manager;
-    manager.applyProceduralConfig(proceduralConfigRef.current, true);
-    if (firstRunSetupOpenRef.current) {
-      manager.setCruiseVelocity(0);
-    }
-    try {
-      if (sessionStorage.getItem('capy_return_to_surface') === '1') {
-        sessionStorage.removeItem('capy_return_to_surface');
-        manager.setCosmicStage('playing');
-      }
-    } catch {
-      // Ignore sessionStorage restrictions
-    }
-    setSimStats(manager.cosmicBuilder.getSimulationStats());
-    setCosmicSimInfo(manager.cosmicBuilder.getCosmicSimTelemetry());
-    setSnakeTelemetry(manager.getCapySnakeTelemetry());
-    setUniverseScale(manager.getUniverseScaleTelemetry());
-    setGpuTelemetry(manager.getGpuEngineTelemetry());
-
-    let animFrameId = 0;
-    let lastTime = performance.now();
-    let uiSyncAccum = 0;
-    let paceTimerId: number | null = null;
-    let activeFenceSync: WebGLSync | null = null;
-    let modalWakeParity = 0;
-    const glCtx = manager.isSoftwareGl
-      ? (manager.renderer.getContext() as WebGL2RenderingContext | null)
-      : null;
-
-    const scheduleNextFrame = (didDrawGl: boolean) => {
-      if (!manager.isSoftwareGl) {
-        animFrameId = window.requestAnimationFrame(animate);
+      },
+      webGpuInit
+    );
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Unable to initialize 3D graphics context.';
+        setWebglError(message);
         return;
       }
-      const delayMs =
-        modalOpenRef.current || menuOpenRef.current
-          ? 45
-          : manager.cosmicStage === 'playing'
-            ? 80
-            : 45;
-      if (
-        didDrawGl &&
-        glCtx &&
-        typeof glCtx.fenceSync === 'function' &&
-        !glCtx.isContextLost()
-      ) {
-        const sync = glCtx.fenceSync(glCtx.SYNC_GPU_COMMANDS_COMPLETE, 0);
-        glCtx.flush();
-        if (sync) {
-          activeFenceSync = sync;
-          const poll = () => {
-            if (glCtx.isContextLost()) {
-              activeFenceSync = null;
-              return;
-            }
-            const state = glCtx.getSyncParameter(sync, glCtx.SYNC_STATUS);
-            if (state === glCtx.UNSIGNALED) {
-              paceTimerId = window.setTimeout(poll, 5);
-            } else {
-              glCtx.deleteSync(sync);
-              if (activeFenceSync === sync) activeFenceSync = null;
-              paceTimerId = window.setTimeout(() => {
-                paceTimerId = null;
-                animFrameId = window.requestAnimationFrame(animate);
-              }, delayMs);
-            }
-          };
-          paceTimerId = window.setTimeout(poll, 5);
+
+      if (cancelled) {
+        manager.dispose();
+        return;
+      }
+
+      managerRef.current = manager;
+      (window as unknown as { __capyManager?: PlayStyleManager }).__capyManager = manager;
+      manager.applyProceduralConfig(proceduralConfigRef.current, true);
+      if (firstRunSetupOpenRef.current) {
+        manager.setCruiseVelocity(0);
+      }
+      try {
+        if (sessionStorage.getItem('capy_return_to_surface') === '1') {
+          sessionStorage.removeItem('capy_return_to_surface');
+          manager.setCosmicStage('playing');
+        }
+      } catch {
+        // Ignore sessionStorage restrictions
+      }
+      setSimStats(manager.cosmicBuilder.getSimulationStats());
+      setCosmicSimInfo(manager.cosmicBuilder.getCosmicSimTelemetry());
+      setSnakeTelemetry(manager.getCapySnakeTelemetry());
+      setUniverseScale(manager.getUniverseScaleTelemetry());
+      setGpuTelemetry(manager.getGpuEngineTelemetry());
+      setPerfLog(manager.getPerformanceLogSnapshot());
+
+      let animFrameId = 0;
+      let lastTime = performance.now();
+      let uiSyncAccum = 0;
+      let paceTimerId: number | null = null;
+      let activeFenceSync: WebGLSync | null = null;
+      let modalWakeParity = 0;
+      const glCtx =
+        manager.isSoftwareGl &&
+        !manager.isWebGpu &&
+        typeof (manager.renderer as { getContext?: unknown }).getContext === 'function'
+          ? ((manager.renderer as { getContext: () => WebGL2RenderingContext | null }).getContext())
+          : null;
+
+      const scheduleNextFrame = (didDrawGl: boolean) => {
+        if (!manager.isSoftwareGl) {
+          animFrameId = window.requestAnimationFrame(animate);
           return;
         }
-      }
-      paceTimerId = window.setTimeout(() => {
-        paceTimerId = null;
-        animFrameId = window.requestAnimationFrame(animate);
-      }, delayMs);
-    };
+        const delayMs =
+          modalOpenRef.current || menuOpenRef.current
+            ? 45
+            : manager.cosmicStage === 'playing'
+              ? 80
+              : 45;
+        if (
+          didDrawGl &&
+          glCtx &&
+          typeof glCtx.fenceSync === 'function' &&
+          !glCtx.isContextLost()
+        ) {
+          const sync = glCtx.fenceSync(glCtx.SYNC_GPU_COMMANDS_COMPLETE, 0);
+          glCtx.flush();
+          if (sync) {
+            activeFenceSync = sync;
+            const poll = () => {
+              if (glCtx.isContextLost()) {
+                activeFenceSync = null;
+                return;
+              }
+              const state = glCtx.getSyncParameter(sync, glCtx.SYNC_STATUS);
+              if (state === glCtx.UNSIGNALED) {
+                paceTimerId = window.setTimeout(poll, 5);
+              } else {
+                glCtx.deleteSync(sync);
+                if (activeFenceSync === sync) activeFenceSync = null;
+                paceTimerId = window.setTimeout(() => {
+                  paceTimerId = null;
+                  animFrameId = window.requestAnimationFrame(animate);
+                }, delayMs);
+              }
+            };
+            paceTimerId = window.setTimeout(poll, 5);
+            return;
+          }
+        }
+        paceTimerId = window.setTimeout(() => {
+          paceTimerId = null;
+          animFrameId = window.requestAnimationFrame(animate);
+        }, delayMs);
+      };
 
-    const animate = (now: number) => {
-      if (manager.isSoftwareGl && (modalOpenRef.current || menuOpenRef.current)) {
+      const animate = (now: number) => {
+        if (cancelled) return;
+        if (manager.isSoftwareGl && (modalOpenRef.current || menuOpenRef.current)) {
+          lastTime = now;
+          modalWakeParity ^= 1;
+          if (mountRef.current) {
+            mountRef.current.style.opacity = modalWakeParity ? '0.999' : '1';
+          }
+          scheduleNextFrame(false);
+          return;
+        }
+        if (
+          manager.isSoftwareGl &&
+          mountRef.current &&
+          mountRef.current.style.opacity !== '' &&
+          mountRef.current.style.opacity !== '1'
+        ) {
+          mountRef.current.style.opacity = '1';
+        }
+
+        const dt = Math.min(0.1, Math.max(0.001, (now - lastTime) / 1000));
         lastTime = now;
-        modalWakeParity ^= 1;
-        if (mountRef.current) {
-          mountRef.current.style.opacity = modalWakeParity ? '0.999' : '1';
+        uiSyncAccum += dt;
+
+        manager.tick(dt, dt);
+
+        if (uiSyncAccum >= 0.35) {
+          uiSyncAccum = 0;
+          if (manager.cosmicStage !== 'playing') {
+            setSimStats(manager.cosmicBuilder.getSimulationStats());
+            setCosmicSimInfo(manager.cosmicBuilder.getCosmicSimTelemetry());
+          } else {
+            setPhysicsTelemetry(manager.getPhysicsTelemetry());
+          }
+          setGpuTelemetry(manager.getGpuEngineTelemetry());
+          setSnakeTelemetry(manager.getCapySnakeTelemetry());
+          setPerfLog(manager.getPerformanceLogSnapshot());
         }
-        scheduleNextFrame(false);
-        return;
-      }
-      if (
-        manager.isSoftwareGl &&
-        mountRef.current &&
-        mountRef.current.style.opacity !== '' &&
-        mountRef.current.style.opacity !== '1'
-      ) {
-        mountRef.current.style.opacity = '1';
-      }
 
-      const dt = Math.min(0.1, Math.max(0.001, (now - lastTime) / 1000));
-      lastTime = now;
-      uiSyncAccum += dt;
+        scheduleNextFrame(true);
+      };
+      animFrameId = window.requestAnimationFrame(animate);
 
-      manager.tick(dt, dt);
+      const handleResize = () => {
+        if (!mountRef.current || !managerRef.current) return;
+        managerRef.current.handleResize(
+          mountRef.current.clientWidth,
+          mountRef.current.clientHeight
+        );
+      };
 
-      if (uiSyncAccum >= 0.35) {
-        uiSyncAccum = 0;
-        if (manager.cosmicStage !== 'playing') {
-          setSimStats(manager.cosmicBuilder.getSimulationStats());
-          setCosmicSimInfo(manager.cosmicBuilder.getCosmicSimTelemetry());
-        } else {
-          setPhysicsTelemetry(manager.getPhysicsTelemetry());
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (!managerRef.current) return;
+        const key = e.key.toLowerCase();
+        if (key === 'w' || key === 'arrowup') managerRef.current.moveInput.z = -1;
+        if (key === 's' || key === 'arrowdown') managerRef.current.moveInput.z = 1;
+        if (key === 'a' || key === 'arrowleft') managerRef.current.moveInput.x = -1;
+        if (key === 'd' || key === 'arrowright') managerRef.current.moveInput.x = 1;
+        if (key === ' ') managerRef.current.isJumping = true;
+        if (key === '=' || key === '+' || key === ']') {
+          managerRef.current.adjustZoom(0.18);
         }
-        setGpuTelemetry(manager.getGpuEngineTelemetry());
-        setSnakeTelemetry(manager.getCapySnakeTelemetry());
-      }
+        if (key === '-' || key === '_' || key === '[') {
+          managerRef.current.adjustZoom(-0.18);
+        }
+        if (key === 'escape') {
+          managerRef.current.cancelBuildingPlacementGhost();
+          setIsScaleAtlasOpen(false);
+          setIsOpticsOpen(false);
+          setIsInfographicExpanded(false);
+          setIsPerfLogOpen(false);
+          setIsAboutOpen(false);
+          setIsSettingsOpen(false);
+          setIsJsonEditorOpen(false);
+          setIsMenuOpen(false);
+        }
+      };
 
-      scheduleNextFrame(true);
-    };
-    animFrameId = window.requestAnimationFrame(animate);
+      const handleKeyUp = (e: KeyboardEvent) => {
+        if (!managerRef.current) return;
+        const key = e.key.toLowerCase();
+        if (key === 'w' || key === 'arrowup' || key === 's' || key === 'arrowdown') {
+          managerRef.current.moveInput.z = 0;
+        }
+        if (key === 'a' || key === 'arrowleft' || key === 'd' || key === 'arrowright') {
+          managerRef.current.moveInput.x = 0;
+        }
+      };
 
-    const handleResize = () => {
-      if (!mountRef.current || !managerRef.current) return;
-      managerRef.current.handleResize(
-        mountRef.current.clientWidth,
-        mountRef.current.clientHeight
-      );
-    };
+      const handleTouchStart = (e: TouchEvent) => {
+        if (e.touches.length === 2) {
+          const dx = e.touches[0].clientX - e.touches[1].clientX;
+          const dy = e.touches[0].clientY - e.touches[1].clientY;
+          pointerGestureRef.current.pinchDist = Math.hypot(dx, dy);
+        }
+      };
+      const handleTouchMove = (e: TouchEvent) => {
+        if (
+          e.touches.length === 2 &&
+          pointerGestureRef.current.pinchDist !== null &&
+          managerRef.current
+        ) {
+          const dx = e.touches[0].clientX - e.touches[1].clientX;
+          const dy = e.touches[0].clientY - e.touches[1].clientY;
+          const newDist = Math.hypot(dx, dy);
+          const delta = (newDist - pointerGestureRef.current.pinchDist) * 0.004;
+          managerRef.current.adjustZoom(delta);
+          pointerGestureRef.current.pinchDist = newDist;
+        }
+      };
+      const handleTouchEnd = () => {
+        pointerGestureRef.current.pinchDist = null;
+      };
+      const handleWheel = (e: WheelEvent) => {
+        if (!managerRef.current) return;
+        e.preventDefault();
+        const zoomDelta = -e.deltaY * 0.0012;
+        managerRef.current.adjustZoom(zoomDelta);
+      };
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!managerRef.current) return;
-      const key = e.key.toLowerCase();
-      if (key === 'w' || key === 'arrowup') managerRef.current.moveInput.z = -1;
-      if (key === 's' || key === 'arrowdown') managerRef.current.moveInput.z = 1;
-      if (key === 'a' || key === 'arrowleft') managerRef.current.moveInput.x = -1;
-      if (key === 'd' || key === 'arrowright') managerRef.current.moveInput.x = 1;
-      if (key === ' ') managerRef.current.isJumping = true;
-      if (key === '=' || key === '+' || key === ']') {
-        managerRef.current.adjustZoom(0.18);
-      }
-      if (key === '-' || key === '_' || key === '[') {
-        managerRef.current.adjustZoom(-0.18);
-      }
-      if (key === 'escape') {
-        managerRef.current.cancelBuildingPlacementGhost();
-        setIsScaleAtlasOpen(false);
-        setIsOpticsOpen(false);
-        setIsInfographicExpanded(false);
-        setIsAboutOpen(false);
-        setIsSettingsOpen(false);
-        setIsJsonEditorOpen(false);
-        setIsMenuOpen(false);
-      }
-    };
+      containerEl.addEventListener('touchstart', handleTouchStart, { passive: true });
+      containerEl.addEventListener('touchmove', handleTouchMove, { passive: true });
+      containerEl.addEventListener('touchend', handleTouchEnd, { passive: true });
+      containerEl.addEventListener('wheel', handleWheel, { passive: false });
 
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (!managerRef.current) return;
-      const key = e.key.toLowerCase();
-      if (key === 'w' || key === 'arrowup' || key === 's' || key === 'arrowdown') {
-        managerRef.current.moveInput.z = 0;
-      }
-      if (key === 'a' || key === 'arrowleft' || key === 'd' || key === 'arrowright') {
-        managerRef.current.moveInput.x = 0;
-      }
-    };
+      window.addEventListener('resize', handleResize);
+      window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('keyup', handleKeyUp);
 
-    const containerEl = mountRef.current;
-    const handleTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
-        pointerGestureRef.current.pinchDist = Math.hypot(dx, dy);
-      }
-    };
-    const handleTouchMove = (e: TouchEvent) => {
-      if (
-        e.touches.length === 2 &&
-        pointerGestureRef.current.pinchDist !== null &&
-        managerRef.current
-      ) {
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
-        const newDist = Math.hypot(dx, dy);
-        const delta = (newDist - pointerGestureRef.current.pinchDist) * 0.004;
-        managerRef.current.adjustZoom(delta);
-        pointerGestureRef.current.pinchDist = newDist;
-      }
-    };
-    const handleTouchEnd = () => {
-      pointerGestureRef.current.pinchDist = null;
-    };
-    const handleWheel = (e: WheelEvent) => {
-      if (!managerRef.current) return;
-      e.preventDefault();
-      const zoomDelta = -e.deltaY * 0.0012;
-      managerRef.current.adjustZoom(zoomDelta);
+      cleanupFn = () => {
+        window.cancelAnimationFrame(animFrameId);
+        if (paceTimerId !== null) {
+          window.clearTimeout(paceTimerId);
+        }
+        if (activeFenceSync && glCtx && !glCtx.isContextLost()) {
+          glCtx.deleteSync(activeFenceSync);
+          activeFenceSync = null;
+        }
+        containerEl.removeEventListener('touchstart', handleTouchStart);
+        containerEl.removeEventListener('touchmove', handleTouchMove);
+        containerEl.removeEventListener('touchend', handleTouchEnd);
+        containerEl.removeEventListener('wheel', handleWheel);
+        window.removeEventListener('resize', handleResize);
+        window.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('keyup', handleKeyUp);
+        manager.dispose();
+        managerRef.current = null;
+      };
     };
 
-    containerEl.addEventListener('touchstart', handleTouchStart, { passive: true });
-    containerEl.addEventListener('touchmove', handleTouchMove, { passive: true });
-    containerEl.addEventListener('touchend', handleTouchEnd, { passive: true });
-    containerEl.addEventListener('wheel', handleWheel, { passive: false });
-
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    void bootEngine();
 
     return () => {
-      window.cancelAnimationFrame(animFrameId);
-      if (paceTimerId !== null) {
-        window.clearTimeout(paceTimerId);
-      }
-      if (activeFenceSync && glCtx && !glCtx.isContextLost()) {
-        glCtx.deleteSync(activeFenceSync);
-        activeFenceSync = null;
-      }
-      containerEl.removeEventListener('touchstart', handleTouchStart);
-      containerEl.removeEventListener('touchmove', handleTouchMove);
-      containerEl.removeEventListener('touchend', handleTouchEnd);
-      containerEl.removeEventListener('wheel', handleWheel);
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      manager.dispose();
-      managerRef.current = null;
+      cancelled = true;
+      cleanupFn?.();
     };
   }, []);
 
@@ -1757,7 +1866,7 @@ export const CapyGameView: React.FC = () => {
       <nav
         data-testid="unified-top-bar"
         aria-label="Universe Simulator Controls and Status"
-        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1.5 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
+        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-0.5 sm:gap-2 pointer-events-auto whitespace-nowrap"
       >
         {/* LEFT CLUSTER: Continuous 63-Order Scale & Step Zoom Controls */}
         <div
@@ -1772,7 +1881,7 @@ export const CapyGameView: React.FC = () => {
             onClick={() => managerRef.current?.stepScaleBand(1)}
             title="Zoom Out 1 Scale Band (Toward Big Bang 10^+28m)"
             aria-label="Zoom Out Scale"
-            className="w-6 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
+            className="w-5 h-6 sm:w-6 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
           >
             <Minus className="w-3 h-3" />
           </button>
@@ -1794,7 +1903,7 @@ export const CapyGameView: React.FC = () => {
               });
             }}
             title="Open 63-Orders-of-Magnitude Universe Scale Scrubber (Big Bang to Photon)"
-            className={`h-7 px-1.5 sm:px-2 rounded border flex items-center gap-1 text-left transition-colors cursor-pointer ${
+            className={`h-6 sm:h-7 px-1 sm:px-2 rounded border flex items-center gap-0.5 sm:gap-1 text-left transition-colors cursor-pointer ${
               isScaleAtlasOpen
                 ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
                 : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-100'
@@ -1837,7 +1946,7 @@ export const CapyGameView: React.FC = () => {
             onClick={() => managerRef.current?.stepScaleBand(-1)}
             title="Zoom In 1 Scale Band (Toward Electron & Photon 10^-35m)"
             aria-label="Zoom In Scale"
-            className="w-6 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
+            className="w-5 h-6 sm:w-6 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
           >
             <Plus className="w-3 h-3" />
           </button>
@@ -1859,7 +1968,7 @@ export const CapyGameView: React.FC = () => {
               });
             }}
             title="Cosmic Optics: 1:1 Physical Scale, Object Finder Markers & Reality Rescaler"
-            className={`h-7 px-1.5 rounded border flex items-center gap-1 text-[10px] font-mono tabular-nums transition-colors cursor-pointer shrink-0 ${
+            className={`h-6 sm:h-7 px-1 sm:px-1.5 rounded border flex items-center gap-0.5 sm:gap-1 text-[9px] sm:text-[10px] font-mono tabular-nums transition-colors cursor-pointer shrink-0 ${
               isOpticsOpen || universeScale.showObjectMarkers || universeScale.realityScaleGamma < 0.99
                 ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
                 : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
@@ -1932,7 +2041,7 @@ export const CapyGameView: React.FC = () => {
                   });
                 }}
                 title="Open Live Simulation, Cosmic & Capybara Inspector"
-                className={`h-7 px-1.5 sm:px-2 rounded border flex items-center gap-1 sm:gap-1.5 min-w-0 max-w-full overflow-hidden text-[11px] whitespace-nowrap transition-colors cursor-pointer ${
+                className={`h-6 sm:h-7 px-1 sm:px-2 rounded border flex items-center gap-1 sm:gap-1.5 min-w-0 max-w-full overflow-hidden text-[10px] sm:text-[11px] whitespace-nowrap transition-colors cursor-pointer ${
                   isInfographicExpanded
                     ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
                     : 'bg-zinc-900/90 hover:bg-zinc-800 border-white/10 text-zinc-200'
@@ -1968,7 +2077,7 @@ export const CapyGameView: React.FC = () => {
                       data-testid="capy-lod-label"
                       className="sr-only lg:not-sr-only lg:inline text-[10px] text-emerald-400 shrink-0 whitespace-nowrap"
                     >
-                      {snakeTelemetry.fps} FPS · {snakeTelemetry.lodLabel}
+                      {snakeTelemetry.lodLabel}
                     </span>
                   </span>
                 ) : cosmicStage === 'playing' && !universeScale.active ? (
@@ -1984,9 +2093,6 @@ export const CapyGameView: React.FC = () => {
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 min-w-0 font-mono text-[10px] tabular-nums">
-                    <span className="hidden md:inline text-emerald-400 font-semibold shrink-0">
-                      {simStats.fps} FPS
-                    </span>
                     <span className="text-sky-400 shrink-0">
                       {universeScale.active ? universeScale.scaleFormatted : infographicStageTag}
                     </span>
@@ -2033,7 +2139,7 @@ export const CapyGameView: React.FC = () => {
             onClick={handleOpenJsonEditor}
             title="Live Procedural JSON Engine Configurator"
             aria-label="Open Procedural JSON Config Editor"
-            className={`h-7 px-1.5 sm:px-2 rounded border flex items-center gap-1 text-[11px] font-mono transition-colors cursor-pointer ${
+            className={`h-6 sm:h-7 px-1 sm:px-2 rounded border flex items-center gap-1 text-[11px] font-mono transition-colors cursor-pointer ${
               isJsonEditorOpen
                 ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
                 : 'bg-zinc-900 hover:bg-zinc-800 border-cyan-400/25 text-cyan-300'
@@ -2060,7 +2166,7 @@ export const CapyGameView: React.FC = () => {
             }}
             aria-expanded={isMenuOpen}
             aria-label={isMenuOpen ? 'Close World Menu' : 'Open World Menu'}
-            className={`h-7 px-2 rounded border flex items-center gap-1 text-xs font-medium transition-colors cursor-pointer ${
+            className={`h-6 sm:h-7 px-1.5 sm:px-2 rounded border flex items-center gap-1 text-xs font-medium transition-colors cursor-pointer ${
               isMenuOpen
                 ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
                 : 'bg-zinc-900 hover:bg-zinc-800 border-white/12 text-zinc-100'
@@ -2083,7 +2189,7 @@ export const CapyGameView: React.FC = () => {
             }}
             title="Simulation Settings"
             aria-label="Open Simulation Settings"
-            className="w-7 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer"
+            className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0"
           >
             <SettingsIcon className="w-3.5 h-3.5" />
           </button>
@@ -2097,7 +2203,7 @@ export const CapyGameView: React.FC = () => {
             }}
             title="Universe Architecture Overview"
             aria-label="Open Overview"
-            className="w-7 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer"
+            className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0"
           >
             <Info className="w-3.5 h-3.5" />
           </button>
@@ -2115,8 +2221,207 @@ export const CapyGameView: React.FC = () => {
               <Volume2 className="w-3.5 h-3.5" />
             )}
           </button>
+
+          <button
+            type="button"
+            data-testid="top-right-fps-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              setIsPerfLogOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  setIsScaleAtlasOpen(false);
+                  setIsOpticsOpen(false);
+                  setIsInfographicExpanded(false);
+                  setIsMenuOpen(false);
+                }
+                return next;
+              });
+            }}
+            aria-expanded={isPerfLogOpen}
+            aria-label="Open 60 FPS Performance Log"
+            title="Live 60 FPS Telemetry & Frame-Drop Alert Log"
+            className={`h-6 sm:h-7 px-1 sm:px-2 rounded border flex items-center gap-0.5 sm:gap-1 text-[9px] sm:text-[10px] font-mono font-semibold tabular-nums transition-colors cursor-pointer shrink-0 ${
+              isPerfLogOpen
+                ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200'
+                : perfLog.liveFps >= 55
+                  ? 'bg-zinc-900 hover:bg-zinc-800 border-emerald-400/35 text-emerald-300'
+                  : perfLog.liveFps >= 40
+                    ? 'bg-amber-950/90 hover:bg-amber-900/90 border-amber-400/50 text-amber-200'
+                    : 'bg-rose-950/90 hover:bg-rose-900/90 border-rose-500/60 text-rose-200'
+            }`}
+          >
+            <Activity className="hidden sm:block w-3 h-3 shrink-0" />
+            <span>{perfLog.liveFps} FPS</span>
+            {perfLog.alertCount > 0 && (
+              <span
+                data-testid="fps-alert-count-badge"
+                className="px-0.5 sm:px-1 rounded bg-rose-500/25 border border-rose-400/50 text-rose-200 text-[8px] sm:text-[9px] leading-tight"
+              >
+                !{perfLog.alertCount}
+              </span>
+            )}
+          </button>
         </div>
       </nav>
+
+      {/* Transient Top-Right Lag / Frame-Drop Alert Strip */}
+      {perfLog.activeAlert && !isPerfLogOpen && perfLog.lastAlertSummary && (
+        <button
+          type="button"
+          data-testid="perf-lag-alert-banner"
+          onClick={() => setIsPerfLogOpen(true)}
+          className="fixed top-11 right-2 z-30 pointer-events-auto max-w-[calc(100vw-16px)] px-2.5 py-1 rounded-lg bg-rose-950/95 border border-rose-500/55 text-rose-100 text-[10px] font-mono flex items-center gap-1.5 shadow-xl cursor-pointer"
+        >
+          <AlertTriangle className="w-3 h-3 text-amber-300 shrink-0" />
+          <span className="truncate">FRAME DROP · {perfLog.lastAlertSummary}</span>
+        </button>
+      )}
+
+      {/* TOP-ANCHORED PERFORMANCE LOG POPOVER (right-aligned under top-right FPS badge) */}
+      {isPerfLogOpen && (
+        <div
+          data-testid="performance-log-popover"
+          className="fixed top-11 right-2 z-40 pointer-events-auto w-[calc(100vw-16px)] max-w-[356px] bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5"
+        >
+          <div className="flex items-start justify-between gap-2 border-b border-white/10 pb-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[10px] font-mono text-emerald-300">
+                <Activity className="w-3 h-3 shrink-0" />
+                <span>60 FPS PERFORMANCE GOVERNOR</span>
+              </div>
+              <p className="text-[10px] font-mono text-zinc-400 truncate mt-0.5">
+                {gpuTelemetry.webGpuActive
+                  ? `WebGPU WGSL · ${gpuTelemetry.webGpuAdapterName}`
+                  : gpuTelemetry.backendLabel}
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="close-perf-log-btn"
+              onClick={() => setIsPerfLogOpen(false)}
+              className="w-6 h-6 rounded bg-zinc-900 hover:bg-zinc-800 border border-white/10 flex items-center justify-center text-zinc-400 cursor-pointer shrink-0"
+              aria-label="Close Performance Log"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Real-Time Pacing & GPU Shadow Readout Grid */}
+          <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono tabular-nums bg-zinc-900/90 p-2 rounded-lg border border-white/8">
+            <div>
+              <span className="text-zinc-500 block">LIVE / AVG</span>
+              <span className="text-emerald-300 font-semibold">
+                {perfLog.liveFps} / {perfLog.avgFps} FPS
+              </span>
+            </div>
+            <div>
+              <span className="text-zinc-500 block">MIN FPS</span>
+              <span className={perfLog.minFps < 54 ? 'text-amber-300 font-semibold' : 'text-zinc-200'}>
+                {perfLog.minFps} FPS
+              </span>
+            </div>
+            <div>
+              <span className="text-zinc-500 block">AVG / P95</span>
+              <span className="text-sky-300">
+                {perfLog.avgFrameMs} / {perfLog.p95FrameMs}ms
+              </span>
+            </div>
+            <div>
+              <span className="text-zinc-500 block">MAX SPIKE</span>
+              <span className={perfLog.maxFrameMs > 20.5 ? 'text-rose-300' : 'text-zinc-200'}>
+                {perfLog.maxFrameMs} ms
+              </span>
+            </div>
+            <div>
+              <span className="text-zinc-500 block">DROPS</span>
+              <span data-testid="perf-dropped-count" className={perfLog.droppedFramesCount > 0 ? 'text-amber-300 font-semibold' : 'text-emerald-300'}>
+                {perfLog.droppedFramesCount}
+              </span>
+            </div>
+            <div>
+              <span className="text-zinc-500 block">SHADOW RIG</span>
+              <span className="text-amber-200 uppercase">
+                {gpuTelemetry.shadowCasterMode} · {gpuTelemetry.shadowMapSize || 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          {/* Governor Controls & Log Actions */}
+          <div className="flex items-center justify-between gap-1.5">
+            <button
+              type="button"
+              data-testid="perf-toggle-lock60-btn"
+              onClick={() => {
+                const next = !perfLog.lock60FpsEnabled;
+                managerRef.current?.setLock60Fps(next);
+                updateGameSettings({ lock60FpsGovernor: next });
+                if (managerRef.current) {
+                  setPerfLog(managerRef.current.getPerformanceLogSnapshot());
+                }
+              }}
+              className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-mono font-semibold border cursor-pointer ${
+                perfLog.lock60FpsEnabled
+                  ? 'bg-emerald-500/20 border-emerald-400/45 text-emerald-200'
+                  : 'bg-zinc-900 border-white/10 text-zinc-400'
+              }`}
+            >
+              Lock 60 FPS: {perfLog.lock60FpsEnabled ? 'ON' : 'OFF'}
+            </button>
+            <button
+              type="button"
+              data-testid="perf-clear-log-btn"
+              onClick={() => {
+                managerRef.current?.clearPerformanceLog();
+                if (managerRef.current) {
+                  setPerfLog(managerRef.current.getPerformanceLogSnapshot());
+                }
+              }}
+              className="py-1.5 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 text-[10px] font-mono flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>Clear</span>
+            </button>
+          </div>
+
+          {/* Lag / Frame-Drop Alert Feed */}
+          <div
+            data-testid="perf-log-entries"
+            className="max-h-44 overflow-y-auto space-y-1.5 pr-0.5"
+          >
+            {perfLog.entries.length === 0 ? (
+              <div className="p-2.5 rounded-lg bg-emerald-950/35 border border-emerald-500/25 text-emerald-200 text-[11px] font-mono">
+                Locked 60 FPS — Zero frame drops or lag spikes logged.
+              </div>
+            ) : (
+              perfLog.entries.map((entry) => (
+                <div
+                  key={entry.id}
+                  data-testid="perf-log-entry-row"
+                  className={`p-2 rounded-lg border text-[10px] font-mono space-y-0.5 ${
+                    entry.severity === 'critical'
+                      ? 'bg-rose-950/55 border-rose-500/40 text-rose-100'
+                      : 'bg-amber-950/45 border-amber-400/35 text-amber-100'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                      <span>
+                        T+{entry.elapsedLabel} · {entry.fps} FPS ({entry.frameMs}ms)
+                      </span>
+                    </span>
+                    <span className="text-[9px] opacity-80 truncate">{entry.stageLabel}</span>
+                  </div>
+                  <div className="text-[9px] opacity-85 truncate">
+                    {entry.cause} → {entry.mitigation}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       {/* =====================================================================
           TOP-ANCHORED DROPDOWN 1: 63-ORDER UNIVERSE SCALE ATLAS (left-aligned under top bar)
@@ -4132,10 +4437,10 @@ export const CapyGameView: React.FC = () => {
                 <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2">
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-zinc-100">
-                      3D Hardware GPU Engine, Lighting, Textures &amp; Filters
+                      3D Hardware GPU Engine, WebGPU WGSL, Lighting &amp; Filters
                     </div>
                     <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
-                      {gpuTelemetry.backendLabel} · {gpuTelemetry.registeredPbrTextures} PBR maps · Shadow {gpuTelemetry.shadowMapSize || 'OFF'}
+                      {gpuTelemetry.backendLabel} · {gpuTelemetry.registeredPbrTextures} PBR maps · Shadow {gpuTelemetry.shadowMapSize || 'OFF'} ({gpuTelemetry.shadowCasterMode.toUpperCase()})
                     </p>
                   </div>
                   <button
@@ -4154,6 +4459,43 @@ export const CapyGameView: React.FC = () => {
                   >
                     {gameSettings.gpuPostProcessing ? 'POST-FX ON' : 'DIRECT PASS'}
                   </button>
+                </div>
+
+                {/* WebGPU / WebGL2 Backend Capability Strip & Preference */}
+                <div className="p-2 rounded-lg bg-zinc-900/90 border border-white/8 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-mono">
+                    <span className="text-zinc-400 truncate">
+                      Adapter: <span className="text-cyan-300">{gpuTelemetry.webGpuAdapterName}</span>
+                    </span>
+                    <span className={gpuTelemetry.webGpuActive ? 'text-emerald-300 font-semibold shrink-0' : 'text-sky-300 shrink-0'}>
+                      {gpuTelemetry.webGpuActive ? 'WEBGPU WGSL ACTIVE' : 'WEBGL2 PARITY'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(
+                      [
+                        { id: 'auto', label: 'Auto (WebGPU WGSL)' },
+                        { id: 'webgl2', label: 'Force WebGL2' },
+                      ] as Array<{ id: GpuRenderBackendMode; label: string }>
+                    ).map(({ id, label }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        data-testid={`settings-backend-${id}`}
+                        onClick={() => {
+                          updateGameSettings({ gpuBackendPreference: id });
+                          showToast('Saved GPU Backend — reload page to switch active graphics device');
+                        }}
+                        className={`px-2 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                          (gameSettings.gpuBackendPreference ?? 'auto') === id
+                            ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/45'
+                            : 'bg-zinc-950 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* GPU Quality Presets */}
@@ -4528,6 +4870,41 @@ export const CapyGameView: React.FC = () => {
                   }
                   className="w-full accent-amber-400 cursor-pointer"
                 />
+                <div className="grid grid-cols-4 gap-1.5 pt-0.5">
+                  {(
+                    [
+                      { id: 'dawn', label: 'Dawn 6.2h', hour: 6.2 },
+                      { id: 'noon', label: 'Noon 12h', hour: 12.0 },
+                      { id: 'dusk', label: 'Dusk 18.2h', hour: 18.2 },
+                      { id: 'night', label: 'Night 23h', hour: 23.0 },
+                    ] as const
+                  ).map((phase) => (
+                    <button
+                      key={phase.id}
+                      type="button"
+                      data-testid={`settings-phase-${phase.id}`}
+                      onClick={() =>
+                        updateGameSettings({
+                          dayNightAutoCycle: false,
+                          timeOfDayHours: phase.hour,
+                        })
+                      }
+                      className={`px-1.5 py-1 rounded text-[10px] font-mono cursor-pointer border flex items-center justify-center gap-1 ${
+                        !gameSettings.dayNightAutoCycle &&
+                        Math.abs((gameSettings.timeOfDayHours ?? 9.5) - phase.hour) < 0.8
+                          ? 'bg-amber-500/20 text-amber-200 border-amber-400/45'
+                          : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                      }`}
+                    >
+                      {phase.id === 'night' ? (
+                        <Moon className="w-2.5 h-2.5 shrink-0" />
+                      ) : (
+                        <Sun className="w-2.5 h-2.5 shrink-0" />
+                      )}
+                      <span>{phase.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">

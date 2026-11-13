@@ -1,6 +1,8 @@
 import * as THREE from 'three';
+import * as THREE_WEBGPU from 'three/webgpu';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GpuTextureFilterMode } from './GpuEngineTypes';
+import { createTslIblSkyDomeMaterial } from './WebGpuPipeline';
 
 export type PbrSurfaceMaterialKind =
   | 'grass'
@@ -533,7 +535,7 @@ export class PbrTextureSynthesizer {
    *   synthesized in <0.5ms on CPU so software rasterizers never stall on 36-pass cubemap convolution.
    */
   public static createStudioAndSkyEnvironmentMap(
-    renderer: THREE.WebGLRenderer,
+    renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
     isSoftwareGl: boolean = false
   ): THREE.Texture | null {
     if (isSoftwareGl) {
@@ -591,40 +593,56 @@ export class PbrTextureSynthesizer {
       return envTex;
     }
 
-    let pmremGenerator: THREE.PMREMGenerator | null = null;
+    const isWebGpu = Boolean(
+      (renderer as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer
+    );
+    let pmremGenerator: {
+      fromScene: (scene: THREE.Scene, sigma?: number) => { texture: THREE.Texture };
+      dispose: () => void;
+    } | null = null;
     let envScene: THREE.Scene | null = null;
     const disposableGeos: THREE.BufferGeometry[] = [];
     const disposableMats: THREE.Material[] = [];
 
     try {
-      pmremGenerator = new THREE.PMREMGenerator(renderer);
+      pmremGenerator = isWebGpu
+        ? (new THREE_WEBGPU.PMREMGenerator(
+            renderer as THREE_WEBGPU.WebGPURenderer
+          ) as unknown as {
+            fromScene: (scene: THREE.Scene, sigma?: number) => { texture: THREE.Texture };
+            dispose: () => void;
+          })
+        : new THREE.PMREMGenerator(renderer as THREE.WebGLRenderer);
       envScene = new RoomEnvironment();
 
       // Add a warm solar specular softbox dome + cool sky hemisphere + botanical ground bounce
       const skyDomeGeo = new THREE.SphereGeometry(14, 24, 16);
-      const skyDomeMat = new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        depthWrite: false,
-        vertexShader: `
+      const skyDomeMat: THREE.Material = isWebGpu
+        ? createTslIblSkyDomeMaterial()
+        : new THREE.ShaderMaterial({
+            side: THREE.BackSide,
+            depthWrite: false,
+            vertexShader: `
           varying vec3 vDir;
           void main() {
             vDir = normalize(position);
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
           }
         `,
-        fragmentShader: `
+            fragmentShader: `
           varying vec3 vDir;
           void main() {
             float y = vDir.y;
-            vec3 sky = mix(vec3(0.75, 0.88, 1.05), vec3(0.16, 0.44, 0.86), clamp(y, 0.0, 1.0));
-            vec3 ground = vec3(0.16, 0.24, 0.14);
-            vec3 col = y >= 0.0 ? sky : mix(vec3(0.45, 0.52, 0.58), ground, clamp(-y * 2.2, 0.0, 1.0));
+            vec3 sky = mix(vec3(0.68, 0.84, 1.0), vec3(0.12, 0.38, 0.82), clamp(y, 0.0, 1.0));
+            vec3 ground = vec3(0.11, 0.16, 0.10);
+            vec3 col = y >= 0.0 ? sky : mix(vec3(0.32, 0.38, 0.42), ground, clamp(-y * 2.4, 0.0, 1.0));
             float sunDot = max(0.0, dot(normalize(vDir), normalize(vec3(0.48, 0.74, 0.42))));
-            col += vec3(3.4, 2.9, 2.1) * pow(sunDot, 42.0);
+            col += vec3(1.8, 1.45, 1.05) * pow(sunDot, 28.0);
+            col += vec3(7.5, 6.8, 5.4) * pow(sunDot, 220.0);
             gl_FragColor = vec4(col, 1.0);
           }
         `,
-      });
+          });
       disposableGeos.push(skyDomeGeo);
       disposableMats.push(skyDomeMat);
       envScene.add(new THREE.Mesh(skyDomeGeo, skyDomeMat));

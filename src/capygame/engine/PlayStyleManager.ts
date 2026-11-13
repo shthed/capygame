@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as THREE_WEBGPU from 'three/webgpu';
 import {
   CapyModelGenerator,
   CapyMeshGroup,
@@ -23,8 +24,10 @@ import {
   installSightlineEdgeFadeShader,
 } from './RealisticWorldEnvironment';
 import {
+  PerformanceLogTracker,
   computeDistrictTickStride,
   computeEffectivePixelRatio,
+  computeVesselOneToOneTransform,
   doesSphereBlockPlayerSightline,
   shouldEnableOccluderDepthWrite,
 } from './gpu/FramePerformanceGovernor';
@@ -47,6 +50,7 @@ import {
   MAX_UNIVERSE_LOG_METERS,
   MIN_UNIVERSE_LOG_METERS,
   PLAYABLE_CAPY_HEROES,
+  PerformanceLogSnapshot,
   PlanetaryBiomeConfig,
   PlayableCapyHero,
   PlayStyle,
@@ -69,6 +73,11 @@ import { NativeBridge } from '../../services/NativeBridge';
 import { AaaWorldVfxEngine } from './gpu/AaaWorldVfxEngine';
 import { HardwareGpuEngine } from './gpu/HardwareGpuEngine';
 import { PbrTextureSynthesizer } from './gpu/PbrTextureSynthesizer';
+import {
+  WebGpuPostAndComputePipeline,
+  WebGpuProbeResult,
+  convertLegacyShaderMaterialsToTsl,
+} from './gpu/WebGpuPipeline';
 import { PhysicsWorldBridge } from './physics/PhysicsWorldBridge';
 import {
   CONTIGUOUS_BRIDGES,
@@ -118,6 +127,8 @@ const _occluderCandidates: THREE.Object3D[] = [];
 const _rendererSizeVec2 = new THREE.Vector2(1280, 720);
 const _occProjectedNdc = new THREE.Vector3();
 const _pointerNdc = new THREE.Vector2();
+const _vesselUprightQuat = new THREE.Quaternion();
+const _vesselEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 const _colorHelper = new THREE.Color();
 const _colorHelper2 = new THREE.Color();
 const _seamlessSkyColor = new THREE.Color();
@@ -237,8 +248,11 @@ export interface GameEventCallbacks {
 export class PlayStyleManager {
   public scene: THREE.Scene;
   public camera: THREE.PerspectiveCamera;
-  public renderer: THREE.WebGLRenderer;
+  public renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer;
   public readonly isSoftwareGl: boolean;
+  public readonly isWebGpu: boolean;
+  public readonly performanceLog = new PerformanceLogTracker();
+  private webGpuPipeline: WebGpuPostAndComputePipeline | null = null;
 
   public currentMode: PlayStyle = 'sanctuary';
   private stats: PlayerStats;
@@ -580,27 +594,34 @@ export class PlayStyleManager {
     container: HTMLElement,
     initialStats: PlayerStats,
     initialSettings: CapyGameSettings = DEFAULT_CAPY_SETTINGS,
-    callbacks: GameEventCallbacks
+    callbacks: GameEventCallbacks,
+    webGpuInit?: {
+      renderer: THREE_WEBGPU.WebGPURenderer;
+      probe: WebGpuProbeResult;
+    } | null
   ) {
     this.stats = initialStats;
     this.settings = initialSettings;
     this.callbacks = callbacks;
+    this.performanceLog.lock60FpsEnabled = initialSettings.lock60FpsGovernor !== false;
 
-    this.isSoftwareGl = (() => {
-      try {
-        const gl =
-          document.createElement('canvas').getContext('webgl2') ||
-          document.createElement('canvas').getContext('webgl');
-        if (!gl) return true;
-        const ext = gl.getExtension('WEBGL_debug_renderer_info');
-        const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-        const gpu = String(gl.getParameter(param));
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
-        return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-      } catch {
-        return true;
-      }
-    })();
+    this.isSoftwareGl = webGpuInit
+      ? webGpuInit.probe.isFallbackAdapter
+      : (() => {
+          try {
+            const gl =
+              document.createElement('canvas').getContext('webgl2') ||
+              document.createElement('canvas').getContext('webgl');
+            if (!gl) return true;
+            const ext = gl.getExtension('WEBGL_debug_renderer_info');
+            const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+            const gpu = String(gl.getParameter(param));
+            gl.getExtension('WEBGL_lose_context')?.loseContext();
+            return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+          } catch {
+            return true;
+          }
+        })();
 
     // 1. Scene & Camera (Long far-plane so all 5 game zones are visible in the same world)
     this.scene = new THREE.Scene();
@@ -617,20 +638,26 @@ export class PlayStyleManager {
     );
     this.camera.position.set(0, 7.5, 14);
 
-    // 2. Renderer (with mobile / low-memory fallback)
-    try {
-      this.renderer = new THREE.WebGLRenderer({
-        antialias: !this.isSoftwareGl,
-        powerPreference: 'high-performance',
-        preserveDrawingBuffer: false,
-      });
-    } catch {
-      this.isSoftwareGl = true;
-      this.renderer = new THREE.WebGLRenderer({
-        antialias: false,
-        powerPreference: 'default',
-        preserveDrawingBuffer: false,
-      });
+    // 2. Renderer (Hardware WebGPURenderer or WebGL2 with mobile/software fallback)
+    if (webGpuInit?.renderer) {
+      this.renderer = webGpuInit.renderer;
+      this.isWebGpu = true;
+    } else {
+      this.isWebGpu = false;
+      try {
+        this.renderer = new THREE.WebGLRenderer({
+          antialias: !this.isSoftwareGl,
+          powerPreference: 'high-performance',
+          preserveDrawingBuffer: false,
+        });
+      } catch {
+        this.isSoftwareGl = true;
+        this.renderer = new THREE.WebGLRenderer({
+          antialias: false,
+          powerPreference: 'default',
+          preserveDrawingBuffer: false,
+        });
+      }
     }
     this.renderer.setPixelRatio(
       computeEffectivePixelRatio(
@@ -643,8 +670,10 @@ export class PlayStyleManager {
     this.renderer.setSize(width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
+    this.renderer.toneMappingExposure = 1.02;
+    const gpuCfg = this.buildGpuConfigFromSettings(this.settings);
+    const shadowsEnabledAtBoot = gpuCfg.shadowQuality !== 'off';
+    this.renderer.shadowMap.enabled = shadowsEnabledAtBoot;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.style.touchAction = 'none';
     this.renderer.domElement.style.userSelect = 'none';
@@ -653,29 +682,38 @@ export class PlayStyleManager {
     container.innerHTML = '';
     container.appendChild(this.renderer.domElement);
 
-    // 3. Studio Environment, Warm/Cool Lighting Rig & Hardware-Accelerated 3D GPU Engine
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+    // 3. Studio Environment, Warm/Cool 5:1 Lighting Rig & Hardware-Accelerated 3D GPU Engine
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.08);
     this.scene.add(ambientLight);
 
-    const hemiLight = new THREE.HemisphereLight(0xfffbeb, 0x334155, 0.95);
+    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x263d24, 0.48);
     this.scene.add(hemiLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffedd5, 1.45);
+    const dirLight = new THREE.DirectionalLight(0xfffaf0, 2.65);
     dirLight.position.set(38, 72, 32);
-    dirLight.castShadow = !this.isSoftwareGl;
+    dirLight.castShadow = shadowsEnabledAtBoot;
     const shadowRes = this.isSoftwareGl ? 1024 : 2048;
     dirLight.shadow.mapSize.width = shadowRes;
     dirLight.shadow.mapSize.height = shadowRes;
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far = 260;
-    const d = 42;
+    const d = 38;
     dirLight.shadow.camera.left = -d;
     dirLight.shadow.camera.right = d;
     dirLight.shadow.camera.top = d;
     dirLight.shadow.camera.bottom = -d;
-    dirLight.shadow.bias = -0.00035;
-    dirLight.shadow.normalBias = 0.026;
+    dirLight.shadow.bias = -0.00032;
+    dirLight.shadow.normalBias = 0.024;
     this.scene.add(dirLight);
+    if (this.isWebGpu && webGpuInit?.probe) {
+      this.webGpuPipeline = new WebGpuPostAndComputePipeline(
+        this.renderer as THREE_WEBGPU.WebGPURenderer,
+        this.scene,
+        this.camera,
+        webGpuInit.probe.adapterName,
+        gpuCfg as GpuPipelineConfig
+      );
+    }
 
     this.gpuEngine = new HardwareGpuEngine(
       this.renderer,
@@ -685,12 +723,19 @@ export class PlayStyleManager {
       this.isSoftwareGl,
       width,
       height,
-      this.buildGpuConfigFromSettings(this.settings)
+      gpuCfg,
+      this.isWebGpu
+        ? {
+            webGpuPipeline: this.webGpuPipeline ?? undefined,
+            webGpuProbe: webGpuInit?.probe,
+          }
+        : undefined
     );
     this.vfxEngine = new AaaWorldVfxEngine(
       this.scene,
       this.isSoftwareGl,
-      this.renderer.getPixelRatio()
+      this.renderer.getPixelRatio(),
+      this.isWebGpu
     );
 
     // Hardware-accelerated PBR texture cache, GPU Sky Dome, 360° Alpine Mountains & Weather
@@ -699,9 +744,11 @@ export class PlayStyleManager {
       this.isSoftwareGl,
       ambientLight,
       hemiLight,
-      dirLight
+      dirLight,
+      this.isWebGpu
     );
     this.scene.add(this.worldEnv.moonLight);
+    this.gpuEngine.setMoonLight(this.worldEnv.moonLight);
 
     // 4. Hero Capybara (Ultra-Detailed with Dynamic 60 FPS LOD & Signature Head Orange)
     this.currentCapyLodTier = this.settings.autoCapyLod
@@ -774,7 +821,7 @@ export class PlayStyleManager {
     this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl);
     this.cosmicBuilder.setSuspended(true);
     this.scene.add(this.cosmicBuilder.rootGroup);
-    this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl);
+    this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl, this.isWebGpu);
     this.scene.add(this.seamlessUniverse.rootGroup);
     this.scene.add(this.seamlessUniverse.celestialBackdropGroup);
     this.sanctuaryGroup.add(this.seamlessUniverse.forestGroveGroup);
@@ -784,8 +831,11 @@ export class PlayStyleManager {
     this.buildSelectableCapyHeroCircle();
     this.prewarmOccluderShaderPrograms();
 
-    if (!this.isSoftwareGl) {
-      this.renderer.compile(this.scene, this.camera);
+    if (this.isWebGpu) {
+      convertLegacyShaderMaterialsToTsl(this.scene);
+      void (this.renderer as THREE_WEBGPU.WebGPURenderer).compileAsync(this.scene, this.camera);
+    } else if (!this.isSoftwareGl) {
+      (this.renderer as THREE.WebGLRenderer).compile(this.scene, this.camera);
     }
 
     const skipCosmic =
@@ -937,7 +987,12 @@ export class PlayStyleManager {
   }
 
   public updateSettings(newSettings: CapyGameSettings) {
+    const prevManualTime = this.settings.timeOfDayHours ?? 9.5;
+    const manualTimeChanged =
+      typeof newSettings.timeOfDayHours === 'number' &&
+      Math.abs(newSettings.timeOfDayHours - prevManualTime) > 0.01;
     this.settings = newSettings;
+    this.performanceLog.lock60FpsEnabled = newSettings.lock60FpsGovernor !== false;
     this.camera.fov = newSettings.fov || 58;
     this.camera.updateProjectionMatrix();
     this.applyFogSetting();
@@ -947,8 +1002,19 @@ export class PlayStyleManager {
     }
     if (
       this.worldEnv &&
-      (this.cosmicStage === 'playing' || this.cosmicStage === 'capy_selection')
+      (this.cosmicStage === 'playing' ||
+        this.cosmicStage === 'capy_selection' ||
+        this.seamlessZoomActive)
     ) {
+      if (manualTimeChanged && typeof newSettings.timeOfDayHours === 'number') {
+        const prevCaster = this.worldEnv.activeShadowCaster;
+        this.worldEnv.timeOfDayHours = ((newSettings.timeOfDayHours % 24) + 24) % 24;
+        const nextPhaseIsNight =
+          this.worldEnv.timeOfDayHours < 6.0 || this.worldEnv.timeOfDayHours >= 18.2;
+        if ((prevCaster === 'sun') === nextPhaseIsNight) {
+          this.performanceLog.notifyTransitionWarmup(4);
+        }
+      }
       const exposureScale = (this.settings.gpuExposure ?? 1.12) / 1.12;
       this.worldEnv.tickAtmosphereAndWeather(
         0.016,
@@ -959,11 +1025,28 @@ export class PlayStyleManager {
         this.heroCapy.position.z,
         this.scene,
         this.renderer,
-        this.settings.worldFogEnabled,
+        this.settings.worldFogEnabled && !this.seamlessZoomActive,
         this.homePool?.lanternLight,
         exposureScale
       );
       this.updateBioluminescentNightGlow();
+      if (manualTimeChanged && this.gpuEngine) {
+        this.gpuEngine.updateLightingAndShadowCascade(
+          0.016,
+          this.heroCapy.position.x,
+          this.heroCapy.position.y,
+          this.heroCapy.position.z,
+          0,
+          !this.seamlessZoomActive || this.currentLogScaleMeters <= 3.1,
+          this.worldEnv.currentNightFactor,
+          this.worldEnv.currentSunDir,
+          this.worldEnv.currentMoonDir,
+          this.worldEnv.activeShadowCaster,
+          this.worldEnv.getDayPhaseLabel(),
+          this.worldEnv.timeOfDayHours,
+          this.worldEnv.currentIblEnvIntensity
+        );
+      }
     }
     this.emitTelemetry();
   }
@@ -979,22 +1062,13 @@ export class PlayStyleManager {
     this.worldBaseGroup.add(this.worldEnv.weatherMesh);
 
     // Photorealistic Clearcoat Specular Ocean spanning the archipelago with dual-octave Gerstner normal maps
-    const waterNormal = RealisticWorldEnvironment.getWaterRippleTexture();
-    const waterNorms = PbrTextureSynthesizer.getWaterNormalMaps();
     const oceanGeo = PbrTextureSynthesizer.prepareGeometryForPbr(
       new THREE.CylinderGeometry(355, 355, 0.6, 64)
     );
-    const oceanMat = new THREE.MeshPhysicalMaterial({
-      color: 0x0369a1,
-      roughness: 0.08,
-      metalness: 0.18,
-      clearcoat: this.isSoftwareGl ? 0.0 : 1.0,
-      clearcoatRoughness: 0.06,
-      normalMap: waterNorms.primary,
-      normalScale: new THREE.Vector2(0.62, 0.62),
-      clearcoatNormalMap: waterNorms.secondary,
-      clearcoatNormalScale: new THREE.Vector2(0.42, 0.42),
-    });
+    const oceanMat = RealisticWorldEnvironment.createOceanWaterMaterial(
+      this.isSoftwareGl,
+      this.isWebGpu
+    );
     const ocean = new THREE.Mesh(oceanGeo, oceanMat);
     ocean.position.set(0, -1.25, 0);
     ocean.receiveShadow = true;
@@ -1633,6 +1707,12 @@ export class PlayStyleManager {
     this.cosmicStage = stage;
     this.seamlessZoomActive = false;
     this.autoZoomDirection = 0;
+    this.performanceLog.notifyTransitionWarmup(5);
+    if (this.vfxEngine) {
+      const showVfx = stage === 'playing' || stage === 'capy_selection';
+      this.vfxEngine.rootGroup.visible = showVfx;
+      this.vfxEngine.rootGroup.matrixWorldAutoUpdate = showVfx;
+    }
     if (this.seamlessUniverse) {
       this.seamlessUniverse.hide();
       const showForestGrove =
@@ -1942,7 +2022,7 @@ export class PlayStyleManager {
     return {
       geometries: info.memory.geometries,
       textures: info.memory.textures,
-      programs: info.programs?.length ?? 0,
+      programs: 'programs' in info && Array.isArray(info.programs) ? info.programs.length : 0,
     };
   }
 
@@ -1996,6 +2076,7 @@ export class PlayStyleManager {
     if (!this.seamlessZoomActive) {
       this.seamlessZoomActive = true;
       this.currentLogScaleMeters = Math.max(CAPYBARA_FOREST_LOG_METERS, this.currentLogScaleMeters);
+      this.performanceLog.notifyTransitionWarmup(4);
     }
     this.autoLandAtForestPending = false;
     this.vesselMode = 'chase_pod';
@@ -2895,6 +2976,35 @@ export class PlayStyleManager {
     return this.gpuEngine.getTelemetry();
   }
 
+  public getPerformanceLogSnapshot(): PerformanceLogSnapshot {
+    return this.performanceLog.getSnapshot(Date.now());
+  }
+
+  public clearPerformanceLog(): void {
+    this.performanceLog.clear(Date.now());
+  }
+
+  public setLock60Fps(enabled: boolean): void {
+    this.performanceLog.lock60FpsEnabled = enabled;
+    this.settings = { ...this.settings, lock60FpsGovernor: enabled };
+    ProgressionService.saveSettings(this.settings);
+  }
+
+  public recordSyntheticLagSpike(frameMs: number): void {
+    const stageStr = this.seamlessZoomActive
+      ? this.seamlessUniverse.getBandById(
+          UNIVERSE_SCALE_BANDS[findNearestScaleBandIndex(this.currentLogScaleMeters)].id
+        ).title
+      : this.currentMode;
+    this.performanceLog.recordSyntheticLagSpike(
+      frameMs,
+      stageStr,
+      this.performanceLog.lock60FpsEnabled
+        ? 'Stepped LOD & PostFX load down to restore 60 FPS'
+        : 'Logged frame drop alert'
+    );
+  }
+
   // ============================================================================
   // 2. SPORE EVOLUTION LAGOON (AT WORLD -75, -75)
   // ============================================================================
@@ -2978,6 +3088,7 @@ export class PlayStyleManager {
         colorHex: lagoonWaterHex,
         opacity: 0.78,
         rippleAmp: 0.11,
+        isWebGpu: this.isWebGpu,
       }
     );
     this.sporeWaterMesh = new THREE.Mesh(
@@ -3192,10 +3303,10 @@ export class PlayStyleManager {
 
     const ballGeo = new THREE.SphereGeometry(0.38, 16, 16);
     const ballMat = new THREE.MeshStandardMaterial({
-      color: 0xffbb00,
-      roughness: 0.15,
-      metalness: 0.3,
-      emissive: 0x78350f,
+      color: 0xfbbf24,
+      roughness: 0.14,
+      metalness: 0.45,
+      envMapIntensity: 1.25,
     });
     for (let i = 0; i < MAX_BREAKOUT_BALLS; i++) {
       const mesh = new THREE.Mesh(ballGeo, ballMat);
@@ -4581,8 +4692,15 @@ export class PlayStyleManager {
       }
     }
 
-    if (!this.isSoftwareGl && swappedSamples.length > 0) {
-      this.renderer.compile(this.sanctuaryGroup, this.camera);
+    if (!this.isSoftwareGl && !this.isWebGpu && swappedSamples.length > 0) {
+      (this.renderer as THREE.WebGLRenderer).compile(this.sanctuaryGroup, this.camera);
+      for (let i = 0; i < swappedSamples.length; i++) {
+        const mesh = swappedSamples[i];
+        if (mesh.userData.__origMaterial) {
+          mesh.material = mesh.userData.__origMaterial;
+        }
+      }
+    } else if (swappedSamples.length > 0) {
       for (let i = 0; i < swappedSamples.length; i++) {
         const mesh = swappedSamples[i];
         if (mesh.userData.__origMaterial) {
@@ -4601,7 +4719,7 @@ export class PlayStyleManager {
         delete occMat.userData.__occUniforms;
         occMat.userData.__origOpacity = m.opacity;
         occMat.userData.__origDepthWrite = m.depthWrite;
-        installSightlineEdgeFadeShader(occMat);
+        installSightlineEdgeFadeShader(occMat, this.isWebGpu);
         return occMat;
       });
     } else if (mesh.material) {
@@ -4610,7 +4728,7 @@ export class PlayStyleManager {
       delete occMat.userData.__occUniforms;
       occMat.userData.__origOpacity = orig.opacity;
       occMat.userData.__origDepthWrite = orig.depthWrite;
-      installSightlineEdgeFadeShader(occMat);
+      installSightlineEdgeFadeShader(occMat, this.isWebGpu);
       mesh.userData.__occMaterial = occMat;
     }
     mesh.userData.__occluderPrepared = true;
@@ -4645,7 +4763,7 @@ export class PlayStyleManager {
         );
       }
 
-      const uniforms = installSightlineEdgeFadeShader(mat);
+      const uniforms = installSightlineEdgeFadeShader(mat, this.isWebGpu);
       const origOpacity =
         (mat.userData.__origOpacity as number | undefined) ?? 1.0;
 
@@ -5147,6 +5265,7 @@ export class PlayStyleManager {
   // PER-FRAME GAME LOOP (SHARED WORLD + 60 FPS LOD GOVERNOR + ATMOSPHERE/WEATHER)
   // ============================================================================
   public tick(delta: number, rawFrameDt?: number) {
+    const tickStartMs = performance.now();
     const dt = Math.min(delta, 0.1);
     if (this.portalCooldown > 0) this.portalCooldown -= dt;
     if (this.snakeSelfHitCooldown > 0) this.snakeSelfHitCooldown -= dt;
@@ -5202,7 +5321,7 @@ export class PlayStyleManager {
         );
       }
 
-      const exposureScale = (this.settings.gpuExposure ?? 1.12) / 1.12;
+      const exposureScale = (this.settings.gpuExposure ?? 1.02) / 1.02;
       this.worldEnv.tickAtmosphereAndWeather(
         dt,
         this.settings.dayNightAutoCycle !== false,
@@ -5228,17 +5347,24 @@ export class PlayStyleManager {
     // 0. Handle Seamless 63-Orders-of-Magnitude Universe Zoom (+28 Big Bang <-> +0.8 Forest <-> -35 Photon)
     if (this.seamlessZoomActive) {
       this.tickSeamlessUniverse(dt);
+      const inForestWindow =
+        this.currentLogScaleMeters >= -0.85 && this.currentLogScaleMeters <= 3.1;
       this.gpuEngine.updateLightingAndShadowCascade(
         dt,
         this.heroCapy.position.x,
         this.heroCapy.position.y,
         this.heroCapy.position.z,
         0,
-        false,
+        inForestWindow,
         this.worldEnv.currentNightFactor,
-        this.worldEnv.currentSunDir
+        this.worldEnv.currentSunDir,
+        this.worldEnv.currentMoonDir,
+        this.worldEnv.activeShadowCaster,
+        this.worldEnv.getDayPhaseLabel(),
+        this.worldEnv.timeOfDayHours,
+        this.worldEnv.currentIblEnvIntensity
       );
-      this.renderSceneFrame(rawFrameDt);
+      this.renderSceneFrame(rawFrameDt, tickStartMs);
       return;
     }
 
@@ -5253,10 +5379,15 @@ export class PlayStyleManager {
         0,
         this.cosmicStage === 'capy_selection',
         this.worldEnv.currentNightFactor,
-        this.worldEnv.currentSunDir
+        this.worldEnv.currentSunDir,
+        this.worldEnv.currentMoonDir,
+        this.worldEnv.activeShadowCaster,
+        this.worldEnv.getDayPhaseLabel(),
+        this.worldEnv.timeOfDayHours,
+        this.worldEnv.currentIblEnvIntensity
       );
       this.updateHeadLineOfSightTransparency(dt);
-      this.renderSceneFrame(rawFrameDt);
+      this.renderSceneFrame(rawFrameDt, tickStartMs);
       return;
     }
 
@@ -5313,10 +5444,15 @@ export class PlayStyleManager {
         glideGroundY,
         true,
         this.worldEnv.currentNightFactor,
-        this.worldEnv.currentSunDir
+        this.worldEnv.currentSunDir,
+        this.worldEnv.currentMoonDir,
+        this.worldEnv.activeShadowCaster,
+        this.worldEnv.getDayPhaseLabel(),
+        this.worldEnv.timeOfDayHours,
+        this.worldEnv.currentIblEnvIntensity
       );
       this.updateHeadLineOfSightTransparency(dt);
-      this.renderSceneFrame(rawFrameDt);
+      this.renderSceneFrame(rawFrameDt, tickStartMs);
       return;
     }
 
@@ -5324,7 +5460,7 @@ export class PlayStyleManager {
     // plus active player physics & seamless overland district handover!
     this.tickContiguousUnifiedWorld(dt);
 
-    // Update texel-snapped directional solar shadow cascade & Hero contact shadow across all 5 districts
+    // Update texel-snapped directional solar & lunar shadow cascade across all 5 districts
     if (this.homePool) {
       _cachedPoolSpec.x = this.homePool.centerX;
       _cachedPoolSpec.z = this.homePool.centerZ;
@@ -5344,7 +5480,12 @@ export class PlayStyleManager {
       heroGroundY,
       this.heroCapy.visible,
       this.worldEnv.currentNightFactor,
-      this.worldEnv.currentSunDir
+      this.worldEnv.currentSunDir,
+      this.worldEnv.currentMoonDir,
+      this.worldEnv.activeShadowCaster,
+      this.worldEnv.getDayPhaseLabel(),
+      this.worldEnv.timeOfDayHours,
+      this.worldEnv.currentIblEnvIntensity
     );
 
     // AAA Velocity-Reactive Dynamic FOV, Quadratic Camera Trauma & Zero-Allocation GPU VFX Step
@@ -5359,10 +5500,10 @@ export class PlayStyleManager {
       this.emitTelemetry();
     }
 
-    this.renderSceneFrame(rawFrameDt);
+    this.renderSceneFrame(rawFrameDt, tickStartMs);
   }
 
-  private renderSceneFrame(rawFrameDt?: number) {
+  private renderSceneFrame(rawFrameDt?: number, tickStartMs?: number) {
     if (this.isSoftwareGl && rawFrameDt === undefined) {
       const now = performance.now();
       if (now - this.lastSoftwareRenderMs < 30) {
@@ -5375,6 +5516,34 @@ export class PlayStyleManager {
       this.lastSoftwareRenderMs = performance.now();
     }
     this.gpuEngine.render();
+
+    const endMs = performance.now();
+    const workMs = tickStartMs !== undefined ? endMs - tickStartMs : 4.0;
+    const intervalMs = (rawFrameDt ?? 0.01667) * 1000;
+    const stageStr = this.seamlessZoomActive
+      ? this.seamlessUniverse.getBandById(
+          UNIVERSE_SCALE_BANDS[findNearestScaleBandIndex(this.currentLogScaleMeters)].id
+        ).title
+      : ZONE_LOCATIONS[this.currentMode]?.title || this.currentMode;
+
+    const mitigation =
+      this.performanceLog.lock60FpsEnabled && this.currentCapyLodTier > 0
+        ? `LOD->Tier ${this.currentCapyLodTier}`
+        : this.performanceLog.lock60FpsEnabled
+          ? 'GPU DPR & FX Governor'
+          : 'Monitoring Only';
+
+    const res = this.performanceLog.recordFrame(
+      workMs,
+      intervalMs,
+      this.isSoftwareGl,
+      stageStr,
+      Date.now(),
+      mitigation
+    );
+    if (res.shouldReduceLoad && this.settings.autoCapyLod !== false && this.currentCapyLodTier > 0) {
+      this.applyGlobalCapyLodTier((this.currentCapyLodTier - 1) as CapyLodTier);
+    }
   }
 
   /**
@@ -5421,10 +5590,10 @@ export class PlayStyleManager {
           | THREE.MeshStandardMaterial
           | undefined;
         if (pGlow) {
-          pGlow.opacity = (0.05 + glowBoost * 0.36) * pulse;
+          pGlow.opacity = (0.01 + glowBoost * 0.34) * pulse;
         }
         if (pMat) {
-          pMat.emissiveIntensity = (0.38 + glowBoost * 2.25) * pulse;
+          pMat.emissiveIntensity = (0.1 + glowBoost * 2.15) * pulse;
         }
       }
     }
@@ -5439,16 +5608,16 @@ export class PlayStyleManager {
         | THREE.MeshStandardMaterial
         | undefined;
       if (beaconMat) {
-        beaconMat.emissiveIntensity = (0.55 + glowBoost * 1.95) * pulse;
+        beaconMat.emissiveIntensity = (0.28 + glowBoost * 1.95) * pulse;
       }
       if (frameMat) {
-        frameMat.emissiveIntensity = 0.28 + glowBoost * 0.85;
+        frameMat.emissiveIntensity = 0.08 + glowBoost * 0.85;
       }
     }
 
     // 3b. Grand Promenade Causeway Lantern Bollards (4 Overland Bridges)
     if (this.causewayLanternMat) {
-      this.causewayLanternMat.emissiveIntensity = (0.55 + glowBoost * 2.3) * pulse;
+      this.causewayLanternMat.emissiveIntensity = (0.1 + glowBoost * 2.15) * pulse;
     }
 
     // 4. Spore Lagoon Bio-Orbs (O(1) shared-material intensity modulation)
@@ -8020,10 +8189,37 @@ export class PlayStyleManager {
     this.selectableCapyGroup.visible = false;
     this.selectableCapyGroup.matrixWorldAutoUpdate = false;
     this.heroCapy.visible = inForestWindow;
+    if (this.vfxEngine) {
+      this.vfxEngine.rootGroup.visible = inForestWindow;
+      this.vfxEngine.rootGroup.matrixWorldAutoUpdate = inForestWindow;
+      if (!inForestWindow) {
+        this.vfxEngine.godRayGroup.visible = false;
+      }
+    }
     if (this.dachshundGroup) {
       this.dachshundGroup.visible = inForestWindow && this.currentMode === 'sanctuary';
     }
-    this.scene.fog = null;
+    if (inForestWindow && logVal <= 2.35 && this.settings.worldFogEnabled) {
+      this.applyFogSetting();
+    } else {
+      this.scene.fog = null;
+    }
+
+    if (!inForestWindow && this.worldEnv) {
+      // Dedicated calibrated deep-space key/fill rig so UFO & cosmic bodies retain crisp contrast
+      this.worldEnv.ambientLight.intensity = 0.08;
+      this.worldEnv.hemiLight.color.setHex(0x60a5fa);
+      this.worldEnv.hemiLight.groundColor.setHex(0x0f172a);
+      this.worldEnv.hemiLight.intensity = 0.24;
+      this.worldEnv.sunLight.color.setHex(0xfffaf0);
+      this.worldEnv.sunLight.intensity = 2.45;
+      if (logVal >= 3.5 && logVal <= 14.5) {
+        const sunDir = this.seamlessUniverse.getSharedSunDir();
+        this.worldEnv.sunLight.position.set(sunDir.x * 90, sunDir.y * 90, sunDir.z * 90);
+      }
+      this.worldEnv.moonLight.intensity = 0.0;
+      this.renderer.toneMappingExposure = this.settings.gpuExposure ?? 1.02;
+    }
 
     // Keep sanctuary companion Capybaras & portals gently alive while zooming through the forest!
     if (inForestWindow) {
@@ -8144,7 +8340,7 @@ export class PlayStyleManager {
     this.camera.position.copy(_camTarget);
     this.camera.lookAt(_seamlessFocalPos);
 
-    // Anchor Future Capybara Chrono-Vessel in view along camera sightline (zero heap allocations)
+    // Anchor Future Capybara Chrono-Vessel with seamless HUD -> True 1:1 Meter World Scale convergence!
     if (this.chronoVessel) {
       if (this.vesselMode === 'landed') {
         this.chronoVessel.root.visible = false;
@@ -8152,13 +8348,33 @@ export class PlayStyleManager {
         this.camera.updateMatrixWorld();
         _camForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
         _camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-        const vesselDist = this.vesselMode === 'telescope_first_person' ? 1.65 : 3.1;
-        const vesselDrop = this.vesselMode === 'telescope_first_person' ? -0.68 : -0.74;
-        this.chronoVessel.root.position
-          .copy(this.camera.position)
-          .addScaledVector(_camForward, vesselDist)
-          .addScaledVector(_camUp, vesselDrop);
-        this.chronoVessel.root.quaternion.copy(this.camera.quaternion);
+        const vt = computeVesselOneToOneTransform(
+          logVal,
+          this.vesselMode,
+          this.camera.position.x,
+          this.camera.position.y,
+          this.camera.position.z,
+          _camForward.x,
+          _camForward.y,
+          _camForward.z,
+          _camUp.x,
+          _camUp.y,
+          _camUp.z,
+          this.heroCapy.position.x,
+          this.heroCapy.position.y,
+          this.heroCapy.position.z
+        );
+        this.chronoVessel.root.position.set(vt.worldX, vt.worldY, vt.worldZ);
+        this.chronoVessel.root.scale.setScalar(vt.uniformScale);
+        if (vt.worldSpaceBlend > 0.001) {
+          _vesselEuler.set(0, this.cosmicOrbitYaw, 0);
+          _vesselUprightQuat.setFromEuler(_vesselEuler);
+          this.chronoVessel.root.quaternion
+            .copy(this.camera.quaternion)
+            .slerp(_vesselUprightQuat, vt.worldSpaceBlend);
+        } else {
+          this.chronoVessel.root.quaternion.copy(this.camera.quaternion);
+        }
         const scaleVel =
           this.autoZoomDirection !== 0
             ? this.autoZoomDirection * Math.abs(this.cruiseVelocityLogPerSec)
@@ -8289,6 +8505,7 @@ export class PlayStyleManager {
     );
     if (!this.seamlessZoomActive) {
       this.seamlessZoomActive = true;
+      this.performanceLog.notifyTransitionWarmup(4);
       this.vesselMode = 'chase_pod';
       this.chronoVessel?.setMode('chase_pod');
       this.cosmicOrbitPitch = Math.max(0.24, this.cosmicOrbitPitch);
@@ -8297,11 +8514,33 @@ export class PlayStyleManager {
         this.camera.updateProjectionMatrix();
       }
     }
+    this.autoZoomDirection = 0;
     this.autoLandAtForestPending = false;
     this.targetLogScaleMeters = clamped;
     if (immediate) {
+      this.performanceLog.notifyTransitionWarmup(5);
       this.currentLogScaleMeters = clamped;
       this.tickSeamlessUniverse(0.016);
+      if (this.worldEnv && this.gpuEngine) {
+        const inForestWindow =
+          this.currentLogScaleMeters >= -0.85 && this.currentLogScaleMeters <= 3.1;
+        this.gpuEngine.updateLightingAndShadowCascade(
+          0.016,
+          this.heroCapy.position.x,
+          this.heroCapy.position.y,
+          this.heroCapy.position.z,
+          0,
+          inForestWindow,
+          this.worldEnv.currentNightFactor,
+          this.worldEnv.currentSunDir,
+          this.worldEnv.currentMoonDir,
+          this.worldEnv.activeShadowCaster,
+          this.worldEnv.getDayPhaseLabel(),
+          this.worldEnv.timeOfDayHours,
+          this.worldEnv.currentIblEnvIntensity
+        );
+        this.gpuEngine.render();
+      }
     }
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
   }
@@ -8465,7 +8704,7 @@ export class PlayStyleManager {
         wx,
         wy,
         wz,
-        this.gpuEngine.sunLight.position,
+        this.worldEnv?.currentSunDir ?? this.gpuEngine.sunLight.position,
         this.worldEnv?.currentNightFactor ?? 0,
         this.settings.weatherMode === 'storm' ? 1 : this.settings.weatherMode === 'rain' ? 0.5 : 0,
         !this.seamlessZoomActive && this.cosmicStage === 'playing'

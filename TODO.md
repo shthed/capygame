@@ -12,11 +12,10 @@ For subsystem references, see:
 
 ---
 
-## Milestone 1: WebGPU Native Compute & Rendering Backend
+## Milestone 1: WebGPU Compute Wake Simulation
 
-- [ ] **WebGPU Renderer & TSL Shader Backend (`HardwareGpuEngine.ts`)**:
-  - Add progressive `navigator.gpu` feature detection to initialize a native WebGPU rendering path alongside the existing WebGL2 `HalfFloatType` `EffectComposer` fallback.
-  - Port `ShallowWaterFluidSolver` (`24x24` grid) to a WGSL compute shader for higher-resolution (`128x128`) real-time coastal and lagoon wake waves.
+- [ ] **WGSL Compute Shallow-Water Wake Grid (`ContiguousWorldTopology.ts`)**:
+  - Port the `24x24` `ShallowWaterFluidSolver` to a `128x128` WGSL compute shader for higher-resolution real-time coastal and lagoon wake waves on hardware WebGPU adapters.
 
 ---
 

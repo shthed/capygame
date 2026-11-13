@@ -17,10 +17,16 @@ import {
 import { ShallowWaterFluidSolver } from '../engine/physics/ContiguousWorldTopology';
 import { computeCosmicAgeGyr } from '../engine/SeamlessUniverseSimulator';
 import {
+  CHRONO_VESSEL_HUD_SCALE,
+  CHRONO_VESSEL_ONE_TO_ONE_SCALE,
+  PerformanceLogTracker,
   computeBloomRenderScale,
+  computeDayNightAtmosphereRig,
   computeDistrictTickStride,
   computeEffectivePixelRatio,
+  computeSolarPlanetFocusOffset,
   computeTexelSnappedShadowOrigin,
+  computeVesselOneToOneTransform,
   doesSphereBlockPlayerSightline,
   evaluateWholeScreenSightlineClearAlpha,
   shouldEnableOccluderDepthWrite,
@@ -356,3 +362,120 @@ test('Fine-Structure Constant (alpha) physics solver & pilot/vessel schema valid
     assert.equal(res.config.player.startingVesselMode, 'telescope_first_person');
   }
 });
+
+test('Solar System Zoom Focus: locks onto Capy-Earth instead of Sun center (0,0,0) and updates sun direction', () => {
+  const orbitR = 22.0 * (1.0 / 30.07);
+  const theta = 1.4;
+  // At outer Heliosphere (log 14.0): focusBlend === 0 (sun stays centered for full solar overview)
+  const outer = computeSolarPlanetFocusOffset(14.0, orbitR, theta, 0.34);
+  assert.equal(outer.focusBlend, 0);
+  assert.equal(outer.eclipticOffsetX, 0);
+  assert.equal(outer.eclipticOffsetZ, 0);
+
+  // Zoomed inward toward Capy-Earth (log 9.5 -> 7.11): ecliptic shifts by exact (-px, -pz) so planet sits at (0,0,0)
+  const inner = computeSolarPlanetFocusOffset(9.5, orbitR, theta, 0.34);
+  assert.equal(inner.focusBlend, 1);
+  const expectedPx = Math.cos(theta) * orbitR;
+  const expectedPz = -Math.sin(theta) * orbitR;
+  assert.ok(Math.abs(inner.eclipticOffsetX + expectedPx) < 1e-6);
+  assert.ok(Math.abs(inner.eclipticOffsetZ + expectedPz) < 1e-6);
+  // Solar lighting vector stays unit-normalized pointing back from Capy-Earth toward Sun
+  const sunLen = Math.hypot(inner.sunDirX, inner.sunDirY, inner.sunDirZ);
+  assert.ok(Math.abs(sunLen - 1.0) < 1e-6);
+});
+
+test('Chrono-Vessel 1:1 Physical Scale: transitions smoothly from HUD scale to true 1:1 Sanctuary scale', () => {
+  const outer = computeVesselOneToOneTransform(
+    18.0,
+    'chase_pod',
+    0, 7, 14,
+    0, -0.3, -0.95,
+    0, 0.95, -0.3,
+    2, 0.3, 4
+  );
+  assert.equal(outer.worldSpaceBlend, 0);
+  assert.ok(Math.abs(outer.uniformScale - CHRONO_VESSEL_HUD_SCALE) < 1e-6);
+
+  const landedScale = computeVesselOneToOneTransform(
+    0.8,
+    'chase_pod',
+    0, 7, 14,
+    0, -0.3, -0.95,
+    0, 0.95, -0.3,
+    2, 0.3, 4
+  );
+  assert.equal(landedScale.worldSpaceBlend, 1);
+  assert.ok(Math.abs(landedScale.uniformScale - CHRONO_VESSEL_ONE_TO_ONE_SCALE) < 1e-6);
+  assert.ok(Math.abs(landedScale.worldX - 3.85) < 1e-6);
+
+  // First-person telescope mode stays foreground HUD-anchored even at low scale
+  const scope = computeVesselOneToOneTransform(
+    0.8,
+    'telescope_first_person',
+    0, 7, 14,
+    0, -0.3, -0.95,
+    0, 0.95, -0.3,
+    2, 0.3, 4
+  );
+  assert.equal(scope.worldSpaceBlend, 0);
+});
+
+test('AAA Day/Night & Dual Sun+Moon Shadow Rig: clean handoff between Sun and Moon shadows across 24h cycle', () => {
+  const noon = computeDayNightAtmosphereRig(12.0, 0.0, 1.0, 0.0);
+  assert.equal(noon.dayPhaseLabel, 'Daylight');
+  assert.equal(noon.activeShadowCaster, 'sun');
+  assert.ok(noon.sunIntensity > 2.5);
+  assert.equal(noon.moonIntensity, 0);
+
+  const dusk = computeDayNightAtmosphereRig(18.2, 0.1, 1.0, 0.0);
+  assert.equal(dusk.dayPhaseLabel, 'Crimson Dusk');
+  assert.ok(dusk.duskFactor > 0.5);
+  assert.ok(dusk.lanternBoost > 0.5);
+
+  const midnight = computeDayNightAtmosphereRig(23.5, 0.0, 1.0, 0.0);
+  assert.equal(midnight.dayPhaseLabel, 'Starlight Night');
+  assert.equal(midnight.activeShadowCaster, 'moon');
+  assert.equal(midnight.sunIntensity, 0);
+  assert.ok(midnight.moonIntensity > 0.7);
+  assert.ok(midnight.shadowIntensity > 0.8);
+});
+
+test('PerformanceLogTracker: ignores startup/transition warmup stalls, caps readout at 60 FPS, and logs real lag drops', () => {
+  const tracker = new PerformanceLogTracker(1000);
+  // Warmup frames (first 4 frames + transition warmup) ignore one-time shader compile stalls
+  const bootCompile = tracker.recordFrame(1500.0, 1500.0, true, 'Sanctuary', 1020);
+  assert.equal(bootCompile.isLagDrop, false);
+  assert.equal(tracker.getSnapshot(1050).alertCount, 0);
+
+  // Smooth 60 FPS frames produce zero alerts and cap display at <=60 FPS
+  for (let i = 0; i < 10; i++) {
+    const r = tracker.recordFrame(3.2, 16.5, false, 'Sanctuary', 1100 + i * 16);
+    assert.equal(r.isLagDrop, false);
+  }
+  const steadySnap = tracker.getSnapshot(1500);
+  assert.equal(steadySnap.alertCount, 0);
+  assert.ok(steadySnap.liveFps <= 60 && steadySnap.liveFps >= 58);
+
+  // Transition warmup suppresses next switch hitch without touching prior metrics
+  tracker.notifyTransitionWarmup(2);
+  assert.equal(tracker.recordFrame(240.0, 240.0, false, 'Solar Systems', 2000).isLagDrop, false);
+  assert.equal(tracker.recordFrame(16.0, 16.0, false, 'Solar Systems', 2020).isLagDrop, false);
+
+  // Sudden 38ms lag spike (~26 FPS) triggers critical alert & load reduction
+  const lag = tracker.recordFrame(38.0, 38.0, false, 'Solar Systems', 3000, 'LOD->Tier 2');
+  assert.equal(lag.isLagDrop, true);
+  assert.equal(lag.shouldReduceLoad, true);
+  const snapAfter = tracker.getSnapshot(3200);
+  assert.equal(snapAfter.alertCount, 1);
+  assert.equal(snapAfter.droppedFramesCount, 1);
+  assert.equal(snapAfter.activeAlert, true);
+  assert.equal(snapAfter.entries[0].severity, 'critical');
+
+  // Clear resets alert count and restores steady 60 FPS summary
+  tracker.clear(4000);
+  const cleared = tracker.getSnapshot(4100);
+  assert.equal(cleared.alertCount, 0);
+  assert.equal(cleared.droppedFramesCount, 0);
+  assert.equal(cleared.liveFps, 60);
+});
+

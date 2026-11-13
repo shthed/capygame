@@ -1,10 +1,19 @@
 import * as THREE from 'three';
+import * as THREE_WEBGPU from 'three/webgpu';
 import { HEAD_ORANGE_VARIETIES, WeatherType } from '../types';
 import {
   PbrSurfaceMaterialKind,
   PbrTextureSynthesizer,
 } from './gpu/PbrTextureSynthesizer';
-import { evaluateWholeScreenSightlineClearAlpha } from './gpu/FramePerformanceGovernor';
+import {
+  computeDayNightAtmosphereRig,
+  evaluateWholeScreenSightlineClearAlpha,
+} from './gpu/FramePerformanceGovernor';
+import {
+  createTslSkyNodeMaterial,
+  createTslWaterPhysicalNodeMaterial,
+  upgradeMaterialWithTslSightlineFade,
+} from './gpu/WebGpuPipeline';
 
 // Zero-allocation scratch helpers for GPU particle & shader updates
 const _matDummy = new THREE.Object3D();
@@ -25,6 +34,10 @@ export const SHARED_OCCLUDER_VIEWPORT = new THREE.Vector2(1280, 720);
 export const SHARED_OCCLUDER_HEAD_UV = new THREE.Vector2(0.5, 0.5);
 export const SHARED_OCCLUDER_HEAD_CLIP = new THREE.Vector4(0.5, 0.5, 10.0, 0.16);
 export const SHARED_OCCLUDER_TAIL_CLIP = new THREE.Vector4(0.5, 0.42, 10.4, 0.08);
+export const SHARED_WATER_SUN_DIR = new THREE.Vector3(0.4, 0.8, 0.35).normalize();
+export const SHARED_WATER_SUN_COLOR = new THREE.Color(0xfffaf0);
+export const SHARED_WATER_SUN_STRENGTH = { value: 1.0 };
+export const SHARED_WATER_TIME = { value: 0.0 };
 
 export interface OccluderEdgeShaderUniforms {
   uCapyOccBlend: { value: number };
@@ -43,7 +56,8 @@ export interface OccluderEdgeShaderUniforms {
  * - Leaves at most a faint (`alpha <= 0.18`) translucent whisper on the outermost 2.2% screen border.
  */
 export function installSightlineEdgeFadeShader(
-  mat: THREE.Material
+  mat: THREE.Material,
+  isWebGpu: boolean = false
 ): OccluderEdgeShaderUniforms {
   if (
     mat.userData.__occUniforms &&
@@ -53,8 +67,12 @@ export function installSightlineEdgeFadeShader(
     return mat.userData.__occUniforms as OccluderEdgeShaderUniforms;
   }
 
+  const isNodeMat =
+    isWebGpu || Boolean((mat as unknown as { isNodeMaterial?: boolean }).isNodeMaterial);
+  const tslBlend = isNodeMat ? upgradeMaterialWithTslSightlineFade(mat) : { value: 0.0 };
+
   const uniforms: OccluderEdgeShaderUniforms = {
-    uCapyOccBlend: { value: 0.0 },
+    uCapyOccBlend: tslBlend,
     uCapyOccBounds: { value: new THREE.Vector3(0.5, 0.5, 0.85) },
     uCapyViewport: { value: SHARED_OCCLUDER_VIEWPORT },
     uCapyHeadUv: { value: SHARED_OCCLUDER_HEAD_UV },
@@ -70,6 +88,10 @@ export function installSightlineEdgeFadeShader(
   mat.userData.__edgeOutlineMaxOpacity = 1.0;
   mat.transparent = true;
   mat.depthWrite = Boolean(mat.userData.__origDepthWrite ?? true);
+
+  if (isNodeMat) {
+    return uniforms;
+  }
 
   const baseType = mat.type;
   mat.customProgramCacheKey = () => `capy_occ_whole96_${baseType}`;
@@ -96,7 +118,7 @@ export function installSightlineEdgeFadeShader(
       '  float screenEdgeFade = clamp(length(edgeRamp), 0.0, 1.0);\n' +
       '  screenEdgeFade = screenEdgeFade * screenEdgeFade * (3.0 - 2.0 * screenEdgeFade);\n' +
       '  float rimOutline = mix(0.75, 1.0, screenEdgeFade);\n' +
-      '  return screenEdgeFade * rimOutline * 0.18;\n' +
+      '  return screenEdgeFade * rimOutline * 0.05;\n' +
       '}\n' +
       shader.fragmentShader
         .replace(
@@ -118,7 +140,6 @@ export function installSightlineEdgeFadeShader(
           if (uCapyOccBlend > 0.85 && finalAlpha < 0.004) {
             discard;
           }
-          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.84, 0.96, 1.0), 0.28 * uCapyOccBlend);
           gl_FragColor.a = finalAlpha;
         }`
         );
@@ -382,21 +403,80 @@ export class RealisticWorldEnvironment {
     return tex;
   }
 
+  private static trackedTslWaterMaterials: Array<THREE.Material> = [];
+
+  public static createOceanWaterMaterial(
+    isSoftwareGl: boolean,
+    isWebGpu: boolean = false
+  ): THREE.MeshPhysicalMaterial {
+    const waterNorms = PbrTextureSynthesizer.getWaterNormalMaps();
+    if (isWebGpu) {
+      const mat = createTslWaterPhysicalNodeMaterial({
+        baseColorHex: 0x0369a1,
+        normalMap: waterNorms.primary,
+        clearcoatNormalMap: waterNorms.secondary,
+        sunDir: SHARED_WATER_SUN_DIR,
+        sunColor: SHARED_WATER_SUN_COLOR,
+        roughness: 0.05,
+        opacity: 1.0,
+        transparent: false,
+      });
+      this.trackedTslWaterMaterials.push(mat);
+      return mat as unknown as THREE.MeshPhysicalMaterial;
+    }
+
+    const oceanMat = new THREE.MeshPhysicalMaterial({
+      color: 0x0369a1,
+      roughness: 0.05,
+      metalness: 0.0,
+      ior: 1.333,
+      reflectivity: 0.9,
+      clearcoat: isSoftwareGl ? 0.0 : 1.0,
+      clearcoatRoughness: 0.035,
+      envMapIntensity: 1.25,
+      normalMap: waterNorms.primary,
+      normalScale: new THREE.Vector2(0.62, 0.62),
+      clearcoatNormalMap: waterNorms.secondary,
+      clearcoatNormalScale: new THREE.Vector2(0.42, 0.42),
+    });
+    RealisticWorldEnvironment.installOceanSunGlintShader(oceanMat);
+    return oceanMat;
+  }
+
   public static createRipplingWaterMaterial(
     rippleTex: THREE.DataTexture,
     options?: {
       colorHex?: number;
       opacity?: number;
       rippleAmp?: number;
+      isWebGpu?: boolean;
     }
   ): THREE.MeshPhysicalMaterial {
     const waterNorms = PbrTextureSynthesizer.getWaterNormalMaps();
+    if (options?.isWebGpu) {
+      const mat = createTslWaterPhysicalNodeMaterial({
+        baseColorHex: options?.colorHex ?? 0x0ea5e9,
+        normalMap: waterNorms.primary,
+        clearcoatNormalMap: waterNorms.secondary,
+        sunDir: SHARED_WATER_SUN_DIR,
+        sunColor: SHARED_WATER_SUN_COLOR,
+        roughness: 0.05,
+        opacity: options?.opacity ?? 0.84,
+        transparent: true,
+      });
+      this.trackedTslWaterMaterials.push(mat);
+      return mat as unknown as THREE.MeshPhysicalMaterial;
+    }
+
     const mat = new THREE.MeshPhysicalMaterial({
       color: options?.colorHex ?? 0x0ea5e9,
-      roughness: 0.06,
-      metalness: 0.14,
+      roughness: 0.05,
+      metalness: 0.0,
+      ior: 1.333,
+      reflectivity: 0.9,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.04,
+      clearcoatRoughness: 0.035,
+      envMapIntensity: 1.25,
       normalMap: waterNorms.primary,
       normalScale: new THREE.Vector2(0.55, 0.55),
       clearcoatNormalMap: waterNorms.secondary,
@@ -410,19 +490,26 @@ export class RealisticWorldEnvironment {
       uRippleTex: { value: rippleTex },
       uWaterTime: { value: 0.0 },
       uRippleAmp: { value: options?.rippleAmp ?? 0.09 },
+      uWaterSunDir: { value: SHARED_WATER_SUN_DIR },
+      uWaterSunColor: { value: SHARED_WATER_SUN_COLOR },
+      uWaterSunStrength: SHARED_WATER_SUN_STRENGTH,
     };
     mat.userData.__waterUniforms = uniforms;
-    mat.customProgramCacheKey = () => 'capy_pbr_water_ripple_v1';
+    mat.customProgramCacheKey = () => 'capy_pbr_water_ripple_sunglint_v2';
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uRippleTex = uniforms.uRippleTex;
       shader.uniforms.uWaterTime = uniforms.uWaterTime;
       shader.uniforms.uRippleAmp = uniforms.uRippleAmp;
+      shader.uniforms.uWaterSunDir = uniforms.uWaterSunDir;
+      shader.uniforms.uWaterSunColor = uniforms.uWaterSunColor;
+      shader.uniforms.uWaterSunStrength = uniforms.uWaterSunStrength;
 
       shader.vertexShader =
         'uniform sampler2D uRippleTex;\n' +
         'uniform float uWaterTime;\n' +
         'uniform float uRippleAmp;\n' +
         'varying vec2 vRippleUv;\n' +
+        'varying vec3 vWaterWorldPos;\n' +
         shader.vertexShader.replace(
           '#include <begin_vertex>',
           `#include <begin_vertex>
@@ -430,30 +517,113 @@ export class RealisticWorldEnvironment {
           vec4 rSamp = texture2D(uRippleTex, clamp(uv, 0.02, 0.98));
           float fluidH = (rSamp.r - 0.5) * uRippleAmp * 2.4;
           float capillary = sin(position.x * 2.2 + uWaterTime * 3.1) * cos(position.z * 2.1 - uWaterTime * 2.5) * (uRippleAmp * 0.22);
-          transformed.y += fluidH + capillary;`
+          transformed.y += fluidH + capillary;
+          vWaterWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
         );
 
       shader.fragmentShader =
         'uniform sampler2D uRippleTex;\n' +
         'uniform float uWaterTime;\n' +
+        'uniform vec3 uWaterSunDir;\n' +
+        'uniform vec3 uWaterSunColor;\n' +
+        'uniform float uWaterSunStrength;\n' +
         'varying vec2 vRippleUv;\n' +
-        shader.fragmentShader.replace(
-          '#include <normal_fragment_maps>',
-          `#include <normal_fragment_maps>
+        'varying vec3 vWaterWorldPos;\n' +
+        shader.fragmentShader
+          .replace(
+            '#include <normal_fragment_maps>',
+            `#include <normal_fragment_maps>
           vec4 fragRipple = texture2D(uRippleTex, clamp(vRippleUv, 0.02, 0.98));
           vec2 waveGrad = (fragRipple.gb - 0.5) * 1.45;
           normal = normalize(normal + vec3(waveGrad.x, 0.0, waveGrad.y));`
-        );
+          )
+          .replace(
+            '#include <lights_fragment_end>',
+            `#include <lights_fragment_end>
+          if (uWaterSunStrength > 0.01) {
+            vec3 sunW = normalize(uWaterSunDir);
+            if (sunW.y > 0.02) {
+              vec3 viewW = normalize(cameraPosition - vWaterWorldPos);
+              vec3 halfW = normalize(sunW + viewW);
+              vec2 wp = vWaterWorldPos.xz;
+              float wt = uWaterTime;
+              float wx1 = cos(wp.x * 3.4 + wt * 2.2) * cos(wp.y * 2.9 - wt * 1.7);
+              float wz1 = sin(wp.x * 2.7 - wt * 1.9) * sin(wp.y * 3.6 + wt * 2.4);
+              float wx2 = sin(wp.x * 9.5 - wp.y * 5.2 + wt * 3.5);
+              float wz2 = cos(wp.x * 6.1 + wp.y * 8.8 - wt * 3.1);
+              vec3 microN1 = normalize(vec3(wx1 * 0.16 + wx2 * 0.09, 1.0, wz1 * 0.16 + wz2 * 0.09));
+              vec3 microN2 = normalize(vec3(wx2 * 0.24 - wx1 * 0.11, 1.0, wz2 * 0.24 + wz1 * 0.11));
+              float specBroad = pow(max(dot(microN1, halfW), 0.0), 380.0);
+              float specPin = pow(max(dot(microN2, halfW), 0.0), 1050.0);
+              float fres = 0.35 + 0.65 * pow(1.0 - max(viewW.y, 0.0), 3.0);
+              reflectedLight.directSpecular += uWaterSunColor * (specBroad * 2.1 + specPin * 4.8) * fres * uWaterSunStrength;
+            }
+          }`
+          );
     };
 
     return mat;
   }
 
+  /**
+   * Installs sun-reflection micro-wave glitter on large planar water bodies (Archipelago Ocean)
+   * driven strictly by live sun direction, cloud cover, and camera view angle.
+   */
+  public static installOceanSunGlintShader(mat: THREE.MeshPhysicalMaterial): void {
+    mat.customProgramCacheKey = () => 'capy_ocean_sunglint_v2';
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uWaterTime = SHARED_WATER_TIME;
+      shader.uniforms.uWaterSunDir = { value: SHARED_WATER_SUN_DIR };
+      shader.uniforms.uWaterSunColor = { value: SHARED_WATER_SUN_COLOR };
+      shader.uniforms.uWaterSunStrength = SHARED_WATER_SUN_STRENGTH;
+
+      shader.vertexShader =
+        'varying vec3 vOceanWorldPos;\n' +
+        shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          vOceanWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+        );
+
+      shader.fragmentShader =
+        'uniform float uWaterTime;\n' +
+        'uniform vec3 uWaterSunDir;\n' +
+        'uniform vec3 uWaterSunColor;\n' +
+        'uniform float uWaterSunStrength;\n' +
+        'varying vec3 vOceanWorldPos;\n' +
+        shader.fragmentShader.replace(
+          '#include <lights_fragment_end>',
+          `#include <lights_fragment_end>
+          if (uWaterSunStrength > 0.01) {
+            vec3 sunW = normalize(uWaterSunDir);
+            if (sunW.y > 0.02) {
+              vec3 viewW = normalize(cameraPosition - vOceanWorldPos);
+              vec3 halfW = normalize(sunW + viewW);
+              vec2 wp = vOceanWorldPos.xz;
+              float wt = uWaterTime;
+              float distFade = 1.0 - smoothstep(140.0, 330.0, length(wp));
+              float wx1 = cos(wp.x * 1.15 + wt * 1.6) * cos(wp.y * 0.95 - wt * 1.3);
+              float wz1 = sin(wp.x * 0.92 - wt * 1.4) * sin(wp.y * 1.25 + wt * 1.7);
+              float wx2 = sin(wp.x * 3.8 - wp.y * 2.7 + wt * 2.9);
+              float wz2 = cos(wp.x * 2.9 + wp.y * 3.9 - wt * 2.5);
+              vec3 microN1 = normalize(vec3(wx1 * 0.14 + wx2 * 0.08, 1.0, wz1 * 0.14 + wz2 * 0.08));
+              vec3 microN2 = normalize(vec3(wx2 * 0.22 - wx1 * 0.10, 1.0, wz2 * 0.22 + wz1 * 0.10));
+              float specBroad = pow(max(dot(microN1, halfW), 0.0), 420.0);
+              float specPin = pow(max(dot(microN2, halfW), 0.0), 1150.0);
+              float fres = 0.28 + 0.72 * pow(1.0 - max(viewW.y, 0.0), 3.2);
+              reflectedLight.directSpecular += uWaterSunColor * (specBroad * 2.0 + specPin * 4.6) * fres * distFade * uWaterSunStrength;
+            }
+          }`
+        );
+    };
+  }
+
   public readonly skyMesh: THREE.Mesh;
-  public readonly skyMaterial: THREE.ShaderMaterial;
+  public readonly skyMaterial: THREE.Material;
   public readonly mountainMesh: THREE.Mesh;
   public readonly cloudGroup = new THREE.Group();
   public readonly weatherMesh: THREE.InstancedMesh;
+  public readonly isWebGpu: boolean;
 
   // Lighting rig controlled by Day/Night & Weather
   public readonly sunLight: THREE.DirectionalLight;
@@ -466,7 +636,11 @@ export class RealisticWorldEnvironment {
   public activeWeather: WeatherType = 'clear';
   public currentNightFactor: number = 0.0;
   public currentDuskFactor: number = 0.0;
+  public activeShadowCaster: 'sun' | 'moon' = 'sun';
+  public currentDayPhaseLabel: string = 'Daylight';
+  public currentIblEnvIntensity: number = 1.15;
   public readonly currentSunDir = new THREE.Vector3(0.4, 0.8, 0.35).normalize();
+  public readonly currentMoonDir = new THREE.Vector3(-0.4, 0.6, 0.35).normalize();
   private weatherAutoTimer: number = 0;
   private lightningFlash: number = 0;
   public elapsedSeconds: number = 0;
@@ -494,38 +668,64 @@ export class RealisticWorldEnvironment {
   private lastAppliedWetness: number = -1;
 
   constructor(
-    renderer: THREE.WebGLRenderer,
+    renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
     isSoftwareGl: boolean,
     ambientLight: THREE.AmbientLight,
     hemiLight: THREE.HemisphereLight,
-    sunLight: THREE.DirectionalLight
+    sunLight: THREE.DirectionalLight,
+    isWebGpu: boolean = false
   ) {
     this.ambientLight = ambientLight;
     this.hemiLight = hemiLight;
     this.sunLight = sunLight;
+    this.isWebGpu = isWebGpu;
 
-    const maxAniso = isSoftwareGl ? 1 : Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    const rendererAny = renderer as unknown as {
+      getMaxAnisotropy?: () => number;
+      capabilities?: { getMaxAnisotropy?: () => number };
+    };
+    const rawAniso =
+      typeof rendererAny.getMaxAnisotropy === 'function'
+        ? rendererAny.getMaxAnisotropy()
+        : rendererAny.capabilities?.getMaxAnisotropy?.() ?? 4;
+    const maxAniso = isSoftwareGl ? 1 : Math.min(8, rawAniso);
     RealisticWorldEnvironment.ensureCoreTextures(maxAniso);
 
-    // Cool silvery directional moonlight for nighttime specular highlights
+    // Cool silvery directional moonlight with full shadow casting for starlight nights!
     this.moonLight = new THREE.DirectionalLight(0x93c5fd, 0.25);
     this.moonLight.position.set(-40, 55, -35);
+    this.moonLight.castShadow = false;
+    const moonShadowRes = isSoftwareGl ? 1024 : 2048;
+    this.moonLight.shadow.mapSize.set(moonShadowRes, moonShadowRes);
+    this.moonLight.shadow.camera.near = 0.5;
+    this.moonLight.shadow.camera.far = 260;
+    this.moonLight.shadow.camera.left = -38;
+    this.moonLight.shadow.camera.right = 38;
+    this.moonLight.shadow.camera.top = 38;
+    this.moonLight.shadow.camera.bottom = -38;
+    this.moonLight.shadow.bias = -0.00032;
+    this.moonLight.shadow.normalBias = 0.024;
+    this.moonLight.shadow.radius = 2.4;
 
-    // 1. Hardware-Accelerated Atmospheric Sky Dome Shader (Rayleigh/Mie + Sun + Moon + Night Stars)
-    this.skyMaterial = new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: false,
-      uniforms: {
-        uSunDir: { value: new THREE.Vector3(0.4, 0.75, 0.3) },
-        uZenithColor: { value: new THREE.Color(0x0c4a6e) },
-        uHorizonColor: { value: new THREE.Color(0xbae6fd) },
-        uSunColor: { value: new THREE.Color(0xfff7ed) },
-        uStarIntensity: { value: 0.0 },
-        uCloudCover: { value: 0.15 },
-        uTime: { value: 0.0 },
-      },
-      vertexShader: `
+    const skyUniforms = {
+      uSunDir: { value: new THREE.Vector3(0.4, 0.75, 0.3) },
+      uZenithColor: { value: new THREE.Color(0x0c4a6e) },
+      uHorizonColor: { value: new THREE.Color(0xbae6fd) },
+      uSunColor: { value: new THREE.Color(0xfff7ed) },
+      uStarIntensity: { value: 0.0 },
+      uCloudCover: { value: 0.15 },
+      uTime: { value: 0.0 },
+    };
+
+    // 1. Hardware-Accelerated Atmospheric Sky Dome Shader (WGSL TSL on WebGPU / GLSL on WebGL2)
+    this.skyMaterial = this.isWebGpu
+      ? createTslSkyNodeMaterial(skyUniforms)
+      : new THREE.ShaderMaterial({
+          side: THREE.BackSide,
+          depthWrite: false,
+          fog: false,
+          uniforms: skyUniforms,
+          vertexShader: `
         varying vec3 vWorldDir;
         void main() {
           vWorldDir = normalize(position);
@@ -533,7 +733,7 @@ export class RealisticWorldEnvironment {
           gl_Position = projectionMatrix * mvPos;
         }
       `,
-      fragmentShader: `
+          fragmentShader: `
         varying vec3 vWorldDir;
         uniform vec3 uSunDir;
         uniform vec3 uZenithColor;
@@ -598,7 +798,7 @@ export class RealisticWorldEnvironment {
           gl_FragColor = vec4(sky, 1.0);
         }
       `,
-    });
+        });
     this.skyMesh = new THREE.Mesh(new THREE.SphereGeometry(720, 32, 20), this.skyMaterial);
     this.skyMesh.frustumCulled = false;
 
@@ -675,6 +875,11 @@ export class RealisticWorldEnvironment {
         roughness: synth.roughness,
         ao: synth.ao,
       };
+      cobbleSet.albedo.repeat.set(8, 8);
+      cobbleSet.normal.repeat.set(8, 8);
+      cobbleSet.bump.repeat.set(8, 8);
+      cobbleSet.roughness.repeat.set(8, 8);
+      cobbleSet.ao.repeat.set(8, 8);
       this.textureCache.set(kind, cobbleSet);
       return cobbleSet;
     }
@@ -723,15 +928,15 @@ export class RealisticWorldEnvironment {
         actx.fill();
       }
 
-      // Thousands of individual grass blades & clover leaves
-      const greens = ['#3f8f42', '#4ea84f', '#255c29', '#65b755', '#347839'];
-      for (let i = 0; i < 6500; i++) {
+      // Thousands of isotropic grass tufts & clover clusters so tiled pasture reads crisply at any yaw
+      const greens = ['#3f8f42', '#4ea84f', '#2e6b32', '#65b755', '#347839'];
+      for (let i = 0; i < 7200; i++) {
         const x = rnd() * size;
         const y = rnd() * size;
-        const len = 4 + rnd() * 9;
-        const ang = -Math.PI * 0.5 + (rnd() - 0.5) * 0.9;
+        const len = 3.2 + rnd() * 6.4;
+        const ang = rnd() * Math.PI * 2;
         actx.strokeStyle = greens[i % greens.length];
-        actx.lineWidth = 1.0 + rnd() * 1.4;
+        actx.lineWidth = 0.9 + rnd() * 1.1;
         actx.beginPath();
         actx.moveTo(x, y);
         actx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
@@ -739,7 +944,7 @@ export class RealisticWorldEnvironment {
 
         const bVal = Math.floor(110 + rnd() * 135);
         bctx.strokeStyle = `rgb(${bVal},${bVal},${bVal})`;
-        bctx.lineWidth = 1.2;
+        bctx.lineWidth = 1.1;
         bctx.beginPath();
         bctx.moveTo(x, y);
         bctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
@@ -772,28 +977,28 @@ export class RealisticWorldEnvironment {
         bctx.fillRect(x, y, r, r);
       }
     } else if (kind === 'mountain') {
-      actx.fillStyle = '#57534e';
+      actx.fillStyle = '#cbd5e1';
       actx.fillRect(0, 0, size, size);
-      bctx.fillStyle = '#787878';
+      bctx.fillStyle = '#808080';
       bctx.fillRect(0, 0, size, size);
       rctx.fillStyle = '#d4d4d4';
       rctx.fillRect(0, 0, size, size);
 
-      // Diagonal tectonic rock strata & sharp granite fractures
+      // Diagonal tectonic rock strata & sunlit granite fractures (vertexColors multiply cleanly)
       for (let i = 0; i < 420; i++) {
         const x = rnd() * size;
         const y = rnd() * size;
         const w = 18 + rnd() * 65;
         const h = 4 + rnd() * 16;
-        const v = Math.floor(62 + rnd() * 85);
+        const v = Math.floor(148 + rnd() * 88);
         actx.save();
         actx.translate(x, y);
         actx.rotate(-0.35 + (rnd() - 0.5) * 0.4);
-        actx.fillStyle = `rgba(${v}, ${v - 2}, ${v - 5}, 0.55)`;
+        actx.fillStyle = `rgba(${v}, ${v - 2}, ${v - 5}, 0.52)`;
         actx.fillRect(-w / 2, -h / 2, w, h);
         actx.restore();
 
-        const bv = Math.floor(45 + rnd() * 195);
+        const bv = Math.floor(55 + rnd() * 185);
         bctx.save();
         bctx.translate(x, y);
         bctx.rotate(-0.35 + (rnd() - 0.5) * 0.4);
@@ -911,6 +1116,17 @@ export class RealisticWorldEnvironment {
 
     const synth = PbrTextureSynthesizer.getSurfaceMaps(kind, albedo, bump);
 
+    const repeatScale =
+      kind === 'grass'
+        ? 18
+        : kind === 'sand'
+          ? 16
+          : kind === 'mountain'
+            ? 1
+            : kind === 'basalt' || kind === 'timber' || kind === 'foliage'
+              ? 3
+              : 2;
+
     const set: PbrTextureSet = {
       albedo,
       normal: synth.normal,
@@ -918,6 +1134,13 @@ export class RealisticWorldEnvironment {
       roughness: synth.roughness,
       ao: synth.ao,
     };
+    if (repeatScale > 1) {
+      set.albedo.repeat.set(repeatScale, repeatScale);
+      set.normal.repeat.set(repeatScale, repeatScale);
+      set.bump.repeat.set(repeatScale, repeatScale);
+      set.roughness.repeat.set(repeatScale, repeatScale);
+      set.ao.repeat.set(repeatScale, repeatScale);
+    }
     this.textureCache.set(kind, set);
     return set;
   }
@@ -1002,9 +1225,9 @@ export class RealisticWorldEnvironment {
   // 3D BACKGROUND ALPINE MOUNTAIN RANGE
   // ============================================================================
   private buildAlpineMountainRange(radialSegs: number): THREE.Mesh {
-    const ringSegs = 20;
-    const innerR = 148;
-    const outerR = 355;
+    const ringSegs = 28;
+    const innerR = 175;
+    const outerR = 345;
 
     const vertCount = (radialSegs + 1) * (ringSegs + 1);
     const positions = new Float32Array(vertCount * 3);
@@ -1012,8 +1235,8 @@ export class RealisticWorldEnvironment {
     const uvs = new Float32Array(vertCount * 2);
     const indices: number[] = [];
 
-    const foothillCol = new THREE.Color(0x274e2a);
-    const cliffCol = new THREE.Color(0x645f5a);
+    const foothillCol = new THREE.Color(0x3a6e3e);
+    const cliffCol = new THREE.Color(0x8c857d);
     const snowCol = new THREE.Color(0xf8fafc);
     const scratchCol = new THREE.Color();
 
@@ -1022,8 +1245,8 @@ export class RealisticWorldEnvironment {
     for (let r = 0; r <= ringSegs; r++) {
       const v = r / ringSegs; // 0 (inner shore) -> 1 (outer horizon)
       const rad = innerR + v * (outerR - innerR);
-      // Bell-shaped radial envelope so mountains rise steeply from ocean and taper at far horizon
-      const radialEnvelope = Math.sin(Math.pow(v, 0.72) * Math.PI);
+      // Smooth bell-shaped radial envelope so foothills rise cleanly out of ocean without jagged shards
+      const radialEnvelope = Math.sin(Math.pow(v, 0.78) * Math.PI);
 
       for (let a = 0; a <= radialSegs; a++) {
         const u = a / radialSegs;
@@ -1032,22 +1255,22 @@ export class RealisticWorldEnvironment {
         const wz = Math.sin(theta) * rad;
 
         const ridge = ridgedMountainHeight(wx, wz);
-        const macroPeak = 0.68 + 0.45 * Math.sin(theta * 5.0 + 0.8) + 0.25 * Math.cos(theta * 9.0);
-        const height = Math.max(-1.6, ridge * macroPeak * radialEnvelope * 56.0 - 1.5);
+        const macroPeak = 0.72 + 0.35 * Math.sin(theta * 5.0 + 0.8) + 0.2 * Math.cos(theta * 9.0);
+        const height = -1.08 + ridge * macroPeak * radialEnvelope * 42.0;
 
         positions[ptr] = wx;
         positions[ptr + 1] = height;
         positions[ptr + 2] = wz;
 
-        // Elevation + slope color ramp: lush pine foothills -> granite rock -> bright snow caps
-        if (height < 14) {
-          scratchCol.copy(foothillCol).lerp(cliffCol, THREE.MathUtils.clamp(height / 14, 0, 1));
-        } else if (height < 36) {
+        // Elevation + slope color ramp: pine foothills -> sunlit granite -> bright snow caps
+        if (height < 11) {
+          scratchCol.copy(foothillCol).lerp(cliffCol, THREE.MathUtils.clamp(height / 11, 0, 1));
+        } else if (height < 26) {
           scratchCol.copy(cliffCol);
         } else {
           scratchCol
             .copy(cliffCol)
-            .lerp(snowCol, THREE.MathUtils.clamp((height - 34) / 14, 0, 1));
+            .lerp(snowCol, THREE.MathUtils.clamp((height - 24) / 11, 0, 1));
         }
 
         colors[ptr] = scratchCol.r;
@@ -1203,6 +1426,7 @@ export class RealisticWorldEnvironment {
       colorHex: 0x0ea5e9,
       opacity: 0.84,
       rippleAmp: 0.09,
+      isWebGpu: this.isWebGpu,
     });
     const waterMesh = new THREE.Mesh(
       RealisticWorldEnvironment.createSubdividedWaterDiscGeometry(basinRadius - 0.18, 36, 12),
@@ -1241,8 +1465,9 @@ export class RealisticWorldEnvironment {
 
     const brassMat = new THREE.MeshStandardMaterial({
       color: 0xd97706,
-      metalness: 0.86,
-      roughness: 0.22,
+      metalness: 0.92,
+      roughness: 0.15,
+      envMapIntensity: 1.35,
     });
     const horizontalPipe = new THREE.Mesh(
       new THREE.CylinderGeometry(0.075, 0.075, 1.45, 10),
@@ -1269,9 +1494,9 @@ export class RealisticWorldEnvironment {
     // Flowing 3D Tap Water Column + White Foam Impact Ring
     const streamMat = new THREE.MeshPhysicalMaterial({
       color: 0xe0f2fe,
-      emissive: 0x38bdf8,
-      emissiveIntensity: 0.22,
-      roughness: 0.05,
+      roughness: 0.04,
+      metalness: 0.0,
+      ior: 1.333,
       clearcoat: 1.0,
       transparent: true,
       opacity: 0.78,
@@ -1320,9 +1545,10 @@ export class RealisticWorldEnvironment {
     const puddleMat = new THREE.MeshPhysicalMaterial({
       color: 0x0369a1,
       roughness: 0.04,
-      metalness: 0.25,
+      metalness: 0.0,
+      ior: 1.333,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.04,
+      clearcoatRoughness: 0.03,
       transparent: true,
       opacity: 0.85,
       polygonOffset: true,
@@ -1332,7 +1558,7 @@ export class RealisticWorldEnvironment {
     const mudMat = new THREE.MeshStandardMaterial({
       color: 0x452c1e,
       roughness: 0.18,
-      metalness: 0.08,
+      metalness: 0.02,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
@@ -1359,9 +1585,8 @@ export class RealisticWorldEnvironment {
     const splashGeo = new THREE.SphereGeometry(0.085, 6, 6);
     const splashMat = new THREE.MeshStandardMaterial({
       color: 0xe0f2fe,
-      emissive: 0x38bdf8,
-      emissiveIntensity: 0.3,
-      roughness: 0.08,
+      roughness: 0.05,
+      metalness: 0.0,
     });
     const splashInstanced = new THREE.InstancedMesh(splashGeo, splashMat, this.maxSplashDroplets);
     splashInstanced.frustumCulled = false;
@@ -1821,8 +2046,8 @@ export class RealisticWorldEnvironment {
     const ringMat = new THREE.MeshStandardMaterial({
       color: variety.colorHex,
       emissive: variety.emissiveHex,
-      emissiveIntensity: 0.32,
-      roughness: 0.45,
+      emissiveIntensity: 0.04,
+      roughness: 0.52,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
@@ -2146,9 +2371,8 @@ export class RealisticWorldEnvironment {
     });
     const petalMat = new THREE.MeshStandardMaterial({
       color: 0xfffbeb,
-      emissive: 0xfef3c7,
-      emissiveIntensity: 0.18,
-      roughness: 0.38,
+      roughness: 0.55,
+      metalness: 0.0,
       side: THREE.DoubleSide,
     });
 
@@ -2165,11 +2389,11 @@ export class RealisticWorldEnvironment {
       const fruitMat = new THREE.MeshStandardMaterial({
         color: variety.colorHex,
         emissive: variety.emissiveHex,
-        emissiveIntensity: 0.18,
+        emissiveIntensity: 0.0,
         bumpMap: peelBump,
         bumpScale: 0.038,
         roughness: 0.22,
-        metalness: 0.05,
+        metalness: 0.03,
       });
 
       const fGroup = new THREE.Group();
@@ -2295,21 +2519,21 @@ export class RealisticWorldEnvironment {
     slot.mesh.position.y = slot.baseY - weightDroop;
     slot.localOffset.y = slot.mesh.position.y;
 
-    // Botanical chlorophyll -> carotenoid/anthocyanin color transition
+    // Botanical chlorophyll -> carotenoid/anthocyanin color transition (purely PBR, zero fake emission)
     if (g < 0.52) {
       slot.fruitMat.color.copy(_unripeGreen);
       slot.fruitMat.roughness = 0.46;
-      slot.fruitMat.emissiveIntensity = 0.03;
+      slot.fruitMat.emissiveIntensity = 0.0;
     } else if (g < 0.78) {
       const tMid = (g - 0.52) / 0.26;
       slot.fruitMat.color.copy(_unripeGreen).lerp(_chartreuseMid, tMid);
       slot.fruitMat.roughness = THREE.MathUtils.lerp(0.46, 0.3, tMid);
-      slot.fruitMat.emissiveIntensity = 0.08;
+      slot.fruitMat.emissiveIntensity = 0.0;
     } else {
       const tRipe = THREE.MathUtils.clamp((g - 0.78) / 0.2, 0, 1);
       slot.fruitMat.color.copy(_chartreuseMid).lerp(_ripeColor, tRipe);
       slot.fruitMat.roughness = THREE.MathUtils.lerp(0.3, 0.21, tRipe);
-      slot.fruitMat.emissiveIntensity = THREE.MathUtils.lerp(0.08, 0.22, tRipe);
+      slot.fruitMat.emissiveIntensity = 0.0;
     }
   }
 
@@ -2377,7 +2601,7 @@ export class RealisticWorldEnvironment {
     focusWorldX: number,
     focusWorldZ: number,
     scene: THREE.Scene,
-    renderer: THREE.WebGLRenderer,
+    renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
     fogEnabled: boolean,
     poolLantern?: THREE.PointLight,
     exposureScale: number = 1.0,
@@ -2413,27 +2637,6 @@ export class RealisticWorldEnvironment {
       this.activeWeather = weatherMode;
     }
 
-    // Solar elevation angle (-1 midnight .. +1 solar noon at 12:00)
-    const sunPhase = ((this.timeOfDayHours - 6.0) / 24.0) * Math.PI * 2.0;
-    const sunElev = Math.sin(sunPhase);
-    const sunAzimuth = Math.cos(sunPhase);
-
-    _sunDir.set(sunAzimuth * 0.85, sunElev, 0.38).normalize();
-    this.currentSunDir.copy(_sunDir);
-    const tgt = this.sunLight.target.position;
-    this.sunLight.position.set(
-      tgt.x + _sunDir.x * 96,
-      Math.max(12, _sunDir.y * 96),
-      tgt.z + _sunDir.z * 96
-    );
-    this.moonLight.position.set(-_sunDir.x * 75, Math.max(12, -_sunDir.y * 80), -_sunDir.z * 75);
-
-    const dayFactor = THREE.MathUtils.smoothstep(sunElev, -0.14, 0.28);
-    const duskFactor = Math.max(0, 1.0 - Math.abs(sunElev - 0.04) * 4.2);
-    const nightFactor = 1.0 - dayFactor;
-    this.currentNightFactor = nightFactor;
-    this.currentDuskFactor = duskFactor;
-
     const cloudCover =
       this.activeWeather === 'storm'
         ? 0.92
@@ -2444,6 +2647,49 @@ export class RealisticWorldEnvironment {
         : this.activeWeather === 'snow'
         ? 0.68
         : 0.14;
+
+    // Lightning flash during storm
+    if (this.activeWeather === 'storm') {
+      if (this.lightningFlash > 0) {
+        this.lightningFlash = Math.max(0, this.lightningFlash - dt * 5.5);
+      } else if (Math.random() < dt * 0.35) {
+        this.lightningFlash = 1.0;
+      }
+    } else {
+      this.lightningFlash = 0;
+    }
+
+    const rig = computeDayNightAtmosphereRig(
+      this.timeOfDayHours,
+      cloudCover,
+      exposureScale,
+      this.lightningFlash
+    );
+    const dayFactor = rig.dayFactor;
+    const duskFactor = rig.duskFactor;
+    const nightFactor = rig.nightFactor;
+
+    this.currentNightFactor = nightFactor;
+    this.currentDuskFactor = duskFactor;
+    this.activeShadowCaster = rig.activeShadowCaster;
+    this.currentDayPhaseLabel = rig.dayPhaseLabel;
+    this.currentIblEnvIntensity = rig.iblEnvIntensity;
+
+    _sunDir.set(rig.sunDirX, rig.sunDirY, rig.sunDirZ).normalize();
+    this.currentSunDir.copy(_sunDir);
+    this.currentMoonDir.set(rig.moonDirX, rig.moonDirY, rig.moonDirZ).normalize();
+
+    const tgt = this.sunLight.target.position;
+    this.sunLight.position.set(
+      tgt.x + _sunDir.x * 96,
+      Math.max(12, _sunDir.y * 96),
+      tgt.z + _sunDir.z * 96
+    );
+    this.moonLight.position.set(
+      tgt.x + this.currentMoonDir.x * 84,
+      Math.max(14, this.currentMoonDir.y * 84),
+      tgt.z + this.currentMoonDir.z * 84
+    );
 
     // Sky Zenith & Horizon color blending across Night / Golden Hour / Noon + Weather overcast
     _skyZenith.setHex(0x020617).lerp(_hemiSky.setHex(0x075985), dayFactor);
@@ -2458,40 +2704,81 @@ export class RealisticWorldEnvironment {
       _skyHorizon.lerp(overcast, (cloudCover - 0.2) * 0.65);
     }
 
-    // Lightning flash during storm
-    if (this.activeWeather === 'storm') {
-      if (this.lightningFlash > 0) {
-        this.lightningFlash = Math.max(0, this.lightningFlash - dt * 5.5);
-      } else if (Math.random() < dt * 0.35) {
-        this.lightningFlash = 1.0;
-      }
-    } else {
-      this.lightningFlash = 0;
+    const tslSkyU = this.skyMaterial.userData.__tslSkyUniforms as
+      | {
+          uSunDir: { value: THREE.Vector3 };
+          uZenith: { value: THREE.Color };
+          uHorizon: { value: THREE.Color };
+          uSunCol: { value: THREE.Color };
+          uStars: { value: number };
+          uClouds: { value: number };
+          uTime: { value: number };
+        }
+      | undefined;
+    if (tslSkyU) {
+      tslSkyU.uSunDir.value.copy(_sunDir);
+      tslSkyU.uZenith.value.copy(_skyZenith);
+      tslSkyU.uHorizon.value.copy(_skyHorizon);
+      tslSkyU.uSunCol.value.setHex(duskFactor > 0.35 ? 0xfb923c : 0xfffbeb);
+      tslSkyU.uStars.value = nightFactor;
+      tslSkyU.uClouds.value = cloudCover;
+      tslSkyU.uTime.value = this.elapsedSeconds;
+    } else if ((this.skyMaterial as THREE.ShaderMaterial).uniforms) {
+      const glSkyU = (this.skyMaterial as THREE.ShaderMaterial).uniforms;
+      glSkyU.uSunDir.value.copy(_sunDir);
+      glSkyU.uZenithColor.value.copy(_skyZenith);
+      glSkyU.uHorizonColor.value.copy(_skyHorizon);
+      glSkyU.uSunColor.value.setHex(duskFactor > 0.35 ? 0xfb923c : 0xfffbeb);
+      glSkyU.uStarIntensity.value = nightFactor;
+      glSkyU.uCloudCover.value = cloudCover;
+      glSkyU.uTime.value = this.elapsedSeconds;
     }
 
-    this.skyMaterial.uniforms.uSunDir.value.copy(_sunDir);
-    this.skyMaterial.uniforms.uZenithColor.value.copy(_skyZenith);
-    this.skyMaterial.uniforms.uHorizonColor.value.copy(_skyHorizon);
-    this.skyMaterial.uniforms.uSunColor.value.setHex(duskFactor > 0.35 ? 0xfb923c : 0xfffbeb);
-    this.skyMaterial.uniforms.uStarIntensity.value = nightFactor;
-    this.skyMaterial.uniforms.uCloudCover.value = cloudCover;
-    this.skyMaterial.uniforms.uTime.value = this.elapsedSeconds;
-
-    // Update Sun, Moon, Hemisphere & Lantern lights
-    const weatherDim = 1.0 - cloudCover * 0.48;
-    this.sunLight.intensity =
-      Math.max(0, dayFactor * 1.65 * weatherDim) + this.lightningFlash * 2.4;
-    this.sunLight.color.setHex(duskFactor > 0.35 ? 0xfdba74 : 0xfff7ed);
-    this.moonLight.intensity = nightFactor * 0.55;
+    // Update Sun, Moon, Hemisphere & Lantern lights with a calibrated 5:1 outdoor contrast ratio
+    this.sunLight.intensity = rig.sunIntensity;
+    this.sunLight.color.setHex(duskFactor > 0.35 ? 0xffc68a : 0xfffaf0);
+    this.moonLight.intensity = rig.moonIntensity;
+    this.moonLight.color.setHex(0x93c5fd);
     this.hemiLight.color.copy(_skyHorizon);
-    this.hemiLight.groundColor.setHex(dayFactor > 0.3 ? 0x2d4a2e : 0x0f172a);
-    this.hemiLight.intensity = 0.38 + dayFactor * 0.58;
-    this.ambientLight.intensity = 0.24 + dayFactor * 0.36 + this.lightningFlash * 0.6;
-    renderer.toneMappingExposure =
-      (0.88 + dayFactor * 0.24 + this.lightningFlash * 0.35) * exposureScale;
+    this.hemiLight.groundColor.setHex(dayFactor > 0.3 ? 0x263d24 : 0x0b1120);
+    this.hemiLight.intensity = rig.hemiIntensity;
+    this.ambientLight.intensity = rig.ambientIntensity;
+    scene.environmentIntensity = rig.iblEnvIntensity;
+    renderer.toneMappingExposure = rig.exposure;
+
+    // Water solar glints by day, cool silver lunar water glints by night
+    if (rig.activeShadowCaster === 'moon' && nightFactor > 0.25) {
+      SHARED_WATER_SUN_DIR.copy(this.currentMoonDir);
+      SHARED_WATER_SUN_COLOR.setHex(0x93c5fd);
+      SHARED_WATER_SUN_STRENGTH.value = THREE.MathUtils.clamp(
+        nightFactor * 0.42 * (1.0 - cloudCover * 0.78),
+        0,
+        0.42
+      );
+    } else {
+      SHARED_WATER_SUN_DIR.copy(_sunDir);
+      SHARED_WATER_SUN_COLOR.copy(this.sunLight.color);
+      SHARED_WATER_SUN_STRENGTH.value = THREE.MathUtils.clamp(
+        dayFactor * (1.0 - cloudCover * 0.78),
+        0,
+        1
+      );
+    }
+    SHARED_WATER_TIME.value = this.elapsedSeconds;
+
+    for (let wi = 0; wi < RealisticWorldEnvironment.trackedTslWaterMaterials.length; wi++) {
+      const wu = RealisticWorldEnvironment.trackedTslWaterMaterials[wi].userData
+        .__tslWaterUniforms as
+        | { uSunStrength: { value: number }; uWaterTime: { value: number } }
+        | undefined;
+      if (wu) {
+        wu.uSunStrength.value = SHARED_WATER_SUN_STRENGTH.value;
+        wu.uWaterTime.value = SHARED_WATER_TIME.value;
+      }
+    }
 
     if (poolLantern) {
-      poolLantern.intensity = 0.3 + nightFactor * 2.2 + (cloudCover > 0.6 ? 0.6 : 0);
+      poolLantern.intensity = rig.lanternBoost + (cloudCover > 0.6 ? 0.55 : 0);
     }
 
     // Update atmospheric fog to blend distant mountain bases seamlessly

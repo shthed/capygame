@@ -142,19 +142,57 @@ export const DEFAULT_GPU_PIPELINE_CONFIG: GpuPipelineConfig = {
   postProcessingEnabled: true,
   visualFilterPreset: 'natural_pbr',
   toneMapping: 'agx',
-  exposure: 1.12,
+  exposure: 1.02,
   textureFilter: 'trilinear_aniso',
   anisotropyLevel: 8,
   shadowQuality: 'pcf_soft',
   antiAliasing: 'msaa_fxaa',
   bloomEnabled: true,
-  bloomStrength: 0.36,
+  bloomStrength: 0.24,
   ssaoEnabled: true,
-  sharpenAmount: 0.28,
+  sharpenAmount: 0.26,
 };
+
+export type GpuRenderBackendMode = 'auto' | 'webgpu' | 'webgl2';
+
+export type PerformanceLogSeverity = 'warn' | 'critical';
+
+export interface PerformanceLogEntry {
+  id: number;
+  timestampMs: number;
+  elapsedLabel: string;
+  severity: PerformanceLogSeverity;
+  fps: number;
+  frameMs: number;
+  stageLabel: string;
+  cause: string;
+  mitigation: string;
+}
+
+export interface PerformanceLogSnapshot {
+  liveFps: number;
+  avgFps: number;
+  minFps: number;
+  avgFrameMs: number;
+  p95FrameMs: number;
+  maxFrameMs: number;
+  droppedFramesCount: number;
+  alertCount: number;
+  activeAlert: boolean;
+  lastAlertSummary: string | null;
+  lock60FpsEnabled: boolean;
+  entries: PerformanceLogEntry[];
+}
 
 export interface GpuEngineTelemetry {
   backendLabel: string;
+  webGpuActive: boolean;
+  webGpuSupported: boolean;
+  webGpuAdapterName: string;
+  computeParticlesActive: boolean;
+  shadowCasterMode: 'sun' | 'moon' | 'off';
+  dayPhaseLabel: string;
+  timeOfDayHours: number;
   gpuRenderer: string;
   isSoftwareGl: boolean;
   contextLost: boolean;
@@ -181,3 +219,4 @@ export interface GpuEngineTelemetry {
   shaderPrograms: number;
   registeredPbrTextures: number;
 }
+
