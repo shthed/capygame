@@ -110,6 +110,17 @@ function smoothstep01(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+/**
+ * Maps continuous logarithmic scale (`10^28 m` Big Bang .. `<= 10^23.4 m` virialized galaxies)
+ * monotonically to Cosmic Epoch Age in Gigayears (`0.00 Gyr` .. `13.80 Gyr`).
+ */
+export function computeCosmicAgeGyr(logScaleMeters: number): number {
+  if (logScaleMeters >= 28.0) return 0.0;
+  if (logScaleMeters <= 23.4) return 13.8;
+  const p = THREE.MathUtils.clamp((28.0 - logScaleMeters) / (28.0 - 23.4), 0, 1);
+  return +(13.8 * Math.pow(p, 1.35)).toFixed(2);
+}
+
 export class SeamlessUniverseSimulator {
   public readonly rootGroup: THREE.Group = new THREE.Group();
   public readonly forestGroveGroup: THREE.Group = new THREE.Group();
@@ -164,6 +175,32 @@ export class SeamlessUniverseSimulator {
 
   private layersBuilt: boolean = false;
   private groveBuilt: boolean = false;
+
+  // Live procedural universe/biome customization handles (mutated in-place, zero allocations)
+  private bigBangSpeedScale: number = 1.0;
+  private fineStructureInverse: number = 137.036;
+  private fineStructureRatio: number = 1.0;
+  private atomicCloudPoints: THREE.Points | null = null;
+  private singleElectronTorus: THREE.Points | null = null;
+  private solarSunMat: THREE.ShaderMaterial | null = null;
+  private capyEarthRingMesh: THREE.Mesh | null = null;
+  private capyEarthBodyMat: THREE.ShaderMaterial | null = null;
+  private atmosphereRayleighMat: THREE.ShaderMaterial | null = null;
+  private atmosphereLimbMat: THREE.ShaderMaterial | null = null;
+  private atmosphereCloudMats: THREE.ShaderMaterial[] = [];
+  private ecosystemMeadowMat: THREE.MeshStandardMaterial | null = null;
+  private ecosystemRiverMat: THREE.MeshStandardMaterial | null = null;
+  private pendingProceduralBiome: {
+    bigBangSpeed?: number;
+    fineStructureInverse?: number;
+    oceanColorHex?: number;
+    landColorHex?: number;
+    atmosphereColorHex?: number;
+    cloudDensity?: number;
+    ringSystemEnabled?: boolean;
+    grassPrimaryHex?: number;
+    waterColorHex?: number;
+  } | null = null;
 
   constructor(isSoftwareGl: boolean = false) {
     this.isSoftwareGl = isSoftwareGl;
@@ -582,8 +619,8 @@ export class SeamlessUniverseSimulator {
     );
 
     return (dt, elapsed) => {
-      group.rotation.y += dt * 0.06;
-      const pulse = 17.2 + Math.sin(elapsed * 1.8) * 1.1;
+      group.rotation.y += dt * 0.06 * this.bigBangSpeedScale;
+      const pulse = 17.2 + Math.sin(elapsed * 1.8 * this.bigBangSpeedScale) * 1.1;
       coreHalo.scale.setScalar(pulse);
     };
   }
@@ -1224,6 +1261,8 @@ export class SeamlessUniverseSimulator {
     // True 1:1 Sun radius = 0.00465047 AU => 22.0 * (0.00465047 / 30.07) = 0.003402 world units!
     const sunGeo = new THREE.SphereGeometry(1.0, this.isSoftwareGl ? 24 : 40, 24);
     const sunMat = createSolarPhotosphereMaterial();
+    sunMat.uniforms.uAlphaRatio.value = this.fineStructureRatio;
+    this.solarSunMat = sunMat;
     this.solarSunMesh = new THREE.Mesh(sunGeo, sunMat);
     ecliptic.add(this.solarSunMesh);
 
@@ -1420,7 +1459,22 @@ export class SeamlessUniverseSimulator {
         new THREE.SphereGeometry(1.0, this.isSoftwareGl ? 18 : 28, 20),
         bodyMat
       );
-      if (def.ringed) {
+      if (def.id === 'capy_earth') {
+        this.capyEarthBodyMat = bodyMat as THREE.ShaderMaterial;
+        const customRingMesh = new THREE.Mesh(
+          new THREE.RingGeometry(1.38, 2.25, 48),
+          createPlanetaryRingMaterial({
+            innerRadius: 1.38,
+            outerRadius: 2.25,
+            planetRadius: 1.0,
+            sunDir: _sharedSunDir,
+          })
+        );
+        customRingMesh.rotation.x = Math.PI * 0.43;
+        customRingMesh.visible = false;
+        bodyMesh.add(customRingMesh);
+        this.capyEarthRingMesh = customRingMesh;
+      } else if (def.ringed) {
         const ringMesh = new THREE.Mesh(
           new THREE.RingGeometry(1.35, 2.32, 48),
           createPlanetaryRingMaterial({
@@ -1645,6 +1699,15 @@ export class SeamlessUniverseSimulator {
         this.solarOortPoints.rotation.y += dt * 0.003;
         this.solarOortPoints.rotation.x += dt * 0.0015;
       }
+
+      if (this.solarCoronaSprite) {
+        const coronaMat = this.solarCoronaSprite.material as THREE.SpriteMaterial;
+        coronaMat.opacity = THREE.MathUtils.clamp(
+          0.72 + 0.14 * THREE.MathUtils.clamp(this.fineStructureRatio, 0.55, 2.2),
+          0.45,
+          0.98
+        );
+      }
     };
   }
 
@@ -1740,30 +1803,34 @@ export class SeamlessUniverseSimulator {
     });
 
     // Curved planetary Rayleigh limb + cumulus cloud sea below with open descent corridor at (0,0)
+    const limbMat = createHabitablePlanetMaterial(_sharedSunDir);
+    this.atmosphereLimbMat = limbMat as THREE.ShaderMaterial;
     const limbCurvature = new THREE.Mesh(
       new THREE.SphereGeometry(52, 48, 28, 0, Math.PI * 2, 0, Math.PI * 0.36),
-      createHabitablePlanetMaterial(_sharedSunDir)
+      limbMat
     );
     limbCurvature.position.y = -51.5;
     group.add(limbCurvature);
 
+    const rayleighMat = createAtmosphereScatteringMaterial({
+      sunDir: _sharedSunDir,
+      rayleighColor: new THREE.Color(0.2, 0.58, 1.0),
+      intensity: 1.6,
+    });
+    this.atmosphereRayleighMat = rayleighMat as THREE.ShaderMaterial;
     const rayleighCap = new THREE.Mesh(
       new THREE.SphereGeometry(53.4, 48, 28, 0, Math.PI * 2, 0, Math.PI * 0.36),
-      createAtmosphereScatteringMaterial({
-        sunDir: _sharedSunDir,
-        rayleighColor: new THREE.Color(0.20, 0.58, 1.0),
-        intensity: 1.6,
-      })
+      rayleighMat
     );
     rayleighCap.position.y = -51.5;
     group.add(rayleighCap);
 
     // Multi-layered soft volumetric FBM cloud deck planes parting cleanly around (0,0)
+    this.atmosphereCloudMats = [];
     for (let layerIdx = 0; layerIdx < 3; layerIdx++) {
-      const deck = new THREE.Mesh(
-        new THREE.PlaneGeometry(54, 54),
-        createPlanetCloudMaterial(_sharedSunDir)
-      );
+      const cMat = createPlanetCloudMaterial(_sharedSunDir);
+      this.atmosphereCloudMats.push(cMat as THREE.ShaderMaterial);
+      const deck = new THREE.Mesh(new THREE.PlaneGeometry(54, 54), cMat);
       deck.rotation.x = -Math.PI / 2;
       deck.position.y = -3.8 + layerIdx * 1.8;
       deck.rotation.z = layerIdx * 1.1;
@@ -1833,26 +1900,28 @@ export class SeamlessUniverseSimulator {
   private populateEcosystemsLayer(
     group: THREE.Group
   ): (dt: number, elapsed: number) => void {
+    this.ecosystemMeadowMat = new THREE.MeshStandardMaterial({
+      color: 0x14532d,
+      roughness: 0.9,
+    });
     const meadow = new THREE.Mesh(
       new THREE.CircleGeometry(23, 48),
-      new THREE.MeshStandardMaterial({
-        color: 0x14532d,
-        roughness: 0.9,
-      })
+      this.ecosystemMeadowMat
     );
     meadow.rotation.x = -Math.PI / 2;
     meadow.position.y = -2.4;
     group.add(meadow);
 
+    this.ecosystemRiverMat = new THREE.MeshStandardMaterial({
+      color: 0x0284c7,
+      roughness: 0.18,
+      metalness: 0.25,
+      side: THREE.DoubleSide,
+      opacity: 0.88,
+    });
     const river = new THREE.Mesh(
       new THREE.RingGeometry(5.2, 6.6, 48),
-      new THREE.MeshStandardMaterial({
-        color: 0x0284c7,
-        roughness: 0.18,
-        metalness: 0.25,
-        side: THREE.DoubleSide,
-        opacity: 0.88,
-      })
+      this.ecosystemRiverMat
     );
     river.rotation.x = -Math.PI / 2;
     river.position.y = -2.34;
@@ -2235,16 +2304,15 @@ export class SeamlessUniverseSimulator {
     cloudGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     cloudGeo.setAttribute('aScale', new THREE.BufferAttribute(sc, 1));
     cloudGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(lum, 1));
-    group.add(
-      new THREE.Points(
-        cloudGeo,
-        createStarPsfMaterial({
-          baseSize: 13.5,
-          diffractionStrength: 0.0,
-          opacity: 0.62,
-        })
-      )
+    this.atomicCloudPoints = new THREE.Points(
+      cloudGeo,
+      createStarPsfMaterial({
+        baseSize: 13.5,
+        diffractionStrength: 0.0,
+        opacity: 0.62,
+      })
     );
+    group.add(this.atomicCloudPoints);
 
     const waveHalo = new THREE.Sprite(
       new THREE.SpriteMaterial({
@@ -2261,7 +2329,13 @@ export class SeamlessUniverseSimulator {
     this.electronMarkers = [];
 
     return (dt, _elapsed, gamma) => {
-      group.rotation.y += dt * 0.14;
+      const alphaRate = THREE.MathUtils.clamp(this.fineStructureRatio, 0.55, 2.3);
+      const bohrRadiusScale = THREE.MathUtils.clamp(1.0 / alphaRate, 0.45, 2.2);
+      group.rotation.y += dt * 0.14 * alphaRate;
+      if (this.atomicCloudPoints) {
+        this.atomicCloudPoints.scale.setScalar(bohrRadiusScale);
+      }
+      waveHalo.scale.setScalar(26 * bohrRadiusScale);
       if (this.atomicNuclearClusterGroup) {
         // Exact 1/62,963 ratio at gamma=1.0; expands smoothly to ~1.5 units as gamma -> 0.28!
         const nucScale = 19.0 * Math.pow(1 / 62963, gamma);
@@ -2480,11 +2554,15 @@ export class SeamlessUniverseSimulator {
       createStarPsfMaterial({ baseSize: 12.0, diffractionStrength: 0.0, opacity: 0.78 })
     );
     torusCloud.rotation.x = 0.35;
+    this.singleElectronTorus = torusCloud;
     group.add(torusCloud);
 
     return (dt, elapsed) => {
-      torusCloud.rotation.y += dt * 1.4;
-      halo.scale.setScalar(10.5 + Math.sin(elapsed * 5.0) * 0.8);
+      const alphaRate = THREE.MathUtils.clamp(this.fineStructureRatio, 0.55, 2.3);
+      const comptonScale = THREE.MathUtils.clamp(1.0 / Math.sqrt(alphaRate), 0.72, 1.35);
+      torusCloud.scale.setScalar(comptonScale);
+      torusCloud.rotation.y += dt * 1.4 * alphaRate;
+      halo.scale.setScalar((10.5 + Math.sin(elapsed * 5.0 * alphaRate) * 0.8) * comptonScale);
     };
   }
 
@@ -2586,12 +2664,15 @@ export class SeamlessUniverseSimulator {
     }
 
     const samples = this.photonElectricPositions.length / 3;
-    const phase = -elapsed * 8.5;
+    const alphaRate = THREE.MathUtils.clamp(this.fineStructureRatio, 0.55, 2.3);
+    const kFreq = 26.0 * THREE.MathUtils.clamp(0.75 + 0.25 * alphaRate, 0.65, 1.65);
+    const ampScale = THREE.MathUtils.clamp(0.82 + 0.18 * alphaRate, 0.7, 1.35);
+    const phase = -elapsed * (8.5 * (0.8 + 0.2 * alphaRate));
     for (let i = 0; i < samples; i++) {
       const u = i / (samples - 1) - 0.5;
       const x = u * 30.0;
-      const env = Math.exp(-u * u * 14.0) * 7.8;
-      const wave = Math.sin(u * 26.0 + phase) * env;
+      const env = Math.exp(-u * u * 14.0) * 7.8 * ampScale;
+      const wave = Math.sin(u * kFreq + phase) * env;
       this.photonElectricPositions[i * 3] = x;
       this.photonElectricPositions[i * 3 + 1] = wave;
       this.photonElectricPositions[i * 3 + 2] = 0;
@@ -2607,8 +2688,8 @@ export class SeamlessUniverseSimulator {
       for (let i = 0; i < children.length; i++) {
         const bar = children[i] as THREE.Mesh;
         const u = bar.userData.barNormX as number;
-        const env = Math.exp(-u * u * 14.0) * 7.8;
-        const amp = Math.sin(u * 26.0 + phase) * env;
+        const env = Math.exp(-u * u * 14.0) * 7.8 * ampScale;
+        const amp = Math.sin(u * kFreq + phase) * env;
         const absAmp = Math.max(0.05, Math.abs(amp));
         if (bar.userData.isElectric) {
           bar.position.y = amp * 0.5;
@@ -2932,6 +3013,14 @@ export class SeamlessUniverseSimulator {
       }
       alpha *= focusBoost;
 
+      // Smooth atmospheric-to-surface fade near planetary touchdown (+1.7 -> +0.9) so land_masses/ecosystems never clip
+      if (
+        (layer.spec.id === 'ecosystems' || layer.spec.id === 'land_masses' || layer.spec.id === 'atmosphere') &&
+        logScaleMeters < 2.0
+      ) {
+        alpha *= smoothstep01(0.95, 2.05, logScaleMeters);
+      }
+
       if (alpha <= 0.008) {
         layer.group.visible = false;
         layer.group.matrixWorldAutoUpdate = false;
@@ -2944,9 +3033,18 @@ export class SeamlessUniverseSimulator {
       layer.group.matrixWorldAutoUpdate = true;
       layer.group.scale.setScalar(visualScale);
 
+      const densityMod =
+        layer.spec.id === 'atmosphere' && this.pendingProceduralBiome?.cloudDensity !== undefined
+          ? this.pendingProceduralBiome.cloudDensity
+          : 1.0;
+
       for (let m = 0; m < layer.materials.length; m++) {
         const entry = layer.materials[m];
-        const finalOpacity = entry.baseOpacity * alpha;
+        const isCloudMat = this.atmosphereCloudMats.includes(entry.mat as THREE.ShaderMaterial);
+        const finalOpacity = Math.min(
+          1.0,
+          entry.baseOpacity * alpha * (isCloudMat ? densityMod : 1.0)
+        );
         if (entry.shaderOpacityUniform) {
           entry.shaderOpacityUniform.value = finalOpacity;
         } else {
@@ -2958,7 +3056,7 @@ export class SeamlessUniverseSimulator {
         if (entry.shaderHubbleUniform) {
           entry.shaderHubbleUniform.value = hubbleMix;
         }
-        entry.mat.depthWrite = alpha > 0.85 ? entry.defaultDepthWrite : false;
+        entry.mat.depthWrite = alpha > 0.85 && logScaleMeters > 1.85 ? entry.defaultDepthWrite : false;
       }
 
       if (layer.tickFn) {
@@ -3072,6 +3170,54 @@ export class SeamlessUniverseSimulator {
 
   public getBandById(id: UniverseScaleBandId): UniverseScaleBandSpec {
     return UNIVERSE_SCALE_BANDS.find((b) => b.id === id) || UNIVERSE_SCALE_BANDS[0];
+  }
+
+  public applyProceduralConfig(opts: {
+    bigBangSpeed?: number;
+    fineStructureInverse?: number;
+    oceanColorHex?: number;
+    landColorHex?: number;
+    atmosphereColorHex?: number;
+    cloudDensity?: number;
+    ringSystemEnabled?: boolean;
+    grassPrimaryHex?: number;
+    waterColorHex?: number;
+  }): void {
+    this.pendingProceduralBiome = { ...this.pendingProceduralBiome, ...opts };
+    if (typeof opts.bigBangSpeed === 'number') {
+      this.bigBangSpeedScale = Math.max(0.2, Math.min(4.0, opts.bigBangSpeed));
+    }
+    if (typeof opts.fineStructureInverse === 'number' && Number.isFinite(opts.fineStructureInverse)) {
+      this.fineStructureInverse = Math.max(60.0, Math.min(220.0, opts.fineStructureInverse));
+      this.fineStructureRatio = 137.036 / this.fineStructureInverse;
+      if (this.solarSunMat?.uniforms?.uAlphaRatio) {
+        this.solarSunMat.uniforms.uAlphaRatio.value = this.fineStructureRatio;
+      }
+    }
+    if (this.capyEarthRingMesh && typeof opts.ringSystemEnabled === 'boolean') {
+      this.capyEarthRingMesh.visible = opts.ringSystemEnabled;
+    }
+    if (this.atmosphereRayleighMat && typeof opts.atmosphereColorHex === 'number') {
+      const uColor = this.atmosphereRayleighMat.uniforms?.uRayleighColor;
+      if (uColor && uColor.value instanceof THREE.Color) {
+        uColor.value.setHex(opts.atmosphereColorHex);
+      }
+    }
+    for (const pMat of [this.capyEarthBodyMat, this.atmosphereLimbMat]) {
+      if (!pMat?.uniforms) continue;
+      if (typeof opts.oceanColorHex === 'number' && pMat.uniforms.uOceanColor?.value instanceof THREE.Color) {
+        pMat.uniforms.uOceanColor.value.setHex(opts.oceanColorHex);
+      }
+      if (typeof opts.landColorHex === 'number' && pMat.uniforms.uLandColor?.value instanceof THREE.Color) {
+        pMat.uniforms.uLandColor.value.setHex(opts.landColorHex);
+      }
+    }
+    if (this.ecosystemMeadowMat && typeof opts.grassPrimaryHex === 'number') {
+      this.ecosystemMeadowMat.color.setHex(opts.grassPrimaryHex);
+    }
+    if (this.ecosystemRiverMat && typeof opts.waterColorHex === 'number') {
+      this.ecosystemRiverMat.color.setHex(opts.waterColorHex);
+    }
   }
 
   public dispose() {

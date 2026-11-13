@@ -280,6 +280,174 @@ export class RealisticWorldEnvironment {
   private static sharedBlossomCorollaGeo: THREE.BufferGeometry | null = null;
   private static sharedCalyxStarGeo: THREE.BufferGeometry | null = null;
   private static sharedUnitRibbedFruitGeo: THREE.BufferGeometry | null = null;
+  private static sharedRippleDataTexture: THREE.DataTexture | null = null;
+
+  public static createSubdividedWaterDiscGeometry(
+    radius: number,
+    radialSegs: number = 36,
+    ringSegs: number = 12
+  ): THREE.BufferGeometry {
+    const vertCount = 1 + radialSegs * ringSegs;
+    const positions = new Float32Array(vertCount * 3);
+    const normals = new Float32Array(vertCount * 3);
+    const uvs = new Float32Array(vertCount * 2);
+    const indices: number[] = [];
+
+    // Center vertex
+    positions[0] = 0;
+    positions[1] = 0;
+    positions[2] = 0;
+    normals[0] = 0;
+    normals[1] = 1;
+    normals[2] = 0;
+    uvs[0] = 0.5;
+    uvs[1] = 0.5;
+
+    let vIdx = 1;
+    for (let r = 1; r <= ringSegs; r++) {
+      const frac = r / ringSegs;
+      const rad = radius * frac;
+      for (let a = 0; a < radialSegs; a++) {
+        const theta = (a / radialSegs) * Math.PI * 2;
+        const cosT = Math.cos(theta);
+        const sinT = Math.sin(theta);
+        const x = cosT * rad;
+        const z = sinT * rad;
+        positions[vIdx * 3] = x;
+        positions[vIdx * 3 + 1] = 0;
+        positions[vIdx * 3 + 2] = z;
+        normals[vIdx * 3] = 0;
+        normals[vIdx * 3 + 1] = 1;
+        normals[vIdx * 3 + 2] = 0;
+        uvs[vIdx * 2] = 0.5 + cosT * frac * 0.5;
+        uvs[vIdx * 2 + 1] = 0.5 + sinT * frac * 0.5;
+        vIdx++;
+      }
+    }
+
+    // Innermost fan triangles
+    for (let a = 0; a < radialSegs; a++) {
+      const nextA = (a + 1) % radialSegs;
+      indices.push(0, 1 + nextA, 1 + a);
+    }
+
+    // Concentric quads
+    for (let r = 1; r < ringSegs; r++) {
+      const row0 = 1 + (r - 1) * radialSegs;
+      const row1 = 1 + r * radialSegs;
+      for (let a = 0; a < radialSegs; a++) {
+        const nextA = (a + 1) % radialSegs;
+        const i0 = row0 + a;
+        const i1 = row0 + nextA;
+        const i2 = row1 + a;
+        const i3 = row1 + nextA;
+        indices.push(i0, i1, i3);
+        indices.push(i0, i3, i2);
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    const uvAttr = new THREE.BufferAttribute(uvs, 2);
+    geo.setAttribute('uv', uvAttr);
+    geo.setAttribute('uv2', uvAttr);
+    geo.setIndex(indices);
+    PbrTextureSynthesizer.prepareGeometryForPbr(geo);
+    return geo;
+  }
+
+  public static createWaterRippleDataTexture(
+    initialBytes?: Uint8Array
+  ): THREE.DataTexture {
+    if (this.sharedRippleDataTexture) return this.sharedRippleDataTexture;
+    const bytes = initialBytes ?? new Uint8Array(24 * 24 * 4);
+    if (!initialBytes) {
+      for (let i = 0; i < 24 * 24; i++) {
+        bytes[i * 4] = 128;
+        bytes[i * 4 + 1] = 128;
+        bytes[i * 4 + 2] = 128;
+        bytes[i * 4 + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(bytes, 24, 24, THREE.RGBAFormat);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    this.sharedRippleDataTexture = tex;
+    PbrTextureSynthesizer.registerManagedTexture(tex);
+    return tex;
+  }
+
+  public static createRipplingWaterMaterial(
+    rippleTex: THREE.DataTexture,
+    options?: {
+      colorHex?: number;
+      opacity?: number;
+      rippleAmp?: number;
+    }
+  ): THREE.MeshPhysicalMaterial {
+    const waterNorms = PbrTextureSynthesizer.getWaterNormalMaps();
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: options?.colorHex ?? 0x0ea5e9,
+      roughness: 0.06,
+      metalness: 0.14,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.04,
+      normalMap: waterNorms.primary,
+      normalScale: new THREE.Vector2(0.55, 0.55),
+      clearcoatNormalMap: waterNorms.secondary,
+      clearcoatNormalScale: new THREE.Vector2(0.42, 0.42),
+      transparent: true,
+      opacity: options?.opacity ?? 0.84,
+      depthWrite: false,
+    });
+
+    const uniforms = {
+      uRippleTex: { value: rippleTex },
+      uWaterTime: { value: 0.0 },
+      uRippleAmp: { value: options?.rippleAmp ?? 0.09 },
+    };
+    mat.userData.__waterUniforms = uniforms;
+    mat.customProgramCacheKey = () => 'capy_pbr_water_ripple_v1';
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uRippleTex = uniforms.uRippleTex;
+      shader.uniforms.uWaterTime = uniforms.uWaterTime;
+      shader.uniforms.uRippleAmp = uniforms.uRippleAmp;
+
+      shader.vertexShader =
+        'uniform sampler2D uRippleTex;\n' +
+        'uniform float uWaterTime;\n' +
+        'uniform float uRippleAmp;\n' +
+        'varying vec2 vRippleUv;\n' +
+        shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          vRippleUv = uv;
+          vec4 rSamp = texture2D(uRippleTex, clamp(uv, 0.02, 0.98));
+          float fluidH = (rSamp.r - 0.5) * uRippleAmp * 2.4;
+          float capillary = sin(position.x * 2.2 + uWaterTime * 3.1) * cos(position.z * 2.1 - uWaterTime * 2.5) * (uRippleAmp * 0.22);
+          transformed.y += fluidH + capillary;`
+        );
+
+      shader.fragmentShader =
+        'uniform sampler2D uRippleTex;\n' +
+        'uniform float uWaterTime;\n' +
+        'varying vec2 vRippleUv;\n' +
+        shader.fragmentShader.replace(
+          '#include <normal_fragment_maps>',
+          `#include <normal_fragment_maps>
+          vec4 fragRipple = texture2D(uRippleTex, clamp(vRippleUv, 0.02, 0.98));
+          vec2 waveGrad = (fragRipple.gb - 0.5) * 1.45;
+          normal = normalize(normal + vec3(waveGrad.x, 0.0, waveGrad.y));`
+        );
+    };
+
+    return mat;
+  }
 
   public readonly skyMesh: THREE.Mesh;
   public readonly skyMaterial: THREE.ShaderMaterial;
@@ -1029,29 +1197,20 @@ export class RealisticWorldEnvironment {
       });
     }
 
-    // Photorealistic Clearcoat Specular Pool Water Surface with Dual-Octave Tangent-Space Normal Maps
-    const waterNorms = PbrTextureSynthesizer.getWaterNormalMaps();
-    const waterMat = new THREE.MeshPhysicalMaterial({
-      color: 0x0ea5e9,
-      roughness: 0.05,
-      metalness: 0.14,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.04,
-      normalMap: waterNorms.primary,
-      normalScale: new THREE.Vector2(0.55, 0.55),
-      clearcoatNormalMap: waterNorms.secondary,
-      clearcoatNormalScale: new THREE.Vector2(0.42, 0.42),
-      transparent: true,
+    // Photorealistic Clearcoat Specular Pool Water Surface with 24x24 Fluid DataTexture Ripples
+    const rippleTex = RealisticWorldEnvironment.createWaterRippleDataTexture();
+    const waterMat = RealisticWorldEnvironment.createRipplingWaterMaterial(rippleTex, {
+      colorHex: 0x0ea5e9,
       opacity: 0.84,
+      rippleAmp: 0.09,
     });
     const waterMesh = new THREE.Mesh(
-      PbrTextureSynthesizer.prepareGeometryForPbr(
-        new THREE.CylinderGeometry(basinRadius - 0.18, basinRadius - 0.22, 0.18, 36)
-      ),
+      RealisticWorldEnvironment.createSubdividedWaterDiscGeometry(basinRadius - 0.18, 36, 12),
       waterMat
     );
-    waterMesh.position.set(0, baseWaterY, 0);
+    waterMesh.position.set(0, baseWaterY + 0.08, 0);
     waterMesh.receiveShadow = true;
+    waterMesh.renderOrder = 2;
     waterMesh.userData.ignoreCameraFade = true;
     group.add(waterMesh);
 
@@ -1290,7 +1449,13 @@ export class RealisticWorldEnvironment {
     pool.tapFoamRing.position.y = pool.waterMesh.position.y + 0.1;
     pool.tapFoamRing.scale.setScalar(0.92 + Math.sin(this.elapsedSeconds * 12.0) * 0.14);
 
-    // Scroll water bump map on GPU
+    // Scroll water bump map & drive DataTexture ripple wave time on GPU
+    const waterUniforms = pool.waterMat.userData.__waterUniforms as
+      | { uWaterTime: { value: number } }
+      | undefined;
+    if (waterUniforms) {
+      waterUniforms.uWaterTime.value = this.elapsedSeconds;
+    }
     const waterNormal = RealisticWorldEnvironment.getWaterRippleTexture();
     waterNormal.offset.x = (this.elapsedSeconds * 0.045) % 1;
     waterNormal.offset.y = (this.elapsedSeconds * 0.032) % 1;
@@ -2215,7 +2380,9 @@ export class RealisticWorldEnvironment {
     renderer: THREE.WebGLRenderer,
     fogEnabled: boolean,
     poolLantern?: THREE.PointLight,
-    exposureScale: number = 1.0
+    exposureScale: number = 1.0,
+    dayCycleSpeed: number = 1.0,
+    fogDensityScale: number = 1.0
   ) {
     this.elapsedSeconds += dt;
 
@@ -2226,9 +2393,9 @@ export class RealisticWorldEnvironment {
     waterNorms.secondary.offset.x = (-this.elapsedSeconds * 0.026) % 1;
     waterNorms.secondary.offset.y = (this.elapsedSeconds * 0.021) % 1;
 
-    // 1. Advance Day/Night solar clock (1 full 24h cycle every ~144 real seconds -> 0.166 hr/sec)
-    if (autoDayNight) {
-      this.timeOfDayHours = (this.timeOfDayHours + dt * 0.165) % 24;
+    // 1. Advance Day/Night solar clock
+    if (autoDayNight && dayCycleSpeed > 0.001) {
+      this.timeOfDayHours = (this.timeOfDayHours + dt * 0.165 * dayCycleSpeed) % 24;
     } else {
       this.timeOfDayHours = ((manualTimeHours % 24) + 24) % 24;
     }
@@ -2339,8 +2506,9 @@ export class RealisticWorldEnvironment {
           : this.activeWeather === 'rain'
           ? 0.76
           : 1.0;
-      scene.fog.near = (fogEnabled ? 68 : 160) * mistPull;
-      scene.fog.far = (fogEnabled ? 340 : 520) * mistPull;
+      const safeFogScale = Math.max(0.1, Math.min(2.5, fogDensityScale));
+      scene.fog.near = ((fogEnabled ? 68 : 160) * mistPull) / safeFogScale;
+      scene.fog.far = ((fogEnabled ? 340 : 520) * mistPull) / safeFogScale;
     }
 
     // Wet surface specular response during rain/storm (dirty-checked so clear frames cost 0 iterations)

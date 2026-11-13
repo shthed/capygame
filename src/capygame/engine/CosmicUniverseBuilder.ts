@@ -277,6 +277,7 @@ export class CosmicUniverseBuilder {
   private bigBangElapsed = 0;
   private elapsedTime = 0;
   private flashIntensity = 0;
+  private suspended = false;
 
   // Real-time Gravity, Fluid, Nucleosynthesis & Tracked Star Telemetry
   private genesisEpoch: CosmicGenesisEpoch = 'inflation';
@@ -2175,7 +2176,20 @@ export class CosmicUniverseBuilder {
     return this.flashIntensity;
   }
 
+  public setSuspended(suspended: boolean): void {
+    this.suspended = suspended;
+    if (suspended) {
+      this.rootGroup.visible = false;
+      this.rootGroup.matrixWorldAutoUpdate = false;
+    } else {
+      this.rootGroup.matrixWorldAutoUpdate = true;
+    }
+  }
+
   public tick(dt: number, stage: CosmicStage, camera: THREE.Camera): boolean {
+    if (this.suspended || !this.rootGroup.visible) {
+      return false;
+    }
     this.elapsedTime += dt;
     let shouldAdvanceToUniverseFlight = false;
 

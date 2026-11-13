@@ -13,13 +13,15 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/components/AppErrorBoundary.tsx` | Diagnostic crash and WebGL recovery boundary with cache-reset controls. |
 | `src/services/NativeBridge.ts` | Web vibration haptics (`navigator.vibrate`) and modal Escape/back handler registration. |
 | `src/services/PwaService.ts` | Offline Service Worker registration (`./sw.js`) and PWA install prompt lifecycle. |
-| `src/capygame/types.ts` | Scale band definitions (`UNIVERSE_SCALE_BANDS`), `PlayStyle` zones, `CapyGameSettings`, `PlayerStats`, and mutation/building catalogs. |
-| `src/capygame/components/CapyGameView.tsx` | Single `40px` (`h-10`) top HUD (`unified-top-bar`), top-anchored Scale Atlas, Cosmic Optics, Live Inspector, World Dock, and GPU Settings modal. |
-| `src/capygame/engine/PlayStyleManager.ts` | Contiguous 5-district simulation loop, bidirectional PBD spine solver, 95% screen-clear sightline transparency, and camera feel. |
-| `src/capygame/engine/CapyModelGenerator.ts` | Procedural *Hydrochoerus hydrochaeris* 4-tier 60 FPS LOD meshes, mutations, hats, and Sanctuary structures. |
-| `src/capygame/engine/RealisticWorldEnvironment.ts` | Rayleigh/Mie sky dome, 360-degree Alpine mountains, 24-hour solar/lunar cycle, weather, sunken Home Pool, and exponential fruit trees. |
-| `src/capygame/engine/CosmicUniverseBuilder.ts` | Singularity ignition, N-Body/SPH galaxy coalescence, supernova nucleosynthesis, and planetary descent stages. |
-| `src/capygame/engine/SeamlessUniverseSimulator.ts` | Continuous 63-order-of-magnitude (`10^+28 m` to `10^-35 m`) `1:1` scale hierarchy, Object Finder Markers, and Reality Rescaler. |
+| `src/capygame/types.ts` | Scale band definitions (`UNIVERSE_SCALE_BANDS`), `PlayStyle` zones, `CapyGameSettings`, `ChronoVesselViewMode`, `PlayerStats`, and mutation/building catalogs. |
+| `src/capygame/config/ProceduralGameConfig.ts` | Deterministic `mulberry32` seed PRNG, Fine-Structure Constant ($\alpha^{-1}$) physics solver (`computeFineStructurePhysics`), validated full-game JSON schema, 5 presets, `capy_game_procedural_config_v1`, and `capy_game_onboarding_v1` persistence. |
+| `src/capygame/components/CapyGameView.tsx` | Single `40px` (`h-10`) top HUD (`unified-top-bar`), First-Time Chrono-Genesis Configurator (Pilot, Spaceship & $\alpha$), collapsible Chrono-Vessel Flight Strip, Live Procedural JSON Config Editor modal, Scale Atlas, Cosmic Optics, Live Inspector, World Dock, Settings, and `PwaService` card. |
+| `src/capygame/engine/ChronoVesselRig.ts` | Future Capybara time-machine Chrono-Vessel (`chase_pod`, `telescope_first_person`, `landed`), brass chrono-rings, Cherenkov thrusters, customizable canopy tint & pilot headgear, and Sanctuary Chrono-Pad docking beacon. |
+| `src/capygame/engine/PlayStyleManager.ts` | Contiguous 5-district simulation loop with fixed pre-allocated VRAM pools, bidirectional PBD spine solver, 95% screen-clear sightline transparency, and Chrono-Vessel continuum. |
+| `src/capygame/engine/CapyModelGenerator.ts` | Procedural *Hydrochoerus hydrochaeris* 4-tier 60 FPS LOD meshes, custom fur pigments, mutations, hats, and Sanctuary structures. |
+| `src/capygame/engine/RealisticWorldEnvironment.ts` | Rayleigh/Mie sky dome, 360-degree Alpine mountains, 24-hour solar/lunar cycle, weather, coupled `24x24` `DataTexture` Home Pool, and exponential fruit trees. |
+| `src/capygame/engine/CosmicUniverseBuilder.ts` | N-Body/SPH galaxy coalescence, supernova nucleosynthesis, and on-demand suspended planetary selection stages. |
+| `src/capygame/engine/SeamlessUniverseSimulator.ts` | Continuous 63-order-of-magnitude (`10^+28 m` to `10^-35 m`) `1:1` scale hierarchy, monotonic `0.00` to `13.80 Gyr` expansion, $\alpha$-coupled atomic Bohr scaling/Dirac spinor/photon/solar photosphere physics, Object Finder Markers, and Reality Rescaler. |
 | `src/capygame/engine/UniverseShaders.ts` | Flux-conserving PSF stars, Hubble narrowband/natural volumetric nebulae, spiral galaxies, and Rayleigh planetary atmospheres. |
 | `src/capygame/engine/gpu/HardwareGpuEngine.ts` | WebGL2 `HalfFloatType` `EffectComposer`, PMREM IBL, 3-point lighting, `84 m` azimuth-invariant texel-snapped Hero shadow cascade, half-res Bloom, smooth `C^1` Depth-SSAO, DoF, and CAS. |
 | `src/capygame/engine/gpu/FramePerformanceGovernor.ts` | Pure zero-allocation 60 FPS governor computing preset DPR caps, half-resolution bloom scales, distant district tick strides, occluder `depthWrite` restoration, and azimuth-invariant texel-snapped shadow origins. |
@@ -87,7 +89,7 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 | **SW Promenade** | `(-20.5, +20.5)` | `Number Stampede` (`-75, +75`) | Bounded 4-segment circuit (`localZ` `0` to `-86`) with east/west wooden return boardwalks (`x = +-6.3 m`) and turnaround deck (`z = -92 m`). |
 | **SE Promenade** | `(+20.5, +20.5)` | `Yuzu Mountain` (`+75, +75`) | Entry ramp (`localZ` `+8.5` to `+4.5`), continuous safety promenade, rigid-body sweeper hammers, torque-balanced see-saw, and XPBD launch pad. |
 
-- **Rapier3D Wasm + Worker Architecture**: Offloads `@dimforge/rapier3d-compat` rigid bodies, swept CCD (`ccdEnabled = true`), and `RevoluteJoint` see-saws to `physics.worker.ts` using lock-free `SharedArrayBuffer` + `Atomics` when `crossOriginIsolated === true` (with zero-allocation transferable `Float32Array` fallback in cross-origin iframes), paired with a `24x24` Saint-Venant shallow-water buoyancy solver and 4-substep XPBD soft-body pad solver.
+- **Rapier3D Wasm + Worker Architecture**: Offloads `@dimforge/rapier3d-compat` rigid bodies, swept CCD (`ccdEnabled = true`), and pure torque-balanced `RevoluteJoint` see-saws to `physics.worker.ts` using lock-free `SharedArrayBuffer` + `Atomics` when `crossOriginIsolated === true` (with zero-allocation transferable `Float32Array` fallback in cross-origin iframes), paired with a `24x24` Saint-Venant shallow-water buoyancy solver (streaming height and gradient bytes directly into Home Pool and Spore Lagoon shader `DataTexture` uniforms via `packRippleTextureBytes()`) and 4-substep XPBD soft-body pad solver.
 
 ---
 

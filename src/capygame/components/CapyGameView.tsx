@@ -15,6 +15,7 @@ import {
   PROGRESSIVE_UNLOCKS,
   COSMIC_GALAXIES,
   CosmicStage,
+  ChronoVesselViewMode,
   GPU_VISUAL_FILTER_PROFILES,
   GpuEngineTelemetry,
   GpuQualityPreset,
@@ -46,6 +47,22 @@ import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
 import { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
 import { AudioService } from '../services/AudioService';
 import { NativeBridge } from '../../services/NativeBridge';
+import { PwaService } from '../../services/PwaService';
+import {
+  ProceduralGameConfig,
+  PROCEDURAL_CONFIG_PRESETS,
+  CODATA_FINE_STRUCTURE_INVERSE,
+  FINE_STRUCTURE_MIN_INVERSE,
+  FINE_STRUCTURE_MAX_INVERSE,
+  computeFineStructurePhysics,
+  hasCompletedFirstRunSetup,
+  markFirstRunSetupComplete,
+  loadSavedProceduralConfig,
+  saveProceduralConfig,
+  resetSavedProceduralConfig,
+  parseAndValidateProceduralConfig,
+  cloneProceduralConfig,
+} from '../config/ProceduralGameConfig';
 import {
   Sparkles,
   Volume2,
@@ -71,6 +88,13 @@ import {
   Unlock,
   AlertTriangle,
   Crosshair,
+  Code2,
+  Rocket,
+  Eye,
+  Pause,
+  Play,
+  Copy,
+  Download,
 } from 'lucide-react';
 
 type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
@@ -231,6 +255,40 @@ export const CapyGameView: React.FC = () => {
   const [isMuted, setIsMuted] = useState<boolean>(() => AudioService.getMuted());
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isJsonEditorOpen, setIsJsonEditorOpen] = useState<boolean>(false);
+  const [isFirstRunSetupOpen, setIsFirstRunSetupOpen] = useState<boolean>(() => {
+    try {
+      if (
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('skip_cosmic') === '1'
+      ) {
+        return false;
+      }
+    } catch {
+      // ignore
+    }
+    return !hasCompletedFirstRunSetup();
+  });
+  const [firstRunTab, setFirstRunTab] = useState<'pilot' | 'vessel' | 'universe'>('pilot');
+  const firstRunSetupOpenRef = useRef<boolean>(isFirstRunSetupOpen);
+  firstRunSetupOpenRef.current = isFirstRunSetupOpen;
+  const [proceduralConfig, setProceduralConfig] = useState<ProceduralGameConfig>(() =>
+    loadSavedProceduralConfig()
+  );
+  const proceduralConfigRef = useRef<ProceduralGameConfig>(proceduralConfig);
+  proceduralConfigRef.current = proceduralConfig;
+  const [jsonDraftText, setJsonDraftText] = useState<string>(() =>
+    JSON.stringify(loadSavedProceduralConfig(), null, 2)
+  );
+  const [jsonValidationError, setJsonValidationError] = useState<string | null>(null);
+  const [jsonValidationWarnings, setJsonValidationWarnings] = useState<string[]>([]);
+  const [jsonCopyLabel, setJsonCopyLabel] = useState<string>('Copy JSON');
+  const [isFlightStripCollapsed, setIsFlightStripCollapsed] = useState<boolean>(false);
+  const [pwaStatus, setPwaStatus] = useState(() => ({
+    installable: PwaService.isInstallable,
+    standalone: PwaService.isStandalone,
+    updateAvailable: PwaService.isUpdateAvailable,
+  }));
   const [webglError, setWebglError] = useState<string | null>(null);
   const [placementGhost, setPlacementGhost] = useState<PlacementGhostStatus>({
     active: false,
@@ -286,7 +344,7 @@ export const CapyGameView: React.FC = () => {
   });
 
   const modalOpenRef = useRef<boolean>(false);
-  modalOpenRef.current = isSettingsOpen || isAboutOpen;
+  modalOpenRef.current = isSettingsOpen || isAboutOpen || isJsonEditorOpen;
   const menuOpenRef = useRef<boolean>(false);
   menuOpenRef.current = isMenuOpen;
 
@@ -396,6 +454,11 @@ export const CapyGameView: React.FC = () => {
     realityScaleGamma: 1.0,
     showObjectMarkers: false,
     markers: [],
+    cosmicAgeGyr: 0.0,
+    cruiseVelocityLogPerSec: -2.2,
+    vesselMode: 'chase_pod',
+    fineStructureInverse: CODATA_FINE_STRUCTURE_INVERSE,
+    fineStructureAlpha: 1 / CODATA_FINE_STRUCTURE_INVERSE,
   }));
 
   // Mobile Touch Virtual Joystick visual state
@@ -475,9 +538,20 @@ export const CapyGameView: React.FC = () => {
   };
 
   useEffect(() => {
+    return PwaService.subscribe(() => {
+      setPwaStatus({
+        installable: PwaService.isInstallable,
+        standalone: PwaService.isStandalone,
+        updateAvailable: PwaService.isUpdateAvailable,
+      });
+    });
+  }, []);
+
+  useEffect(() => {
     const anyOpen =
       isAboutOpen ||
       isSettingsOpen ||
+      isJsonEditorOpen ||
       isMenuOpen ||
       isScaleAtlasOpen ||
       isOpticsOpen ||
@@ -485,6 +559,7 @@ export const CapyGameView: React.FC = () => {
     NativeBridge.setBackModalOpen(anyOpen, () => {
       if (isAboutOpen) setIsAboutOpen(false);
       else if (isSettingsOpen) setIsSettingsOpen(false);
+      else if (isJsonEditorOpen) setIsJsonEditorOpen(false);
       else if (isOpticsOpen) setIsOpticsOpen(false);
       else if (isScaleAtlasOpen) setIsScaleAtlasOpen(false);
       else if (isInfographicExpanded) setIsInfographicExpanded(false);
@@ -493,6 +568,7 @@ export const CapyGameView: React.FC = () => {
   }, [
     isAboutOpen,
     isSettingsOpen,
+    isJsonEditorOpen,
     isMenuOpen,
     isScaleAtlasOpen,
     isOpticsOpen,
@@ -521,7 +597,13 @@ export const CapyGameView: React.FC = () => {
       manager = new PlayStyleManager(mountRef.current, initialStats, initialSettings, {
         onProgressEarned: (dnaDelta: number, mode: PlayStyle, score: number) => {
           setStats((prev: PlayerStats) => {
-            return ProgressionService.recordProgress(prev, dnaDelta, mode, score);
+            return ProgressionService.recordProgress(
+              prev,
+              dnaDelta,
+              mode,
+              score,
+              proceduralConfigRef.current.economy.coinRewardMultiplier
+            );
           });
         },
         onTelemetryUpdate: (live: LiveModeTelemetry) => {
@@ -542,6 +624,7 @@ export const CapyGameView: React.FC = () => {
           setPlacementGhost(ghost);
         },
         onBuildingGhostConfirmed: (type, name, x, z, description) => {
+          const costMult = proceduralConfigRef.current.economy.buildingCostMultiplier;
           setStats((prev: PlayerStats) => {
             if (prev.buildings.length >= 16) {
               showToast('Sector capacity reached (16/16 structures)');
@@ -553,10 +636,11 @@ export const CapyGameView: React.FC = () => {
               name,
               x,
               z,
-              description
+              description,
+              costMult
             );
             if (!nextStats) {
-              const cost = ProgressionService.getBuildingCoinCost(type);
+              const cost = ProgressionService.getBuildingCoinCost(type, costMult);
               showToast(`Requires ${cost}c to construct ${name}`);
               return prev;
             }
@@ -613,6 +697,10 @@ export const CapyGameView: React.FC = () => {
 
     managerRef.current = manager;
     (window as unknown as { __capyManager?: PlayStyleManager }).__capyManager = manager;
+    manager.applyProceduralConfig(proceduralConfigRef.current, true);
+    if (firstRunSetupOpenRef.current) {
+      manager.setCruiseVelocity(0);
+    }
     try {
       if (sessionStorage.getItem('capy_return_to_surface') === '1') {
         sessionStorage.removeItem('capy_return_to_surface');
@@ -755,6 +843,7 @@ export const CapyGameView: React.FC = () => {
         setIsInfographicExpanded(false);
         setIsAboutOpen(false);
         setIsSettingsOpen(false);
+        setIsJsonEditorOpen(false);
         setIsMenuOpen(false);
       }
     };
@@ -1109,11 +1198,195 @@ export const CapyGameView: React.FC = () => {
     }
   };
 
+  const handleOpenJsonEditor = () => {
+    AudioService.playCoin();
+    setJsonDraftText(JSON.stringify(proceduralConfigRef.current, null, 2));
+    setJsonValidationError(null);
+    setJsonValidationWarnings([]);
+    setIsScaleAtlasOpen(false);
+    setIsOpticsOpen(false);
+    setIsInfographicExpanded(false);
+    setIsMenuOpen(false);
+    setIsJsonEditorOpen(true);
+  };
+
+  const handleJsonDraftChange = (nextText: string) => {
+    setJsonDraftText(nextText);
+    const res = parseAndValidateProceduralConfig(nextText);
+    if (res.ok) {
+      setJsonValidationError(null);
+      setJsonValidationWarnings(res.warnings);
+    } else {
+      setJsonValidationError(res.error);
+      setJsonValidationWarnings([]);
+    }
+  };
+
+  const applyProceduralConfigCommit = (
+    cfg: ProceduralGameConfig,
+    regenerate: boolean,
+    closeEditor: boolean
+  ) => {
+    saveProceduralConfig(cfg);
+    proceduralConfigRef.current = cfg;
+    setProceduralConfig(cfg);
+    setJsonDraftText(JSON.stringify(cfg, null, 2));
+    setJsonValidationError(null);
+    if (cfg.economy.unlockAllSectors || cfg.economy.unlockAllInstruments) {
+      setAllFeaturesUnlocked(true);
+      managerRef.current?.setAllFeaturesUnlocked(true);
+    }
+    if (managerRef.current) {
+      managerRef.current.applyProceduralConfig(cfg, regenerate);
+      setGpuTelemetry(managerRef.current.getGpuEngineTelemetry());
+      setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
+      setSnakeTelemetry(managerRef.current.getCapySnakeTelemetry());
+    }
+    AudioService.playCoin();
+    showToast(
+      regenerate
+        ? `Regenerated World: ${cfg.meta.configName} (Seed ${cfg.meta.seed})`
+        : `Applied Live Config: ${cfg.meta.configName}`
+    );
+    if (closeEditor) {
+      setIsJsonEditorOpen(false);
+    }
+  };
+
+  const handleApplyJsonConfig = (regenerate: boolean) => {
+    const res = parseAndValidateProceduralConfig(jsonDraftText);
+    if (!res.ok) {
+      setJsonValidationError(res.error);
+      return;
+    }
+    setJsonValidationWarnings(res.warnings);
+    applyProceduralConfigCommit(res.config, regenerate, false);
+  };
+
+  const handleSelectProceduralPreset = (presetCfg: ProceduralGameConfig) => {
+    const cloned = cloneProceduralConfig(presetCfg);
+    setJsonValidationWarnings([]);
+    applyProceduralConfigCommit(cloned, true, false);
+  };
+
+  const handleRandomizeProceduralSeed = () => {
+    const res = parseAndValidateProceduralConfig(jsonDraftText);
+    const baseCfg = res.ok
+      ? cloneProceduralConfig(res.config)
+      : cloneProceduralConfig(proceduralConfigRef.current);
+    baseCfg.meta.seed = Math.floor(100000 + Math.random() * 899999);
+    setJsonValidationWarnings([]);
+    applyProceduralConfigCommit(baseCfg, true, false);
+  };
+
+  const handleFormatJsonDraft = () => {
+    const res = parseAndValidateProceduralConfig(jsonDraftText);
+    if (!res.ok) {
+      setJsonValidationError(res.error);
+      return;
+    }
+    setJsonValidationError(null);
+    setJsonValidationWarnings(res.warnings);
+    setJsonDraftText(JSON.stringify(res.config, null, 2));
+  };
+
+  const handleCopyJsonDraft = async () => {
+    try {
+      await navigator.clipboard.writeText(jsonDraftText);
+      setJsonCopyLabel('Copied!');
+      window.setTimeout(() => setJsonCopyLabel('Copy JSON'), 1800);
+    } catch {
+      setJsonCopyLabel('Unavailable');
+      window.setTimeout(() => setJsonCopyLabel('Copy JSON'), 1800);
+    }
+  };
+
+  const handleResetProceduralDefault = () => {
+    const resetCfg = resetSavedProceduralConfig();
+    setJsonValidationWarnings([]);
+    applyProceduralConfigCommit(resetCfg, true, false);
+  };
+
+  const applyFirstRunDraftUpdate = (
+    updater: (draft: ProceduralGameConfig) => void,
+    syncStarterStats: boolean = false
+  ) => {
+    const next = cloneProceduralConfig(proceduralConfigRef.current);
+    updater(next);
+    saveProceduralConfig(next);
+    proceduralConfigRef.current = next;
+    setProceduralConfig(next);
+    setJsonDraftText(JSON.stringify(next, null, 2));
+
+    if (syncStarterStats) {
+      setStats((prev) => {
+        const unlockedCosmetics = prev.unlockedCosmetics.includes(next.player.activeHat)
+          ? prev.unlockedCosmetics
+          : [...prev.unlockedCosmetics, next.player.activeHat];
+        const updated: PlayerStats = {
+          ...prev,
+          activeSkin: next.player.activeSkin,
+          activeHat: next.player.activeHat,
+          unlockedCosmetics,
+        };
+        ProgressionService.saveStats(updated);
+        managerRef.current?.updateStats(updated);
+        return updated;
+      });
+    }
+
+    if (managerRef.current) {
+      managerRef.current.applyProceduralConfig(next, false);
+      setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
+      setSnakeTelemetry(managerRef.current.getCapySnakeTelemetry());
+    }
+  };
+
+  const handleOpenFirstRunSetup = () => {
+    AudioService.playCoin();
+    setIsMenuOpen(false);
+    setIsScaleAtlasOpen(false);
+    setIsOpticsOpen(false);
+    setIsInfographicExpanded(false);
+    setFirstRunTab('pilot');
+    setIsFirstRunSetupOpen(true);
+    if (managerRef.current && universeScale.active) {
+      managerRef.current.setCruiseVelocity(0);
+    }
+  };
+
+  const handleCompleteFirstRunSetup = (launchFromBigBang: boolean) => {
+    const cfg = cloneProceduralConfig(proceduralConfigRef.current);
+    saveProceduralConfig(cfg);
+    markFirstRunSetupComplete();
+    setIsFirstRunSetupOpen(false);
+
+    if (managerRef.current) {
+      managerRef.current.applyProceduralConfig(cfg, false);
+      if (launchFromBigBang) {
+        managerRef.current.launchIntoCosmos(28.0);
+        managerRef.current.setSeamlessLogScale(28.0, true);
+        managerRef.current.setVesselMode(cfg.player.startingVesselMode);
+        managerRef.current.setCruiseVelocity(-2.2);
+      }
+      setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
+      setSnakeTelemetry(managerRef.current.getCapySnakeTelemetry());
+    }
+    AudioService.playCosmicWarp(1.2);
+    const activeHeroName =
+      PLAYABLE_CAPY_HEROES.find((h) => h.id === cfg.player.heroArchetypeId)?.name || 'Captain Yuzu';
+    showToast(
+      `Chrono-Vessel Launched · ${activeHeroName} · α⁻¹=${cfg.universe.fineStructureInverse.toFixed(1)}`
+    );
+  };
+
   const handlePlaceBuilding = (def: BuildingCatalogItem) => {
     if (stats.buildings.length >= 16) {
       showToast('Sector capacity reached (16/16 structures)');
       return;
     }
+    const costMult = proceduralConfigRef.current.economy.buildingCostMultiplier;
+    const coinCost = ProgressionService.getBuildingCoinCost(def.type, costMult);
     const idx = stats.buildings.length;
     const clearSpot = managerRef.current?.findClearBuildingSpot(idx);
     const angle = (idx * Math.PI * 2) / 10 + 0.4;
@@ -1127,17 +1400,18 @@ export const CapyGameView: React.FC = () => {
       def.name,
       bx,
       bz,
-      def.description
+      def.description,
+      costMult
     );
     if (!nextStats) {
-      showToast(`Requires ${def.coinCost}c to deploy ${def.name}`);
+      showToast(`Requires ${coinCost}c to deploy ${def.name}`);
       return;
     }
     AudioService.playCoin();
     setStats(nextStats);
     managerRef.current?.updateStats(nextStats);
     managerRef.current?.refreshSanctuaryBuildings();
-    showToast(`Deployed ${def.name} (-${def.coinCost}c)`);
+    showToast(`Deployed ${def.name} (-${coinCost}c)`);
   };
 
   const handleStartBuildingGhost = (def: BuildingCatalogItem) => {
@@ -1145,8 +1419,10 @@ export const CapyGameView: React.FC = () => {
       showToast('Sector capacity reached (16/16 structures)');
       return;
     }
-    if ((stats.coins ?? 0) < def.coinCost) {
-      showToast(`Requires ${def.coinCost}c to place ${def.name}`);
+    const costMult = proceduralConfigRef.current.economy.buildingCostMultiplier;
+    const coinCost = ProgressionService.getBuildingCoinCost(def.type, costMult);
+    if ((stats.coins ?? 0) < coinCost) {
+      showToast(`Requires ${coinCost}c to place ${def.name}`);
       return;
     }
     if (activeMode !== 'sanctuary') {
@@ -1163,11 +1439,16 @@ export const CapyGameView: React.FC = () => {
   };
 
   const handleUpgradeBuilding = (buildingId: string) => {
+    const costMult = proceduralConfigRef.current.economy.buildingCostMultiplier;
     const target = stats.buildings.find((b) => b.id === buildingId);
-    const updated = ProgressionService.upgradeBuilding(stats, buildingId);
+    const updated = ProgressionService.upgradeBuilding(stats, buildingId, costMult);
     if (!updated) {
       if (target) {
-        const reqCoins = ProgressionService.getBuildingUpgradeCoinCost(target.type, target.level);
+        const reqCoins = ProgressionService.getBuildingUpgradeCoinCost(
+          target.type,
+          target.level,
+          costMult
+        );
         showToast(`Requires ${reqCoins}c to upgrade ${target.name}`);
       }
       return;
@@ -1725,8 +2006,17 @@ export const CapyGameView: React.FC = () => {
           )}
         </div>
 
-        {/* RIGHT CLUSTER: Compact DNA/Coins Readout, World Dropdown, Settings, Overview & Audio */}
+        {/* RIGHT CLUSTER: Compact Epoch/DNA/Coins Readout, JSON Config, World Dropdown, Settings, Overview & Audio */}
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+          {universeScale.active && (
+            <div
+              data-testid="top-bar-epoch-badge"
+              className="hidden md:flex items-center gap-1 px-1.5 h-7 rounded bg-zinc-900/90 border border-cyan-400/25 text-[10px] font-mono tabular-nums text-cyan-300"
+            >
+              T+{universeScale.cosmicAgeGyr.toFixed(2)} Gyr
+            </div>
+          )}
+
           <div className="hidden lg:flex items-center gap-1.5 px-2 h-7 rounded bg-zinc-900/75 border border-white/8 text-[10px] font-mono tabular-nums mr-0.5">
             <span data-testid="stat-dna" className="text-emerald-300 font-semibold">
               {stats.dna} DNA
@@ -1736,6 +2026,22 @@ export const CapyGameView: React.FC = () => {
               {stats.coins ?? 0}c
             </span>
           </div>
+
+          <button
+            type="button"
+            data-testid="open-json-editor-btn"
+            onClick={handleOpenJsonEditor}
+            title="Live Procedural JSON Engine Configurator"
+            aria-label="Open Procedural JSON Config Editor"
+            className={`h-7 px-1.5 sm:px-2 rounded border flex items-center gap-1 text-[11px] font-mono transition-colors cursor-pointer ${
+              isJsonEditorOpen
+                ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+                : 'bg-zinc-900 hover:bg-zinc-800 border-cyan-400/25 text-cyan-300'
+            }`}
+          >
+            <Code2 className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">JSON</span>
+          </button>
 
           <button
             type="button"
@@ -2751,7 +3057,7 @@ export const CapyGameView: React.FC = () => {
               <div className="p-2 rounded-lg bg-zinc-900/95 border border-sky-500/30 space-y-1.5 shadow-lg shadow-sky-950/20">
                 <div className="flex items-center justify-between text-[10px] font-mono">
                   <div className="flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     <span className="text-zinc-300 font-medium">SIM CLOCK</span>
                     <span className="text-sky-300 font-bold" data-testid="sim-clock-readout">
                       Yr {orbitTelemetry?.simElapsedYears ?? 0} · Day {orbitTelemetry?.simElapsedDays ?? 0}
@@ -3157,6 +3463,19 @@ export const CapyGameView: React.FC = () => {
             <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
+                data-testid="launch-chrono-vessel-btn"
+                onClick={() => {
+                  managerRef.current?.launchIntoCosmos(22.0);
+                  setIsMenuOpen(false);
+                }}
+                className="flex items-center gap-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 font-medium text-[11px] px-2 py-1 rounded-md border border-cyan-400/40 transition-colors cursor-pointer"
+              >
+                <Rocket className="w-3 h-3 text-cyan-300" />
+                <span>Chrono-Flight</span>
+              </button>
+
+              <button
+                type="button"
                 data-testid="open-cosmic-map-btn"
                 onClick={() => {
                   AudioService.playCosmicWarp(1.0);
@@ -3181,6 +3500,16 @@ export const CapyGameView: React.FC = () => {
               >
                 <Crown className="w-3 h-3 text-amber-400" />
                 <span>Select Unit</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="open-first-run-setup-btn"
+                onClick={handleOpenFirstRunSetup}
+                className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-amber-300 font-medium text-[11px] px-2 py-1 rounded-md border border-amber-400/30 transition-colors cursor-pointer"
+              >
+                <Sparkles className="w-3 h-3 text-amber-400" />
+                <span>Genesis Setup</span>
               </button>
 
               <button
@@ -3373,6 +3702,10 @@ export const CapyGameView: React.FC = () => {
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {BUILDING_CATALOG.map((def) => {
                         const count = stats.buildings.filter((b) => b.type === def.type).length;
+                        const displayCost = ProgressionService.getBuildingCoinCost(
+                          def.type,
+                          proceduralConfig.economy.buildingCostMultiplier
+                        );
                         return (
                           <div
                             key={def.type}
@@ -3384,7 +3717,7 @@ export const CapyGameView: React.FC = () => {
                                   {def.name}
                                 </span>
                                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-amber-300 border border-white/10 shrink-0">
-                                  {def.coinCost}c · #{count}
+                                  {displayCost}c · #{count}
                                 </span>
                               </div>
                               <p className="text-[10px] text-zinc-400 mt-0.5 line-clamp-1">
@@ -3400,7 +3733,7 @@ export const CapyGameView: React.FC = () => {
                                 className="flex-1 flex items-center justify-center gap-1 py-1 px-1.5 rounded text-[11px] font-medium transition-colors cursor-pointer bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-white/10"
                               >
                                 <Plus className="w-3 h-3" />
-                                <span>Deploy ({def.coinCost}c)</span>
+                                <span>Deploy ({displayCost}c)</span>
                               </button>
                               <button
                                 type="button"
@@ -3424,7 +3757,11 @@ export const CapyGameView: React.FC = () => {
                           Deployed ({stats.buildings.length}/16):
                         </span>
                         {stats.buildings.map((b, idx) => {
-                          const upCost = ProgressionService.getBuildingUpgradeCoinCost(b.type, b.level);
+                          const upCost = ProgressionService.getBuildingUpgradeCoinCost(
+                            b.type,
+                            b.level,
+                            proceduralConfig.economy.buildingCostMultiplier
+                          );
                           return (
                             <button
                               key={b.id}
@@ -4344,6 +4681,59 @@ export const CapyGameView: React.FC = () => {
                 </div>
               </div>
 
+              {/* Offline Progressive Web App (PwaService) Panel */}
+              <div
+                data-testid="settings-pwa-panel"
+                className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-zinc-100">
+                      Offline App &amp; Procedural Engine Config
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-400 mt-0.5">
+                      Mode: {pwaStatus.standalone ? 'Standalone Installed' : 'Web Session'} · Preset:{' '}
+                      {proceduralConfig.meta.configName} (#{proceduralConfig.meta.seed})
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {pwaStatus.installable && (
+                      <button
+                        type="button"
+                        data-testid="pwa-install-btn"
+                        onClick={() => PwaService.promptInstall()}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-400/40 cursor-pointer"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>Install App</span>
+                      </button>
+                    )}
+                    {pwaStatus.updateAvailable && (
+                      <button
+                        type="button"
+                        data-testid="pwa-update-btn"
+                        onClick={() => PwaService.applyUpdate()}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/40 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Apply Update</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSettingsOpen(false);
+                        handleOpenJsonEditor();
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/35 cursor-pointer"
+                    >
+                      <Code2 className="w-3 h-3" />
+                      <span>Edit JSON</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
                 <button
                   type="button"
@@ -4359,6 +4749,937 @@ export const CapyGameView: React.FC = () => {
                   className="px-3 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 text-xs font-medium border border-rose-500/30 cursor-pointer"
                 >
                   Reset State
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          FIRST-TIME GENESIS LAUNCH CONFIGURATOR (Pilot, Spaceship & Fine-Structure α)
+          Docked left on desktop & bottom on mobile so the live 3D Chrono-Vessel
+          and Universe remain unobstructed behind it.
+         ===================================================================== */}
+      {isFirstRunSetupOpen && !webglError && !isJsonEditorOpen && !isSettingsOpen && (() => {
+        const alphaPhysics = computeFineStructurePhysics(
+          proceduralConfig.universe.fineStructureInverse
+        );
+        const regimeColorClass =
+          alphaPhysics.regimeTone === 'emerald'
+            ? 'text-emerald-300 border-emerald-400/40 bg-emerald-500/15'
+            : alphaPhysics.regimeTone === 'amber'
+              ? 'text-amber-300 border-amber-400/40 bg-amber-500/15'
+              : 'text-cyan-300 border-cyan-400/40 bg-cyan-500/15';
+
+        const furPresets = [
+          { hex: '#b47442', secondary: '#6d3f1d', label: 'Classic' },
+          { hex: '#eab308', secondary: '#854d0e', label: 'Solar' },
+          { hex: '#f472b6', secondary: '#9d174d', label: 'Sakura' },
+          { hex: '#4ade80', secondary: '#166534', label: 'Matcha' },
+          { hex: '#6366f1', secondary: '#312e81', label: 'Cosmic' },
+          { hex: '#cbd5e1', secondary: '#475569', label: 'Lunar' },
+        ];
+        const skinIds = ['classic', 'golden', 'sakura', 'matcha', 'cosmic'];
+        const hatIds: Array<{ id: string; label: string }> = [
+          { id: 'yuzu', label: 'Yuzu' },
+          { id: 'crown', label: 'Crown' },
+          { id: 'flower', label: 'Flora' },
+          { id: 'wizard', label: 'Wizard' },
+          { id: 'halo', label: 'Halo' },
+          { id: 'party', label: 'Party' },
+        ];
+
+        return (
+          <aside
+            data-testid="first-run-customizer"
+            aria-label="Genesis Launch Configurator"
+            className="fixed bottom-2 left-2 right-2 sm:bottom-auto sm:right-auto sm:top-12 sm:left-2.5 z-40 pointer-events-auto sm:w-[376px] max-h-[55vh] sm:max-h-[calc(100vh-58px)] bg-zinc-950/95 border border-cyan-400/35 rounded-xl shadow-2xl text-zinc-100 flex flex-col overflow-hidden"
+          >
+            <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between gap-2 shrink-0 bg-zinc-900/70">
+              <div className="min-w-0">
+                <div className="text-[9px] font-mono uppercase tracking-wider text-cyan-400">
+                  Chrono-Genesis Setup
+                </div>
+                <h2 className="text-xs font-semibold text-zinc-100 truncate">
+                  Customize Pilot, Spaceship &amp; α
+                </h2>
+              </div>
+              <button
+                type="button"
+                data-testid="setup-skip-btn"
+                onClick={() => handleCompleteFirstRunSetup(false)}
+                aria-label="Close Genesis Setup"
+                className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* 3 Crisp Navigation Tabs */}
+            <div className="grid grid-cols-3 gap-1 p-1.5 border-b border-white/10 bg-zinc-950 shrink-0">
+              <button
+                type="button"
+                data-testid="setup-tab-pilot"
+                onClick={() => {
+                  AudioService.playCoin();
+                  setFirstRunTab('pilot');
+                }}
+                className={`py-1.5 px-2 rounded text-[11px] font-medium flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer border transition-colors ${
+                  firstRunTab === 'pilot'
+                    ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
+                    : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-400'
+                }`}
+              >
+                <Crown className="w-3 h-3 shrink-0" />
+                <span>Pilot</span>
+              </button>
+              <button
+                type="button"
+                data-testid="setup-tab-vessel"
+                onClick={() => {
+                  AudioService.playCoin();
+                  setFirstRunTab('vessel');
+                }}
+                className={`py-1.5 px-2 rounded text-[11px] font-medium flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer border transition-colors ${
+                  firstRunTab === 'vessel'
+                    ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+                    : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-400'
+                }`}
+              >
+                <Rocket className="w-3 h-3 shrink-0" />
+                <span>Spaceship</span>
+              </button>
+              <button
+                type="button"
+                data-testid="setup-tab-universe"
+                onClick={() => {
+                  AudioService.playCoin();
+                  setFirstRunTab('universe');
+                }}
+                className={`py-1.5 px-2 rounded text-[11px] font-medium flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer border transition-colors ${
+                  firstRunTab === 'universe'
+                    ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
+                    : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-400'
+                }`}
+              >
+                <Sparkles className="w-3 h-3 shrink-0" />
+                <span>Universe α</span>
+              </button>
+            </div>
+
+            {/* Active Tab Body */}
+            <div className="p-2.5 sm:p-3 overflow-y-auto flex-1 space-y-2.5">
+              {firstRunTab === 'pilot' && (
+                <div data-testid="setup-panel-pilot" className="space-y-2.5">
+                  <div>
+                    <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      Pilot Archetype &amp; Perks
+                    </div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {PLAYABLE_CAPY_HEROES.map((hero) => {
+                        const isSelected = proceduralConfig.player.heroArchetypeId === hero.id;
+                        const matchingFur =
+                          furPresets.find((f) =>
+                            hero.skin === 'golden'
+                              ? f.label === 'Solar'
+                              : hero.skin === 'sakura'
+                                ? f.label === 'Sakura'
+                                : hero.skin === 'matcha'
+                                  ? f.label === 'Matcha'
+                                  : hero.skin === 'cosmic'
+                                    ? f.label === 'Cosmic'
+                                    : f.label === 'Classic'
+                          ) || furPresets[0];
+                        return (
+                          <button
+                            key={hero.id}
+                            type="button"
+                            data-testid={`setup-hero-${hero.id}`}
+                            onClick={() => {
+                              AudioService.playCoin();
+                              applyFirstRunDraftUpdate((draft) => {
+                                draft.player.heroArchetypeId = hero.id;
+                                draft.player.activeSkin = hero.skin;
+                                draft.player.activeHat = hero.hat;
+                                draft.player.furPrimaryHex = matchingFur.hex;
+                                draft.player.furSecondaryHex = matchingFur.secondary;
+                              }, true);
+                            }}
+                            className={`p-1.5 rounded text-left border transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-amber-500/20 border-amber-400/60 text-zinc-100'
+                                : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                            }`}
+                          >
+                            <div className="text-[11px] font-semibold truncate">{hero.name}</div>
+                            <div className="text-[9px] font-mono text-amber-300 truncate">
+                              {hero.perkLabel}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      <span>Coat Primary &amp; Snout Trim</span>
+                      <span className="tabular-nums text-zinc-300">
+                        {proceduralConfig.player.furPrimaryHex}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {furPresets.map((preset) => {
+                        const isActive =
+                          proceduralConfig.player.furPrimaryHex.toLowerCase() === preset.hex;
+                        return (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            data-testid={`setup-fur-preset-${preset.label.toLowerCase()}`}
+                            onClick={() => {
+                              AudioService.playCoin();
+                              applyFirstRunDraftUpdate((draft) => {
+                                draft.player.furPrimaryHex = preset.hex;
+                                draft.player.furSecondaryHex = preset.secondary;
+                              }, true);
+                            }}
+                            title={preset.label}
+                            className={`w-6 h-6 rounded border cursor-pointer ${
+                              isActive ? 'border-white ring-1 ring-cyan-400' : 'border-white/20'
+                            }`}
+                            style={{ backgroundColor: preset.hex }}
+                          />
+                        );
+                      })}
+                      <label className="flex items-center gap-1 text-[10px] font-mono text-zinc-400 ml-auto cursor-pointer">
+                        <span>Coat</span>
+                        <input
+                          type="color"
+                          data-testid="setup-fur-primary-input"
+                          value={proceduralConfig.player.furPrimaryHex}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            applyFirstRunDraftUpdate((draft) => {
+                              draft.player.furPrimaryHex = val;
+                            }, true);
+                          }}
+                          className="w-6 h-6 bg-transparent border border-white/20 rounded cursor-pointer"
+                        />
+                      </label>
+                      <label className="flex items-center gap-1 text-[10px] font-mono text-zinc-400 cursor-pointer">
+                        <span>Trim</span>
+                        <input
+                          type="color"
+                          data-testid="setup-fur-secondary-input"
+                          value={proceduralConfig.player.furSecondaryHex}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            applyFirstRunDraftUpdate((draft) => {
+                              draft.player.furSecondaryHex = val;
+                            }, true);
+                          }}
+                          className="w-6 h-6 bg-transparent border border-white/20 rounded cursor-pointer"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      Surface Skin &amp; Headgear
+                    </div>
+                    <div className="grid grid-cols-5 gap-1 mb-1.5">
+                      {skinIds.map((skinId) => (
+                        <button
+                          key={skinId}
+                          type="button"
+                          data-testid={`setup-skin-${skinId}`}
+                          onClick={() => {
+                            AudioService.playCoin();
+                            applyFirstRunDraftUpdate((draft) => {
+                              draft.player.activeSkin = skinId;
+                            }, true);
+                          }}
+                          className={`py-1 px-1 rounded text-[10px] font-mono capitalize border cursor-pointer ${
+                            proceduralConfig.player.activeSkin === skinId
+                              ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                              : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                          }`}
+                        >
+                          {skinId}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {hatIds.map((h) => (
+                        <button
+                          key={h.id}
+                          type="button"
+                          data-testid={`setup-hat-${h.id}`}
+                          onClick={() => {
+                            AudioService.playCoin();
+                            applyFirstRunDraftUpdate((draft) => {
+                              draft.player.activeHat = h.id;
+                            }, true);
+                          }}
+                          className={`py-1 px-1.5 rounded text-[10px] font-mono border cursor-pointer ${
+                            proceduralConfig.player.activeHat === h.id
+                              ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                              : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                          }`}
+                        >
+                          {h.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {firstRunTab === 'vessel' && (
+                <div data-testid="setup-panel-vessel" className="space-y-2.5">
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      <span>Cherenkov Thruster &amp; Visor</span>
+                      <span className="tabular-nums text-cyan-300">
+                        {proceduralConfig.player.vesselCherenkovHex}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {['#06b6d4', '#38bdf8', '#f59e0b', '#ec4899', '#34d399', '#a855f7'].map(
+                        (hex) => (
+                          <button
+                            key={hex}
+                            type="button"
+                            onClick={() => {
+                              AudioService.playCoin();
+                              applyFirstRunDraftUpdate((draft) => {
+                                draft.player.vesselCherenkovHex = hex;
+                              });
+                            }}
+                            className={`w-6 h-6 rounded border cursor-pointer ${
+                              proceduralConfig.player.vesselCherenkovHex.toLowerCase() === hex
+                                ? 'border-white ring-1 ring-cyan-400'
+                                : 'border-white/20'
+                            }`}
+                            style={{ backgroundColor: hex }}
+                          />
+                        )
+                      )}
+                      <input
+                        type="color"
+                        data-testid="setup-vessel-cherenkov-input"
+                        value={proceduralConfig.player.vesselCherenkovHex}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          applyFirstRunDraftUpdate((draft) => {
+                            draft.player.vesselCherenkovHex = val;
+                          });
+                        }}
+                        className="ml-auto w-7 h-6 bg-transparent border border-white/20 rounded cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      <span>Astrolabe Brass / Alloy Trim</span>
+                      <span className="tabular-nums text-amber-300">
+                        {proceduralConfig.player.vesselBrassHex}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {['#eab308', '#cbd5e1', '#f97316', '#2dd4bf', '#f43f5e'].map((hex) => (
+                        <button
+                          key={hex}
+                          type="button"
+                          onClick={() => {
+                            AudioService.playCoin();
+                            applyFirstRunDraftUpdate((draft) => {
+                              draft.player.vesselBrassHex = hex;
+                            });
+                          }}
+                          className={`w-6 h-6 rounded border cursor-pointer ${
+                            proceduralConfig.player.vesselBrassHex.toLowerCase() === hex
+                              ? 'border-white ring-1 ring-amber-400'
+                              : 'border-white/20'
+                          }`}
+                          style={{ backgroundColor: hex }}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        data-testid="setup-vessel-brass-input"
+                        value={proceduralConfig.player.vesselBrassHex}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          applyFirstRunDraftUpdate((draft) => {
+                            draft.player.vesselBrassHex = val;
+                          });
+                        }}
+                        className="ml-auto w-7 h-6 bg-transparent border border-white/20 rounded cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      <span>Optical Canopy Dome Tint</span>
+                      <span className="tabular-nums text-sky-300">
+                        {proceduralConfig.player.vesselCanopyHex}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {['#38bdf8', '#22d3ee', '#fde047', '#c084fc', '#e2e8f0'].map((hex) => (
+                        <button
+                          key={hex}
+                          type="button"
+                          onClick={() => {
+                            AudioService.playCoin();
+                            applyFirstRunDraftUpdate((draft) => {
+                              draft.player.vesselCanopyHex = hex;
+                            });
+                          }}
+                          className={`w-6 h-6 rounded border cursor-pointer ${
+                            proceduralConfig.player.vesselCanopyHex.toLowerCase() === hex
+                              ? 'border-white ring-1 ring-sky-400'
+                              : 'border-white/20'
+                          }`}
+                          style={{ backgroundColor: hex }}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        data-testid="setup-vessel-canopy-input"
+                        value={proceduralConfig.player.vesselCanopyHex}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          applyFirstRunDraftUpdate((draft) => {
+                            draft.player.vesselCanopyHex = val;
+                          });
+                        }}
+                        className="ml-auto w-7 h-6 bg-transparent border border-white/20 rounded cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      <span>Chrono-Vessel Hull Scale</span>
+                      <span className="tabular-nums text-zinc-200 font-semibold">
+                        {proceduralConfig.player.vesselScale.toFixed(2)}x
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      data-testid="setup-vessel-scale-slider"
+                      min={0.6}
+                      max={1.6}
+                      step={0.05}
+                      value={proceduralConfig.player.vesselScale}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        applyFirstRunDraftUpdate((draft) => {
+                          draft.player.vesselScale = val;
+                        });
+                      }}
+                      className="w-full accent-cyan-400 cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      Launch Flight View
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        data-testid="setup-vessel-mode-chase"
+                        onClick={() => {
+                          AudioService.playCoin();
+                          applyFirstRunDraftUpdate((draft) => {
+                            draft.player.startingVesselMode = 'chase_pod';
+                          });
+                        }}
+                        className={`py-1.5 px-2 rounded text-[11px] font-mono border cursor-pointer ${
+                          proceduralConfig.player.startingVesselMode === 'chase_pod'
+                            ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                            : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                        }`}
+                      >
+                        Chase Pod (3P)
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="setup-vessel-mode-telescope"
+                        onClick={() => {
+                          AudioService.playCoin();
+                          applyFirstRunDraftUpdate((draft) => {
+                            draft.player.startingVesselMode = 'telescope_first_person';
+                          });
+                        }}
+                        className={`py-1.5 px-2 rounded text-[11px] font-mono border cursor-pointer ${
+                          proceduralConfig.player.startingVesselMode === 'telescope_first_person'
+                            ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                            : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                        }`}
+                      >
+                        Telescope (1P)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {firstRunTab === 'universe' && (
+                <div data-testid="setup-panel-universe" className="space-y-2.5">
+                  <div className="p-2 rounded-lg bg-zinc-900/90 border border-white/10 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400">
+                        Fine-Structure Constant (α)
+                      </span>
+                      <span
+                        data-testid="setup-alpha-readout"
+                        className="text-xs font-mono tabular-nums font-semibold text-cyan-300"
+                      >
+                        1 / {alphaPhysics.inverseAlpha.toFixed(3)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      data-testid="setup-alpha-slider"
+                      min={FINE_STRUCTURE_MIN_INVERSE}
+                      max={FINE_STRUCTURE_MAX_INVERSE}
+                      step={0.1}
+                      value={proceduralConfig.universe.fineStructureInverse}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        applyFirstRunDraftUpdate((draft) => {
+                          draft.universe.fineStructureInverse = val;
+                        });
+                      }}
+                      className="w-full accent-sky-400 cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
+                    />
+                    <div className="grid grid-cols-3 gap-1">
+                      {[
+                        { label: 'Strong 1/90', val: 90.0 },
+                        { label: 'CODATA 137', val: CODATA_FINE_STRUCTURE_INVERSE },
+                        { label: 'Weak 1/185', val: 185.0 },
+                      ].map((p) => (
+                        <button
+                          key={p.label}
+                          type="button"
+                          data-testid={`setup-alpha-preset-${Math.round(p.val)}`}
+                          onClick={() => {
+                            AudioService.playCoin();
+                            applyFirstRunDraftUpdate((draft) => {
+                              draft.universe.fineStructureInverse = p.val;
+                            });
+                          }}
+                          className={`py-1 px-1.5 rounded text-[10px] font-mono tabular-nums border cursor-pointer ${
+                            Math.abs(alphaPhysics.inverseAlpha - p.val) < 0.6
+                              ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                              : 'bg-zinc-950 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Scientific Consequences Readout */}
+                  <div className="p-2 rounded-lg bg-zinc-900/75 border border-white/10 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        data-testid="setup-alpha-regime"
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${regimeColorClass}`}
+                      >
+                        {alphaPhysics.regimeLabel}
+                      </span>
+                      <span className="text-[10px] font-mono tabular-nums text-zinc-400">
+                        α = {alphaPhysics.alpha.toFixed(6)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono tabular-nums">
+                      <div className="bg-zinc-950/90 px-2 py-1 rounded border border-white/8">
+                        <div className="text-zinc-500 text-[9px]">Bohr Radius (a₀)</div>
+                        <div className="text-amber-300 font-semibold">
+                          {alphaPhysics.bohrRadiusScale.toFixed(2)}× real
+                        </div>
+                      </div>
+                      <div className="bg-zinc-950/90 px-2 py-1 rounded border border-white/8">
+                        <div className="text-zinc-500 text-[9px]">Electron v₁ / c</div>
+                        <div className="text-cyan-300 font-semibold">
+                          {alphaPhysics.electronSpeedC.toFixed(5)} c
+                        </div>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-zinc-400 leading-snug">
+                      {alphaPhysics.summary}
+                    </p>
+                  </div>
+
+                  {/* Quick Live 3D Scale Previewer */}
+                  <div>
+                    <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1">
+                      Inspect α Live in 3D Viewport
+                    </div>
+                    <div className="grid grid-cols-4 gap-1 text-[10px] font-mono">
+                      {[
+                        { id: 'big_bang', label: 'Big Bang', log: 28.0 },
+                        { id: 'solar', label: 'Sun Star', log: 11.2 },
+                        { id: 'atom', label: 'C-Atom', log: -9.47 },
+                        { id: 'photon', label: 'Photon γ', log: -29.0 },
+                      ].map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          data-testid={`setup-preview-${s.id}`}
+                          onClick={() => {
+                            AudioService.playCosmicWarp(1.05);
+                            managerRef.current?.setCruiseVelocity(0);
+                            managerRef.current?.setSeamlessLogScale(s.log, true);
+                          }}
+                          className={`py-1 px-1 rounded border cursor-pointer truncate ${
+                            Math.abs(universeScale.logScaleMeters - s.log) < 0.8
+                              ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                              : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                          }`}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Launch Actions */}
+            <div className="px-3 py-2 border-t border-white/10 bg-zinc-950 flex items-center justify-between gap-2 shrink-0">
+              <button
+                type="button"
+                data-testid="setup-reset-btn"
+                onClick={() => {
+                  AudioService.playSplash();
+                  applyFirstRunDraftUpdate((draft) => {
+                    draft.universe.fineStructureInverse = CODATA_FINE_STRUCTURE_INVERSE;
+                    draft.player.heroArchetypeId = 'captain_yuzu';
+                    draft.player.activeSkin = 'classic';
+                    draft.player.activeHat = 'yuzu';
+                    draft.player.furPrimaryHex = '#b47442';
+                    draft.player.furSecondaryHex = '#6d3f1d';
+                    draft.player.vesselScale = 1.0;
+                    draft.player.vesselCherenkovHex = '#06b6d4';
+                    draft.player.vesselBrassHex = '#eab308';
+                    draft.player.vesselCanopyHex = '#38bdf8';
+                    draft.player.startingVesselMode = 'chase_pod';
+                  }, true);
+                }}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-[11px] font-mono border border-white/10 cursor-pointer whitespace-nowrap"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Defaults</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="setup-launch-btn"
+                onClick={() => handleCompleteFirstRunSetup(true)}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-cyan-400 hover:bg-cyan-300 text-zinc-950 text-xs font-semibold cursor-pointer whitespace-nowrap"
+              >
+                <Rocket className="w-3.5 h-3.5 shrink-0" />
+                <span>Launch Chrono-Vessel</span>
+              </button>
+            </div>
+          </aside>
+        );
+      })()}
+
+      {/* =====================================================================
+          FUTURE CAPYBARA CHRONO-VESSEL FLIGHT STRIP (Collapsible Bottom Controls)
+          Crisp solid zinc surface (zero backdrop-blur) during cosmic voyage.
+         ===================================================================== */}
+      {universeScale.active && !isFirstRunSetupOpen && !webglError && !isJsonEditorOpen && !isSettingsOpen && (
+        <div
+          data-testid="chrono-vessel-flight-strip"
+          className="fixed bottom-2 left-1/2 -translate-x-1/2 z-30 pointer-events-auto w-[calc(100vw-16px)] max-w-[700px] bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2.5 py-1.5 text-zinc-100"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Rocket className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              <span className="text-[11px] font-semibold text-zinc-100 truncate">
+                Chrono-Vessel
+              </span>
+              <span
+                data-testid="flight-strip-epoch"
+                className="text-[10px] font-mono tabular-nums text-cyan-300 shrink-0"
+              >
+                T+{universeScale.cosmicAgeGyr.toFixed(2)} Gyr
+              </span>
+              <span className="text-zinc-600 text-[10px] hidden sm:inline">·</span>
+              <span className="hidden sm:inline text-[10px] font-mono tabular-nums text-amber-300 shrink-0">
+                {universeScale.scientificLabel} ({universeScale.scaleFormatted})
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                data-testid="chrono-land-pad-btn"
+                onClick={() => managerRef.current?.engageAutoLanding()}
+                className="px-2 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/45 text-[10px] font-mono font-semibold cursor-pointer whitespace-nowrap"
+              >
+                Land on Pad
+              </button>
+              <button
+                type="button"
+                data-testid="toggle-flight-strip-collapse"
+                onClick={() => setIsFlightStripCollapsed((prev) => !prev)}
+                aria-label={isFlightStripCollapsed ? 'Expand Chrono Controls' : 'Collapse Chrono Controls'}
+                className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
+              >
+                {isFlightStripCollapsed ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
+          </div>
+
+          {!isFlightStripCollapsed && (
+            <div className="mt-1.5 pt-1.5 border-t border-white/10 flex flex-wrap items-center justify-between gap-1.5">
+              <div className="flex items-center gap-1 overflow-x-auto">
+                <span className="text-[9px] font-mono uppercase text-zinc-500 mr-0.5">
+                  Throttle:
+                </span>
+                {[
+                  { vel: -6.0, label: '-6/s' },
+                  { vel: -2.2, label: '-2.2/s' },
+                  { vel: 0.0, label: 'Hold' },
+                  { vel: 2.2, label: '+2.2/s' },
+                  { vel: 6.0, label: '+6/s' },
+                ].map((btn) => {
+                  const isActive =
+                    btn.vel === 0
+                      ? universeScale.autoZoomDir === 0
+                      : universeScale.autoZoomDir !== 0 &&
+                        Math.abs(universeScale.cruiseVelocityLogPerSec - btn.vel) < 0.25 &&
+                        Math.sign(btn.vel) === universeScale.autoZoomDir;
+                  return (
+                    <button
+                      key={btn.label}
+                      type="button"
+                      data-testid={`throttle-btn-${btn.vel}`}
+                      onClick={() => managerRef.current?.setCruiseVelocity(btn.vel)}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono border cursor-pointer flex items-center gap-0.5 ${
+                        isActive
+                          ? 'bg-cyan-500/25 text-cyan-200 border-cyan-400/60 font-semibold'
+                          : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border-white/10'
+                      }`}
+                    >
+                      {btn.vel === 0 ? (
+                        <Pause className="w-2.5 h-2.5" />
+                      ) : (
+                        <Play className="w-2.5 h-2.5" />
+                      )}
+                      <span>{btn.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                data-testid="toggle-vessel-view-btn"
+                onClick={() => {
+                  const nextView: ChronoVesselViewMode =
+                    universeScale.vesselMode === 'telescope_first_person'
+                      ? 'chase_pod'
+                      : 'telescope_first_person';
+                  managerRef.current?.setVesselMode(nextView);
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-900 hover:bg-zinc-800 text-sky-300 border border-sky-400/30 cursor-pointer shrink-0"
+              >
+                <Eye className="w-3 h-3" />
+                <span>
+                  {universeScale.vesselMode === 'telescope_first_person'
+                    ? 'Telescope 1P'
+                    : 'Chase Pod 3P'}
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* =====================================================================
+          BUILT-IN LIVE PROCEDURAL JSON CONFIG EDITOR MODAL
+         ===================================================================== */}
+      {isJsonEditorOpen && (
+        <div
+          data-testid="json-config-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-zinc-950/90"
+        >
+          <div className="relative w-full max-w-3xl bg-zinc-900 rounded-xl shadow-2xl border border-cyan-400/25 overflow-hidden text-zinc-100 flex flex-col max-h-[92vh]">
+            <div className="bg-zinc-950 px-4 py-3 border-b border-white/10 flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Code2 className="w-4 h-4 text-cyan-400 shrink-0" />
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold tracking-wider uppercase truncate">
+                    Procedural World &amp; Gameplay JSON Engine
+                  </h2>
+                  <p className="text-[11px] font-mono text-zinc-400 truncate">
+                    Active: {proceduralConfig.meta.configName} · Seed #{proceduralConfig.meta.seed} · Stored locally
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                data-testid="close-json-editor-btn"
+                onClick={() => setIsJsonEditorOpen(false)}
+                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
+                aria-label="Close JSON Editor"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 sm:p-4 space-y-2.5 overflow-y-auto flex-1">
+              {/* 5 Built-in Procedural Presets */}
+              <div className="space-y-1">
+                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400">
+                  Instant Procedural Archetypes
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-1.5">
+                  {PROCEDURAL_CONFIG_PRESETS.map((preset) => {
+                    const isSelected = proceduralConfig.meta.configName === preset.config.meta.configName;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        data-testid={`json-preset-${preset.id}`}
+                        title={preset.subtitle}
+                        onClick={() => handleSelectProceduralPreset(preset.config)}
+                        className={`p-2 rounded-lg text-left border transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-cyan-500/20 border-cyan-400/60 text-zinc-100'
+                            : 'bg-zinc-950/90 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                        }`}
+                      >
+                        <div className="text-[11px] font-semibold truncate">{preset.label}</div>
+                        <div className="text-[9px] font-mono text-zinc-400 truncate mt-0.5">
+                          Seed #{preset.config.meta.seed}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Action Utilities */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="json-randomize-seed-btn"
+                    onClick={handleRandomizeProceduralSeed}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-zinc-800 text-amber-300 border border-amber-400/30 cursor-pointer"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>Randomize Seed</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="json-format-btn"
+                    onClick={handleFormatJsonDraft}
+                    className="px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-white/10 cursor-pointer"
+                  >
+                    Format JSON
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="json-copy-btn"
+                    onClick={handleCopyJsonDraft}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-white/10 cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>{jsonCopyLabel}</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  data-testid="json-reset-default-btn"
+                  onClick={handleResetProceduralDefault}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-rose-950/60 text-rose-300 border border-rose-500/30 cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset Default</span>
+                </button>
+              </div>
+
+              {/* Validation Status Banner */}
+              {jsonValidationError ? (
+                <div
+                  data-testid="json-validation-error"
+                  className="px-3 py-2 rounded-lg bg-rose-950/80 border border-rose-500/50 text-rose-200 text-xs font-mono"
+                >
+                  {jsonValidationError}
+                </div>
+              ) : jsonValidationWarnings.length > 0 ? (
+                <div
+                  data-testid="json-validation-warnings"
+                  className="px-3 py-2 rounded-lg bg-amber-950/70 border border-amber-400/40 text-amber-200 text-[11px] font-mono"
+                >
+                  Sanitized: {jsonValidationWarnings.slice(0, 3).join(' · ')}
+                  {jsonValidationWarnings.length > 3 ? ` (+${jsonValidationWarnings.length - 3} more)` : ''}
+                </div>
+              ) : (
+                <div className="px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-400/30 text-emerald-300 text-[11px] font-mono flex items-center gap-1.5">
+                  <Check className="w-3.5 h-3.5 shrink-0" />
+                  <span>Schema Valid · Ready to hot-reload live or regenerate world seed</span>
+                </div>
+              )}
+
+              {/* Live Editable JSON Textarea */}
+              <textarea
+                data-testid="json-config-textarea"
+                value={jsonDraftText}
+                onChange={(e) => handleJsonDraftChange(e.target.value)}
+                spellCheck={false}
+                aria-label="Procedural Game Configuration JSON"
+                className="w-full h-72 sm:h-80 p-3 rounded-lg bg-zinc-950 border border-white/15 focus:border-cyan-400/60 focus:outline-none text-[11px] font-mono leading-relaxed text-cyan-100 resize-y"
+              />
+            </div>
+
+            <div className="bg-zinc-950 px-4 py-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <span className="text-[10px] font-mono text-zinc-500">
+                Controls universe physics, biomes, vessel colors, gravity, weather &amp; all 5 districts
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  data-testid="json-apply-live-btn"
+                  disabled={Boolean(jsonValidationError)}
+                  onClick={() => handleApplyJsonConfig(false)}
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-100 text-xs font-medium border border-white/15 cursor-pointer"
+                >
+                  Apply Live
+                </button>
+                <button
+                  type="button"
+                  data-testid="json-apply-regen-btn"
+                  disabled={Boolean(jsonValidationError)}
+                  onClick={() => handleApplyJsonConfig(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-zinc-950 text-xs font-semibold cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Apply &amp; Regenerate</span>
                 </button>
               </div>
             </div>

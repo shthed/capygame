@@ -54,27 +54,6 @@ const _obbScratch: RotatedBoxCollisionResult = {
   nz: 0,
 };
 
-export interface WorkerBallSnapshot {
-  wx: number;
-  wy: number;
-  wz: number;
-  vx: number;
-  vy: number;
-  vz: number;
-}
-
-/**
- * Main-Thread Coordinator & Deterministic Swept-CCD / Worker Wasm Bridge (`PhysicsWorldBridge.ts`)
- *
- * Architecture:
- * 1. Spawns `physics.worker.ts` off the main thread (keeping `@dimforge/rapier3d-compat` Wasm
- *    bundled once inside the worker chunk rather than duplicated on the main thread) using
- *    `SharedArrayBuffer` + `Atomics` seqlock when `crossOriginIsolated === true`, falling back
- *    to zero-copy transferable `Float32Array` ping-pong buffers in cross-origin iframes.
- * 2. Runs zero-allocation swept-CCD sub-stepping + yaw-aware analytical circle/OBB & shoreline
- *    projection on the main thread for zero-latency character movement, reconciled continuously
- *    with off-thread Rapier3D dynamic rigid-body snapshots (See-Saw torque & Breakout ball).
- */
 export class PhysicsWorldBridge {
   private worker: Worker | null = null;
   private sab: SharedArrayBuffer | null = null;
@@ -96,7 +75,11 @@ export class PhysicsWorldBridge {
   private homePoolSpec: { x: number; z: number; radius: number; waterY: number } | null = null;
   private seeSawTilt0 = 0;
   private seeSawAngVel0 = 0;
-  private rigidBodyCount = 12;
+  private seesawStiffnessScale = 1.0;
+  private waterWaveSpeedScale = 1.0;
+  private fluidViscosityScale = 1.0;
+  private trampolineBoostMultiplier = 1.0;
+  private rigidBodyCount = 11;
   private staticColliderCount = 0;
   private lastSubsteps = 1;
   private lastStepDurationMs = 0.25;
@@ -104,15 +87,6 @@ export class PhysicsWorldBridge {
   private lastHeroWx = 0;
   private lastHeroWy = 0;
   private lastHeroWz = 4;
-
-  private readonly workerBallSnapshot: WorkerBallSnapshot = {
-    wx: ZONE_LOCATIONS.breakout.x,
-    wy: 0.5,
-    wz: ZONE_LOCATIONS.breakout.z + 6.5,
-    vx: 4.2,
-    vy: 0,
-    vz: -9.2,
-  };
 
   constructor() {
     this.initWorker();
@@ -161,9 +135,7 @@ export class PhysicsWorldBridge {
 
         if (data.type === 'stepped') {
           this.workerInFlight = false;
-          this.seeSawTilt0 = this.seeSawTilt0 * 0.35 + data.seeSawTilt0 * 0.65;
           if (data.transferBuf) {
-            this.readBallSnapshotFromBuffer(data.transferBuf);
             this.pingPongBuf = data.transferBuf;
           }
         }
@@ -182,19 +154,28 @@ export class PhysicsWorldBridge {
     }
   }
 
-  private readBallSnapshotFromBuffer(buf: Float32Array): void {
-    if (buf.length >= 54) {
-      this.workerBallSnapshot.wx = buf[48];
-      this.workerBallSnapshot.wy = buf[49];
-      this.workerBallSnapshot.wz = buf[50];
-      this.workerBallSnapshot.vx = buf[51];
-      this.workerBallSnapshot.vy = buf[52];
-      this.workerBallSnapshot.vz = buf[53];
-    }
-  }
-
   public setHomePoolSpec(spec: { x: number; z: number; radius: number; waterY: number }): void {
     this.homePoolSpec = spec;
+  }
+
+  public setPhysicsTuning(opts: {
+    seesawStiffnessScale?: number;
+    waterWaveSpeedScale?: number;
+    fluidViscosityScale?: number;
+    trampolineBoostMultiplier?: number;
+  }): void {
+    if (typeof opts.seesawStiffnessScale === 'number') {
+      this.seesawStiffnessScale = Math.max(0.25, Math.min(3.0, opts.seesawStiffnessScale));
+    }
+    if (typeof opts.waterWaveSpeedScale === 'number') {
+      this.waterWaveSpeedScale = Math.max(0.2, Math.min(3.5, opts.waterWaveSpeedScale));
+    }
+    if (typeof opts.fluidViscosityScale === 'number') {
+      this.fluidViscosityScale = Math.max(0.1, Math.min(3.0, opts.fluidViscosityScale));
+    }
+    if (typeof opts.trampolineBoostMultiplier === 'number') {
+      this.trampolineBoostMultiplier = Math.max(0.5, Math.min(2.5, opts.trampolineBoostMultiplier));
+    }
   }
 
   public syncStaticWorldColliders(
@@ -217,7 +198,7 @@ export class PhysicsWorldBridge {
   }
 
   /**
-   * Reads lock-free SharedArrayBuffer snapshot if crossOriginIsolated is active.
+   * Reads lock-free SharedArrayBuffer snapshot telemetry if crossOriginIsolated is active.
    */
   private pollSharedBufferSnapshot(): void {
     if (!this.sabInt32 || !this.sabFloat32) return;
@@ -226,24 +207,10 @@ export class PhysicsWorldBridge {
       if ((seqStart & 1) === 1) continue; // Worker currently writing
       const stepMs = this.sabFloat32[24];
       const substeps = this.sabFloat32[25];
-      const seeSawTilt = this.sabFloat32[26];
-      const ballWx = this.sabFloat32[48];
-      const ballWy = this.sabFloat32[49];
-      const ballWz = this.sabFloat32[50];
-      const ballVx = this.sabFloat32[51];
-      const ballVy = this.sabFloat32[52];
-      const ballVz = this.sabFloat32[53];
       const seqEnd = Atomics.load(this.sabInt32, 0);
       if (seqStart === seqEnd) {
         this.lastStepDurationMs = stepMs;
         this.lastSubsteps = Math.max(1, Math.round(substeps));
-        this.seeSawTilt0 = seeSawTilt;
-        this.workerBallSnapshot.wx = ballWx;
-        this.workerBallSnapshot.wy = ballWy;
-        this.workerBallSnapshot.wz = ballWz;
-        this.workerBallSnapshot.vx = ballVx;
-        this.workerBallSnapshot.vy = ballVy;
-        this.workerBallSnapshot.vz = ballVz;
         this.rigidBodyCount = Atomics.load(this.sabInt32, 2) || this.rigidBodyCount;
         this.staticColliderCount = Atomics.load(this.sabInt32, 3) || this.staticColliderCount;
         break;
@@ -298,10 +265,17 @@ export class PhysicsWorldBridge {
     this.lastSubsteps = ccdSubsteps;
 
     // Step local fluid & XPBD soft-body solvers synchronously for zero-latency visual deformation
-    this.fluidSolver.step(dt, wx, wz, Math.hypot(totalVx, totalVz));
+    this.fluidSolver.step(
+      dt,
+      wx,
+      wz,
+      Math.hypot(totalVx, totalVz),
+      this.waterWaveSpeedScale,
+      this.fluidViscosityScale
+    );
     this.softBodySolver.step(dt);
 
-    // Client-side predictive torque-coupled See-Saw spring-damper integration (reconciled with Worker onmessage)
+    // Authoritative torque-coupled See-Saw spring-damper integration
     {
       const fz = ZONE_LOCATIONS.fallguys;
       const relSeeX = wx - fz.x;
@@ -310,7 +284,8 @@ export class PhysicsWorldBridge {
       if (Math.abs(relSeeX) <= 5.1 && Math.abs(relSeeZ) <= 6.2 && wy <= 1.4) {
         playerTorque = -relSeeX * 1.15;
       }
-      const restoringTorque = -this.seeSawTilt0 * 9.5 - this.seeSawAngVel0 * 3.2;
+      const restoringTorque =
+        -this.seeSawTilt0 * 9.5 * this.seesawStiffnessScale - this.seeSawAngVel0 * 3.2;
       this.seeSawAngVel0 += (playerTorque + restoringTorque) * dt;
       this.seeSawTilt0 = Math.max(
         -0.32,
@@ -459,7 +434,11 @@ export class PhysicsWorldBridge {
       const dPad = Math.hypot(wx - pad.wx, wz - pad.wz);
       const padTopY = pad.wy + 0.24 * (1.0 - pad.compression);
       if (dPad < pad.radius && wy <= padTopY + 0.35 && vy <= 0.5) {
-        const launchVy = this.softBodySolver.applyImpact(pad.id, Math.max(4.0, -vy));
+        const launchVy = this.softBodySolver.applyImpact(
+          pad.id,
+          Math.max(4.0, -vy),
+          this.trampolineBoostMultiplier
+        );
         vy = launchVy;
         wy = padTopY + 0.08;
         grounded = false;
@@ -553,8 +532,9 @@ export class PhysicsWorldBridge {
     return this.seeSawTilt0;
   }
 
-  public getWorkerBreakoutBallState(): WorkerBallSnapshot {
-    return this.workerBallSnapshot;
+  public resetSeeSaw(): void {
+    this.seeSawTilt0 = 0;
+    this.seeSawAngVel0 = 0;
   }
 
   public getSoftPadCompression(padId: string): number {

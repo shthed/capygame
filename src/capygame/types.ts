@@ -1620,6 +1620,8 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
   },
 ];
 
+export type ChronoVesselViewMode = 'chase_pod' | 'telescope_first_person' | 'landed';
+
 export interface ProjectedObjectMarker {
   id: string;
   label: string;
@@ -1648,6 +1650,11 @@ export interface UniverseScaleTelemetry {
   realityScaleGamma: number;
   showObjectMarkers: boolean;
   markers: ProjectedObjectMarker[];
+  cosmicAgeGyr: number;
+  cruiseVelocityLogPerSec: number;
+  vesselMode: ChronoVesselViewMode;
+  fineStructureInverse: number;
+  fineStructureAlpha: number;
 }
 
 export function findNearestScaleBandIndex(logMeters: number): number {

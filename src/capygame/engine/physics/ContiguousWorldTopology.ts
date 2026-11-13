@@ -314,15 +314,23 @@ export class ShallowWaterFluidSolver {
   public readonly heightPrev = new Float32Array(24 * 24);
   public readonly velX = new Float32Array(24 * 24);
   public readonly velZ = new Float32Array(24 * 24);
+  public readonly rippleDataBytes = new Uint8Array(24 * 24 * 4);
   private simTime = 0;
 
-  public step(dt: number, heroWx: number, heroWz: number, heroSpeed: number): void {
+  public step(
+    dt: number,
+    heroWx: number,
+    heroWz: number,
+    heroSpeed: number,
+    waveSpeedScale: number = 1.0,
+    viscosityScale: number = 1.0
+  ): void {
     this.simTime += dt;
     const n = this.gridSize;
-    const waveSpeedSq = 14.0;
+    const waveSpeedSq = 14.0 * Math.max(0.2, Math.min(3.5, waveSpeedScale));
     const dtClamped = Math.min(0.025, dt);
-    const alpha = waveSpeedSq * dtClamped * dtClamped;
-    const damping = 0.982;
+    const alpha = Math.min(0.24, waveSpeedSq * dtClamped * dtClamped);
+    const damping = Math.max(0.92, Math.min(0.992, 1.0 - 0.018 * Math.max(0.2, viscosityScale)));
 
     // Inject wake impulse when Hero swims in Spore Lagoon (-75, -75) or Home Pool (-8.8, 3.0)
     const dPool = Math.hypot(heroWx - -8.8, heroWz - 3.0);
@@ -371,6 +379,25 @@ export class ShallowWaterFluidSolver {
       this.heightCur[i] = this.heightPrev[i];
       this.heightPrev[i] = tmp;
     }
+  }
+
+  /**
+   * Packs wave height (R) and lateral velocity gradients (G, B) into a pre-allocated
+   * 24x24 RGBA Uint8Array for zero-allocation Three.js DataTexture uploads.
+   */
+  public packRippleTextureBytes(): Uint8Array {
+    const out = this.rippleDataBytes;
+    for (let i = 0; i < this.cellCount; i++) {
+      const off = i * 4;
+      const hByte = Math.max(0, Math.min(255, Math.round(128 + this.heightCur[i] * 700)));
+      const gxByte = Math.max(0, Math.min(255, Math.round(128 + this.velX[i] * 180)));
+      const gzByte = Math.max(0, Math.min(255, Math.round(128 + this.velZ[i] * 180)));
+      out[off] = hByte;
+      out[off + 1] = gxByte;
+      out[off + 2] = gzByte;
+      out[off + 3] = 255;
+    }
+    return out;
   }
 
   public sampleFluid(
@@ -508,16 +535,16 @@ export class XpbdSoftBodySolver {
     }
   }
 
-  public applyImpact(padId: string, impactSpeedY: number): number {
+  public applyImpact(padId: string, impactSpeedY: number, boostMultiplier: number = 1.0): number {
     for (let i = 0; i < this.pads.length; i++) {
       const pad = this.pads[i];
       if (pad.id === padId) {
         pad.compression = Math.min(0.42, pad.compression + Math.min(0.34, impactSpeedY * 0.032));
         pad.velocityY = -6.8;
         // Stored elastic potential converts into upward restitution impulse
-        return 15.8 + pad.compression * 6.5;
+        return (15.8 + pad.compression * 6.5) * boostMultiplier;
       }
     }
-    return 16.0;
+    return 16.0 * boostMultiplier;
   }
 }

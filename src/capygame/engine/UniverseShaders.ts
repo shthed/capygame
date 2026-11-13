@@ -675,6 +675,7 @@ export function createSolarPhotosphereMaterial(): THREE.ShaderMaterial {
     uniforms: {
       uTime: { value: 0 },
       uOpacity: { value: 1.0 },
+      uAlphaRatio: { value: 1.0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vNormalObj;
@@ -696,6 +697,7 @@ export function createSolarPhotosphereMaterial(): THREE.ShaderMaterial {
       varying vec3 vViewDir;
       uniform float uTime;
       uniform float uOpacity;
+      uniform float uAlphaRatio;
 
       void main() {
         float mu = clamp(dot(vNormalView, vViewDir), 0.0, 1.0);
@@ -717,6 +719,10 @@ export function createSolarPhotosphereMaterial(): THREE.ShaderMaterial {
         photo = mix(photo, coreWhite, smoothstep(0.45, 1.0, limb) * (0.55 + 0.45 * gran));
         photo += vec3(0.28, 0.16, 0.04) * superGran * (1.0 - limb * 0.5);
         photo = mix(photo, umbra, sunspot * 0.85);
+
+        float alphaBoost = clamp(uAlphaRatio, 0.55, 2.3);
+        vec3 tempTint = mix(vec3(0.86, 0.94, 1.06), vec3(1.10, 0.94, 0.82), smoothstep(0.65, 1.85, alphaBoost));
+        photo *= tempTint * (0.78 + 0.22 * alphaBoost);
 
         gl_FragColor = vec4(acesToneMap(photo * 1.45), uOpacity);
       }

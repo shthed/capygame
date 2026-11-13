@@ -24,8 +24,26 @@ const SETTINGS_KEY = 'capy_game_settings_v1';
 export class ProgressionService {
   private static cachedStats: PlayerStats | null = null;
   private static cachedSettings: CapyGameSettings | null = null;
+  private static saveTimerId: ReturnType<typeof setTimeout> | null = null;
+  private static pendingFlush = false;
+  private static lifecycleHooked = false;
+
+  private static ensureLifecycleHooks(): void {
+    if (this.lifecycleHooked || typeof window === 'undefined') return;
+    this.lifecycleHooked = true;
+    const flush = () => this.flushPendingSave();
+    window.addEventListener('pagehide', flush);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+          this.flushPendingSave();
+        }
+      });
+    }
+  }
 
   public static loadStats(forceReload: boolean = false): PlayerStats {
+    this.ensureLifecycleHooks();
     if (this.cachedStats && !forceReload) return this.cachedStats;
     try {
       if (typeof window !== 'undefined') {
@@ -74,17 +92,40 @@ export class ProgressionService {
     return fallback;
   }
 
-  public static saveStats(stats: PlayerStats) {
-    this.cachedStats = stats;
+  public static flushPendingSave(): void {
+    if (this.saveTimerId !== null) {
+      clearTimeout(this.saveTimerId);
+      this.saveTimerId = null;
+    }
+    if (!this.pendingFlush || !this.cachedStats) return;
+    this.pendingFlush = false;
     try {
       if (typeof window !== 'undefined') {
-        const serialized = JSON.stringify(stats);
-        localStorage.setItem(SAVE_KEY, serialized);
-        localStorage.setItem(LEGACY_SAVE_KEY_V2, serialized);
+        localStorage.setItem(SAVE_KEY, JSON.stringify(this.cachedStats));
       }
     } catch (e) {
-      console.warn('Failed to save CapyGame stats', e);
+      console.warn('Failed to flush CapyGame stats', e);
     }
+  }
+
+  public static scheduleSaveStats(stats: PlayerStats, delayMs: number = 250): void {
+    this.ensureLifecycleHooks();
+    this.cachedStats = stats;
+    this.pendingFlush = true;
+    if (this.saveTimerId !== null) {
+      clearTimeout(this.saveTimerId);
+    }
+    this.saveTimerId = setTimeout(() => {
+      this.saveTimerId = null;
+      this.flushPendingSave();
+    }, delayMs);
+  }
+
+  public static saveStats(stats: PlayerStats) {
+    this.ensureLifecycleHooks();
+    this.cachedStats = stats;
+    this.pendingFlush = true;
+    this.flushPendingSave();
   }
 
   public static resetStats(): PlayerStats {
@@ -166,11 +207,20 @@ export class ProgressionService {
     stats: PlayerStats,
     dnaAmount: number = 0,
     mode?: PlayStyle,
-    modeScore?: number
+    modeScore?: number,
+    coinMultiplierBonus: number = 1.0
   ): PlayerStats {
     const finalDna = Math.max(0, Math.round(dnaAmount));
     const prestigeMult = Math.max(1, stats.prestigeLevel || 1);
-    const bonusCoins = finalDna > 0 ? finalDna * 2 * prestigeMult : 0;
+    const statueLevels = (stats.buildings || []).reduce(
+      (sum, b) => (b.type === 'capy_statue' ? sum + Math.max(1, b.level || 1) : sum),
+      0
+    );
+    const statueMult = 1 + statueLevels * 0.15;
+    const bonusCoins =
+      finalDna > 0
+        ? Math.max(1, Math.round(finalDna * 2 * prestigeMult * statueMult * coinMultiplierBonus))
+        : 0;
 
     const next: PlayerStats = {
       ...stats,
@@ -190,18 +240,26 @@ export class ProgressionService {
       }
     }
 
-    this.saveStats(next);
+    this.scheduleSaveStats(next);
     return next;
   }
 
-  public static getBuildingCoinCost(type: BuildingType): number {
-    return BUILDING_CATALOG.find((b) => b.type === type)?.coinCost ?? 10;
+  public static getBuildingCoinCost(
+    type: BuildingType,
+    costMultiplier: number = 1.0
+  ): number {
+    const base = BUILDING_CATALOG.find((b) => b.type === type)?.coinCost ?? 10;
+    return Math.max(0, Math.round(base * costMultiplier));
   }
 
-  public static getBuildingUpgradeCoinCost(type: BuildingType, currentLevel: number): number {
+  public static getBuildingUpgradeCoinCost(
+    type: BuildingType,
+    currentLevel: number,
+    costMultiplier: number = 1.0
+  ): number {
     return Math.max(
       5,
-      Math.round(this.getBuildingCoinCost(type) * 0.75 * Math.max(1, currentLevel))
+      Math.round(this.getBuildingCoinCost(type, costMultiplier) * 0.75 * Math.max(1, currentLevel))
     );
   }
 
@@ -217,11 +275,19 @@ export class ProgressionService {
     return PRESTIGE_BASE_DNA_COST * Math.max(1, prestigeLevel || 1);
   }
 
-  public static upgradeBuilding(stats: PlayerStats, buildingId: string): PlayerStats | null {
+  public static upgradeBuilding(
+    stats: PlayerStats,
+    buildingId: string,
+    costMultiplier: number = 1.0
+  ): PlayerStats | null {
     const building = stats.buildings.find((b) => b.id === buildingId);
     if (!building) return null;
 
-    const coinCost = this.getBuildingUpgradeCoinCost(building.type, building.level);
+    const coinCost = this.getBuildingUpgradeCoinCost(
+      building.type,
+      building.level,
+      costMultiplier
+    );
     const currentCoins = stats.coins ?? 0;
     if (currentCoins < coinCost) return null;
 
@@ -244,9 +310,10 @@ export class ProgressionService {
     name: string,
     x: number,
     z: number,
-    description: string
+    description: string,
+    costMultiplier: number = 1.0
   ): PlayerStats | null {
-    const coinCost = this.getBuildingCoinCost(type);
+    const coinCost = this.getBuildingCoinCost(type, costMultiplier);
     const currentCoins = stats.coins ?? 0;
     if (currentCoins < coinCost) return null;
 

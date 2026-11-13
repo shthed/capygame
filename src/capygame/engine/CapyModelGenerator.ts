@@ -1435,13 +1435,17 @@ export class CapyModelGenerator {
     hat: string,
     skin: string,
     mutations: MutationId[],
-    overrideOrangeHex?: number
+    overrideOrangeHex?: number,
+    overrideFurHex?: number
   ) {
     this.attachHat(capy.userData.hatGroup, hat);
     this.attachMutations(capy.userData.mutationGroup, mutations);
     capy.userData.skin = skin;
 
-    const furColor = this.skinColors[skin] ?? this.skinColors.classic;
+    const furColor =
+      typeof overrideFurHex === 'number' && Number.isFinite(overrideFurHex)
+        ? overrideFurHex
+        : (this.skinColors[skin] ?? this.skinColors.classic);
     const furTex = this.getFurAlbedoTexture(furColor);
 
     capy.traverse((obj) => {

@@ -35,6 +35,7 @@ import {
   CapyGameSettings,
   CapyLodTier,
   CapySnakeTelemetry,
+  ChronoVesselViewMode,
   COSMIC_GALAXIES,
   CosmicStage,
   DEFAULT_CAPY_SETTINGS,
@@ -82,6 +83,19 @@ import type {
 } from './physics/PhysicsTypes';
 import { clampStarSystemIndex } from './physics/ColliderMath';
 import { disposeObject3DTree } from './gpu/ThreeDisposal';
+import {
+  ChronoVesselRig,
+  SanctuaryChronoPadSystem,
+  createSanctuaryChronoPad,
+} from './ChronoVesselRig';
+import {
+  DEFAULT_PROCEDURAL_GAME_CONFIG,
+  ProceduralGameConfig,
+  cloneProceduralConfig,
+  mulberry32,
+  parseHexColorString,
+} from '../config/ProceduralGameConfig';
+import { computeCosmicAgeGyr } from './SeamlessUniverseSimulator';
 
 // Pre-allocated math helpers for zero per-frame garbage collection
 const _tempVec3 = new THREE.Vector3();
@@ -121,6 +135,17 @@ const MAX_SPINE_BEND_RAD = 0.52; // ~30 deg max articulation bend so backing up 
 const MAX_SOLID_SQUASH = 0.06; // Solid body: <= 6% slight compression on impact
 const MAX_PHYSICS_FRUITS = 64;
 const POND_OVERFLOW_FRUIT_THRESHOLD = 6;
+const MAX_SANCTUARY_BUDDIES = 12;
+const MAX_SPORE_ORBS = 72;
+const MAX_SPORE_CRITTERS = 32;
+const MAX_BREAKOUT_BALLS = 8;
+const MAX_BREAKOUT_POWERUPS = 6;
+const MAX_BREAKOUT_ROWS = 7;
+const MAX_BREAKOUT_COLS = 7;
+const MAX_RUNNER_HERD = 22;
+const CHRONO_PAD_X = 9.8;
+const CHRONO_PAD_Z = 12.6;
+const CHRONO_PAD_RADIUS = 2.65;
 
 function normalizeAngleSigned(angle: number): number {
   let a = angle % (Math.PI * 2);
@@ -230,12 +255,23 @@ export class PlayStyleManager {
   private fallGuysGroup = new THREE.Group();
 
   // Cosmic Genesis & Multi-Scale Universe State
-  public cosmicStage: CosmicStage = 'singularity';
+  public cosmicStage: CosmicStage = 'playing';
   public cosmicBuilder: CosmicUniverseBuilder;
   public seamlessUniverse: SeamlessUniverseSimulator;
+  public chronoVessel!: ChronoVesselRig;
+  public chronoPad: SanctuaryChronoPadSystem | null = null;
   public seamlessZoomActive: boolean = false;
+  private vesselMode: ChronoVesselViewMode = 'chase_pod';
+  private cruiseVelocityLogPerSec: number = -2.2;
+  private proceduralConfig: ProceduralGameConfig = cloneProceduralConfig(
+    DEFAULT_PROCEDURAL_GAME_CONFIG
+  );
+  private proceduralPrng: () => number = mulberry32(
+    DEFAULT_PROCEDURAL_GAME_CONFIG.meta.seed
+  );
   private currentLogScaleMeters: number = MAX_UNIVERSE_LOG_METERS;
   private targetLogScaleMeters: number = MAX_UNIVERSE_LOG_METERS;
+  private autoLandAtForestPending: boolean = true;
   private quantumFocusMode: QuantumFocusMode = 'auto';
   private autoZoomDirection: -1 | 0 | 1 = 0;
   private seamlessTelemetryAccum: number = 0;
@@ -321,8 +357,8 @@ export class PlayStyleManager {
   private heroSoftSquashVel: number = 0;
   private segSoftSquash = new Float32Array(MAX_DACHSHUND_SEGMENTS);
   private segSoftSquashVel = new Float32Array(MAX_DACHSHUND_SEGMENTS);
-  private buddySoftSquash = new Float32Array(8);
-  private buddySoftSquashVel = new Float32Array(8);
+  private buddySoftSquash = new Float32Array(MAX_SANCTUARY_BUDDIES);
+  private buddySoftSquashVel = new Float32Array(MAX_SANCTUARY_BUDDIES);
 
   // Bidirectional Articulated Solid-Rod Spine State (node 0 = Hero, 1..N = Segments, N+1 = Caboose)
   private spineX = new Float32Array(MAX_SPINE_NODES);
@@ -441,6 +477,8 @@ export class PlayStyleManager {
   private pondMessLevel: number = 0;
   private pondSplashTimer: number = 0;
 
+  private orchardAutoDropTimer: number = 0;
+
   // --- 2. Spore Evolution State ---
   private sporeMass: number = 10;
   private sporeDnaEarned: number = 0;
@@ -448,14 +486,25 @@ export class PlayStyleManager {
     mesh: THREE.Mesh;
     isDna: boolean;
     value: number;
+    active: boolean;
   }> = [];
   private sporeCritters: Array<{
     mesh: CapyMeshGroup;
     scale: number;
     vel: THREE.Vector3;
     changeDirTimer: number;
+    active: boolean;
   }> = [];
+  private sporePoolsInitialized: boolean = false;
+  private sporeOrbSphereGeo: THREE.SphereGeometry | null = null;
+  private sporeOrbDnaGeo: THREE.OctahedronGeometry | null = null;
+  private sporeOrbPlanktonMat: THREE.MeshStandardMaterial | null = null;
+  private sporeOrbDnaMat: THREE.MeshStandardMaterial | null = null;
+  private sporeRippleTexture: THREE.DataTexture | null = null;
+  private sporeWaterMesh: THREE.Mesh | null = null;
+  private sporeWaterMat: THREE.MeshPhysicalMaterial | null = null;
   private sporeDashCooldown: number = 0;
+  private sporeLargeCritterKnockbackCd: number = 0;
 
   // --- 3. Breakout State ---
   private breakoutPaddle: THREE.Mesh | null = null;
@@ -466,13 +515,18 @@ export class PlayStyleManager {
   }> = [];
   private breakoutBlocks: Array<{
     mesh: THREE.Mesh;
+    mat: THREE.MeshStandardMaterial;
     hp: number;
     isBonus: boolean;
+    active: boolean;
   }> = [];
   private breakoutPowerups: Array<{
     mesh: THREE.Mesh;
     type: 'multiball' | 'wide';
+    active: boolean;
   }> = [];
+  private breakoutPoolsInitialized: boolean = false;
+  private breakoutMegaPaddleTimer: number = 0;
   private readonly sharedBreakoutPowerupGeo = (() => {
     const geo = new THREE.CylinderGeometry(0.28, 0.28, 0.6, 12);
     geo.userData.sharedAsset = true;
@@ -500,16 +554,20 @@ export class PlayStyleManager {
   private runnerSpeed: number = 15.0;
   private runnerGates: Array<{
     mesh: THREE.Group;
+    panelMat: THREE.MeshBasicMaterial;
     type: 'add' | 'multiply' | 'sub';
     value: number;
     z: number;
     triggered: boolean;
   }> = [];
+  private runnerPoolsInitialized: boolean = false;
+  private runnerBannerTextureCache = new Map<string, THREE.CanvasTexture>();
 
   // --- 5. Fall Guys State ---
   private fallGuysCrowns: number = 0;
   private fallGuysRound: number = 1;
-  private spinningObstacles: Array<{ mesh: THREE.Mesh; speed: number }> = [];
+  private fallGuysInitialized: boolean = false;
+  private spinningObstacles: Array<{ mesh: THREE.Mesh; speed: number; dir: number }> = [];
   private seeSaws: Array<{ mesh: THREE.Mesh; phase: number }> = [];
   private fallGuysRivals: Array<{
     capy: CapyMeshGroup;
@@ -711,13 +769,18 @@ export class PlayStyleManager {
     this.buildFallGuys();
     this.syncWorldPhysicsColliders();
 
-    // 6. Build Cosmic Universe Simulation & 25-Band Seamless Multi-Scale Universe Simulator
+    // 6. Build Chrono-Vessel Rig & 21-Band Seamless Multi-Scale Universe Simulator
+    //    (CosmicUniverseBuilder stays suspended so only one unified cosmic renderer executes)
     this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl);
+    this.cosmicBuilder.setSuspended(true);
     this.scene.add(this.cosmicBuilder.rootGroup);
     this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl);
     this.scene.add(this.seamlessUniverse.rootGroup);
     this.scene.add(this.seamlessUniverse.celestialBackdropGroup);
     this.sanctuaryGroup.add(this.seamlessUniverse.forestGroveGroup);
+    this.chronoVessel = new ChronoVesselRig();
+    this.chronoVessel.root.visible = false;
+    this.scene.add(this.chronoVessel.root);
     this.buildSelectableCapyHeroCircle();
     this.prewarmOccluderShaderPrograms();
 
@@ -728,10 +791,67 @@ export class PlayStyleManager {
     const skipCosmic =
       typeof window !== 'undefined' &&
       new URLSearchParams(window.location.search).get('skip_cosmic') === '1';
-    this.cosmicStage = skipCosmic ? 'playing' : 'singularity';
 
     this.switchMode(this.stats.selectedPlayStyle, true);
-    this.setCosmicStage(skipCosmic ? 'playing' : 'singularity');
+    if (skipCosmic) {
+      this.vesselMode = 'landed';
+      this.chronoVessel.setMode('landed');
+      this.chronoVessel.root.visible = false;
+      this.setCosmicStage('playing');
+    } else {
+      // Unified Future Capybara Chrono-Vessel Continuum: start directly at T = 0.00 Gyr Big Bang (10^+28m)
+      this.cosmicStage = 'playing';
+      this.seamlessZoomActive = true;
+      this.vesselMode = 'chase_pod';
+      this.chronoVessel.setMode('chase_pod');
+      this.cruiseVelocityLogPerSec = -2.2;
+      this.autoZoomDirection = -1;
+      this.currentLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
+      this.targetLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
+      this.applyFogSetting();
+      this.tickSeamlessUniverse(0.016);
+      this.emitCosmicState();
+      this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+    }
+  }
+
+  private setSceneBackgroundHex(hex: number): void {
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.setHex(hex);
+    } else {
+      this.scene.background = new THREE.Color(hex);
+    }
+  }
+
+  private getBuildingLevelSum(type: BuildingType): number {
+    let total = 0;
+    for (let i = 0; i < this.stats.buildings.length; i++) {
+      if (this.stats.buildings[i].type === type) {
+        total += Math.max(1, this.stats.buildings[i].level || 1);
+      }
+    }
+    return total;
+  }
+
+  private getDesiredBuddyCount(): number {
+    const baseBuddies = Math.max(
+      1,
+      Math.min(
+        MAX_SANCTUARY_BUDDIES,
+        Math.round(this.proceduralConfig.districts.sanctuary.buddyCount)
+      )
+    );
+    const groveLevels = this.getBuildingLevelSum('bamboo_grove');
+    return Math.min(MAX_SANCTUARY_BUDDIES, baseBuddies + groveLevels * 2);
+  }
+
+  private awardProgress(baseDna: number, mode: PlayStyle, score: number): void {
+    const pagodaLevels = this.getBuildingLevelSum('zen_pagoda');
+    const pagodaMult = 1 + pagodaLevels * 0.1;
+    const cfgMult = this.proceduralConfig.economy.dnaRewardMultiplier;
+    const scaledDna =
+      baseDna > 0 ? Math.max(1, Math.round(baseDna * pagodaMult * cfgMult)) : 0;
+    this.callbacks.onProgressEarned(scaledDna, mode, score);
   }
 
   private applyFogSetting() {
@@ -1114,7 +1234,7 @@ export class PlayStyleManager {
     if (mode === 'sanctuary') {
       this.heroLocalPos.set(0, 0, 4);
       this.heroYaw = Math.PI;
-      this.scene.background = new THREE.Color(this.activeBiome?.skyHex ?? 0x38bdf8);
+      this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
       this.syncDachshundVisibility();
       this.resetDachshundTrail();
       this.updateDachshundTransforms(0);
@@ -1125,7 +1245,7 @@ export class PlayStyleManager {
       this.syncDachshundVisibility();
       this.heroLocalPos.set(0, 0, 0);
       this.heroYaw = Math.PI;
-      this.scene.background = new THREE.Color(0x0ea5e9);
+      this.setSceneBackgroundHex(0x0ea5e9);
       this.resetSporeGame();
       this.callbacks.onModeNotification?.(
         'Moved to Spore Lagoon (-75, -75) • Eat Yuzu Plankton & DNA Helixes to grow!'
@@ -1133,7 +1253,7 @@ export class PlayStyleManager {
     } else if (mode === 'breakout') {
       this.heroLocalPos.set(0, 0.5, 10.6);
       this.heroYaw = Math.PI;
-      this.scene.background = new THREE.Color(0x1e293b);
+      this.setSceneBackgroundHex(0x1e293b);
       this.resetBreakoutGame(true);
       this.callbacks.onModeNotification?.(
         'Moved to Yuzu Breakout (+75, -75) • Steer the paddle to smash crystal waves!'
@@ -1141,7 +1261,7 @@ export class PlayStyleManager {
     } else if (mode === 'runner') {
       this.heroLocalPos.set(0, 0, 0);
       this.heroYaw = Math.PI;
-      this.scene.background = new THREE.Color(0x38bdf8);
+      this.setSceneBackgroundHex(0x38bdf8);
       this.resetRunnerGame();
       this.callbacks.onModeNotification?.(
         'Moved to Number Stampede (-75, +75) • Steer through + and × gates to multiply your herd!'
@@ -1149,7 +1269,7 @@ export class PlayStyleManager {
     } else if (mode === 'fallguys') {
       this.heroLocalPos.set(0, 0.6, 0);
       this.heroYaw = Math.PI;
-      this.scene.background = new THREE.Color(0x60a5fa);
+      this.setSceneBackgroundHex(0x60a5fa);
       this.resetFallGuysGame(false);
       this.callbacks.onModeNotification?.(
         'Moved to Yuzu Mountain (+75, +75) • Race rival Capys past hammers & see-saws to the Crown!'
@@ -1421,7 +1541,26 @@ export class PlayStyleManager {
     const upgBonus = (this.stats.upgrades.speedBoost - 1) * 0.15;
     const { speedBonus } = ProgressionService.getMutationBonuses(this.stats);
     const heroSpeed = this.activeHeroSpec?.speedMultiplier ?? 1.0;
-    return (1 + upgBonus + speedBonus) * heroSpeed;
+
+    // Cozy Onsen proximity aura (+18% + 4% per level above 1 inside 10.5m)
+    let onsenBonus = 0;
+    if (this.currentMode === 'sanctuary') {
+      let bestOnsenLvl = 0;
+      for (let i = 0; i < this.stats.buildings.length; i++) {
+        const b = this.stats.buildings[i];
+        if (b.type === 'hot_spring') {
+          if (Math.hypot(this.heroLocalPos.x - b.x, this.heroLocalPos.z - b.z) <= 10.5) {
+            bestOnsenLvl = Math.max(bestOnsenLvl, b.level || 1);
+          }
+        }
+      }
+      if (bestOnsenLvl > 0) {
+        onsenBonus = 0.18 + 0.04 * (bestOnsenLvl - 1);
+      }
+    }
+
+    const cfgMult = this.proceduralConfig?.player?.moveSpeedMultiplier ?? 1.0;
+    return (1 + upgBonus + speedBonus + onsenBonus) * heroSpeed * cfgMult;
   }
 
   private getEffectiveMagnetRadius(): number {
@@ -1502,8 +1641,15 @@ export class PlayStyleManager {
       this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
     }
     if (this.cosmicBuilder) {
-      this.cosmicBuilder.rootGroup.visible = true;
-      this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = true;
+      const legacyCosmic = stage !== 'playing' && stage !== 'capy_selection';
+      this.cosmicBuilder.setSuspended(!legacyCosmic);
+      this.cosmicBuilder.rootGroup.visible = legacyCosmic;
+      this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = legacyCosmic;
+    }
+    if (stage === 'playing') {
+      this.vesselMode = 'landed';
+      this.chronoVessel?.setMode('landed');
+      if (this.chronoVessel) this.chronoVessel.root.visible = false;
     }
     if (this.camera.near !== 0.1 || this.camera.far !== 1350) {
       this.camera.near = 0.1;
@@ -1547,41 +1693,41 @@ export class PlayStyleManager {
     this.syncDachshundVisibility();
 
     if (stage === 'singularity') {
-      this.scene.background = new THREE.Color(0x000000);
+      this.setSceneBackgroundHex(0x000000);
       this.cosmicCamPos.set(0, 0, 26);
       this.cosmicCamLook.set(0, 0, 0);
       this.camera.position.copy(this.cosmicCamPos);
       this.camera.lookAt(this.cosmicCamLook);
     } else if (stage === 'big_bang') {
-      this.scene.background = new THREE.Color(0x020617);
+      this.setSceneBackgroundHex(0x020617);
       this.cosmicOrbitYaw = 0.16;
       this.cosmicOrbitPitch = 0.24;
       this.cosmicZoomMultiplier = 1.0;
       this.cosmicCamPos.set(0, 26, 128);
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'universe_flight') {
-      this.scene.background = new THREE.Color(0x020617);
+      this.setSceneBackgroundHex(0x020617);
       this.cosmicOrbitYaw = 0;
       this.cosmicOrbitPitch = 0.25;
       this.cosmicZoomMultiplier = 1.0;
       this.cosmicCamPos.set(0, 32, 155);
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'galaxy_view') {
-      this.scene.background = new THREE.Color(0x030712);
+      this.setSceneBackgroundHex(0x030712);
       this.cosmicBuilder.populateGalaxyView(this.selectedGalaxyIndex);
       this.cosmicOrbitYaw = 0;
       this.cosmicOrbitPitch = 0.38;
       this.cosmicCamPos.set(0, 26, 68);
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'star_system_view') {
-      this.scene.background = new THREE.Color(0x030712);
+      this.setSceneBackgroundHex(0x030712);
       this.cosmicBuilder.populateStarSystemView(this.selectedGalaxyIndex, this.selectedStarIndex);
       this.cosmicOrbitYaw = 0;
       this.cosmicOrbitPitch = 0.42;
       this.cosmicCamPos.set(0, 28, 66);
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'planet_orbit') {
-      this.scene.background = new THREE.Color(0x020617);
+      this.setSceneBackgroundHex(0x020617);
       this.cosmicBuilder.populatePlanetOrbitView(
         this.selectedGalaxyIndex,
         this.selectedStarIndex,
@@ -1594,11 +1740,11 @@ export class PlayStyleManager {
     } else if (stage === 'planet_descent') {
       this.cosmicDescentElapsed = 0;
     } else if (stage === 'capy_selection') {
-      this.scene.background = new THREE.Color(this.activeBiome.skyHex);
+      this.setSceneBackgroundHex(this.activeBiome.skyHex);
       this.camera.position.set(0, 4.2, 9.8);
       this.camera.lookAt(0, 0.9, -1.0);
     } else if (stage === 'playing') {
-      this.scene.background = new THREE.Color(
+      this.setSceneBackgroundHex(
         this.currentMode === 'sanctuary' ? this.activeBiome.skyHex : 0x38bdf8
       );
       this.snapCameraToCurrentZone();
@@ -1781,6 +1927,260 @@ export class PlayStyleManager {
       }
     }
     this.applyFogSetting();
+  }
+
+  public getProceduralConfig(): ProceduralGameConfig {
+    return cloneProceduralConfig(this.proceduralConfig);
+  }
+
+  public getVramResourceTelemetry(): {
+    geometries: number;
+    textures: number;
+    programs: number;
+  } {
+    const info = this.renderer.info;
+    return {
+      geometries: info.memory.geometries,
+      textures: info.memory.textures,
+      programs: info.programs?.length ?? 0,
+    };
+  }
+
+  public setVesselMode(mode: ChronoVesselViewMode): void {
+    this.vesselMode = mode;
+    this.chronoVessel?.setMode(mode);
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+  }
+
+  public getVesselMode(): ChronoVesselViewMode {
+    return this.vesselMode;
+  }
+
+  public setCruiseVelocity(velLogPerSec: number): void {
+    if (Math.abs(velLogPerSec) < 0.05) {
+      this.autoZoomDirection = 0;
+    } else if (velLogPerSec < 0) {
+      this.autoZoomDirection = -1;
+      this.cruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -12.0, -0.25);
+    } else {
+      this.autoZoomDirection = 1;
+      this.cruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.25, 12.0);
+    }
+    if (this.autoZoomDirection !== 0 && !this.seamlessZoomActive) {
+      this.launchIntoCosmos(this.currentLogScaleMeters);
+    }
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+  }
+
+  public engageAutoLanding(): void {
+    this.seamlessZoomActive = true;
+    this.autoLandAtForestPending = true;
+    this.vesselMode = 'chase_pod';
+    this.chronoVessel?.setMode('chase_pod');
+    this.autoZoomDirection = -1;
+    this.cruiseVelocityLogPerSec = -Math.max(2.6, Math.abs(this.cruiseVelocityLogPerSec));
+    this.targetLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
+    AudioService.playCosmicWarp(1.35);
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+  }
+
+  public launchIntoCosmos(targetLogMeters: number = 22.0): void {
+    if (this.placementGhost.active) {
+      this.cancelBuildingPlacementGhost(true);
+    }
+    const clampedTarget = THREE.MathUtils.clamp(
+      targetLogMeters,
+      MIN_UNIVERSE_LOG_METERS,
+      MAX_UNIVERSE_LOG_METERS
+    );
+    if (!this.seamlessZoomActive) {
+      this.seamlessZoomActive = true;
+      this.currentLogScaleMeters = Math.max(CAPYBARA_FOREST_LOG_METERS, this.currentLogScaleMeters);
+    }
+    this.autoLandAtForestPending = false;
+    this.vesselMode = 'chase_pod';
+    this.chronoVessel?.setMode('chase_pod');
+    this.targetLogScaleMeters = clampedTarget;
+    this.autoZoomDirection = 0;
+    AudioService.playCosmicWarp(1.1);
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+  }
+
+  public applyProceduralConfig(
+    cfg: ProceduralGameConfig,
+    regenerate: boolean = false
+  ): void {
+    this.proceduralConfig = cloneProceduralConfig(cfg);
+    this.proceduralPrng = mulberry32(this.proceduralConfig.meta.seed);
+
+    const oceanHex = parseHexColorString(cfg.universe.planetBiome.oceanColorHex, 0x0284c7);
+    const landHex = parseHexColorString(cfg.universe.planetBiome.landColorHex, 0x4ade80);
+    const atmoHex = parseHexColorString(cfg.universe.planetBiome.atmosphereColorHex, 0x38bdf8);
+    const grassPrimaryHex = parseHexColorString(cfg.world.grassPrimaryHex, 0x4d9b3b);
+    const waterHex = parseHexColorString(cfg.world.waterColorHex, 0x06b6d4);
+    const cherenkovHex = parseHexColorString(cfg.player.vesselCherenkovHex, 0x06b6d4);
+    const brassHex = parseHexColorString(cfg.player.vesselBrassHex, 0xeab308);
+    const canopyHex = parseHexColorString(cfg.player.vesselCanopyHex, 0x38bdf8);
+    const furPrimaryHex = parseHexColorString(cfg.player.furPrimaryHex, 0xb47442);
+    const furSecondaryHex = parseHexColorString(cfg.player.furSecondaryHex, 0x6d3f1d);
+
+    this.seamlessUniverse.applyProceduralConfig({
+      bigBangSpeed: cfg.universe.bigBangSpeed,
+      fineStructureInverse: cfg.universe.fineStructureInverse,
+      oceanColorHex: oceanHex,
+      landColorHex: landHex,
+      atmosphereColorHex: atmoHex,
+      cloudDensity: cfg.universe.planetBiome.cloudDensity,
+      ringSystemEnabled: cfg.universe.planetBiome.ringSystemEnabled,
+      grassPrimaryHex,
+      waterColorHex: waterHex,
+    });
+
+    const heroIdx = PLAYABLE_CAPY_HEROES.findIndex((h) => h.id === cfg.player.heroArchetypeId);
+    if (heroIdx >= 0) {
+      this.selectedCapyHeroIndex = heroIdx;
+      this.activeHeroSpec = PLAYABLE_CAPY_HEROES[heroIdx];
+    }
+    const resolvedSkin = cfg.player.activeSkin || this.activeHeroSpec.skin || 'classic';
+    const resolvedHat = cfg.player.activeHat || this.activeHeroSpec.hat || 'yuzu';
+    this.activeHeadOrangeIndex = CapyModelGenerator.skinDefaultOrangeIndex[resolvedSkin] ?? 0;
+    const pilotOrange = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex] ?? HEAD_ORANGE_VARIETIES[0];
+
+    this.stats.activeSkin = resolvedSkin;
+    this.stats.activeHat = resolvedHat;
+    this.syncDachshundSkinAndOrange(furPrimaryHex);
+
+    this.chronoVessel?.applyConfig({
+      vesselScale: cfg.player.vesselScale,
+      vesselCherenkovHex: cherenkovHex,
+      vesselBrassHex: brassHex,
+      vesselCanopyHex: canopyHex,
+      furPrimaryHex,
+      furSecondaryHex,
+      pilotHat: resolvedHat,
+      pilotOrangeHex: pilotOrange.colorHex,
+    });
+
+    if (
+      this.seamlessZoomActive &&
+      this.vesselMode !== 'landed' &&
+      (cfg.player.startingVesselMode === 'chase_pod' ||
+        cfg.player.startingVesselMode === 'telescope_first_person')
+    ) {
+      this.vesselMode = cfg.player.startingVesselMode;
+      this.chronoVessel?.setMode(cfg.player.startingVesselMode);
+    }
+
+    const trampolineLevelSum = Math.max(1, this.getBuildingLevelSum('trampoline_pad'));
+    this.physicsBridge?.setPhysicsTuning({
+      seesawStiffnessScale: cfg.districts.fallguys.seesawStiffness,
+      waterWaveSpeedScale: cfg.world.waterWaveSpeed,
+      fluidViscosityScale: cfg.universe.fluidViscosity,
+      trampolineBoostMultiplier: 1.0 + Math.max(0, trampolineLevelSum - 1) * 0.1,
+    });
+
+    if (this.oceanMesh) {
+      (this.oceanMesh.material as THREE.MeshPhysicalMaterial).color.setHex(oceanHex);
+    }
+    if (this.sanctuaryIslandMesh) {
+      (this.sanctuaryIslandMesh.material as THREE.MeshStandardMaterial).color.setHex(
+        grassPrimaryHex
+      );
+    }
+    if (this.sporeWaterMat) {
+      this.sporeWaterMat.color.setHex(waterHex);
+    }
+    if (this.homePool?.waterMesh) {
+      (this.homePool.waterMesh.material as THREE.MeshPhysicalMaterial).color.setHex(waterHex);
+    }
+
+    this.activeBiome = {
+      ...this.activeBiome,
+      skyHex: atmoHex,
+      fogHex: atmoHex,
+      oceanHex,
+      islandGrassHex: grassPrimaryHex,
+      gravityMultiplier: cfg.player.gravityScale,
+    };
+
+    // Update GPU exposure / bloom / palette & atmosphere time/weather
+    this.gpuEngine?.applyConfig({
+      exposure: cfg.graphics.exposure,
+      bloomStrength: cfg.graphics.bloomIntensity,
+    });
+    this.settings = {
+      ...this.settings,
+      gpuExposure: cfg.graphics.exposure,
+      gpuBloomStrength: cfg.graphics.bloomIntensity,
+      astrophysicsPalette: cfg.graphics.astrophysicsPalette,
+      timeOfDayHours: cfg.world.timeOfDayHours,
+      weatherMode: cfg.world.weather,
+    };
+
+    if (cfg.economy.unlockAllSectors || cfg.economy.unlockAllInstruments) {
+      this.allFeaturesUnlockedOverride = true;
+    }
+
+    // Update companion buddy count visibility immediately
+    const desiredBuddies = this.getDesiredBuddyCount();
+    for (let i = 0; i < this.sanctuaryCapys.length; i++) {
+      this.sanctuaryCapys[i].capy.visible = i < desiredBuddies;
+    }
+
+    // Seed starting snake length if greater than current and reset starting conditions on regenerate
+    if (regenerate) {
+      // Regenerate Sanctuary wildflowers & pebbles deterministically with proceduralPrng
+      if (this.sanctuaryDecorMesh) {
+        const grassAccHex = parseHexColorString(cfg.world.grassAccentHex, 0x7cc444);
+        const palette = [grassAccHex, 0xfef08a, 0xf472b6, 0x93c5fd, 0xd8b4fe];
+        let placed = 0;
+        let cand = 0;
+        while (placed < 64 && cand < 360) {
+          const r = 4.2 + this.proceduralPrng() * 27.5;
+          const theta = this.proceduralPrng() * Math.PI * 2;
+          const px = Math.cos(theta) * r;
+          const pz = Math.sin(theta) * r;
+          cand++;
+          if (Math.hypot(px, pz) > 31.8) continue;
+          if (this.homePool && Math.hypot(px - this.homePool.centerX, pz - this.homePool.centerZ) < 5.6) continue;
+          if (Math.hypot(px - CHRONO_PAD_X, pz - CHRONO_PAD_Z) < 3.6) continue;
+          let hitsStatic = false;
+          for (let t = 0; t < this.sanctuaryTrees.length; t++) {
+            const tr = this.sanctuaryTrees[t];
+            if (Math.hypot(px - tr.x, pz - tr.z) < tr.trunkRadius + 0.85) {
+              hitsStatic = true;
+              break;
+            }
+          }
+          if (hitsStatic) continue;
+          _dummyObj.position.set(px, 0.05, pz);
+          _dummyObj.scale.setScalar(0.65 + this.proceduralPrng() * 0.65);
+          _dummyObj.rotation.set(0, theta, 0);
+          _dummyObj.updateMatrix();
+          this.sanctuaryDecorMesh.setMatrixAt(placed, _dummyObj.matrix);
+          _colorHelper.setHex(palette[placed % palette.length]);
+          this.sanctuaryDecorMesh.setColorAt(placed, _colorHelper);
+          placed++;
+        }
+        this.sanctuaryDecorMesh.count = placed;
+        this.sanctuaryDecorMesh.instanceMatrix.needsUpdate = true;
+        if (this.sanctuaryDecorMesh.instanceColor) {
+          this.sanctuaryDecorMesh.instanceColor.needsUpdate = true;
+        }
+      }
+
+      // Re-seed all minigame pools deterministically without allocating new meshes/textures
+      if (this.sporePoolsInitialized) this.resetSporeGame();
+      if (this.breakoutPoolsInitialized) this.resetBreakoutGame(false);
+      if (this.runnerPoolsInitialized) this.refreshRunnerCircuitGates();
+      if (this.fallGuysInitialized) this.resetFallGuysGame(false);
+      this.sanitizeBuildingNonClipping();
+      this.refreshSanctuaryBuildings();
+    }
+
+    this.applyFogSetting();
+    this.emitTelemetry();
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
   }
 
   public selectCapyHero(index: number, confirmAndPlay: boolean = false) {
@@ -2126,7 +2526,12 @@ export class PlayStyleManager {
       });
     }
 
-    // Instanced textured river pebbles & meadow wildflowers placed strictly outside Pool, Trees & Portals
+    // Pre-warm/plant Future Capybara Chrono-Vessel Landing Pad on open Sanctuary meadow (9.8, 12.6)
+    this.chronoPad = createSanctuaryChronoPad(CHRONO_PAD_X, CHRONO_PAD_Z);
+    this.chronoPad.group.userData.ignoreCameraFade = true;
+    this.sanctuaryGroup.add(this.chronoPad.group);
+
+    // Instanced textured river pebbles & meadow wildflowers placed strictly outside Pool, Trees, Portals & Chrono-Pad
     const pebbleGeo = new THREE.DodecahedronGeometry(0.22);
     const pebbleMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -2139,7 +2544,6 @@ export class PlayStyleManager {
     instancedDecor.userData.ignoreCameraFade = true;
     this.sanctuaryDecorMesh = instancedDecor;
     const palette = [0xfef08a, 0xf472b6, 0x93c5fd, 0xd8b4fe, 0xe2e8f0];
-    const colorHelper = new THREE.Color();
 
     let placedPebbles = 0;
     let candidateIdx = 0;
@@ -2152,6 +2556,7 @@ export class PlayStyleManager {
 
       if (Math.hypot(px, pz) > 31.8) continue;
       if (Math.hypot(px - this.homePool.centerX, pz - this.homePool.centerZ) < 5.6) continue;
+      if (Math.hypot(px - CHRONO_PAD_X, pz - CHRONO_PAD_Z) < 3.6) continue;
       let hitsStatic = false;
       for (let t = 0; t < this.sanctuaryTrees.length; t++) {
         const tr = this.sanctuaryTrees[t];
@@ -2174,8 +2579,8 @@ export class PlayStyleManager {
       _dummyObj.rotation.set(0, theta, 0);
       _dummyObj.updateMatrix();
       instancedDecor.setMatrixAt(placedPebbles, _dummyObj.matrix);
-      colorHelper.setHex(palette[placedPebbles % palette.length]);
-      instancedDecor.setColorAt(placedPebbles, colorHelper);
+      _colorHelper.setHex(palette[placedPebbles % palette.length]);
+      instancedDecor.setColorAt(placedPebbles, _colorHelper);
       placedPebbles++;
     }
     instancedDecor.count = placedPebbles;
@@ -2203,7 +2608,7 @@ export class PlayStyleManager {
     this.resetDachshundTrail();
     this.updateDachshundTransforms(0);
 
-    // Ambient wandering Capybara buddies (spawned at guaranteed non-clipping meadow clearings!)
+    // Pre-allocated pool of ambient wandering Capybara buddies (scaled dynamically by bamboo_grove level!)
     const skins = ['classic', 'golden', 'sakura', 'matcha'];
     const hats = ['flower', 'yuzu', 'party', 'crown'];
     const buddySpawns: Array<[number, number]> = [
@@ -2213,8 +2618,15 @@ export class PlayStyleManager {
       [-15.5, 16.2],
       [-21.5, 6.2],
       [18.8, 8.8],
+      [-14.2, -17.0],
+      [12.4, -15.6],
+      [-18.2, -7.8],
+      [22.0, -6.5],
+      [4.5, 19.5],
+      [-10.5, 19.2],
     ];
-    for (let i = 0; i < 6; i++) {
+    const desiredBuddies = this.getDesiredBuddyCount();
+    for (let i = 0; i < MAX_SANCTUARY_BUDDIES; i++) {
       const buddy = CapyModelGenerator.createCapybara(
         hats[i % hats.length],
         0.84,
@@ -2222,8 +2634,9 @@ export class PlayStyleManager {
         [],
         this.currentCapyLodTier
       );
-      const [bx, bz] = buddySpawns[i];
+      const [bx, bz] = buddySpawns[i % buddySpawns.length];
       buddy.position.set(bx, 0, bz);
+      buddy.visible = i < desiredBuddies;
       buddy.userData.__occluderRoot = buddy;
       this.sanctuaryGroup.add(buddy);
       this.sanctuaryCapys.push({
@@ -2247,9 +2660,10 @@ export class PlayStyleManager {
     buildingRadius: number = 2.05,
     ignoreBuildingIndex: number = -1
   ): boolean {
-    // Stay safely inside meadow shoreline & clear of Hero spawn (0, 4)
+    // Stay safely inside meadow shoreline, clear of Hero spawn (0, 4) & Chrono-Vessel Pad
     if (Math.hypot(x, z) > 29.5 - buildingRadius) return false;
     if (Math.hypot(x - 0, z - 4.0) < buildingRadius + 1.8) return false;
+    if (Math.hypot(x - CHRONO_PAD_X, z - CHRONO_PAD_Z) < 3.4 + buildingRadius) return false;
 
     // Clear of Home Pool + rim boulders + overflow splash apron (radius 5.4m around (-8.8, 3.0))
     if (this.homePool) {
@@ -2326,7 +2740,10 @@ export class PlayStyleManager {
     this.sanctuaryGroup.children.forEach((child) => {
       if (child.name.startsWith('building_')) toRemove.push(child);
     });
-    toRemove.forEach((c) => this.sanctuaryGroup.remove(c));
+    toRemove.forEach((c) => {
+      this.sanctuaryGroup.remove(c);
+      disposeObject3DTree(c);
+    });
     this.sanctuaryBuildingMeshes = [];
 
     // Guarantee zero overlap between buildings (including legacy saved coordinates), trees & Home Pool
@@ -2343,6 +2760,16 @@ export class PlayStyleManager {
       this.sanctuaryBuildingMeshes.push(bMesh);
       this.sanctuaryGroup.add(bMesh);
     });
+
+    const desiredBuddies = this.getDesiredBuddyCount();
+    for (let i = 0; i < this.sanctuaryCapys.length; i++) {
+      this.sanctuaryCapys[i].capy.visible = i < desiredBuddies;
+    }
+    const trampSum = Math.max(1, this.getBuildingLevelSum('trampoline_pad'));
+    this.physicsBridge?.setPhysicsTuning({
+      trampolineBoostMultiplier: 1.0 + Math.max(0, trampSum - 1) * 0.1,
+    });
+
     this.syncWorldPhysicsColliders();
   }
 
@@ -2539,24 +2966,71 @@ export class PlayStyleManager {
       }
     }
 
+    // Coupled rippling PBR shallow-water surface disc driven by 24x24 fluidSolver DataTexture
+    this.sporeRippleTexture = RealisticWorldEnvironment.createWaterRippleDataTexture();
+    const lagoonWaterHex = parseHexColorString(
+      this.proceduralConfig.world.waterColorHex,
+      0x0ea5e9
+    );
+    this.sporeWaterMat = RealisticWorldEnvironment.createRipplingWaterMaterial(
+      this.sporeRippleTexture,
+      {
+        colorHex: lagoonWaterHex,
+        opacity: 0.78,
+        rippleAmp: 0.11,
+      }
+    );
+    this.sporeWaterMesh = new THREE.Mesh(
+      RealisticWorldEnvironment.createSubdividedWaterDiscGeometry(35.6, 36, 12),
+      this.sporeWaterMat
+    );
+    this.sporeWaterMesh.position.set(0, 0.06, 0);
+    this.sporeWaterMesh.renderOrder = 2;
+    this.sporeWaterMesh.receiveShadow = true;
+    this.sporeWaterMesh.userData.ignoreCameraFade = true;
+    this.sporeGroup.add(this.sporeWaterMesh);
+
+    this.initSporePools();
     this.resetSporeGame();
   }
 
-  private resetSporeGame() {
-    this.sporeMass = 10 + (this.stats.evolutionStage - 1) * 5;
-    this.sporeDnaEarned = 0;
+  private initSporePools() {
+    if (this.sporePoolsInitialized) return;
+    this.sporePoolsInitialized = true;
 
-    this.sporeOrbs.forEach((o) => this.sporeGroup.remove(o.mesh));
-    this.sporeOrbs = [];
-    this.sporeCritters.forEach((c) => this.sporeGroup.remove(c.mesh));
-    this.sporeCritters = [];
+    this.sporeOrbSphereGeo = new THREE.SphereGeometry(0.28, 10, 10);
+    this.sporeOrbDnaGeo = new THREE.OctahedronGeometry(0.38, 1);
+    this.sporeOrbPlanktonMat = new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      emissive: 0xca8a04,
+      emissiveIntensity: 0.48,
+      roughness: 0.2,
+    });
+    this.sporeOrbDnaMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.65,
+      roughness: 0.2,
+    });
 
-    for (let i = 0; i < 28; i++) {
-      this.spawnSporeOrb();
+    for (let i = 0; i < MAX_SPORE_ORBS; i++) {
+      const isDna = i % 3 === 0;
+      const mesh = new THREE.Mesh(
+        isDna ? this.sporeOrbDnaGeo : this.sporeOrbSphereGeo,
+        isDna ? this.sporeOrbDnaMat : this.sporeOrbPlanktonMat
+      );
+      mesh.visible = false;
+      this.sporeGroup.add(mesh);
+      this.sporeOrbs.push({
+        mesh,
+        isDna,
+        value: isDna ? 3 : 5,
+        active: false,
+      });
     }
 
     const skins = ['matcha', 'sakura', 'cosmic', 'golden'];
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < MAX_SPORE_CRITTERS; i++) {
       const scale = 0.55 + (i % 4) * 0.32;
       const critter = CapyModelGenerator.createCapybara(
         i % 2 === 0 ? 'flower' : 'yuzu',
@@ -2564,41 +3038,79 @@ export class PlayStyleManager {
         skins[i % skins.length],
         ['flippers']
       );
-      const angle = (i / 8) * Math.PI * 2;
-      const rad = 8 + Math.random() * 18;
-      critter.position.set(Math.cos(angle) * rad, 0, Math.sin(angle) * rad);
+      critter.visible = false;
       this.sporeGroup.add(critter);
       this.sporeCritters.push({
         mesh: critter,
         scale,
-        vel: new THREE.Vector3((Math.random() - 0.5) * 5, 0, (Math.random() - 0.5) * 5),
-        changeDirTimer: 2 + Math.random() * 3,
+        vel: new THREE.Vector3(),
+        changeDirTimer: 2,
+        active: false,
       });
     }
   }
 
-  private spawnSporeOrb() {
-    const isDna = Math.random() > 0.62;
-    const mesh = new THREE.Mesh(
-      isDna
-        ? new THREE.OctahedronGeometry(0.38, 1)
-        : new THREE.SphereGeometry(0.28, 10, 10),
-      new THREE.MeshStandardMaterial({
-        color: isDna ? 0x38bdf8 : 0xfacc15,
-        emissive: isDna ? 0x0284c7 : 0xca8a04,
-        emissiveIntensity: 0.55,
-        roughness: 0.2,
-      })
+  private resetSporeGame() {
+    this.sporeMass = 10 + (this.stats.evolutionStage - 1) * 5;
+    this.sporeDnaEarned = 0;
+    this.initSporePools();
+
+    const targetOrbs = Math.min(
+      MAX_SPORE_ORBS,
+      Math.max(6, Math.round(this.proceduralConfig.districts.spore.planktonCount))
     );
-    const angle = Math.random() * Math.PI * 2;
-    const rad = 2 + Math.random() * 30;
-    mesh.position.set(Math.cos(angle) * rad, 0.45, Math.sin(angle) * rad);
-    this.sporeGroup.add(mesh);
-    this.sporeOrbs.push({
-      mesh,
-      isDna,
-      value: isDna ? 3 : 5,
-    });
+    const targetCritters = Math.min(
+      MAX_SPORE_CRITTERS,
+      Math.max(2, Math.round(this.proceduralConfig.districts.spore.critterCount))
+    );
+
+    for (let i = 0; i < this.sporeOrbs.length; i++) {
+      const orb = this.sporeOrbs[i];
+      if (i < targetOrbs) {
+        orb.active = true;
+        orb.mesh.visible = true;
+        const angle = this.proceduralPrng() * Math.PI * 2;
+        const rad = 2 + this.proceduralPrng() * 30;
+        orb.mesh.position.set(Math.cos(angle) * rad, 0.45, Math.sin(angle) * rad);
+      } else {
+        orb.active = false;
+        orb.mesh.visible = false;
+      }
+    }
+
+    for (let i = 0; i < this.sporeCritters.length; i++) {
+      const critter = this.sporeCritters[i];
+      if (i < targetCritters) {
+        critter.active = true;
+        critter.mesh.visible = true;
+        const angle = (i / targetCritters) * Math.PI * 2 + this.proceduralPrng() * 0.4;
+        const rad = 8 + this.proceduralPrng() * 18;
+        critter.mesh.position.set(Math.cos(angle) * rad, 0, Math.sin(angle) * rad);
+        critter.vel.set(
+          (this.proceduralPrng() - 0.5) * 5,
+          0,
+          (this.proceduralPrng() - 0.5) * 5
+        );
+        critter.changeDirTimer = 2 + this.proceduralPrng() * 3;
+      } else {
+        critter.active = false;
+        critter.mesh.visible = false;
+      }
+    }
+  }
+
+  private spawnSporeOrb() {
+    for (let i = 0; i < this.sporeOrbs.length; i++) {
+      const orb = this.sporeOrbs[i];
+      if (!orb.active) {
+        orb.active = true;
+        orb.mesh.visible = true;
+        const angle = this.proceduralPrng() * Math.PI * 2;
+        const rad = 2 + this.proceduralPrng() * 30;
+        orb.mesh.position.set(Math.cos(angle) * rad, 0.45, Math.sin(angle) * rad);
+        return;
+      }
+    }
   }
 
   // ============================================================================
@@ -2670,72 +3182,138 @@ export class PlayStyleManager {
     paddleCapy.rotation.y = Math.PI;
     this.breakoutPaddle.add(paddleCapy);
 
+    this.initBreakoutPools();
     this.resetBreakoutGame(true);
   }
 
-  private spawnBreakoutBall(x: number, z: number, vx: number, vz: number) {
-    const ballMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.38, 16, 16),
-      new THREE.MeshStandardMaterial({
-        color: 0xffbb00,
-        roughness: 0.15,
-        metalness: 0.3,
-        emissive: 0x78350f,
-      })
-    );
-    ballMesh.position.set(x, 0.5, z);
-    ballMesh.castShadow = true;
-    this.breakoutGroup.add(ballMesh);
-    this.breakoutBalls.push({
-      mesh: ballMesh,
-      vel: new THREE.Vector3(vx, 0, vz),
-      active: true,
+  private initBreakoutPools() {
+    if (this.breakoutPoolsInitialized) return;
+    this.breakoutPoolsInitialized = true;
+
+    const ballGeo = new THREE.SphereGeometry(0.38, 16, 16);
+    const ballMat = new THREE.MeshStandardMaterial({
+      color: 0xffbb00,
+      roughness: 0.15,
+      metalness: 0.3,
+      emissive: 0x78350f,
     });
+    for (let i = 0; i < MAX_BREAKOUT_BALLS; i++) {
+      const mesh = new THREE.Mesh(ballGeo, ballMat);
+      mesh.castShadow = true;
+      mesh.visible = false;
+      this.breakoutGroup.add(mesh);
+      this.breakoutBalls.push({
+        mesh,
+        vel: new THREE.Vector3(),
+        active: false,
+      });
+    }
+
+    const brickGeo = new THREE.BoxGeometry(2.0 - 0.18, 0.7, 0.95 - 0.18);
+    for (let i = 0; i < MAX_BREAKOUT_ROWS * MAX_BREAKOUT_COLS; i++) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xef4444,
+        roughness: 0.22,
+        metalness: 0.3,
+      });
+      const mesh = new THREE.Mesh(brickGeo, mat);
+      mesh.castShadow = true;
+      mesh.visible = false;
+      this.breakoutGroup.add(mesh);
+      this.breakoutBlocks.push({
+        mesh,
+        mat,
+        hp: 1,
+        isBonus: false,
+        active: false,
+      });
+    }
+
+    for (let i = 0; i < MAX_BREAKOUT_POWERUPS; i++) {
+      const mesh = new THREE.Mesh(
+        this.sharedBreakoutPowerupGeo,
+        this.sharedBreakoutPowerupMat
+      );
+      mesh.rotation.z = Math.PI / 2;
+      mesh.visible = false;
+      this.breakoutGroup.add(mesh);
+      this.breakoutPowerups.push({
+        mesh,
+        type: 'multiball',
+        active: false,
+      });
+    }
+  }
+
+  private spawnBreakoutBall(x: number, z: number, vx: number, vz: number) {
+    for (let i = 0; i < this.breakoutBalls.length; i++) {
+      const b = this.breakoutBalls[i];
+      if (!b.active) {
+        b.active = true;
+        b.mesh.visible = true;
+        b.mesh.position.set(x, 0.5, z);
+        b.vel.set(Math.abs(vx) < 1.8 ? (vx >= 0 ? 1.8 : -1.8) : vx, 0, vz);
+        return;
+      }
+    }
   }
 
   private resetBreakoutGame(fullReset: boolean = false) {
+    this.initBreakoutPools();
+    const bCfg = this.proceduralConfig.districts.breakout;
     if (fullReset) {
       this.breakoutScore = 0;
       this.breakoutWave = 1;
       this.breakoutCombo = 1;
     }
 
-    this.breakoutBlocks.forEach((b) => this.breakoutGroup.remove(b.mesh));
-    this.breakoutBlocks = [];
-    this.breakoutBalls.forEach((b) => this.breakoutGroup.remove(b.mesh));
-    this.breakoutBalls = [];
-    this.breakoutPowerups.forEach((p) => this.breakoutGroup.remove(p.mesh));
-    this.breakoutPowerups = [];
+    this.paddleWidthMultiplier = bCfg.paddleWidthMultiplier;
+    this.breakoutMegaPaddleTimer = 0;
 
-    const speedScale = 1 + (this.breakoutWave - 1) * 0.08;
+    for (let i = 0; i < this.breakoutBlocks.length; i++) {
+      this.breakoutBlocks[i].active = false;
+      this.breakoutBlocks[i].mesh.visible = false;
+    }
+    for (let i = 0; i < this.breakoutBalls.length; i++) {
+      this.breakoutBalls[i].active = false;
+      this.breakoutBalls[i].mesh.visible = false;
+    }
+    for (let i = 0; i < this.breakoutPowerups.length; i++) {
+      this.breakoutPowerups[i].active = false;
+      this.breakoutPowerups[i].mesh.visible = false;
+    }
+
+    const speedScale = (bCfg.ballBaseSpeed / 9.2) * (1 + (this.breakoutWave - 1) * 0.08);
     this.spawnBreakoutBall(0, 6.5, 4.2 * speedScale, -9.2 * speedScale);
 
     const blockColors = [0xef4444, 0xf97316, 0xeab308, 0x10b981, 0x06b6d4, 0x8b5cf6];
-    const rows = Math.min(7, 4 + Math.floor(this.breakoutWave / 2));
-    const cols = 7;
+    const rows = Math.min(
+      MAX_BREAKOUT_ROWS,
+      Math.max(2, bCfg.rows + Math.floor((this.breakoutWave - 1) / 2))
+    );
+    const cols = Math.min(MAX_BREAKOUT_COLS, Math.max(3, bCfg.cols));
     const blockW = 2.0;
     const blockD = 0.95;
     const startX = -((cols - 1) * blockW) / 2;
     const startZ = -9.5;
 
+    let slotIdx = 0;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         if (this.breakoutWave % 2 === 0 && (r + c) % 5 === 0) continue;
-        const isBonus = (r === 0 && c === 3) || Math.random() > 0.86;
-        const hp = isBonus ? 2 : 1;
-        const mat = new THREE.MeshStandardMaterial({
-          color: isBonus ? 0xfacc15 : blockColors[r % blockColors.length],
-          roughness: 0.22,
-          metalness: isBonus ? 0.75 : 0.3,
-        });
-        const block = new THREE.Mesh(
-          new THREE.BoxGeometry(blockW - 0.18, 0.7, blockD - 0.18),
-          mat
+        if (slotIdx >= this.breakoutBlocks.length) break;
+        const blk = this.breakoutBlocks[slotIdx++];
+        const isBonus =
+          (r === 0 && c === Math.floor(cols / 2)) || this.proceduralPrng() > 0.86;
+        blk.hp = isBonus ? 2 : 1;
+        blk.isBonus = isBonus;
+        blk.active = true;
+        blk.mat.color.setHex(
+          isBonus ? 0xfacc15 : blockColors[r % blockColors.length]
         );
-        block.position.set(startX + c * blockW, 0.5, startZ + r * blockD);
-        block.castShadow = true;
-        this.breakoutGroup.add(block);
-        this.breakoutBlocks.push({ mesh: block, hp, isBonus });
+        blk.mat.metalness = isBonus ? 0.75 : 0.3;
+        blk.mesh.position.set(startX + c * blockW, 0.5, startZ + r * blockD);
+        blk.mesh.visible = true;
       }
     }
   }
@@ -2744,45 +3322,102 @@ export class PlayStyleManager {
   // 4. NUMBER RUNNER STAMPEDE (AT WORLD -75, +75)
   // ============================================================================
   private buildRunner() {
+    this.initRunnerPools();
     this.resetRunnerGame();
   }
 
-  private resetRunnerGame() {
-    this.runnerDistance = 0;
-    this.runnerCapyCount =
-      this.stats.upgrades.herdSize + (this.activeHeroSpec?.herdBonus ?? 0);
+  private getCachedRunnerBannerTexture(
+    labelText: string,
+    subText: string,
+    bgHex: string,
+    accentHex: string
+  ): THREE.CanvasTexture {
+    const key = `${labelText}|${subText}|${bgHex}|${accentHex}`;
+    const existing = this.runnerBannerTextureCache.get(key);
+    if (existing) return existing;
+    const tex = CapyModelGenerator.createTextBannerTexture(
+      labelText,
+      subText,
+      bgHex,
+      accentHex
+    );
+    this.runnerBannerTextureCache.set(key, tex);
+    return tex;
+  }
 
-    this.runnerTrackSegments.forEach((s) => this.runnerGroup.remove(s));
-    this.runnerTrackSegments = [];
-    this.runnerGates.forEach((g) => this.runnerGroup.remove(g.mesh));
-    this.runnerGates = [];
-    this.runnerHerdMeshes.forEach((m) => this.runnerGroup.remove(m));
-    this.runnerHerdMeshes = [];
+  private initRunnerPools() {
+    if (this.runnerPoolsInitialized) return;
+    this.runnerPoolsInitialized = true;
 
     for (let i = 0; i < 4; i++) {
       this.spawnRunnerTrackSegment(-i * 24);
     }
 
-    this.syncRunnerHerdVisuals();
-  }
+    const panelGeo = new THREE.BoxGeometry(3.6, 2.5, 0.18);
+    const defaultTex = this.getCachedRunnerBannerTexture(
+      '+3',
+      'ADD CAPYS',
+      '#1e3a8a',
+      '#60a5fa'
+    );
+    for (let i = 1; i <= 3; i++) {
+      const zPos = -i * 24;
+      for (const xPos of [-2.1, 2.1]) {
+        const gateGroup = new THREE.Group();
+        gateGroup.position.set(xPos, 0, zPos);
+        const panelMat = new THREE.MeshBasicMaterial({ map: defaultTex });
+        const panel = new THREE.Mesh(panelGeo, panelMat);
+        panel.position.set(0, 1.4, 0);
+        gateGroup.add(panel);
+        this.runnerGroup.add(gateGroup);
+        this.runnerGates.push({
+          mesh: gateGroup,
+          panelMat,
+          type: 'add',
+          value: 3,
+          z: zPos,
+          triggered: false,
+        });
+      }
+    }
 
-  private syncRunnerHerdVisuals() {
-    const desiredVisualCount = Math.min(22, Math.max(0, this.runnerCapyCount - 1));
-    while (this.runnerHerdMeshes.length < desiredVisualCount) {
-      const idx = this.runnerHerdMeshes.length;
+    for (let idx = 0; idx < MAX_RUNNER_HERD; idx++) {
       const mini = CapyModelGenerator.createCapybara(
         idx % 3 === 0 ? 'yuzu' : 'flower',
         0.58,
         idx % 4 === 0 ? 'golden' : 'classic'
       );
       mini.rotation.y = Math.PI;
+      mini.visible = false;
       mini.userData.ignoreCameraFade = true;
       this.runnerGroup.add(mini);
       this.runnerHerdMeshes.push(mini);
     }
-    while (this.runnerHerdMeshes.length > desiredVisualCount) {
-      const removed = this.runnerHerdMeshes.pop()!;
-      this.runnerGroup.remove(removed);
+  }
+
+  private resetRunnerGame() {
+    this.initRunnerPools();
+    const rCfg = this.proceduralConfig.districts.runner;
+    this.runnerDistance = 0;
+    this.runnerSpeed = rCfg.laneSpeed;
+    this.runnerCapyCount = Math.max(
+      1,
+      rCfg.startingHerdCount +
+        (this.stats.upgrades.herdSize - 1) +
+        (this.activeHeroSpec?.herdBonus ?? 0)
+    );
+
+    this.refreshRunnerCircuitGates();
+    this.syncRunnerHerdVisuals();
+  }
+
+  private syncRunnerHerdVisuals() {
+    const desiredVisualCount = Math.min(
+      MAX_RUNNER_HERD,
+      Math.max(0, this.runnerCapyCount - 1)
+    );
+    for (let i = 0; i < this.runnerHerdMeshes.length; i++) {
+      this.runnerHerdMeshes[i].visible = i < desiredVisualCount;
     }
   }
 
@@ -2833,60 +3468,10 @@ export class PlayStyleManager {
 
     this.runnerGroup.add(segment);
     this.runnerTrackSegments.push(segment);
-
-    if (Math.abs(zPos) > 16) {
-      this.spawnRunnerGatePair(zPos);
-    }
   }
 
-  private spawnRunnerGatePair(zPos: number) {
-    const sides = [-2.1, 2.1];
-    for (const xPos of sides) {
-      const roll = Math.random();
-      let type: 'add' | 'multiply' | 'sub' = 'add';
-      let value = Math.floor(Math.random() * 7) + 3;
-      if (roll > 0.62) {
-        type = 'multiply';
-        value = Math.random() > 0.7 ? 3 : 2;
-      } else if (roll < 0.18 && xPos > 0) {
-        type = 'sub';
-        value = Math.floor(Math.random() * 4) + 2;
-      }
-
-      const labelText =
-        type === 'multiply' ? `×${value}` : type === 'add' ? `+${value}` : `-${value}`;
-      const subText =
-        type === 'multiply' ? 'MULTIPLY HERD' : type === 'add' ? 'ADD CAPYS' : 'HAZARD';
-      const bgHex =
-        type === 'multiply' ? '#065f46' : type === 'add' ? '#1e3a8a' : '#7f1d1d';
-      const accentHex =
-        type === 'multiply' ? '#34d399' : type === 'add' ? '#60a5fa' : '#f87171';
-
-      const gateGroup = new THREE.Group();
-      gateGroup.position.set(xPos, 0, zPos);
-
-      const bannerTex = CapyModelGenerator.createTextBannerTexture(
-        labelText,
-        subText,
-        bgHex,
-        accentHex
-      );
-      const panel = new THREE.Mesh(
-        new THREE.BoxGeometry(3.6, 2.5, 0.18),
-        new THREE.MeshBasicMaterial({ map: bannerTex })
-      );
-      panel.position.set(0, 1.4, 0);
-      gateGroup.add(panel);
-
-      this.runnerGroup.add(gateGroup);
-      this.runnerGates.push({
-        mesh: gateGroup,
-        type,
-        value,
-        z: zPos,
-        triggered: false,
-      });
-    }
+  private spawnRunnerGatePair(_zPos: number) {
+    // Gate pairs are pre-allocated once in initRunnerPools() and mutated in-place by refreshRunnerCircuitGates()
   }
 
   // ============================================================================
@@ -2897,143 +3482,159 @@ export class PlayStyleManager {
   }
 
   private resetFallGuysGame(resetRound: boolean = false) {
+    const fCfg = this.proceduralConfig.districts.fallguys;
     if (resetRound) {
       this.fallGuysCrowns = 0;
       this.fallGuysRound = 1;
     }
 
-    while (this.fallGuysGroup.children.length > 0) {
-      this.fallGuysGroup.remove(this.fallGuysGroup.children[0]);
-    }
-    this.spinningObstacles = [];
-    this.seeSaws = [];
-    this.fallGuysRivals = [];
+    if (!this.fallGuysInitialized) {
+      this.fallGuysInitialized = true;
+      const sandTex = RealisticWorldEnvironment.getTextureSet('sand');
+      const timberTex = RealisticWorldEnvironment.getTextureSet('timber');
+      const pinkMat = new THREE.MeshStandardMaterial({
+        color: 0xf472b6,
+        map: sandTex.albedo,
+        normalMap: sandTex.normal,
+        normalScale: new THREE.Vector2(0.68, 0.68),
+        roughnessMap: sandTex.roughness,
+        aoMap: sandTex.ao,
+        roughness: 0.42,
+      });
+      const cyanMat = new THREE.MeshStandardMaterial({
+        color: 0x22d3ee,
+        map: sandTex.albedo,
+        normalMap: sandTex.normal,
+        normalScale: new THREE.Vector2(0.68, 0.68),
+        roughnessMap: sandTex.roughness,
+        aoMap: sandTex.ao,
+        roughness: 0.38,
+      });
+      const yellowMat = new THREE.MeshStandardMaterial({
+        color: 0xfacc15,
+        map: timberTex.albedo,
+        normalMap: timberTex.normal,
+        normalScale: new THREE.Vector2(0.72, 0.72),
+        roughnessMap: timberTex.roughness,
+        aoMap: timberTex.ao,
+        roughness: 0.3,
+      });
 
-    const sandTex = RealisticWorldEnvironment.getTextureSet('sand');
-    const timberTex = RealisticWorldEnvironment.getTextureSet('timber');
-    const pinkMat = new THREE.MeshStandardMaterial({
-      color: 0xf472b6,
-      map: sandTex.albedo,
-      normalMap: sandTex.normal,
-      normalScale: new THREE.Vector2(0.68, 0.68),
-      roughnessMap: sandTex.roughness,
-      aoMap: sandTex.ao,
-      roughness: 0.42,
-    });
-    const cyanMat = new THREE.MeshStandardMaterial({
-      color: 0x22d3ee,
-      map: sandTex.albedo,
-      normalMap: sandTex.normal,
-      normalScale: new THREE.Vector2(0.68, 0.68),
-      roughnessMap: sandTex.roughness,
-      aoMap: sandTex.ao,
-      roughness: 0.38,
-    });
-    const yellowMat = new THREE.MeshStandardMaterial({
-      color: 0xfacc15,
-      map: timberTex.albedo,
-      normalMap: timberTex.normal,
-      normalScale: new THREE.Vector2(0.72, 0.72),
-      roughnessMap: timberTex.roughness,
-      aoMap: timberTex.ao,
-      roughness: 0.3,
-    });
+      const startPlat = new THREE.Mesh(
+        PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.BoxGeometry(12, 1, 12)),
+        pinkMat
+      );
+      startPlat.position.set(0, 0, 0);
+      startPlat.receiveShadow = true;
+      startPlat.userData.ignoreCameraFade = true;
+      this.fallGuysGroup.add(startPlat);
 
-    const startPlat = new THREE.Mesh(
-      PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.BoxGeometry(12, 1, 12)),
-      pinkMat
-    );
-    startPlat.position.set(0, 0, 0);
-    startPlat.receiveShadow = true;
-    startPlat.userData.ignoreCameraFade = true;
-    this.fallGuysGroup.add(startPlat);
+      const plat2 = new THREE.Mesh(
+        PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.BoxGeometry(11, 1, 18)),
+        cyanMat
+      );
+      plat2.position.set(0, 0, -16);
+      plat2.receiveShadow = true;
+      plat2.userData.ignoreCameraFade = true;
+      this.fallGuysGroup.add(plat2);
 
-    const plat2 = new THREE.Mesh(
-      PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.BoxGeometry(11, 1, 18)),
-      cyanMat
-    );
-    plat2.position.set(0, 0, -16);
-    plat2.receiveShadow = true;
-    plat2.userData.ignoreCameraFade = true;
-    this.fallGuysGroup.add(plat2);
+      for (const zOff of [-12, -20]) {
+        const post = new THREE.Mesh(
+          PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.CylinderGeometry(0.5, 0.5, 3, 16)),
+          yellowMat
+        );
+        post.position.set(0, 1.5, zOff);
+        this.fallGuysGroup.add(post);
 
-    for (const zOff of [-12, -20]) {
-      const post = new THREE.Mesh(
-        PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.CylinderGeometry(0.5, 0.5, 3, 16)),
+        const bar = new THREE.Mesh(
+          new THREE.BoxGeometry(9.5, 0.75, 0.75),
+          new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.28, metalness: 0.2 })
+        );
+        bar.position.set(0, 1.15, zOff);
+        bar.castShadow = true;
+        this.fallGuysGroup.add(bar);
+        const dir = zOff === -12 ? 1 : -1;
+        this.spinningObstacles.push({
+          mesh: bar,
+          speed: dir * (2.2 + this.fallGuysRound * 0.25) * fCfg.hammerSpeedMultiplier,
+          dir,
+        });
+      }
+
+      const seeSaw = new THREE.Mesh(
+        PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.BoxGeometry(10, 0.6, 12)),
         yellowMat
       );
-      post.position.set(0, 1.5, zOff);
-      this.fallGuysGroup.add(post);
+      seeSaw.position.set(0, 0.2, -33);
+      seeSaw.castShadow = true;
+      seeSaw.userData.ignoreCameraFade = true;
+      this.fallGuysGroup.add(seeSaw);
+      this.seeSaws.push({ mesh: seeSaw, phase: 0 });
 
-      const bar = new THREE.Mesh(
-        new THREE.BoxGeometry(9.5, 0.75, 0.75),
-        new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.28, metalness: 0.2 })
+      const plat3 = new THREE.Mesh(
+        new THREE.CylinderGeometry(5.5, 5.5, 1, 24),
+        new THREE.MeshStandardMaterial({ color: 0x8b5cf6, roughness: 0.25 })
       );
-      bar.position.set(0, 1.15, zOff);
-      bar.castShadow = true;
-      this.fallGuysGroup.add(bar);
-      this.spinningObstacles.push({
-        mesh: bar,
-        speed: (zOff === -12 ? 1 : -1) * (2.2 + this.fallGuysRound * 0.25),
-      });
+      plat3.position.set(0, 0, -46);
+      plat3.userData.ignoreCameraFade = true;
+      this.fallGuysGroup.add(plat3);
+
+      const finishPlat = new THREE.Mesh(
+        new THREE.BoxGeometry(12, 1, 12),
+        new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3 })
+      );
+      finishPlat.position.set(0, 0, -60);
+      finishPlat.userData.ignoreCameraFade = true;
+      this.fallGuysGroup.add(finishPlat);
+
+      const crown = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.8, 1.3, 1.6, 8),
+        new THREE.MeshStandardMaterial({
+          color: 0xffd700,
+          metalness: 0.9,
+          roughness: 0.12,
+        })
+      );
+      crown.position.set(0, 2.4, -60);
+      this.fallGuysGroup.add(crown);
+
+      const rivalSkins = ['sakura', 'matcha', 'golden', 'cosmic', 'classic'];
+      const rivalHats = ['party', 'wizard', 'flower', 'crown', 'yuzu'];
+      for (let i = 0; i < 5; i++) {
+        const rival = CapyModelGenerator.createCapybara(
+          rivalHats[i],
+          0.92,
+          rivalSkins[i]
+        );
+        const laneX = (i - 2) * 1.9;
+        rival.position.set(laneX, 0.6, 1.5);
+        rival.rotation.y = Math.PI;
+        this.fallGuysGroup.add(rival);
+        this.fallGuysRivals.push({
+          capy: rival,
+          speed: 5.8 + this.proceduralPrng() * 2.4,
+          laneOffset: laneX,
+          vy: 0,
+        });
+      }
     }
 
-    const seeSaw = new THREE.Mesh(
-      PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.BoxGeometry(10, 0.6, 12)),
-      yellowMat
-    );
-    seeSaw.position.set(0, 0.2, -33);
-    seeSaw.castShadow = true;
-    seeSaw.userData.ignoreCameraFade = true;
-    this.fallGuysGroup.add(seeSaw);
-    this.seeSaws.push({ mesh: seeSaw, phase: 0 });
-
-    const plat3 = new THREE.Mesh(
-      new THREE.CylinderGeometry(5.5, 5.5, 1, 24),
-      new THREE.MeshStandardMaterial({ color: 0x8b5cf6, roughness: 0.25 })
-    );
-    plat3.position.set(0, 0, -46);
-    plat3.userData.ignoreCameraFade = true;
-    this.fallGuysGroup.add(plat3);
-
-    const finishPlat = new THREE.Mesh(
-      new THREE.BoxGeometry(12, 1, 12),
-      new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3 })
-    );
-    finishPlat.position.set(0, 0, -60);
-    finishPlat.userData.ignoreCameraFade = true;
-    this.fallGuysGroup.add(finishPlat);
-
-    const crown = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.8, 1.3, 1.6, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0xffd700,
-        metalness: 0.9,
-        roughness: 0.12,
-      })
-    );
-    crown.position.set(0, 2.4, -60);
-    this.fallGuysGroup.add(crown);
-
-    const rivalSkins = ['sakura', 'matcha', 'golden', 'cosmic', 'classic'];
-    const rivalHats = ['party', 'wizard', 'flower', 'crown', 'yuzu'];
-    for (let i = 0; i < 5; i++) {
-      const rival = CapyModelGenerator.createCapybara(
-        rivalHats[i],
-        0.92,
-        rivalSkins[i]
-      );
-      const laneX = (i - 2) * 1.9;
-      rival.position.set(laneX, 0.6, 1.5);
-      rival.rotation.y = Math.PI;
-      this.fallGuysGroup.add(rival);
-      this.fallGuysRivals.push({
-        capy: rival,
-        speed: 5.8 + Math.random() * 2.4,
-        laneOffset: laneX,
-        vy: 0,
-      });
+    // In-place round reset (zero geometry/material allocations!)
+    for (let i = 0; i < this.spinningObstacles.length; i++) {
+      const obs = this.spinningObstacles[i];
+      obs.speed = obs.dir * (2.2 + this.fallGuysRound * 0.25) * fCfg.hammerSpeedMultiplier;
     }
+    for (let i = 0; i < this.seeSaws.length; i++) {
+      this.seeSaws[i].phase = 0;
+      this.seeSaws[i].mesh.rotation.z = 0;
+    }
+    for (let i = 0; i < this.fallGuysRivals.length; i++) {
+      const rival = this.fallGuysRivals[i];
+      rival.capy.position.set(rival.laneOffset, 0.6, 1.5);
+      rival.speed = 5.8 + this.proceduralPrng() * 2.4;
+      rival.capy.visible = i < fCfg.rivalCount;
+    }
+    this.physicsBridge?.resetSeeSaw();
   }
 
   // ============================================================================
@@ -3044,9 +3645,18 @@ export class PlayStyleManager {
   }
 
   public getMouthMaxFruitRadius(): number {
-    // Starts at 0.40m (40cm: fits Tier 0 [24cm] & Tier 1 [35.5cm], blocks Tier 2 [52.6cm], Tier 3 [77.8cm], Tier 4 [115.2cm])
-    // Widens logarithmically as your Capybara grows from eating smaller fruits!
-    return +(0.40 * (1 + 0.48 * Math.log(1 + this.eatenFruitMass))).toFixed(3);
+    // Starts at 0.40m (40cm); 'tusks' mutation widens capacity by +22%, scaled by proceduralConfig.player.mouthCapacityMultiplier
+    const hasTusks =
+      this.stats.activeMutations.includes('tusks') ||
+      Boolean(this.activeHeroSpec?.mutations?.includes('tusks'));
+    const tusksBonus = hasTusks ? 1.22 : 1.0;
+    const cfgMult = this.proceduralConfig.player.mouthCapacityMultiplier;
+    return +(
+      0.4 *
+      (1 + 0.48 * Math.log(1 + this.eatenFruitMass)) *
+      tusksBonus *
+      cfgMult
+    ).toFixed(3);
   }
 
   public syncLogarithmicBodyLength(silent: boolean = false) {
@@ -3202,7 +3812,7 @@ export class PlayStyleManager {
     }
   }
 
-  private syncDachshundSkinAndOrange() {
+  private syncDachshundSkinAndOrange(overrideFurHex?: number) {
     const variety =
       HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex] ?? HEAD_ORANGE_VARIETIES[0];
     CapyModelGenerator.setHeadOrangeColor(
@@ -3211,16 +3821,22 @@ export class PlayStyleManager {
       variety.emissiveHex
     );
 
-    const furColor =
-      CapyModelGenerator.skinColors[this.stats.activeSkin] ??
-      CapyModelGenerator.skinColors.classic;
+    const customFurHex =
+      typeof overrideFurHex === 'number'
+        ? overrideFurHex
+        : parseHexColorString(
+            this.proceduralConfig.player.furPrimaryHex,
+            CapyModelGenerator.skinColors[this.stats.activeSkin] ?? CapyModelGenerator.skinColors.classic
+          );
+    const furColor = customFurHex;
 
     CapyModelGenerator.updateCapyAppearance(
       this.heroCapy,
       this.stats.activeHat,
       this.stats.activeSkin,
       this.stats.activeMutations,
-      variety.colorHex
+      variety.colorHex,
+      customFurHex
     );
     CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, this.fruitsCarried);
 
@@ -3336,7 +3952,7 @@ export class PlayStyleManager {
   ): PhysicsFruit {
     const v = HEAD_ORANGE_VARIETIES[varietyIndex] ?? HEAD_ORANGE_VARIETIES[0];
 
-    // Reuse an inactive fruit slot or recycle the oldest non-pond fruit if pool is full
+    // Reuse an inactive fruit slot or recycle the oldest non-pond fruit in-place (zero allocations!)
     let slot: PhysicsFruit | null = null;
     for (let i = 0; i < this.physicsFruits.length; i++) {
       if (!this.physicsFruits[i].active) {
@@ -3346,16 +3962,30 @@ export class PlayStyleManager {
     }
 
     if (!slot && this.physicsFruits.length >= MAX_PHYSICS_FRUITS) {
-      // Prefer recycling an old ground fruit rather than a pond fruit
-      slot =
-        this.physicsFruits.find((f) => !f.inPond) ?? this.physicsFruits[0];
-      this.fruitsGroup.remove(slot.mesh);
+      slot = this.physicsFruits.find((f) => !f.inPond) ?? this.physicsFruits[0];
     }
 
-    const mesh = CapyModelGenerator.createCollectibleOrange(v.colorHex, v.emissiveHex, radius);
+    let mesh: CollectibleOrangeGroup;
+    if (slot) {
+      mesh = slot.mesh;
+      if (mesh.userData.fruitMat) {
+        mesh.userData.fruitMat.color.setHex(v.colorHex);
+        mesh.userData.fruitMat.emissive.setHex(v.emissiveHex);
+      }
+      if (mesh.userData.haloMat) {
+        mesh.userData.haloMat.color.setHex(v.colorHex);
+      }
+      mesh.userData.rollGroup?.rotation.set(0, 0, 0);
+      mesh.userData.squashGroup?.scale.set(1, 1, 1);
+      mesh.visible = true;
+    } else {
+      mesh = CapyModelGenerator.createCollectibleOrange(v.colorHex, v.emissiveHex, 0.28);
+      mesh.userData.__occluderRoot = mesh;
+      this.fruitsGroup.add(mesh);
+    }
+
+    mesh.scale.setScalar(radius / 0.28);
     mesh.position.set(x, y, z);
-    mesh.userData.__occluderRoot = mesh;
-    this.fruitsGroup.add(mesh);
 
     if (slot) {
       slot.active = true;
@@ -3371,8 +4001,7 @@ export class PlayStyleManager {
       slot.squash = 0.16;
       slot.squashVel = -1.8;
       slot.pickupDelay = pickupDelay;
-      slot.bobPhase = Math.random() * Math.PI * 2;
-      slot.mesh = mesh;
+      slot.bobPhase = this.proceduralPrng() * Math.PI * 2;
       return slot;
     }
 
@@ -3390,7 +4019,7 @@ export class PlayStyleManager {
       squash: 0.16,
       squashVel: -1.8,
       pickupDelay,
-      bobPhase: Math.random() * Math.PI * 2,
+      bobPhase: this.proceduralPrng() * Math.PI * 2,
       mesh,
     };
     this.physicsFruits.push(created);
@@ -4386,6 +5015,7 @@ export class PlayStyleManager {
           // 6. Wandering Sanctuary Capybara Buddies ONLY if directly crossing head sightline rays
           for (let i = 0; i < this.sanctuaryCapys.length; i++) {
             const buddy = this.sanctuaryCapys[i].capy;
+            if (!buddy.visible) continue;
             const wx = zx + buddy.position.x;
             const wz = zz + buddy.position.z;
             if (
@@ -4522,6 +5152,7 @@ export class PlayStyleManager {
     if (this.snakeSelfHitCooldown > 0) this.snakeSelfHitCooldown -= dt;
     if (this.buddyBumpCooldown > 0) this.buddyBumpCooldown -= dt;
     if (this.mouthFullNotifyCooldown > 0) this.mouthFullNotifyCooldown -= dt;
+    if (this.sporeLargeCritterKnockbackCd > 0) this.sporeLargeCritterKnockbackCd -= dt;
 
     // Monitor live frame rate to dynamically scale Capybara mesh detail at smooth 60 FPS
     const measuredFps = this.isSoftwareGl
@@ -4529,7 +5160,7 @@ export class PlayStyleManager {
       : 1 / Math.max(0.004, rawFrameDt ?? delta);
     this.ingestFpsSample(measuredFps, dt);
 
-    // Update GPU Day/Night solar/lunar lighting, sky dome, weather & water ripples on surface stages
+    // Update GPU Day/Night solar/lunar lighting, sky dome, weather & coupled shallow-water ripples
     if (
       this.sanctuaryGroup.visible &&
       (this.cosmicStage === 'capy_selection' ||
@@ -4537,8 +5168,39 @@ export class PlayStyleManager {
         this.seamlessZoomActive)
     ) {
       const rippleTex = RealisticWorldEnvironment.getWaterRippleTexture();
-      rippleTex.offset.x = (rippleTex.offset.x + dt * 0.032) % 1;
-      rippleTex.offset.y = (rippleTex.offset.y + dt * 0.021) % 1;
+      const waveMult = this.proceduralConfig.world.waterWaveSpeed ?? 1.0;
+      rippleTex.offset.x = (rippleTex.offset.x + dt * 0.032 * waveMult) % 1;
+      rippleTex.offset.y = (rippleTex.offset.y + dt * 0.021 * waveMult) % 1;
+
+      const fluidBytes = this.physicsBridge?.fluidSolver.packRippleTextureBytes();
+      const rippleDataTex =
+        this.sporeRippleTexture ??
+        RealisticWorldEnvironment.createWaterRippleDataTexture();
+      if (fluidBytes && rippleDataTex.image?.data instanceof Uint8Array) {
+        rippleDataTex.image.data.set(fluidBytes);
+        rippleDataTex.needsUpdate = true;
+      }
+      const sporeWaterUniforms = this.sporeWaterMat?.userData?.__waterUniforms as
+        | { uWaterTime?: { value: number } }
+        | undefined;
+      if (sporeWaterUniforms?.uWaterTime) {
+        sporeWaterUniforms.uWaterTime.value += dt * waveMult;
+      }
+
+      if (this.chronoPad) {
+        const heroNearPad =
+          this.currentMode === 'sanctuary' &&
+          Math.hypot(
+            this.heroLocalPos.x - this.chronoPad.wx,
+            this.heroLocalPos.z - this.chronoPad.wz
+          ) <=
+            this.chronoPad.radius + 0.6;
+        this.chronoPad.update(
+          dt,
+          !this.seamlessZoomActive || heroNearPad,
+          parseHexColorString(this.proceduralConfig.player.vesselCherenkovHex, 0x06b6d4)
+        );
+      }
 
       const exposureScale = (this.settings.gpuExposure ?? 1.12) / 1.12;
       this.worldEnv.tickAtmosphereAndWeather(
@@ -4552,7 +5214,9 @@ export class PlayStyleManager {
         this.renderer,
         this.settings.worldFogEnabled && !this.seamlessZoomActive,
         this.homePool?.lanternLight,
-        exposureScale
+        exposureScale,
+        this.proceduralConfig.world.dayCycleSpeed ?? 1.0,
+        this.proceduralConfig.graphics.fogDensity ?? 1.0
       );
       this.worldEnv.tickTrees(this.sanctuaryTrees, dt);
       if (this.seamlessUniverse.forestGroveGroup.visible) {
@@ -4787,13 +5451,12 @@ export class PlayStyleManager {
       this.causewayLanternMat.emissiveIntensity = (0.55 + glowBoost * 2.3) * pulse;
     }
 
-    // 4. Spore Lagoon Bio-Orbs & Critters
-    for (let i = 0; i < this.sporeOrbs.length; i++) {
-      const mat = this.sporeOrbs[i].mesh.material as THREE.MeshStandardMaterial;
-      if (mat && mat.emissive !== undefined) {
-        mat.emissiveIntensity =
-          (this.sporeOrbs[i].isDna ? 0.65 : 0.42) + glowBoost * 1.45;
-      }
+    // 4. Spore Lagoon Bio-Orbs (O(1) shared-material intensity modulation)
+    if (this.sporeOrbPlanktonMat) {
+      this.sporeOrbPlanktonMat.emissiveIntensity = 0.42 + glowBoost * 1.45;
+    }
+    if (this.sporeOrbDnaMat) {
+      this.sporeOrbDnaMat.emissiveIntensity = 0.65 + glowBoost * 1.45;
     }
   }
 
@@ -5488,6 +6151,7 @@ export class PlayStyleManager {
 
       // Pass D: Wandering Capybara Buddies vs Static Obstacles, Each Other & Entire Solid Spine
       for (let i = 0; i < this.sanctuaryCapys.length; i++) {
+        if (!this.sanctuaryCapys[i].capy.visible) continue;
         const bA = this.sanctuaryCapys[i].capy.position;
         for (let t = 0; t < this.sanctuaryTrees.length; t++) {
           const tree = this.sanctuaryTrees[t];
@@ -5535,6 +6199,7 @@ export class PlayStyleManager {
           }
         }
         for (let j = i + 1; j < this.sanctuaryCapys.length; j++) {
+          if (!this.sanctuaryCapys[j].capy.visible) continue;
           const bB = this.sanctuaryCapys[j].capy.position;
           const dx = bA.x - bB.x;
           const dz = bA.z - bB.z;
@@ -5597,6 +6262,7 @@ export class PlayStyleManager {
     this.heroCapy.scale.set(hSxz, hSy, hSxz);
 
     for (let i = 0; i < this.sanctuaryCapys.length; i++) {
+      if (!this.sanctuaryCapys[i].capy.visible) continue;
       this.buddySoftSquashVel[i] +=
         (-135 * this.buddySoftSquash[i] - 15.0 * this.buddySoftSquashVel[i]) * dt;
       this.buddySoftSquash[i] = THREE.MathUtils.clamp(
@@ -5859,9 +6525,9 @@ export class PlayStyleManager {
           f.varietyIndex === this.activeHeadOrangeIndex &&
           f.radius <= mouthMaxR
         ) {
-          // Fruit fits in mouth! Chomp & grow logarithmically!
+          // Fruit fits in mouth! Return slot to pool and grow logarithmically!
           f.active = false;
-          this.fruitsGroup.remove(f.mesh);
+          f.mesh.visible = false;
 
           const massGain = Math.pow(f.radius / 0.24, 1.5);
           this.orangesCollectedCount++;
@@ -5871,7 +6537,7 @@ export class PlayStyleManager {
           this.syncLogarithmicBodyLength(true);
 
           AudioService.playCoin();
-          this.callbacks.onProgressEarned(
+          this.awardProgress(
             2,
             'sanctuary',
             this.bestSnakeSegments * 10 + this.orangesCollectedCount
@@ -6175,11 +6841,12 @@ export class PlayStyleManager {
   private tickSanctuaryAmbientOnly(dt: number) {
     for (let i = 0; i < this.sanctuaryCapys.length; i++) {
       const buddy = this.sanctuaryCapys[i];
+      if (!buddy.capy.visible) continue;
       buddy.stateTimer -= dt;
       if (buddy.stateTimer <= 0) {
-        buddy.stateTimer = 4 + Math.random() * 5;
-        const rad = 6.5 + Math.random() * 19.5;
-        const ang = Math.random() * Math.PI * 2;
+        buddy.stateTimer = 4 + this.proceduralPrng() * 5;
+        const rad = 6.5 + this.proceduralPrng() * 19.5;
+        const ang = this.proceduralPrng() * Math.PI * 2;
         buddy.target.set(Math.cos(ang) * rad, 0, Math.sin(ang) * rad);
       }
       _tempVec3.subVectors(buddy.target, buddy.capy.position);
@@ -6195,14 +6862,21 @@ export class PlayStyleManager {
 
   private tickSporeEcosystemOnly(dt: number) {
     for (let i = 0; i < this.sporeOrbs.length; i++) {
-      this.sporeOrbs[i].mesh.rotation.y += dt * 2.2;
+      const orb = this.sporeOrbs[i];
+      if (!orb.active) continue;
+      orb.mesh.rotation.y += dt * 2.2;
     }
     for (let i = 0; i < this.sporeCritters.length; i++) {
       const critter = this.sporeCritters[i];
+      if (!critter.active) continue;
       critter.changeDirTimer -= dt;
       if (critter.changeDirTimer <= 0) {
-        critter.changeDirTimer = 2 + Math.random() * 3;
-        critter.vel.set((Math.random() - 0.5) * 6, 0, (Math.random() - 0.5) * 6);
+        critter.changeDirTimer = 2 + this.proceduralPrng() * 3;
+        critter.vel.set(
+          (this.proceduralPrng() - 0.5) * 6,
+          0,
+          (this.proceduralPrng() - 0.5) * 6
+        );
       }
       critter.mesh.position.addScaledVector(critter.vel, dt);
       critter.mesh.position.x = THREE.MathUtils.clamp(critter.mesh.position.x, -32, 32);
@@ -6215,8 +6889,14 @@ export class PlayStyleManager {
   private tickBreakoutEcosystemOnly(dt: number) {
     if (!this.breakoutPaddle) return;
     // Autonomous rally by paddleCapy while Hero explores other districts
-    const leadBall = this.breakoutBalls[0];
-    if (leadBall) {
+    let leadBall = this.breakoutBalls[0];
+    for (let i = 0; i < this.breakoutBalls.length; i++) {
+      if (this.breakoutBalls[i].active) {
+        leadBall = this.breakoutBalls[i];
+        break;
+      }
+    }
+    if (leadBall && leadBall.active) {
       const targetX = THREE.MathUtils.clamp(leadBall.mesh.position.x, -6.2, 6.2);
       this.breakoutPaddle.position.x = THREE.MathUtils.lerp(
         this.breakoutPaddle.position.x,
@@ -6229,6 +6909,7 @@ export class PlayStyleManager {
 
   private tickRunnerEcosystemOnly(dt: number) {
     for (let i = 0; i < this.runnerHerdMeshes.length; i++) {
+      if (!this.runnerHerdMeshes[i].visible) continue;
       this.animateCapyLegs(this.runnerHerdMeshes[i], dt, 10);
     }
   }
@@ -6236,12 +6917,11 @@ export class PlayStyleManager {
   private tickFallGuysEcosystemOnly(dt: number) {
     const seeSawTilt = this.physicsBridge.getSeeSawTiltAngle();
     for (let i = 0; i < this.seeSaws.length; i++) {
-      const ss = this.seeSaws[i];
-      ss.phase += dt * 1.4;
-      ss.mesh.rotation.z = seeSawTilt + Math.sin(ss.phase) * 0.08;
+      this.seeSaws[i].mesh.rotation.z = seeSawTilt;
     }
     for (let i = 0; i < this.fallGuysRivals.length; i++) {
       const rival = this.fallGuysRivals[i];
+      if (!rival.capy.visible) continue;
       rival.capy.position.z -= rival.speed * dt;
       rival.capy.position.x =
         rival.laneOffset + Math.sin(rival.capy.position.z * 0.35) * 1.1;
@@ -6288,8 +6968,14 @@ export class PlayStyleManager {
       this.heroVelocity.set(0, 0, 0);
       this.isGrounded = false;
     } else {
-      const gravityScale = this.activeBiome?.gravityMultiplier ?? 1.0;
-      const heroJumpScale = this.activeHeroSpec?.jumpMultiplier ?? 1.0;
+      const gravityScale =
+        (this.activeBiome?.gravityMultiplier ?? 1.0) *
+        (this.proceduralConfig.player.gravityScale ?? 1.0);
+      const hasWings = this.stats.activeMutations.includes('wings');
+      const heroJumpScale =
+        (this.activeHeroSpec?.jumpMultiplier ?? 1.0) *
+        (hasWings ? 1.18 : 1.0) *
+        (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
       const wasAirborne = !this.isGrounded;
       const prevVy = this.heroVelocity.y;
 
@@ -6361,21 +7047,107 @@ export class PlayStyleManager {
           this.isGrounded = false;
           this.heroSoftSquashVel -= 1.8;
           AudioService.playJump();
-          this.callbacks.onProgressEarned(1, 'sanctuary', this.bestSnakeSegments * 10);
+          this.awardProgress(1, 'sanctuary', this.bestSnakeSegments * 10);
           this.callbacks.onModeNotification?.('XPBD Soft-Body Mushroom Bounce! +1 Spore DNA!');
         }
       }
     }
 
-    // Ambient Capybara buddies wandering around the orchard
+    // Active Sanctuary yuzu_orchard building perk: periodic ripe citrus auto-drop
+    const orchardLvl = this.getBuildingLevelSum('yuzu_orchard');
+    if (orchardLvl > 0) {
+      this.orchardAutoDropTimer += dt;
+      const dropInterval = Math.max(4, 14 - orchardLvl * 1.5);
+      if (this.orchardAutoDropTimer >= dropInterval) {
+        this.orchardAutoDropTimer = 0;
+        let dropped = false;
+        for (let t = 0; t < this.sanctuaryTrees.length && !dropped; t++) {
+          const tree = this.sanctuaryTrees[t];
+          if (tree.varietyIndex !== this.activeHeadOrangeIndex) continue;
+          for (let s = 0; s < tree.slots.length; s++) {
+            const slot = tree.slots[s];
+            if (slot.growth >= 0.72) {
+              const wx = tree.x + slot.localOffset.x;
+              const wy = Math.max(tree.fruitRadius + 0.35, slot.localOffset.y);
+              const wz = tree.z + slot.localOffset.z;
+              const ang = Math.atan2(slot.localOffset.z, slot.localOffset.x);
+              this.spawnPhysicsFruit(
+                wx,
+                wy,
+                wz,
+                Math.cos(ang) * 1.2,
+                0.7,
+                Math.sin(ang) * 1.2,
+                tree.fruitRadius,
+                tree.varietyIndex,
+                false,
+                0.08
+              );
+              slot.growth = 0.06;
+              this.worldEnv.applyProceduralFruitGrowthVisuals(
+                slot,
+                HEAD_ORANGE_VARIETIES[tree.varietyIndex]?.colorHex ?? 0xff7a00
+              );
+              dropped = true;
+              break;
+            }
+          }
+        }
+        if (!dropped) {
+          for (let b = 0; b < this.stats.buildings.length; b++) {
+            const bld = this.stats.buildings[b];
+            if (bld.type === 'yuzu_orchard') {
+              const ang = this.proceduralPrng() * Math.PI * 2;
+              this.spawnPhysicsFruit(
+                bld.x + Math.cos(ang) * 1.5,
+                2.2,
+                bld.z + Math.sin(ang) * 1.5,
+                Math.cos(ang) * 1.1,
+                0.9,
+                Math.sin(ang) * 1.1,
+                0.24,
+                this.activeHeadOrangeIndex,
+                false,
+                0.08
+              );
+              break;
+            }
+          }
+        }
+      }
+    } else {
+      this.orchardAutoDropTimer = 0;
+    }
+
+    // Check hot_spring building presence for buddy attraction
+    let hotSpringRef: { x: number; z: number } | null = null;
+    for (let b = 0; b < this.stats.buildings.length; b++) {
+      if (this.stats.buildings[b].type === 'hot_spring') {
+        hotSpringRef = this.stats.buildings[b];
+        break;
+      }
+    }
+
+    // Ambient Capybara buddies wandering around the orchard (or basking near hot_spring)
     for (let i = 0; i < this.sanctuaryCapys.length; i++) {
       const buddy = this.sanctuaryCapys[i];
+      if (!buddy.capy.visible) continue;
       buddy.stateTimer -= dt;
       if (buddy.stateTimer <= 0) {
-        buddy.stateTimer = 4 + Math.random() * 5;
-        const rad = 6.5 + Math.random() * 19.5;
-        const ang = Math.random() * Math.PI * 2;
-        buddy.target.set(Math.cos(ang) * rad, 0, Math.sin(ang) * rad);
+        buddy.stateTimer = 4 + this.proceduralPrng() * 5;
+        if (hotSpringRef && this.proceduralPrng() < 0.48) {
+          const ang = this.proceduralPrng() * Math.PI * 2;
+          const r = 2.0 + this.proceduralPrng() * 1.8;
+          buddy.target.set(
+            hotSpringRef.x + Math.cos(ang) * r,
+            0,
+            hotSpringRef.z + Math.sin(ang) * r
+          );
+        } else {
+          const rad = 6.5 + this.proceduralPrng() * 19.5;
+          const ang = this.proceduralPrng() * Math.PI * 2;
+          buddy.target.set(Math.cos(ang) * rad, 0, Math.sin(ang) * rad);
+        }
       }
       _tempVec3.subVectors(buddy.target, buddy.capy.position);
       if (_tempVec3.length() > 0.35) {
@@ -6416,13 +7188,17 @@ export class PlayStyleManager {
   // --- 2. SPORE EVOLUTION LAGOON TICK (CONTIGUOUS WALK-IN / SWIM-OUT) ---
   private tickSpore(dt: number) {
     const zone = ZONE_LOCATIONS.spore;
+    const sCfg = this.proceduralConfig.districts.spore;
+    const growthMult = sCfg.growthRateMultiplier;
+    const hasGlowTail = this.stats.activeMutations.includes('glow_tail');
+    const hasShell = this.stats.activeMutations.includes('shell');
     if (this.sporeDashCooldown > 0) this.sporeDashCooldown -= dt;
 
     let speed = this.baseHeroSpeed * 1.15 * this.getEffectiveSpeedMultiplier();
     let dashVx = 0;
     let dashVz = 0;
     if (this.isJumping && this.sporeDashCooldown <= 0) {
-      this.sporeDashCooldown = 1.2;
+      this.sporeDashCooldown = (hasGlowTail ? 0.6 : 1.0) * sCfg.dashCooldownSec;
       this.isJumping = false;
       AudioService.playChomp();
       speed *= 2.1;
@@ -6440,7 +7216,7 @@ export class PlayStyleManager {
     const desiredVx = (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) + dashVx;
     const desiredVz = (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) + dashVz;
 
-    // Step contiguous physics with Shallow-Water Lagoon Buoyancy & NW Promenade Causeway continuity (no [-36,36] box trap!)
+    // Step contiguous physics with Shallow-Water Lagoon Buoyancy & NW Promenade Causeway continuity
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
       {
         wx: zone.x + prevLx,
@@ -6454,7 +7230,7 @@ export class PlayStyleManager {
         radius: 0.68,
         halfHeight: 0.25,
         jumpImpulseY: 0,
-        gravityScale: 1.0,
+        gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
       this.breakoutPaddle?.position.x ?? 0,
@@ -6466,7 +7242,9 @@ export class PlayStyleManager {
     this.isSwimmingInPool = phys.inFluid;
 
     const magnetRad = this.getEffectiveMagnetRadius() * heroScale;
-    for (const orb of this.sporeOrbs) {
+    for (let i = 0; i < this.sporeOrbs.length; i++) {
+      const orb = this.sporeOrbs[i];
+      if (!orb.active) continue;
       orb.mesh.rotation.y += dt * 2.5;
       const d = Math.hypot(
         this.heroLocalPos.x - orb.mesh.position.x,
@@ -6477,22 +7255,28 @@ export class PlayStyleManager {
         orb.mesh.position.addScaledVector(_tempVec3, 14 * dt);
       }
       if (d < 1.15 * heroScale) {
-        this.sporeMass += orb.value;
+        this.sporeMass += orb.value * growthMult;
         const dnaGain = orb.isDna ? 2 : 0;
         this.sporeDnaEarned += dnaGain;
         AudioService.playCoin();
-        this.callbacks.onProgressEarned(dnaGain, 'spore', this.sporeMass);
-        const angle = Math.random() * Math.PI * 2;
-        const rad = 4 + Math.random() * 28;
+        this.awardProgress(dnaGain, 'spore', Math.round(this.sporeMass));
+        const angle = this.proceduralPrng() * Math.PI * 2;
+        const rad = 4 + this.proceduralPrng() * 28;
         orb.mesh.position.set(Math.cos(angle) * rad, 0.45, Math.sin(angle) * rad);
       }
     }
 
-    for (const critter of this.sporeCritters) {
+    for (let i = 0; i < this.sporeCritters.length; i++) {
+      const critter = this.sporeCritters[i];
+      if (!critter.active) continue;
       critter.changeDirTimer -= dt;
       if (critter.changeDirTimer <= 0) {
-        critter.changeDirTimer = 2 + Math.random() * 3;
-        critter.vel.set((Math.random() - 0.5) * 6, 0, (Math.random() - 0.5) * 6);
+        critter.changeDirTimer = 2 + this.proceduralPrng() * 3;
+        critter.vel.set(
+          (this.proceduralPrng() - 0.5) * 6,
+          0,
+          (this.proceduralPrng() - 0.5) * 6
+        );
       }
       critter.mesh.position.addScaledVector(critter.vel, dt);
       critter.mesh.position.x = THREE.MathUtils.clamp(critter.mesh.position.x, -32, 32);
@@ -6500,18 +7284,34 @@ export class PlayStyleManager {
       critter.mesh.rotation.y = Math.atan2(critter.vel.x, critter.vel.z);
       this.animateCapyLegs(critter.mesh, dt, 10);
 
-      const dCritter = Math.hypot(
-        this.heroLocalPos.x - critter.mesh.position.x,
-        this.heroLocalPos.z - critter.mesh.position.z
-      );
-      if (dCritter < 1.25 * heroScale && heroScale >= critter.scale * 0.9) {
-        AudioService.playChomp();
-        this.sporeMass += 18;
-        this.sporeDnaEarned += 5;
-        this.callbacks.onProgressEarned(5, 'spore', this.sporeMass);
-        this.callbacks.onModeNotification?.('Chomped Spore Critter! +18 Mass & +5 DNA!');
-        const ang = Math.random() * Math.PI * 2;
-        critter.mesh.position.set(Math.cos(ang) * 26, 0, Math.sin(ang) * 26);
+      const dx = this.heroLocalPos.x - critter.mesh.position.x;
+      const dz = this.heroLocalPos.z - critter.mesh.position.z;
+      const dCritter = Math.hypot(dx, dz);
+      if (dCritter < 1.25 * heroScale) {
+        if (heroScale >= critter.scale * 0.9) {
+          AudioService.playChomp();
+          this.sporeMass += 18 * growthMult;
+          this.sporeDnaEarned += 5;
+          this.awardProgress(5, 'spore', Math.round(this.sporeMass));
+          this.callbacks.onModeNotification?.('Chomped Spore Critter! +18 Mass & +5 DNA!');
+          const ang = this.proceduralPrng() * Math.PI * 2;
+          critter.mesh.position.set(Math.cos(ang) * 26, 0, Math.sin(ang) * 26);
+        } else if (this.sporeLargeCritterKnockbackCd <= 0) {
+          this.sporeLargeCritterKnockbackCd = 0.9;
+          const distSafe = Math.max(0.01, dCritter);
+          const nx = dx / distSafe;
+          const nz = dz / distSafe;
+          const knockScale = (hasShell ? 0.6 : 1.0) * 11.5;
+          this.heroVelocity.x += nx * knockScale;
+          this.heroVelocity.z += nz * knockScale;
+          AudioService.playSplash();
+          this.addCameraTrauma(0.28);
+          this.callbacks.onModeNotification?.(
+            hasShell
+              ? 'Apex Predator deflected by Armored Shell!'
+              : 'Too small for that predator — eat plankton to grow bigger!'
+          );
+        }
       }
     }
 
@@ -6561,6 +7361,10 @@ export class PlayStyleManager {
       }
     }
 
+    const hasWings = this.stats.activeMutations.includes('wings');
+    const jumpBoost =
+      (hasWings ? 1.18 : 1.0) *
+      (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
       {
         wx: zone.x + prevLx,
@@ -6573,8 +7377,8 @@ export class PlayStyleManager {
         desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt),
         radius: 0.68,
         halfHeight: 0.25,
-        jumpImpulseY: this.isJumping && this.isGrounded ? 9.5 : 0,
-        gravityScale: 1.0,
+        jumpImpulseY: this.isJumping && this.isGrounded ? 9.5 * jumpBoost : 0,
+        gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
       this.breakoutPaddle.position.x,
@@ -6618,13 +7422,23 @@ export class PlayStyleManager {
 
   private stepBreakoutBallsAndBlocks(dt: number, playerPresent: boolean) {
     if (!this.breakoutPaddle) return;
+    const bCfg = this.proceduralConfig.districts.breakout;
+    if (this.breakoutMegaPaddleTimer > 0) {
+      this.breakoutMegaPaddleTimer -= dt;
+      if (this.breakoutMegaPaddleTimer <= 0) {
+        this.breakoutMegaPaddleTimer = 0;
+        this.paddleWidthMultiplier = bCfg.paddleWidthMultiplier;
+      }
+    }
+
     const paddleWidthScale =
       (1 + (this.stats.upgrades.paddleSize - 1) * 0.12) * this.paddleWidthMultiplier;
     const halfPaddleW = 1.9 * paddleWidthScale;
 
-    // Update falling powerup capsules
-    for (let i = this.breakoutPowerups.length - 1; i >= 0; i--) {
+    // Update falling pooled powerup capsules
+    for (let i = 0; i < this.breakoutPowerups.length; i++) {
       const p = this.breakoutPowerups[i];
+      if (!p.active) continue;
       p.mesh.position.z += 6.5 * dt;
       p.mesh.rotation.y += 3 * dt;
       if (
@@ -6633,51 +7447,64 @@ export class PlayStyleManager {
         Math.abs(p.mesh.position.x - this.breakoutPaddle.position.x) < halfPaddleW + 0.5
       ) {
         if (playerPresent) AudioService.playPrestigeFanfare();
-        if (p.type === 'multiball' && this.breakoutBalls.length < 6) {
+        if (p.type === 'multiball') {
           this.spawnBreakoutBall(this.breakoutPaddle.position.x, 8.2, -4.5, -9.5);
           this.spawnBreakoutBall(this.breakoutPaddle.position.x, 8.2, 4.5, -9.5);
           if (playerPresent) {
             this.callbacks.onModeNotification?.('MULTIBALL UNLEASHED! 3x Yuzu Melons!');
           }
         } else {
-          this.paddleWidthMultiplier = 1.35;
+          this.paddleWidthMultiplier = Math.max(
+            this.paddleWidthMultiplier,
+            bCfg.paddleWidthMultiplier * 1.35
+          );
+          this.breakoutMegaPaddleTimer = 12.0;
           if (playerPresent) {
-            this.callbacks.onModeNotification?.('MEGA PADDLE ACTIVATED!');
+            this.callbacks.onModeNotification?.('MEGA PADDLE ACTIVATED (12s)!');
           }
         }
-        this.breakoutGroup.remove(p.mesh);
-        this.breakoutPowerups.splice(i, 1);
+        p.active = false;
+        p.mesh.visible = false;
       } else if (p.mesh.position.z > 12) {
-        this.breakoutGroup.remove(p.mesh);
-        this.breakoutPowerups.splice(i, 1);
+        p.active = false;
+        p.mesh.visible = false;
       }
     }
 
-    // Swept CCD sub-stepping on high-speed Breakout multiballs (zero brick tunneling!)
-    for (let bIdx = this.breakoutBalls.length - 1; bIdx >= 0; bIdx--) {
+    // Count active balls before substeps
+    let activeBallCount = 0;
+    for (let i = 0; i < this.breakoutBalls.length; i++) {
+      if (this.breakoutBalls[i].active) activeBallCount++;
+    }
+
+    // Swept CCD sub-stepping on pooled Breakout multiballs (zero brick tunneling, zero heap allocs!)
+    for (let bIdx = 0; bIdx < this.breakoutBalls.length; bIdx++) {
       const b = this.breakoutBalls[bIdx];
       if (!b.active) continue;
       const speed = Math.hypot(b.vel.x, b.vel.z);
       const substeps = Math.min(4, Math.max(1, Math.ceil((speed * dt) / 0.28)));
       const subDt = dt / substeps;
 
-      let removed = false;
-      for (let s = 0; s < substeps && !removed; s++) {
+      let deactivated = false;
+      for (let s = 0; s < substeps && !deactivated; s++) {
         b.mesh.position.addScaledVector(b.vel, subDt);
 
         if (b.mesh.position.x <= -7.8) {
           b.mesh.position.x = -7.8;
-          b.vel.x = Math.abs(b.vel.x);
+          b.vel.x = Math.max(1.8, Math.abs(b.vel.x));
           if (playerPresent) AudioService.playBrickHit(0.85);
         } else if (b.mesh.position.x >= 7.8) {
           b.mesh.position.x = 7.8;
-          b.vel.x = -Math.abs(b.vel.x);
+          b.vel.x = -Math.max(1.8, Math.abs(b.vel.x));
           if (playerPresent) AudioService.playBrickHit(0.85);
         }
 
         if (b.mesh.position.z <= -10.8) {
           b.mesh.position.z = -10.8;
           b.vel.z = Math.abs(b.vel.z);
+          if (Math.abs(b.vel.x) < 1.8) {
+            b.vel.x = b.vel.x >= 0 ? 1.8 : -1.8;
+          }
           if (playerPresent) AudioService.playBrickHit(0.9);
         }
 
@@ -6689,31 +7516,45 @@ export class PlayStyleManager {
         ) {
           b.vel.z = -Math.abs(b.vel.z);
           const hitOffset = (b.mesh.position.x - this.breakoutPaddle.position.x) / halfPaddleW;
-          b.vel.x = hitOffset * 8.2;
+          let bounceVx = hitOffset * 8.2;
+          if (Math.abs(bounceVx) < 1.8) {
+            bounceVx = hitOffset >= 0 ? 1.8 : -1.8;
+          }
+          b.vel.x = bounceVx;
           this.breakoutCombo = 1;
           if (playerPresent) AudioService.playJump();
         }
 
         if (b.mesh.position.z > 12.2) {
-          if (this.breakoutBalls.length > 1) {
-            this.breakoutGroup.remove(b.mesh);
-            this.breakoutBalls.splice(bIdx, 1);
-            removed = true;
+          if (activeBallCount > 1) {
+            b.active = false;
+            b.mesh.visible = false;
+            activeBallCount--;
+            deactivated = true;
             break;
           } else {
             b.mesh.position.set(this.breakoutPaddle.position.x, 0.5, 7.5);
-            b.vel.set((Math.random() - 0.5) * 5, 0, -9.2);
+            const rawVx = (this.proceduralPrng() - 0.5) * 6.4;
+            b.vel.set(
+              Math.abs(rawVx) < 1.8 ? (rawVx >= 0 ? 1.8 : -1.8) : rawVx,
+              0,
+              -bCfg.ballBaseSpeed
+            );
             this.breakoutCombo = 1;
             if (playerPresent) AudioService.playSplash();
           }
         }
 
-        for (let i = this.breakoutBlocks.length - 1; i >= 0; i--) {
+        for (let i = 0; i < this.breakoutBlocks.length; i++) {
           const blk = this.breakoutBlocks[i];
+          if (!blk.active) continue;
           const dx = Math.abs(b.mesh.position.x - blk.mesh.position.x);
           const dz = Math.abs(b.mesh.position.z - blk.mesh.position.z);
           if (dx < 1.1 && dz < 0.65) {
             b.vel.z = -b.vel.z;
+            if (Math.abs(b.vel.x) < 1.8) {
+              b.vel.x = b.vel.x >= 0 ? 1.8 : -1.8;
+            }
             blk.hp--;
             if (playerPresent) {
               this.breakoutCombo = Math.min(10, this.breakoutCombo + 1);
@@ -6722,22 +7563,21 @@ export class PlayStyleManager {
             }
 
             if (blk.hp <= 0) {
-              if (playerPresent && (blk.isBonus || Math.random() > 0.82)) {
-                const pMesh = new THREE.Mesh(
-                  this.sharedBreakoutPowerupGeo,
-                  this.sharedBreakoutPowerupMat
-                );
-                pMesh.rotation.z = Math.PI / 2;
-                pMesh.position.copy(blk.mesh.position);
-                this.breakoutGroup.add(pMesh);
-                this.breakoutPowerups.push({
-                  mesh: pMesh,
-                  type: Math.random() > 0.35 ? 'multiball' : 'wide',
-                });
+              if (playerPresent && (blk.isBonus || this.proceduralPrng() < bCfg.powerupDropChance)) {
+                for (let pi = 0; pi < this.breakoutPowerups.length; pi++) {
+                  const pSlot = this.breakoutPowerups[pi];
+                  if (!pSlot.active) {
+                    pSlot.active = true;
+                    pSlot.type = this.proceduralPrng() > 0.35 ? 'multiball' : 'wide';
+                    pSlot.mesh.position.copy(blk.mesh.position);
+                    pSlot.mesh.visible = true;
+                    break;
+                  }
+                }
               }
 
-              this.breakoutGroup.remove(blk.mesh);
-              this.breakoutBlocks.splice(i, 1);
+              blk.active = false;
+              blk.mesh.visible = false;
               if (playerPresent) {
                 AudioService.playBrickHit(1.1 + this.breakoutCombo * 0.08);
                 this.addCameraTrauma(0.24);
@@ -6750,7 +7590,7 @@ export class PlayStyleManager {
                   7,
                   blk.isBonus ? 0x38bdf8 : 0xfbbf24
                 );
-                this.callbacks.onProgressEarned(
+                this.awardProgress(
                   blk.isBonus ? 1 : 0,
                   'breakout',
                   this.breakoutScore
@@ -6760,13 +7600,20 @@ export class PlayStyleManager {
               AudioService.playBrickHit(0.95);
             }
 
-            if (this.breakoutBlocks.length === 0) {
+            let activeBricks = 0;
+            for (let k = 0; k < this.breakoutBlocks.length; k++) {
+              if (this.breakoutBlocks[k].active) {
+                activeBricks++;
+                break;
+              }
+            }
+            if (activeBricks === 0) {
               this.breakoutWave++;
               if (playerPresent) {
                 AudioService.playPrestigeFanfare();
                 const waveBonus = 120 * this.breakoutWave;
                 this.breakoutScore += waveBonus;
-                this.callbacks.onProgressEarned(3, 'breakout', this.breakoutScore);
+                this.awardProgress(3, 'breakout', this.breakoutScore);
                 this.callbacks.onModeNotification?.(
                   `Wave ${this.breakoutWave - 1} Cleared! +3 Spore DNA! Launching Wave ${this.breakoutWave}!`
                 );
@@ -6825,6 +7672,11 @@ export class PlayStyleManager {
       this.applyPlayerMovementAndCamera(dt, walkSpeed, 6.2, 10.2);
     }
 
+    const hasWings = this.stats.activeMutations.includes('wings');
+    const hasShell = this.stats.activeMutations.includes('shell');
+    const jumpBoost =
+      (hasWings ? 1.18 : 1.0) *
+      (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
       {
         wx: zone.x + prevLx,
@@ -6837,8 +7689,8 @@ export class PlayStyleManager {
         desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt),
         radius: 0.68,
         halfHeight: 0.25,
-        jumpImpulseY: this.isJumping && this.isGrounded ? 10.0 : 0,
-        gravityScale: 1.0,
+        jumpImpulseY: this.isJumping && this.isGrounded ? 10.0 * jumpBoost : 0,
+        gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
       this.breakoutPaddle?.position.x ?? 0,
@@ -6852,6 +7704,7 @@ export class PlayStyleManager {
     // Update visible 3D Herd followers in formation around the hero
     for (let i = 0; i < this.runnerHerdMeshes.length; i++) {
       const mini = this.runnerHerdMeshes[i];
+      if (!mini.visible) continue;
       const ring = Math.floor(i / 6) + 1;
       const angle = ((i % 6) / 6) * Math.PI * 2 + this.runnerDistance * 0.05;
       const offsetX = Math.cos(angle) * (0.75 * ring);
@@ -6878,7 +7731,9 @@ export class PlayStyleManager {
     }
 
     // Gate collisions
-    for (const gate of this.runnerGates) {
+    const rCfg = this.proceduralConfig.districts.runner;
+    for (let i = 0; i < this.runnerGates.length; i++) {
+      const gate = this.runnerGates[i];
       if (
         !gate.triggered &&
         Math.abs(gate.z - this.heroLocalPos.z) < 1.45 &&
@@ -6893,12 +7748,17 @@ export class PlayStyleManager {
           this.runnerCapyCount = Math.min(999, this.runnerCapyCount + gate.value);
           AudioService.playCoin();
         } else {
-          this.runnerCapyCount = Math.max(1, this.runnerCapyCount - gate.value);
+          const rawPenalty =
+            gate.value *
+            (hasShell ? 0.5 : 1.0) *
+            rCfg.negativeGatePenaltyScale;
+          const penalty = Math.max(1, Math.round(rawPenalty));
+          this.runnerCapyCount = Math.max(1, this.runnerCapyCount - penalty);
           AudioService.playSplash();
         }
         this.syncRunnerHerdVisuals();
 
-        this.callbacks.onProgressEarned(
+        this.awardProgress(
           gate.type === 'multiply' ? 1 : 0,
           'runner',
           this.runnerCapyCount * 10 + Math.round(this.runnerDistance)
@@ -6911,10 +7771,41 @@ export class PlayStyleManager {
   }
 
   private refreshRunnerCircuitGates() {
-    this.runnerGates.forEach((g) => this.runnerGroup.remove(g.mesh));
-    this.runnerGates = [];
-    for (let i = 1; i < 4; i++) {
-      this.spawnRunnerGatePair(-i * 24);
+    const maxMult = Math.max(2, Math.min(6, Math.round(this.proceduralConfig.districts.runner.maxGateMultiplier)));
+    for (let i = 0; i < this.runnerGates.length; i++) {
+      const g = this.runnerGates[i];
+      const pairIdx = Math.floor(i / 2);
+      const isLeft = i % 2 === 0;
+      const roll = this.proceduralPrng();
+      let type: 'add' | 'multiply' | 'sub' = 'add';
+      let value = 2 + Math.floor(this.proceduralPrng() * 5);
+      let label = `+${value}`;
+      let sub = 'ADD CAPYS';
+      let bg = '#1e3a8a';
+      let accent = '#60a5fa';
+
+      if (roll > 0.72) {
+        type = 'multiply';
+        value = 2 + (Math.floor(this.proceduralPrng() * Math.max(1, maxMult - 1)));
+        label = `×${value}`;
+        sub = 'MULTIPLY HERD';
+        bg = '#065f46';
+        accent = '#34d399';
+      } else if (!isLeft && roll < 0.34 && pairIdx > 0) {
+        type = 'sub';
+        value = 2 + Math.floor(this.proceduralPrng() * 4);
+        label = `-${value}`;
+        sub = 'AVOID LOSS';
+        bg = '#7f1d1d';
+        accent = '#f87171';
+      }
+
+      g.type = type;
+      g.value = value;
+      g.triggered = false;
+      g.mesh.visible = true;
+      g.panelMat.map = this.getCachedRunnerBannerTexture(label, sub, bg, accent);
+      g.panelMat.needsUpdate = true;
     }
   }
 
@@ -6923,13 +7814,18 @@ export class PlayStyleManager {
     const zone = ZONE_LOCATIONS.fallguys;
     const prevLx = this.heroLocalPos.x;
     const prevLz = this.heroLocalPos.z;
+    const hasWings = this.stats.activeMutations.includes('wings');
+    const hasShell = this.stats.activeMutations.includes('shell');
+    const jumpBoost =
+      (hasWings ? 1.18 : 1.0) *
+      (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
 
     const speed = 9.8 * this.getEffectiveSpeedMultiplier();
     this.applyPlayerMovementAndCamera(dt, speed, 6.2, 10.2);
 
     let jumpImpulseY = 0;
     if (this.isJumping && this.isGrounded) {
-      jumpImpulseY = 11.5 + (this.stats.upgrades.bounciness - 1) * 1.0;
+      jumpImpulseY = (11.5 + (this.stats.upgrades.bounciness - 1) * 1.0) * jumpBoost;
       this.isGrounded = false;
       this.isJumping = false;
       AudioService.playJump();
@@ -6948,7 +7844,7 @@ export class PlayStyleManager {
         radius: 0.68,
         halfHeight: 0.25,
         jumpImpulseY,
-        gravityScale: 1.0,
+        gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
       this.breakoutPaddle?.position.x ?? 0,
@@ -6957,6 +7853,11 @@ export class PlayStyleManager {
 
     this.heroLocalPos.set(phys.wx - zone.x, phys.wy, phys.wz - zone.z);
     this.heroVelocity.set(phys.vx, phys.vy, phys.vz);
+    if (phys.hammerImpulseY > 0 && hasShell) {
+      this.heroVelocity.x *= 0.6;
+      this.heroVelocity.y *= 0.65;
+      this.heroVelocity.z *= 0.6;
+    }
     this.isGrounded = phys.grounded;
 
     if (phys.trampolineBoostY > 0) {
@@ -6984,15 +7885,16 @@ export class PlayStyleManager {
       );
     }
 
-    // Apply dynamic torque-coupled See-Saw tilt angle to visual plank mesh
+    // Apply exact torque-coupled See-Saw tilt angle to visual plank mesh
     const seeSawTilt = this.physicsBridge.getSeeSawTiltAngle();
-    for (const ss of this.seeSaws) {
-      ss.phase += dt * 1.2;
-      ss.mesh.rotation.z = seeSawTilt + Math.sin(ss.phase) * 0.04;
+    for (let i = 0; i < this.seeSaws.length; i++) {
+      this.seeSaws[i].mesh.rotation.z = seeSawTilt;
     }
 
     // AI Rival Bean-Capys racing forward
-    for (const rival of this.fallGuysRivals) {
+    for (let i = 0; i < this.fallGuysRivals.length; i++) {
+      const rival = this.fallGuysRivals[i];
+      if (!rival.capy.visible) continue;
       rival.capy.position.z -= rival.speed * dt;
       rival.capy.position.x =
         rival.laneOffset + Math.sin(rival.capy.position.z * 0.35) * 1.1;
@@ -7007,9 +7909,13 @@ export class PlayStyleManager {
       this.fallGuysCrowns++;
       this.fallGuysRound++;
       AudioService.playPrestigeFanfare();
-      this.callbacks.onProgressEarned(4, 'fallguys', this.fallGuysCrowns);
+      const crownDna = Math.max(
+        1,
+        Math.round(this.proceduralConfig.districts.fallguys.crownCoinReward / 4)
+      );
+      this.awardProgress(crownDna, 'fallguys', this.fallGuysCrowns);
       this.callbacks.onModeNotification?.(
-        `GOLDEN CROWN #${this.fallGuysCrowns} CLAIMED! +4 Spore DNA! Advancing to Round ${this.fallGuysRound}!`
+        `GOLDEN CROWN #${this.fallGuysCrowns} CLAIMED! Advancing to Round ${this.fallGuysRound}!`
       );
       this.heroLocalPos.set(0, 1.0, 0);
       this.heroYaw = Math.PI;
@@ -7025,9 +7931,18 @@ export class PlayStyleManager {
 
   private tickSeamlessUniverse(dt: number) {
     if (this.autoZoomDirection !== 0) {
-      const nextTarget =
-        this.targetLogScaleMeters + this.autoZoomDirection * 3.4 * dt;
-      if (nextTarget >= MAX_UNIVERSE_LOG_METERS) {
+      const prevTarget = this.targetLogScaleMeters;
+      const stepVel = Math.max(0.25, Math.abs(this.cruiseVelocityLogPerSec));
+      const nextTarget = prevTarget + this.autoZoomDirection * stepVel * dt;
+
+      if (
+        this.autoLandAtForestPending &&
+        this.autoZoomDirection === -1 &&
+        prevTarget >= CAPYBARA_FOREST_LOG_METERS - 0.05 &&
+        nextTarget <= CAPYBARA_FOREST_LOG_METERS
+      ) {
+        this.targetLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
+      } else if (nextTarget >= MAX_UNIVERSE_LOG_METERS) {
         this.targetLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
         this.autoZoomDirection = 0;
       } else if (nextTarget <= MIN_UNIVERSE_LOG_METERS) {
@@ -7047,6 +7962,27 @@ export class PlayStyleManager {
 
     const logVal = this.currentLogScaleMeters;
 
+    // Auto-touchdown onto Sanctuary Chrono-Pad once descending vessel settles into Capybara Forest window
+    if (
+      this.autoLandAtForestPending &&
+      this.autoZoomDirection === -1 &&
+      this.targetLogScaleMeters <= CAPYBARA_FOREST_LOG_METERS + 0.06 &&
+      Math.abs(logVal - CAPYBARA_FOREST_LOG_METERS) <= 0.16
+    ) {
+      this.autoLandAtForestPending = false;
+      this.currentMode = 'sanctuary';
+      this.physicsBridge?.setActiveDistrict('sanctuary');
+      this.heroLocalPos.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+      this.heroCapy.position.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+      this.resetDachshundTrail();
+      this.updateDachshundTransforms(0);
+      this.resumeSurfacePlayFromForest(false);
+      this.callbacks.onModeNotification?.(
+        'Chrono-Vessel docked on Sanctuary Chrono-Pad! Explore the 5 districts or launch back to cosmos anytime.'
+      );
+      return;
+    }
+
     // Seamless automatic handover into live surface gameplay when steering/jumping inside Capybara Forest!
     const hasSurfaceSteerIntent =
       Math.abs(this.moveInput.x) > 0.06 ||
@@ -7064,6 +8000,7 @@ export class PlayStyleManager {
 
     const inForestWindow = logVal >= -0.85 && logVal <= 3.1;
 
+    this.cosmicBuilder.setSuspended(true);
     this.cosmicBuilder.rootGroup.visible = false;
     this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = false;
     this.worldBaseGroup.visible = inForestWindow;
@@ -7092,11 +8029,12 @@ export class PlayStyleManager {
     if (inForestWindow) {
       for (let i = 0; i < this.sanctuaryCapys.length; i++) {
         const buddy = this.sanctuaryCapys[i];
+        if (!buddy.capy.visible) continue;
         buddy.stateTimer -= dt;
         if (buddy.stateTimer <= 0) {
-          buddy.stateTimer = 4 + Math.random() * 5;
-          const rad = 6.5 + Math.random() * 19.5;
-          const ang = Math.random() * Math.PI * 2;
+          buddy.stateTimer = 4 + this.proceduralPrng() * 5;
+          const rad = 6.5 + this.proceduralPrng() * 19.5;
+          const ang = this.proceduralPrng() * Math.PI * 2;
           buddy.target.set(Math.cos(ang) * rad, 0, Math.sin(ang) * rad);
         }
         _tempVec3.subVectors(buddy.target, buddy.capy.position);
@@ -7119,9 +8057,7 @@ export class PlayStyleManager {
       1.18
     );
 
-    // Compute projective-invariant camera radius & smooth multi-sector focal anchor:
-    // Smoothly blends between active Hero Capybara position (across any of the 5 sectors)
-    // and world origin (0,0,0) across [-0.85, +3.1] so there is zero focal snap!
+    // Compute projective-invariant camera radius & smooth multi-sector focal anchor
     const canonicalRadius = 38.0;
     let camRadius = canonicalRadius;
 
@@ -7154,8 +8090,9 @@ export class PlayStyleManager {
       }
     } else {
       _seamlessFocalPos.set(0, 0, 0);
-      if (this.camera.near !== 0.1 || this.camera.far !== 3500) {
-        this.camera.near = 0.1;
+      const desiredNear = logVal > 14 ? 0.25 : 0.08;
+      if (this.camera.near !== desiredNear || this.camera.far !== 3500) {
+        this.camera.near = desiredNear;
         this.camera.far = 3500;
         this.camera.updateProjectionMatrix();
       }
@@ -7206,6 +8143,29 @@ export class PlayStyleManager {
     );
     this.camera.position.copy(_camTarget);
     this.camera.lookAt(_seamlessFocalPos);
+
+    // Anchor Future Capybara Chrono-Vessel in view along camera sightline (zero heap allocations)
+    if (this.chronoVessel) {
+      if (this.vesselMode === 'landed') {
+        this.chronoVessel.root.visible = false;
+      } else {
+        this.camera.updateMatrixWorld();
+        _camForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+        _camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+        const vesselDist = this.vesselMode === 'telescope_first_person' ? 1.65 : 3.1;
+        const vesselDrop = this.vesselMode === 'telescope_first_person' ? -0.68 : -0.74;
+        this.chronoVessel.root.position
+          .copy(this.camera.position)
+          .addScaledVector(_camForward, vesselDist)
+          .addScaledVector(_camUp, vesselDrop);
+        this.chronoVessel.root.quaternion.copy(this.camera.quaternion);
+        const scaleVel =
+          this.autoZoomDirection !== 0
+            ? this.autoZoomDirection * Math.abs(this.cruiseVelocityLogPerSec)
+            : (this.targetLogScaleMeters - this.currentLogScaleMeters) * 4.0;
+        this.chronoVessel.update(dt, scaleVel, this.moveInput.x, this.moveInput.z);
+      }
+    }
 
     this.seamlessTelemetryAccum += dt;
     if (this.seamlessTelemetryAccum >= 0.08) {
@@ -7307,6 +8267,14 @@ export class PlayStyleManager {
       realityScaleGamma: +effectiveGamma.toFixed(2),
       showObjectMarkers: effectiveMarkers,
       markers: markersSnapshot,
+      cosmicAgeGyr: +computeCosmicAgeGyr(this.currentLogScaleMeters).toFixed(2),
+      cruiseVelocityLogPerSec:
+        this.autoZoomDirection === 0
+          ? 0
+          : +(this.autoZoomDirection * Math.abs(this.cruiseVelocityLogPerSec)).toFixed(2),
+      vesselMode: this.vesselMode,
+      fineStructureInverse: +(this.proceduralConfig.universe.fineStructureInverse ?? 137.036).toFixed(3),
+      fineStructureAlpha: +(1.0 / (this.proceduralConfig.universe.fineStructureInverse ?? 137.036)).toFixed(6),
     };
   }
 
@@ -7321,12 +8289,15 @@ export class PlayStyleManager {
     );
     if (!this.seamlessZoomActive) {
       this.seamlessZoomActive = true;
+      this.vesselMode = 'chase_pod';
+      this.chronoVessel?.setMode('chase_pod');
       this.cosmicOrbitPitch = Math.max(0.24, this.cosmicOrbitPitch);
       if (this.camera.zoom !== 1.0) {
         this.camera.zoom = 1.0;
         this.camera.updateProjectionMatrix();
       }
     }
+    this.autoLandAtForestPending = false;
     this.targetLogScaleMeters = clamped;
     if (immediate) {
       this.currentLogScaleMeters = clamped;
@@ -7345,6 +8316,7 @@ export class PlayStyleManager {
       this.quantumFocusMode = 'auto';
     }
     this.autoZoomDirection = 0;
+    this.autoLandAtForestPending = false;
     AudioService.playCosmicWarp(1.08);
     this.setSeamlessLogScale(spec.logMeters, immediate);
   }
@@ -7373,6 +8345,7 @@ export class PlayStyleManager {
   }
 
   public toggleAutoZoom(direction: -1 | 0 | 1) {
+    this.autoLandAtForestPending = false;
     if (direction !== 0 && this.autoZoomDirection === direction) {
       this.autoZoomDirection = 0;
     } else {
@@ -7387,6 +8360,12 @@ export class PlayStyleManager {
 
   public resumeSurfacePlayFromForest(snapCamera: boolean = true) {
     this.autoZoomDirection = 0;
+    this.autoLandAtForestPending = false;
+    this.vesselMode = 'landed';
+    this.chronoVessel?.setMode('landed');
+    if (this.chronoVessel) {
+      this.chronoVessel.root.visible = false;
+    }
     const savedCamPos = _tempVec3.copy(this.camera.position);
     AudioService.playCoin();
     this.setCosmicStage('playing');
@@ -7515,12 +8494,23 @@ export class PlayStyleManager {
 
   public dispose() {
     this.cancelBuildingPlacementGhost(true);
+    ProgressionService.flushPendingSave();
     AudioService.dispose();
     this.physicsBridge?.dispose();
     this.cosmicBuilder?.dispose();
     this.seamlessUniverse?.dispose();
+    this.chronoVessel?.dispose();
+    this.chronoPad?.dispose();
     this.vfxEngine?.dispose();
     this.gpuEngine?.dispose();
+    this.runnerBannerTextureCache.forEach((tex) => tex.dispose());
+    this.runnerBannerTextureCache.clear();
+    this.sporeOrbSphereGeo?.dispose();
+    this.sporeOrbDnaGeo?.dispose();
+    this.sporeOrbPlanktonMat?.dispose();
+    this.sporeOrbDnaMat?.dispose();
+    this.sporeRippleTexture?.dispose();
+    this.sporeWaterMat?.dispose();
     this.sharedBreakoutPowerupGeo.dispose();
     this.sharedBreakoutPowerupMat.dispose();
     disposeObject3DTree(this.scene);

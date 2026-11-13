@@ -36,7 +36,6 @@ let staticHandles: number[] = [];
 let paddleBody: RAPIER.RigidBody | null = null;
 let hammerBodies: RAPIER.RigidBody[] = [];
 let seeSawBody: RAPIER.RigidBody | null = null;
-let breakoutBallBodies: RAPIER.RigidBody[] = [];
 
 function buildStaticColliders(
   w: RAPIER.World,
@@ -101,21 +100,7 @@ function initDynamicArenaBodies(w: RAPIER.World): void {
     paddleBody
   );
 
-  // 2. Swept-CCD Breakout Yuzu Ball (`ccdEnabled = true` prevents tunneling at any speed)
-  breakoutBallBodies = [];
-  const dynamicBallDesc = RAPIER.RigidBodyDesc.dynamic()
-    .setTranslation(bz.x, 0.5, bz.z + 6.5)
-    .setLinvel(4.2, 0, -9.2)
-    .setGravityScale(0.0)
-    .setCcdEnabled(true);
-  const ballBody = w.createRigidBody(dynamicBallDesc);
-  w.createCollider(
-    RAPIER.ColliderDesc.ball(0.38).setRestitution(1.0).setFriction(0.0),
-    ballBody
-  );
-  breakoutBallBodies.push(ballBody);
-
-  // 3. Yuzu Mountain Kinematic Sweeper Hammers (+75, +75)
+  // 2. Yuzu Mountain Kinematic Sweeper Hammers (+75, +75)
   const fz = ZONE_LOCATIONS.fallguys;
   hammerBodies = [];
   for (const zOff of [-12, -20]) {
@@ -161,17 +146,6 @@ function writeSnapshot(
   outFloat[25] = substeps;
   outFloat[26] = seeSawTilt;
   outFloat[27] = 0;
-
-  if (breakoutBallBodies.length > 0) {
-    const bPos = breakoutBallBodies[0].translation();
-    const bVel = breakoutBallBodies[0].linvel();
-    outFloat[48] = bPos.x;
-    outFloat[49] = bPos.y;
-    outFloat[50] = bPos.z;
-    outFloat[51] = bVel.x;
-    outFloat[52] = bVel.y;
-    outFloat[53] = bVel.z;
-  }
 }
 
 self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {

@@ -7,6 +7,16 @@ import {
   resolveCircleRotatedBox2D,
 } from '../engine/physics/ColliderMath';
 import {
+  CODATA_FINE_STRUCTURE_INVERSE,
+  PROCEDURAL_CONFIG_PRESETS,
+  cloneProceduralConfig,
+  computeFineStructurePhysics,
+  mulberry32,
+  parseAndValidateProceduralConfig,
+} from '../config/ProceduralGameConfig';
+import { ShallowWaterFluidSolver } from '../engine/physics/ContiguousWorldTopology';
+import { computeCosmicAgeGyr } from '../engine/SeamlessUniverseSimulator';
+import {
   computeBloomRenderScale,
   computeDistrictTickStride,
   computeEffectivePixelRatio,
@@ -127,14 +137,9 @@ test('BUG-04: resolveCircleRotatedBox2D accurately resolves penetration against 
   // 45-degree rotated narrow plank: halfX = 5.0, halfZ = 0.5, centered at (0, 0), rotY = +PI/4
   // In Three.js Y-rotation, local +X maps to world (+cos(45), -sin(45)) = (+0.7071, -0.7071)
   const rotY = Math.PI / 4;
-  // Point at world (3.0, 3.0): along local Z axis (perpendicular to the plank!), far outside halfZ = 0.5
-  // Note: An unrotated AABB check [-5, 5] x [-0.5, 0.5] would miss (3.0, -3.0) along the plank diagonal,
-  // whereas at (2.8, -2.8) (which IS right on the rotated plank centerline: localX ~ 3.96 <= 5.0, localZ ~ 0.0!),
-  // a circle of radius 0.6 MUST collide and be pushed perpendicular to the 45-deg plank!
   const hitOnDiagonal = resolveCircleRotatedBox2D(2.8, -2.7, 0.6, 0, 0, 5.0, 0.5, rotY);
   assert.equal(hitOnDiagonal.collided, true);
 
-  // Verify pushed point is now >= 0.5 + 0.6 = 1.1m perpendicular to the plank centerline (x + z = 0)
   const perpDistAfterPush = Math.abs(
     hitOnDiagonal.wx * Math.sin(rotY) + hitOnDiagonal.wz * Math.cos(rotY)
   );
@@ -143,8 +148,6 @@ test('BUG-04: resolveCircleRotatedBox2D accurately resolves penetration against 
     `Expected perpendicular clearance 1.1m, got ${perpDistAfterPush}`
   );
 
-  // Conversely, at (3.5, 0.0) an unrotated [-5, 5] x [-0.5, 0.5] AABB would collide,
-  // whereas for the 45-deg rotated plank: localX = 2.47, localZ = 2.47 > halfZ (0.5) + radius (0.6) -> NO collision!
   const missOffDiagonal = resolveCircleRotatedBox2D(3.5, 0.0, 0.6, 0, 0, 5.0, 0.5, rotY);
   assert.equal(missOffDiagonal.collided, false);
 });
@@ -225,4 +228,131 @@ test('BUG-02: ProgressionService enforces coin and DNA costs and rejects unaffor
   assert.equal(prestiged.coins, 62);
   // Prestige 2 now requires 40 DNA -> rejects with 1 DNA
   assert.equal(ProgressionService.prestige(prestiged), null);
+});
+
+test('ProceduralGameConfig: validation, deterministic mulberry32, clamping, and presets', () => {
+  assert.equal(PROCEDURAL_CONFIG_PRESETS.length, 5);
+
+  // Deterministic PRNG sequence invariance for the same seed
+  const rngA = mulberry32(424242);
+  const rngB = mulberry32(424242);
+  const seqA = [rngA(), rngA(), rngA(), rngA()];
+  const seqB = [rngB(), rngB(), rngB(), rngB()];
+  assert.deepEqual(seqA, seqB);
+
+  // Syntax error detection without throwing
+  const badSyntax = parseAndValidateProceduralConfig('{ bad json');
+  assert.equal(badSyntax.ok, false);
+
+  // Clamping out-of-range fields and emitting warnings cleanly
+  const custom = cloneProceduralConfig(PROCEDURAL_CONFIG_PRESETS[2].config);
+  (custom.universe as { gravityConstant: number }).gravityConstant = 999;
+  (custom.world as { weather: string }).weather = 'meteor_shower';
+  const parsed = parseAndValidateProceduralConfig(JSON.stringify(custom));
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.config.universe.gravityConstant, 3.0);
+    assert.equal(parsed.config.world.weather, 'auto');
+    assert.ok(parsed.warnings.length >= 2);
+  }
+});
+
+test('ShallowWaterFluidSolver packs 24x24 RGBA ripple DataTexture bytes and propagates wakes', () => {
+  const solver = new ShallowWaterFluidSolver();
+  const neutralBytes = solver.packRippleTextureBytes();
+  assert.equal(neutralBytes.length, 24 * 24 * 4);
+  assert.equal(neutralBytes[0], 128);
+  assert.equal(neutralBytes[3], 255);
+
+  // Swim rapidly inside the Home Pool (-8.8, 3.0) across multiple steps
+  for (let i = 0; i < 6; i++) {
+    solver.step(0.016, -8.8, 3.0, 5.0, 1.2, 1.0);
+  }
+  const activeBytes = solver.packRippleTextureBytes();
+  let minHeightByte = 255;
+  let maxGradDelta = 0;
+  for (let i = 0; i < 24 * 24; i++) {
+    const off = i * 4;
+    if (activeBytes[off] < minHeightByte) minHeightByte = activeBytes[off];
+    maxGradDelta = Math.max(maxGradDelta, Math.abs(activeBytes[off + 1] - 128));
+  }
+  assert.ok(minHeightByte < 128, `Expected depression wave < 128, got ${minHeightByte}`);
+  assert.ok(maxGradDelta > 0, 'Expected non-zero lateral velocity gradient byte');
+});
+
+test('Unified Chrono-Vessel computeCosmicAgeGyr progresses monotonically from Big Bang (0.00) to 13.80 Gyr', () => {
+  assert.equal(computeCosmicAgeGyr(28.0), 0.0);
+  const mid = computeCosmicAgeGyr(25.7);
+  assert.ok(mid > 0.0 && mid < 13.8);
+  assert.ok(computeCosmicAgeGyr(24.0) > mid);
+  assert.equal(computeCosmicAgeGyr(23.4), 13.8);
+  assert.equal(computeCosmicAgeGyr(0.8), 13.8);
+});
+
+test('ProgressionService honors custom buildingCostMultiplier, capy_statue coin bonus, and flushPendingSave', () => {
+  const base = structuredClone(INITIAL_PLAYER_STATS);
+  assert.equal(ProgressionService.getBuildingCoinCost('zen_pagoda', 0.0), 0);
+
+  // Free placement with 0.0 cost multiplier (Sandbox Architect preset)
+  const freeBuild = ProgressionService.placeBuilding(
+    base,
+    'capy_statue',
+    'Monument',
+    5,
+    5,
+    'Statue',
+    0.0
+  );
+  assert.ok(freeBuild);
+  assert.equal(freeBuild.coins, 50);
+
+  // Reward with statue (+15% per statue level) + 2x procedural coinRewardMultiplier
+  const rewarded = ProgressionService.recordProgress(freeBuild, 10, 'sanctuary', 100, 2.0);
+  assert.equal(rewarded.dna, 40);
+  assert.ok(rewarded.coins > freeBuild.coins + 40);
+  ProgressionService.flushPendingSave();
+});
+
+test('Fine-Structure Constant (alpha) physics solver & pilot/vessel schema validation', () => {
+  const codata = computeFineStructurePhysics(CODATA_FINE_STRUCTURE_INVERSE);
+  assert.ok(Math.abs(codata.ratioToCodata - 1.0) < 1e-6);
+  assert.ok(Math.abs(codata.bohrRadiusScale - 1.0) < 1e-6);
+  assert.equal(codata.regimeLabel, 'Anthropic Carbon Window');
+  assert.equal(codata.regimeTone, 'emerald');
+
+  // Stronger EM (1/90) shrinks Bohr orbitals and compresses binding energy
+  const strongEm = computeFineStructurePhysics(90.0);
+  assert.ok(strongEm.bohrRadiusScale < 0.7);
+  assert.ok(strongEm.electronSpeedC > codata.electronSpeedC);
+  assert.equal(strongEm.regimeLabel, 'Hyper-Bound EM');
+  assert.equal(strongEm.regimeTone, 'amber');
+
+  // Weak EM (1/185) expands Bohr radius outward
+  const weakEm = computeFineStructurePhysics(185.0);
+  assert.ok(weakEm.bohrRadiusScale > 1.3);
+  assert.equal(weakEm.regimeLabel, 'Diffuse Weak-EM');
+  assert.equal(weakEm.regimeTone, 'cyan');
+
+  // Config parser clamps fineStructureInverse [60, 220] & validates custom vessel/pilot fields
+  const res = parseAndValidateProceduralConfig(
+    JSON.stringify({
+      universe: { fineStructureInverse: 999 },
+      player: {
+        heroArchetypeId: 'nebula_zen',
+        activeSkin: 'cosmic',
+        activeHat: 'halo',
+        vesselCanopyHex: '#c084fc',
+        startingVesselMode: 'telescope_first_person',
+      },
+    })
+  );
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.config.universe.fineStructureInverse, 220);
+    assert.equal(res.config.player.heroArchetypeId, 'nebula_zen');
+    assert.equal(res.config.player.activeSkin, 'cosmic');
+    assert.equal(res.config.player.activeHat, 'halo');
+    assert.equal(res.config.player.vesselCanopyHex, '#c084fc');
+    assert.equal(res.config.player.startingVesselMode, 'telescope_first_person');
+  }
 });

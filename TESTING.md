@@ -14,7 +14,7 @@ Run all commands from the repository root:
 | **Production Build** | `npm run build` | Compiles TypeScript and produces minified relative-path (`./assets/...`) bundles in `dist/` including the Rapier3D Wasm physics worker. |
 | **Dev Server** | `npm run dev` | Launches Vite on `http://localhost:3000`. |
 | **Preview Server** | `npm run preview` | Serves compiled `dist/` on `http://localhost:3000` for production verification. |
-| **Unit Logic Suite** | `npm run test:unit` | Runs deterministic `node:test` assertions (`ProgressionAndPhysics.test.ts`) for economy deductions, Prestige validation, yaw-rotated OBB collision math, and star index clamping. |
+| **Unit Logic Suite** | `npm run test:unit` | Runs deterministic `node:test` assertions (`ProgressionAndPhysics.test.ts`) for economy multipliers/Prestige, `ProceduralGameConfig` validation/`mulberry32`, `24x24` fluid `DataTexture` ripple packing, `computeCosmicAgeGyr`, yaw-rotated OBB math, and 60 FPS sightline/shadow invariants. |
 | **CapyGame 3D E2E Suite** | `npm run test:game` | Executes `scripts/test-capygame.mjs` against `http://localhost:3000`, verifying all cosmic, surface, multiphysics, economy, and AAA GPU rendering invariants. |
 | **PWA & Offline Suite** | `npm run test:pwa` | Executes `scripts/test-pwa-offline.mjs` to validate `manifest.webmanifest`, scope-isolated Service Worker (`sw.js`) precaching, and 100% offline 3D reload. |
 | **District Gallery Capture** | `npm run gallery:capture` | Executes `scripts/capture-capygame-gallery.mjs` to capture full-frame screenshots across all 5 districts into `docs/gallery/`. |
