@@ -2602,11 +2602,12 @@ export class RealisticWorldEnvironment {
     focusWorldZ: number,
     scene: THREE.Scene,
     renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
-    fogEnabled: boolean,
+    _fogEnabled: boolean,
     poolLantern?: THREE.PointLight,
     exposureScale: number = 1.0,
     dayCycleSpeed: number = 1.0,
-    fogDensityScale: number = 1.0
+    _fogDensityScale: number = 1.0,
+    perfMode: boolean = false
   ) {
     this.elapsedSeconds += dt;
 
@@ -2624,17 +2625,18 @@ export class RealisticWorldEnvironment {
       this.timeOfDayHours = ((manualTimeHours % 24) + 24) % 24;
     }
 
-    // 2. Weather state machine
+    // 2. Weather state machine (zero fog/mist obstruction)
     if (weatherMode === 'auto') {
       this.weatherAutoTimer += dt;
       if (this.weatherAutoTimer >= 28) {
         this.weatherAutoTimer = 0;
-        const cycle: WeatherType[] = ['clear', 'rain', 'clear', 'mist', 'storm', 'snow'];
-        const nextIdx = (cycle.indexOf(this.activeWeather) + 1) % cycle.length;
+        const cycle: WeatherType[] = ['clear', 'rain', 'clear', 'storm', 'snow'];
+        const curIdx = cycle.indexOf(this.activeWeather);
+        const nextIdx = (curIdx + 1) % cycle.length;
         this.activeWeather = cycle[nextIdx];
       }
     } else {
-      this.activeWeather = weatherMode;
+      this.activeWeather = weatherMode === 'mist' ? 'clear' : weatherMode;
     }
 
     const cloudCover =
@@ -2642,8 +2644,6 @@ export class RealisticWorldEnvironment {
         ? 0.92
         : this.activeWeather === 'rain'
         ? 0.72
-        : this.activeWeather === 'mist'
-        ? 0.65
         : this.activeWeather === 'snow'
         ? 0.68
         : 0.14;
@@ -2781,26 +2781,20 @@ export class RealisticWorldEnvironment {
       poolLantern.intensity = rig.lanternBoost + (cloudCover > 0.6 ? 0.55 : 0);
     }
 
-    // Update atmospheric fog to blend distant mountain bases seamlessly
-    _fogColor.copy(_skyHorizon);
-    if (scene.fog instanceof THREE.Fog) {
-      scene.fog.color.copy(_fogColor);
-      const mistPull =
-        this.activeWeather === 'mist'
-          ? 0.48
-          : this.activeWeather === 'storm'
-          ? 0.62
-          : this.activeWeather === 'rain'
-          ? 0.76
-          : 1.0;
-      const safeFogScale = Math.max(0.1, Math.min(2.5, fogDensityScale));
-      scene.fog.near = ((fogEnabled ? 68 : 160) * mistPull) / safeFogScale;
-      scene.fog.far = ((fogEnabled ? 340 : 520) * mistPull) / safeFogScale;
+    // Keep scene completely fog-free for unobstructed long-range visibility
+    if (scene.fog !== null) {
+      scene.fog = null;
     }
 
-    // Wet surface specular response during rain/storm (dirty-checked so clear frames cost 0 iterations)
+    // Wet surface specular response during rain/storm (skipped in PERF mode to save state churn)
     const wetness =
-      this.activeWeather === 'storm' ? 0.58 : this.activeWeather === 'rain' ? 0.42 : 0.0;
+      perfMode
+        ? 0.0
+        : this.activeWeather === 'storm'
+          ? 0.58
+          : this.activeWeather === 'rain'
+            ? 0.42
+            : 0.0;
     if (Math.abs(wetness - this.lastAppliedWetness) > 0.002) {
       this.lastAppliedWetness = wetness;
       for (let i = 0; i < this.wettableMaterials.length; i++) {
@@ -2809,10 +2803,13 @@ export class RealisticWorldEnvironment {
       }
     }
 
-    // Drift volumetric clouds slowly across the sky
-    this.cloudGroup.rotation.y += dt * (this.activeWeather === 'storm' ? 0.028 : 0.007);
+    // Hide transparent low-altitude cloud cluster meshes in PERF mode to eliminate fill-rate overdraw
+    this.cloudGroup.visible = !perfMode;
+    if (!perfMode) {
+      this.cloudGroup.rotation.y += dt * (this.activeWeather === 'storm' ? 0.028 : 0.007);
+    }
 
-    // Update GPU Instanced Rain / Snow precipitation around player focus
+    // Update GPU Instanced Rain / Snow precipitation around player focus (reduced cap in PERF)
     const isRain = this.activeWeather === 'rain' || this.activeWeather === 'storm';
     const isSnow = this.activeWeather === 'snow';
     if (!isRain && !isSnow) {
@@ -2820,10 +2817,11 @@ export class RealisticWorldEnvironment {
       return;
     }
 
-    const activeCount =
+    const baseCount =
       this.activeWeather === 'storm'
         ? this.maxWeatherParticles
         : Math.floor(this.maxWeatherParticles * 0.65);
+    const activeCount = perfMode ? Math.min(120, baseCount) : baseCount;
     this.weatherMesh.count = activeCount;
     const wMat = this.weatherMesh.material as THREE.MeshBasicMaterial;
     wMat.color.setHex(isSnow ? 0xffffff : 0xbfdbfe);

@@ -144,6 +144,13 @@ export class ProgressionService {
           const loaded: CapyGameSettings = {
             ...DEFAULT_CAPY_SETTINGS,
             ...parsed,
+            worldFogEnabled: false,
+            drawDistance:
+              typeof parsed.drawDistance === 'number' && Number.isFinite(parsed.drawDistance)
+                ? Math.max(90, Math.min(1350, Math.round(parsed.drawDistance)))
+                : parsed.gpuQualityPreset === 'performance'
+                  ? 135
+                  : DEFAULT_CAPY_SETTINGS.drawDistance,
             realityScaleGamma:
               typeof parsed.realityScaleGamma === 'number' &&
               Number.isFinite(parsed.realityScaleGamma)
@@ -166,6 +173,31 @@ export class ProgressionService {
               Number.isFinite(parsed.gpuSharpenAmount)
                 ? Math.max(0.0, Math.min(1.0, parsed.gpuSharpenAmount))
                 : DEFAULT_CAPY_SETTINGS.gpuSharpenAmount,
+            maxFpsLimit:
+              typeof parsed.maxFpsLimit === 'number' && Number.isFinite(parsed.maxFpsLimit)
+                ? parsed.maxFpsLimit <= 0
+                  ? 0
+                  : Math.max(24, Math.min(240, Math.round(parsed.maxFpsLimit)))
+                : DEFAULT_CAPY_SETTINGS.maxFpsLimit,
+            fpsTarget:
+              typeof parsed.fpsTarget === 'number' && Number.isFinite(parsed.fpsTarget)
+                ? Math.max(24, Math.min(240, Math.round(parsed.fpsTarget)))
+                : DEFAULT_CAPY_SETTINGS.fpsTarget,
+            showFpsButton:
+              parsed.showFpsButton === undefined
+                ? DEFAULT_CAPY_SETTINGS.showFpsButton
+                : Boolean(parsed.showFpsButton),
+            gpuResolutionScale:
+              typeof parsed.gpuResolutionScale === 'number' &&
+              Number.isFinite(parsed.gpuResolutionScale)
+                ? Math.max(0.5, Math.min(1.5, parsed.gpuResolutionScale))
+                : DEFAULT_CAPY_SETTINGS.gpuResolutionScale,
+            gpuAntiAliasing:
+              parsed.gpuAntiAliasing === 'msaa_fxaa' ||
+              parsed.gpuAntiAliasing === 'fxaa' ||
+              parsed.gpuAntiAliasing === 'none'
+                ? parsed.gpuAntiAliasing
+                : DEFAULT_CAPY_SETTINGS.gpuAntiAliasing,
           };
           this.cachedSettings = loaded;
           return loaded;

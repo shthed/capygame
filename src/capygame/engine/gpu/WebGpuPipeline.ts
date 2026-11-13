@@ -316,6 +316,7 @@ export function createTslStarPsfSprite(
   mat.transparent = true;
   mat.depthWrite = false;
   mat.blending = opts.additive === false ? THREE.NormalBlending : THREE.AdditiveBlending;
+  mat.normalNode = vec3(0.0, 0.0, 1.0);
 
   const uOpacity = uniform(opts.opacity ?? 1.0);
   const uBaseSize = uniform(opts.baseSize ?? 14.0);
@@ -396,6 +397,7 @@ export function convertLegacyShaderMaterialsToTsl(root: THREE.Object3D): number 
       nodeMat.depthWrite = mat.depthWrite;
       nodeMat.side = mat.side;
       nodeMat.blending = mat.blending;
+      nodeMat.normalNode = vec3(0.0, 0.0, 1.0);
 
       const baseColHex =
         u.uBaseCol?.value instanceof THREE.Color
@@ -551,6 +553,7 @@ export class WebGpuPostAndComputePipeline {
     moteMat.transparent = true;
     moteMat.depthWrite = false;
     moteMat.blending = THREE.AdditiveBlending;
+    moteMat.normalNode = vec3(0.0, 0.0, 1.0);
     moteMat.positionNode = positions.element(instanceIndex);
     moteMat.sizeNode = float(8.5).add(this.computeNight.mul(7.0));
     moteMat.colorNode = Fn(() => {

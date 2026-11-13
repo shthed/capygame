@@ -21,7 +21,7 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/capygame/engine/CapyModelGenerator.ts` | Procedural *Hydrochoerus hydrochaeris* 4-tier 60 FPS LOD meshes, custom fur pigments, mutations, hats, and Sanctuary structures. |
 | `src/capygame/engine/RealisticWorldEnvironment.ts` | Rayleigh/Mie sky dome, 360-degree Alpine mountains, 24-hour solar/lunar cycle, weather, coupled `24x24` `DataTexture` Home Pool, and exponential fruit trees. |
 | `src/capygame/engine/CosmicUniverseBuilder.ts` | N-Body/SPH galaxy coalescence, supernova nucleosynthesis, and on-demand suspended planetary selection stages. |
-| `src/capygame/engine/SeamlessUniverseSimulator.ts` | Continuous 63-order-of-magnitude (`10^+28 m` to `10^-35 m`) `1:1` scale hierarchy, monotonic `0.00` to `13.80 Gyr` expansion, $\alpha$-coupled atomic Bohr scaling/Dirac spinor/photon/solar photosphere physics, Object Finder Markers, and Reality Rescaler. |
+| `src/capygame/engine/SeamlessUniverseSimulator.ts` | Continuous 65-order-of-magnitude (`10^+30 m` to `10^-35 m`) `1:1` scale hierarchy across 27 astrophysical bands, monotonic `0.00` to `13.80 Gyr` expansion, selectable galaxy morphologies, $\alpha$-coupled atomic Bohr scaling/Dirac spinor/photon/solar photosphere physics, Object Finder Markers, and Reality Rescaler. |
 | `src/capygame/engine/UniverseShaders.ts` | Flux-conserving PSF stars, Hubble narrowband/natural volumetric nebulae, spiral galaxies, and Rayleigh planetary atmospheres. |
 | `src/capygame/engine/gpu/HardwareGpuEngine.ts` | WebGL2 `HalfFloatType` `EffectComposer`, PMREM IBL, 3-point lighting, `84 m` azimuth-invariant texel-snapped Hero shadow cascade, half-res Bloom, smooth `C^1` Depth-SSAO, DoF, and CAS. |
 | `src/capygame/engine/gpu/FramePerformanceGovernor.ts` | Pure zero-allocation 60 FPS governor computing preset DPR caps, half-resolution bloom scales, distant district tick strides, occluder `depthWrite` restoration, and azimuth-invariant texel-snapped shadow origins. |
@@ -62,14 +62,14 @@ In the planetary surface simulation, `RealisticWorldEnvironment.ts` and `PlaySty
 
 ---
 
-## 4. Seamless 63-Orders-of-Magnitude `1:1` Universe Simulator (`SeamlessUniverseSimulator.ts`, `UniverseShaders.ts`)
+## 4. Seamless 65-Orders-of-Magnitude `1:1` Universe Simulator (`SeamlessUniverseSimulator.ts`, `UniverseShaders.ts`)
 
-`SeamlessUniverseSimulator.ts` and `UniverseShaders.ts` provide continuous powers-of-10 zooming across 63 orders of magnitude (`logScaleMeters` from `+28.0` down to `-35.0`), spanning 21 physically calibrated scale bands in `UNIVERSE_SCALE_BANDS` (with inner rocky planets, habitable worlds, the main asteroid belt, gas/ice giants, Kuiper belt, and spherical 3D Oort Cometary Cloud unified into a single `solar_systems` band):
+`SeamlessUniverseSimulator.ts` and `UniverseShaders.ts` provide continuous powers-of-10 zooming across 65 orders of magnitude (`logScaleMeters` from `+30.0` down to `-35.0`), spanning 27 physically calibrated scale bands in `UNIVERSE_SCALE_BANDS` (including the 12 cosmic tiers: Multiverse at `10^+30 m`, Big Bang inflation at `10^+28 m`, Spacetime Manifold at `10^+27.2 m`, Observable Universe at `10^+26.94 m`, Cosmic Web at `10^+25.2 m`, Filament at `10^+24.0 m`, Supercluster at `10^+23.0 m`, Cluster at `10^+22.2 m`, unified Galaxy & Spiral Arms at `10^+21.0 m` down through `10^+19.4 m` with selectable grand-design spiral, barred spiral, elliptical, and irregular morphologies plus continuous Orion-Cygnus Spur stars and gas ribbons, Nebulas & Pillars of Creation at `10^+17.2 m`, and Stellar Systems at `10^+12.95 m`, followed by Planetary System, Planet globe with Sanctuary landmass focus rerouting, Atmosphere, down to Planck Quantum Foam at `10^-35 m`):
 
-- **Hubble & SpaceEngine Radiative Shader Pipeline**:
+- **Hubble & SpaceEngine Radiative Shader Pipeline & Dynamic Focus Rerouting**:
   - Flux-conserving Point-Spread-Function stars (`createStarPsfMaterial`) with Airy cores, 4-vane diffraction spikes, and Planckian blackbody colors (`2,600 K` to `32,000 K`), plus inclined Hubble Deep Field galaxies (`createDeepFieldGalaxyMaterial`).
   - Self-shielded 5-octave FBM volumetric nebulae and absorptive Bok-globule dust pillars (`createVolumetricNebulaMaterial`, `createDustPillarMaterial`) with in-shader ACES filmic tone mapping and Natural vs Hubble `SHO` narrowband palettes.
-  - Sersic spiral galaxy discs, Gaussian WHIM cosmic web filaments, convective solar photospheres, Rayleigh/Mie planetary atmospheres, Kelvin-Helmholtz gas-giant bands, Cassini/Encke rings with cylindrical planet shadows, and cratered lunar regolith.
+  - Unified Sersic spiral galaxy disc, 7,000 combined PSF stars, and Orion-Cygnus Spur volumetric ribbons inside `ScaleLayer_galaxy` with rotating-frame Milky Way Earth focus rerouting (`computeSpiralGalaxyFocusOffset` at `~0.495 * R_gal = 26,000 ly`) and Chrono-Vessel autopilot banking (`getSpiralArmNavigationState`) upon reaching Spiral Arms (`+19.4`), Gaussian WHIM cosmic web filaments, convective solar photospheres, Keplerian planetary orbits with Capy-Earth heliocentric focus rerouting (`computeSolarPlanetFocusOffset`), Earth-Moon orbital ellipses (`planetary_system` at `+8.85` calibrated `60.3x` Earth radius), a single unified 12,742 km habitable `Capy-Earth` sphere (`planet` at `+7.10` with Float32-jitter-free nested curved surface LOD patches at `+-0.40`, `+-0.075`, and `+-0.014 rad` plus parting curved troposphere cloud decks and horizon-aligned Sanctuary Archipelago landmass focus rerouting at `22.5°N`, `42.0°E` all the way down to surface touchdown), Rayleigh/Mie planetary atmospheres, Kelvin-Helmholtz gas-giant bands, Cassini/Encke rings with cylindrical planet shadows, and cratered lunar regolith.
 - **Strict `1:1` Default Scale Law & Unlockable Cosmic Instruments**:
   - Defaults strictly to `realityScaleGamma = 1.0` (`1:1` physical ratios) and `showObjectMarkers = false`.
   - **Object Finder Markers** (`12 DNA` or `30` CapyCoins) project 3D Keplerian orbit hairlines and clickable screen-space diamond reticles (`object-finder-markers-layer`) onto sub-pixel `1:1` planets, moons, stellar cores, and atomic nuclei.
@@ -96,7 +96,7 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 ## 6. Hardware-Accelerated 3D GPU Engine, AAA VFX & Studio Audio (`src/capygame/engine/gpu/`)
 
 - **3-Point Lighting, PMREM IBL & Azimuth-Invariant Shadow Cascade (`HardwareGpuEngine.ts`, `FramePerformanceGovernor.ts`)**: Pairs solar `DirectionalLight` and `HemisphereLight` with a counter-azimuth `rimLight`, `RectAreaLight` specular softbox, procedural Sky + Studio `PMREMGenerator` environment map, Hero Contact Shadow decal, and a tight `84 m` (`+-42 m`) texel-snapped shadow cascade positioned strictly along `currentSunDir` so solar azimuth never warps across `+-75 m` districts.
-- **60 FPS Frame-Budget & Anti-Glitch Pipeline (`FramePerformanceGovernor.ts`, `PlayStyleManager.ts`, `CapyGameView.tsx`)**: Pre-warms `capy_occ_whole96_*` shader programs at startup, restores `depthWrite = true` whenever sightline `uCapyOccBlend <= 0.02`, offsets stacked district causeways/aprons/collars with `polygonOffset` to eliminate Z-fighting, prunes hidden cosmic and 21-band `Object3D` subtrees via `matrixWorldAutoUpdate = false`, strides distant (`> 85 m`) district ticks, throttles continuous React HUD `setState` calls to `~12 Hz`, and paces software WebGL via `WebGL2RenderingContext.fenceSync` (`afterDraw()`) while driving hardware GPUs at unthrottled 60 FPS `requestAnimationFrame`.
+- **60 FPS Frame-Budget & Anti-Glitch Pipeline (`FramePerformanceGovernor.ts`, `PlayStyleManager.ts`, `CapyGameView.tsx`)**: Pre-warms `capy_occ_whole96_*` shader programs at startup, restores `depthWrite = true` whenever sightline `uCapyOccBlend <= 0.02`, offsets stacked district causeways/aprons/collars with `polygonOffset` to eliminate Z-fighting, prunes hidden cosmic and 27-band `Object3D` subtrees via `matrixWorldAutoUpdate = false`, strides distant (`> 85 m`) district ticks, throttles continuous React HUD `setState` calls to `~12 Hz`, and paces software WebGL via `WebGL2RenderingContext.fenceSync` (`afterDraw()`) while driving hardware GPUs at unthrottled 60 FPS `requestAnimationFrame`.
 - **Full 5-District Sobel Tangent-Space PBR (`PbrTextureSynthesizer.ts`)**: Generates periodic seamless `DataTexture` heightfields baked via 3x3 Sobel gradients into `NoColorSpace` `normalMap`, `roughnessMap`, and Laplacian `aoMap` sets across all 5 districts, 4 causeways, dual-octave clearcoat ocean waves, Capybara bristle fur, and dimpled citrus peel, with live `1x..16x` anisotropic and `trilinear_aniso` / `bilinear` / `nearest_retro` switching.
 - **Zero-Allocation GPU VFX & Studio Audio (`AaaWorldVfxEngine.ts`, `AudioService.ts`)**: Steps SoA `InstancedMesh` burst/footstep particles (skipping idle loops in `O(1)`), GPU bokeh sun-motes/fireflies, solar crepuscular god-rays, velocity-reactive FOV, quadratic camera trauma, and compressed stereo-reverb surface footsteps (`turf`, `cobble`, `water`).
 - **Multi-Pass HDR Post-Processing (`EffectComposer` + `CapyGpuMasterFilterShader`)**: Runs `RenderPass` (`HalfFloatType` + `DepthTexture`) -> half-resolution `UnrealBloomPass` (`0.5x`–`0.65x` scale) -> fused single-pass smooth `C^1` Depth-SSAO + foreground CAS sharpening + far-field optical Depth-of-Field + chromatic dispersion + color-grading filter profiles (`natural_pbr`, `cinema_filmic`, `vibrant_hdr`, `golden_hour`, `noir_contrast`, `retro_crt`) -> `OutputPass` (`AgX` / `ACESFilmic` / `Neutral` / `Reinhard`) -> `FXAAShader`.
@@ -112,16 +112,17 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 | `manualCapyLodTier` | `0 \| 1 \| 2 \| 3` | `3` | Simulation Settings Modal (`Perf`, `Balanced`, `High`, `Ultra`); locks Capybara LOD when `autoCapyLod` is `false`. |
 | `dayNightAutoCycle` | `boolean` | `true` | Simulation Settings Modal; advances solar/lunar time continuously across 24 hours. |
 | `timeOfDayHours` | `number` (`0` – `24`) | `9.5` | Simulation Settings Modal; sets manual solar hour (`0.0` to `24.0`). |
-| `weatherMode` | `'auto' \| 'clear' \| 'rain' \| 'storm' \| 'mist' \| 'snow'` | `'auto'` | Simulation Settings Modal; selects automatic weather progression or locks a specific state. |
+| `weatherMode` | `'auto' \| 'clear' \| 'rain' \| 'storm' \| 'snow'` | `'auto'` | Simulation Settings Modal; selects automatic weather progression or locks a specific clear/precipitation state without obstructive fog. |
 | `cameraDistance` | `number` | `1.0` | Simulation Settings Modal; scales camera follow distance (`0.6x` to `1.5x`). |
 | `turnSensitivity` | `number` | `1.0` | Simulation Settings Modal; scales angular steering rate (`0.5x` to `2.0x`). |
 | `fov` | `number` | `58` | Simulation Settings Modal; adjusts baseline vertical perspective field of view (`45` to `75` degrees). |
-| `worldFogEnabled` | `boolean` | `true` | Simulation Settings Modal; toggles atmospheric horizon fog attenuation. |
+| `drawDistance` | `number` (`90` – `1350`) | `650` | Simulation Settings Modal (`Short 135m`, `Med 280m`, `Far 650m`, `Max 1350m`); dynamically trims `camera.far`, culls distant background districts, skips the far alpine ring below `185m`, and scales the atmospheric sky dome proportionally inside `camera.far`. |
+| `worldFogEnabled` | `boolean` | `false` | Retained for save compatibility; scene fog stays permanently disabled (`scene.fog = null`) for unobstructed visibility. |
 | `touchControlsMode` | `'auto' \| 'always' \| 'hidden'` | `'auto'` | Simulation Settings Modal; controls visibility of the directional touch pad. |
 | `showObjectMarkers` | `boolean` | `false` | Cosmic Optics Popover; projects clickable diamond reticles onto sub-pixel `1:1` cosmic/atomic bodies once unlocked. |
 | `realityScaleGamma` | `number` (`0.28` – `1.00`) | `1.0` | Cosmic Optics Popover; defaults to `1.0` (`1:1` scale) and compresses scale ratios once Reality Rescaler is unlocked. |
 | `astrophysicsPalette` | `'natural' \| 'hubble'` | `'natural'` | Cosmic Optics Popover; switches emission nebulae between Natural broadband and Hubble `SHO` narrowband palettes. |
-| `gpuQualityPreset` | `'performance' \| 'balanced' \| 'high' \| 'ultra'` | `'high'` | Simulation Settings Modal; configures shadows, anisotropy, bloom, SSAO, and CAS sharpening in one click. |
+| `gpuQualityPreset` | `'performance' \| 'balanced' \| 'high' \| 'ultra'` | `'high'` | Simulation Settings Modal; `Perf` cuts render scale to `0.70x`, reduces `drawDistance` to `135m`, sets Capybara LOD to Tier `0`, disables IBL/fill-lights/clouds/god-rays/shadows/post-FX for maximum FPS. |
 | `gpuPostProcessing` | `boolean` | `true` | Simulation Settings Modal; toggles `HalfFloatType` `EffectComposer` post-processing vs direct rendering. |
 | `gpuVisualFilter` | `'natural_pbr' \| 'cinema_filmic' \| 'vibrant_hdr' \| 'golden_hour' \| 'noir_contrast' \| 'retro_crt'` | `'natural_pbr'` | Simulation Settings Modal; selects active GPU color-grading and lens profile. |
 | `gpuToneMapping` | `'agx' \| 'aces' \| 'neutral' \| 'reinhard'` | `'agx'` | Simulation Settings Modal; selects hardware HDR tone mapping curve. |
@@ -130,6 +131,37 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 | `gpuAnisotropy` | `1 \| 2 \| 4 \| 8 \| 16` | `8` | Simulation Settings Modal; sets hardware anisotropic filtering level. |
 | `gpuShadowQuality` | `'pcf_soft' \| 'pcf' \| 'vsm' \| 'off'` | `'pcf_soft'` | Simulation Settings Modal; selects directional solar shadow filtering mode. |
 | `gpuBloomEnabled` | `boolean` | `true` | Simulation Settings Modal; toggles `UnrealBloomPass` HDR emissive glow. |
-| `gpuBloomStrength` | `number` (`0.00` – `1.50`) | `0.36` | Persisted in `capy_game_settings_v1`; controls baseline HDR bloom strength. |
+| `gpuBloomStrength` | `number` (`0.05` – `0.80`) | `0.24` | Simulation Settings Modal slider; controls baseline HDR bloom strength. |
 | `gpuSsaoEnabled` | `boolean` | `true` | Simulation Settings Modal; toggles linearized depth-buffer cavity ambient occlusion. |
-| `gpuSharpenAmount` | `number` (`0.00` – `1.00`) | `0.28` | Simulation Settings Modal; controls foreground Contrast-Adaptive Unsharp Mask (CAS) crispness. |
+| `gpuSharpenAmount` | `number` (`0.00` – `1.00`) | `0.26` | Simulation Settings Modal; controls foreground Contrast-Adaptive Unsharp Mask (CAS) crispness when Post-FX is enabled. |
+| `gpuAntiAliasing` | `'msaa_fxaa' \| 'fxaa' \| 'none'` | `'msaa_fxaa'` | Simulation Settings Modal; selects MSAA + FXAA, FXAA only, or Off. |
+| `gpuResolutionScale` | `number` (`0.50` – `1.50`) | `1.0` | Simulation Settings Modal (`0.6x`, `0.75x`, `1.0x`, `1.25x`); scales effective render pixel ratio cleanly across WebGL2 and WebGPU. |
+| `maxFpsLimit` | `number` (`0` or `24` – `240`) | `60` | Simulation Settings Modal & FPS Popover; hardware frame pacing cap (`0` = Unlimited/VSync, `30`, `45`, `60`, `90`, `120`, `144`) reducing GPU power draw. |
+| `fpsTarget` | `number` (`24` – `240`) | `60` | Simulation Settings Modal & FPS Popover (`30`, `45`, `60`, `90`, `120`); drives progressive GPU feature cuts when `autoCapyLod` (Auto GPU Optimizer) is enabled. |
+| `showFpsButton` | `boolean` | `true` | Simulation Settings Modal; shows or hides the top-right FPS telemetry button (`top-right-fps-btn`). |
+
+---
+
+## 8. Frame Performance Governor & Diagnostic Telemetry
+
+- **Max Frame Rate Limiter & Zero-Allocation Target Tracking (`FramePerformanceGovernor.ts`, `CapyGameView.tsx`)**: Enforces `maxFpsLimit` inside the `requestAnimationFrame` loop (`0` = VSync/Unlimited or `30..144` FPS cap) with vsync jitter tolerance so idle/capped GPUs save power without false frame-drop alerts.
+- **Adaptive FPS Target Optimizer (`computeAdaptiveGpuMitigation`)**: When enabled (`autoCapyLod`), progressively steps down GPU-heavy features (Capybara LOD, Depth SSAO, Render Scale, HDR Bloom, Solar Shadows, Anti-Aliasing, and Post-FX Direct Pass) across 6 hysteresis-guarded tiers toward `fpsTarget` without mutating persisted settings, restoring features once headroom returns.
+- **On-Demand Incident Feed (Zero Auto-Popup Interruptions)**: Frame-drop incidents are recorded silently into `PerformanceLogTracker` (grouped across a rolling 8-second window tracking repeat count `xN`, min/max FPS, and time spans) and are revealed only when clicking the top-right FPS button (`top-right-fps-btn`).
+- **Dual Telemetry Modes**:
+  - `Summary Mode`: Produces an ultra-compact report (~110–140 tokens) with active scale, live/min FPS, dropped frame counts, backend info, and grouped incidents optimized for pasting into LLM chat contexts.
+  - `Detail Mode`: Generates comprehensive diagnostic telemetry including GPU adapter specs, shadow cascade state, draw call counts, VRAM allocations, and complete scene hierarchy details.
+- **Selective Snippet Copying (`CapyGameView.tsx`)**: Unlocks text selection (`select-text`) allowing users to highlight and copy individual lines or ranges, in addition to one-click row copy buttons on every incident feed item.
+
+---
+
+## 9. Performance Analysis Mode & Spaceship Flight Controls
+
+- **Fine-Grained CPU/GPU Subsystem Profiler (`PerformanceProfiler.ts`)**: Measures per-frame CPU execution times across 13 distinct engine phases (`input_camera`, `physics_bridge`, `biomechanics`, `world_simulation`, `district_gameplay`, `cosmic_universe`, `chrono_vessel`, `vfx_particles`, `sightline_occlusion`, `scene_graph_matrices`, `gpu_shadow_cascade`, `gpu_render_submit`, `telemetry_hud`) using zero-allocation rolling ring buffers.
+- **Hardware GPU Timer Queries**: Supports non-blocking `EXT_disjoint_timer_query_webgl2` on WebGL2 to measure true hardware GPU execution times in milliseconds, identifying whether bottlenecks are CPU-bound or GPU-bound.
+- **Action & Event Tracer**: Automatically logs and times discrete asynchronous and user actions (e.g., district transitions, cosmic launches, scale jumps, LOD adaptations) with timestamps and durations.
+- **Continuous Spaceship Flight & Mouse Wheel Throttle**:
+  - In spaceship mode, mouse wheel directly controls cruise velocity (`targetCruiseVelocityLogPerSec`) instead of jumping discrete zoom levels.
+  - Smooth aerospace momentum damping (`damp(..., 5.0, dt)`) continuously accelerates or brakes the vessel between `-12.0` and `+12.0` log-meters per second with zero snapping.
+  - Cherenkov thruster flares, plume length, flight pitch attitude, and velocity-reactive FOV dynamically respond to active throttle.
+
+

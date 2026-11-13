@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   AstrophysicsPaletteMode,
   CapyLodTier,
+  GalaxyMorphology,
   ProjectedObjectMarker,
   QuantumFocusMode,
   UNIVERSE_SCALE_BANDS,
@@ -21,15 +22,25 @@ import {
   createDustPillarMaterial,
   createGasGiantMaterial,
   createHabitablePlanetMaterial,
+  createMultiverseBubbleMaterial,
   createPlanetCloudMaterial,
   createPlanetaryRingMaterial,
   createRockyBodyMaterial,
   createSolarPhotosphereMaterial,
+  createSpacetimeManifoldMaterial,
   createSpiralGalaxyDiscMaterial,
   createStarPsfMaterial,
   createVolumetricNebulaMaterial,
 } from './UniverseShaders';
-import { computeSolarPlanetFocusOffset } from './gpu/FramePerformanceGovernor';
+import {
+  computeSolarPlanetFocusOffset,
+  computePlanetSurfaceLandmassFocusOffset,
+  computeSpiralGalaxyFocusOffset,
+  HOME_GALAXY_ARM_RADIUS,
+  HOME_GALAXY_ARM_THETA,
+  SANCTUARY_SURFACE_LAT_DEG,
+  SANCTUARY_SURFACE_LON_DEG,
+} from './gpu/FramePerformanceGovernor';
 import { convertLegacyShaderMaterialsToTsl } from './gpu/WebGpuPipeline';
 
 interface TrackedMaterialEntry {
@@ -81,7 +92,7 @@ interface SolarPlanetEntry {
   pivot: THREE.Group;
   bodyMesh: THREE.Mesh;
   glintPoint: THREE.Points;
-  orbitLine: THREE.LineLoop;
+  orbitLine: THREE.Line;
   baseOrbitPoints: Float32Array;
   targetLogMeters: number;
   colorCss: string;
@@ -89,6 +100,21 @@ interface SolarPlanetEntry {
 
 
 const MAX_PROJECTED_MARKERS = 12;
+
+// Unified Single Continuous Planet Constants (1:1 Physical Proportions)
+export const PLANET_CANON_LOG = 7.10;
+export const PLANET_BASE_RADIUS = 9.0;
+export const MOON_ORBIT_RADIUS_AT_8_85 = 9.65;
+export const MOON_RADIUS_AT_8_85 = 0.04365;
+export const MINIMOON_ORBIT_RADIUS_AT_8_85 = 5.0;
+export const MINIMOON_RADIUS_AT_8_85 = 0.032;
+
+export function computeSinglePlanetWorldRadius(
+  logScaleMeters: number,
+  gamma: number = 1.0
+): number {
+  return PLANET_BASE_RADIUS * Math.pow(10, (PLANET_CANON_LOG - logScaleMeters) * gamma);
+}
 
 // Pre-allocated module scratch objects for zero per-frame GC pressure (AGENTS.md Rule 6)
 const _dummyObj = new THREE.Object3D();
@@ -101,6 +127,19 @@ const _projWorldPos = new THREE.Vector3();
 const _projNdcPos = new THREE.Vector3();
 const _upUnitVec = new THREE.Vector3(0, 1, 0);
 const _sharedSunDir = new THREE.Vector3(0.82, 0.28, 0.50).normalize();
+const _sanctuaryLatRad = SANCTUARY_SURFACE_LAT_DEG * (Math.PI / 180);
+const _sanctuaryLonRad = SANCTUARY_SURFACE_LON_DEG * (Math.PI / 180);
+const _sanctuaryDir = new THREE.Vector3(
+  Math.cos(_sanctuaryLatRad) * Math.sin(_sanctuaryLonRad),
+  Math.sin(_sanctuaryLatRad),
+  Math.cos(_sanctuaryLatRad) * Math.cos(_sanctuaryLonRad)
+).normalize();
+const _identityQuat = new THREE.Quaternion();
+const _sanctuaryUpQuat = new THREE.Quaternion().setFromUnitVectors(_sanctuaryDir, _upUnitVec);
+const _galaxyNavState = {
+  focusBlend: 0,
+  navActiveWeight: 0,
+};
 
 function seededRand(seed: number): number {
   const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
@@ -160,6 +199,39 @@ export class SeamlessUniverseSimulator {
   private solarOortPoints: THREE.Points | null = null;
   private orbitTimeScaleId: OrbitTimeScaleId = '1_orbit_min';
 
+  // Unified Galactic Disc + Spiral Arms (Orion-Cygnus Spur) references
+  private spiralGalaxyTiltGroup: THREE.Group | null = null;
+  private spiralGalaxySpinGroup: THREE.Group | null = null;
+  private spiralGalaxyDiscMesh: THREE.Mesh | null = null;
+  private spiralGalaxyBulgeHalo: THREE.Sprite | null = null;
+  private spiralGalaxyArmRibbons: THREE.Mesh[] = [];
+  private lastGalaxyFocusBlend: number = 0;
+
+  // Planetary System (Hill sphere, Moon orbits — shares single Capy-Earth in planet layer!)
+  private planetarySystemGroup: THREE.Group | null = null;
+  private planetaryMoonMesh: THREE.Mesh | null = null;
+  private planetaryMoonPivot: THREE.Group | null = null;
+  private planetaryMinimoonPivot: THREE.Group | null = null;
+  private planetaryRingMesh: THREE.Mesh | null = null;
+
+  // Unified Single Planet (Capy-Earth orbit -> continents -> clouds -> landing archipelago)
+  private planetSurfaceAlignGroup: THREE.Group | null = null;
+  private planetGlobeContainer: THREE.Group | null = null;
+  private planetSurfaceAnchorGroup: THREE.Group | null = null;
+  private planetGlobeMesh: THREE.Mesh | null = null;
+  private planetGlobeMat: THREE.ShaderMaterial | null = null;
+  private planetCloudMesh: THREE.Mesh | null = null;
+  private planetCloudSphereMat: THREE.ShaderMaterial | null = null;
+  private planetRayleighMesh: THREE.Mesh | null = null;
+  private planetRayleighMat: THREE.ShaderMaterial | null = null;
+  private planetOrbitalGlint: THREE.Points | null = null;
+  private planetLod1Mesh: THREE.Mesh | null = null;
+  private planetLod2Mesh: THREE.Mesh | null = null;
+  private planetLod3Mesh: THREE.Mesh | null = null;
+  private planetLodMats: THREE.ShaderMaterial[] = [];
+  private planetCloudPatchMeshes: THREE.Mesh[] = [];
+  private planetCloudPatchMats: THREE.ShaderMaterial[] = [];
+
   private atomicNuclearClusterGroup: THREE.Group | null = null;
   private nucleonMeshes: Array<{
     mesh: THREE.Mesh;
@@ -193,10 +265,11 @@ export class SeamlessUniverseSimulator {
   private capyEarthRingMesh: THREE.Mesh | null = null;
   private capyEarthBodyMat: THREE.ShaderMaterial | null = null;
   private atmosphereRayleighMat: THREE.ShaderMaterial | null = null;
-  private atmosphereLimbMat: THREE.ShaderMaterial | null = null;
   private atmosphereCloudMats: THREE.ShaderMaterial[] = [];
   private ecosystemMeadowMat: THREE.MeshStandardMaterial | null = null;
   private ecosystemRiverMat: THREE.MeshStandardMaterial | null = null;
+  private galaxyMorphology: GalaxyMorphology = 'spiral';
+  private spiralGalaxyDiscMat: THREE.ShaderMaterial | null = null;
   private pendingProceduralBiome: {
     bigBangSpeed?: number;
     fineStructureInverse?: number;
@@ -208,6 +281,57 @@ export class SeamlessUniverseSimulator {
     grassPrimaryHex?: number;
     waterColorHex?: number;
   } | null = null;
+
+  public setGalaxyMorphology(morphology: GalaxyMorphology): void {
+    this.galaxyMorphology = morphology;
+    if (this.spiralGalaxyDiscMat && this.spiralGalaxyDiscMat.uniforms?.uMorphology) {
+      const morphologyVal =
+        morphology === 'barred_spiral'
+          ? 1.0
+          : morphology === 'elliptical'
+            ? 2.0
+            : morphology === 'irregular'
+              ? 3.0
+              : 0.0;
+      this.spiralGalaxyDiscMat.uniforms.uMorphology.value = morphologyVal;
+    }
+  }
+
+  public getGalaxyMorphology(): GalaxyMorphology {
+    return this.galaxyMorphology;
+  }
+
+  /**
+   * Zero-allocation query returning the world-space direction from the Milky Way core toward
+   * Earth's Orion-Cygnus Spur plus current navigation transit weight (`sin(PI * focusBlend)`).
+   */
+  public getSpiralArmNavigationState(outWorldDir: THREE.Vector3): {
+    focusBlend: number;
+    navActiveWeight: number;
+  } {
+    const blend = this.lastGalaxyFocusBlend;
+    const armX = Math.cos(HOME_GALAXY_ARM_THETA) * HOME_GALAXY_ARM_RADIUS;
+    const armZ = -Math.sin(HOME_GALAXY_ARM_THETA) * HOME_GALAXY_ARM_RADIUS;
+    const phi = this.spiralGalaxySpinGroup ? this.spiralGalaxySpinGroup.rotation.y : 0;
+    const cosP = Math.cos(phi);
+    const sinP = Math.sin(phi);
+    outWorldDir.set(
+      armX * cosP + armZ * sinP,
+      0,
+      -armX * sinP + armZ * cosP
+    );
+    if (this.spiralGalaxyTiltGroup) {
+      outWorldDir.applyQuaternion(this.spiralGalaxyTiltGroup.quaternion);
+    }
+    if (outWorldDir.lengthSq() > 1e-6) {
+      outWorldDir.normalize();
+    } else {
+      outWorldDir.set(0.35, 0.25, -0.9).normalize();
+    }
+    _galaxyNavState.focusBlend = blend;
+    _galaxyNavState.navActiveWeight = Math.sin(Math.PI * THREE.MathUtils.clamp(blend, 0, 1));
+    return _galaxyNavState;
+  }
 
   constructor(isSoftwareGl: boolean = false, isWebGpu: boolean = false) {
     this.isSoftwareGl = isSoftwareGl;
@@ -324,11 +448,12 @@ export class SeamlessUniverseSimulator {
     eccentricity: number,
     colorHex: number,
     segments: number = 96
-  ): { line: THREE.LineLoop; unitCoords: Float32Array } {
-    const unitCoords = new Float32Array(segments * 3);
-    const positions = new Float32Array(segments * 3);
+  ): { line: THREE.Line; unitCoords: Float32Array } {
+    const pointCount = segments + 1;
+    const unitCoords = new Float32Array(pointCount * 3);
+    const positions = new Float32Array(pointCount * 3);
     const bRatio = Math.sqrt(Math.max(0.1, 1 - eccentricity * eccentricity));
-    for (let i = 0; i < segments; i++) {
+    for (let i = 0; i <= segments; i++) {
       const ang = (i / segments) * Math.PI * 2;
       const ux = Math.cos(ang) - eccentricity;
       const uz = Math.sin(ang) * bRatio;
@@ -341,7 +466,7 @@ export class SeamlessUniverseSimulator {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const line = new THREE.LineLoop(
+    const line = new THREE.Line(
       geo,
       new THREE.LineBasicMaterial({
         color: colorHex,
@@ -455,29 +580,47 @@ export class SeamlessUniverseSimulator {
         | undefined;
 
       switch (spec.id) {
+        case 'multiverse':
+          tickFn = this.populateMultiverseLayer(group, glowWarm);
+          break;
         case 'big_bang':
           tickFn = this.populateBigBangLayer(group, glowWarm);
           break;
-        case 'entire_cosmos':
-          tickFn = this.populateEntireCosmosLayer(group);
+        case 'universe':
+          tickFn = this.populateUniverseManifoldLayer(group);
           break;
-        case 'supercluster_a':
-          tickFn = this.populateSuperclusterALayer(group, glowWarm);
+        case 'observable':
+          tickFn = this.populateObservableUniverseLayer(group);
           break;
-        case 'galaxy_filaments':
-          tickFn = this.populateGalaxyFilamentsLayer(group);
+        case 'cosmic_web':
+          tickFn = this.populateCosmicWebLayer(group);
           break;
-        case 'galaxies':
-          tickFn = this.populateSpiralGalaxyLayer(group, glowWarm);
+        case 'filament':
+          tickFn = this.populateFilamentLayer(group);
+          break;
+        case 'supercluster':
+          tickFn = this.populateSuperclusterLayer(group, glowWarm);
+          break;
+        case 'cluster':
+          tickFn = this.populateClusterLayer(group, glowCool);
+          break;
+        case 'galaxy':
+          tickFn = this.populateGalaxyLayer(group, glowWarm);
+          break;
+        case 'spiral_arms':
+          tickFn = this.populateSpiralArmsLayer(group, glowCool);
           break;
         case 'nebulas':
-          tickFn = this.populateNebulaLayer(group);
+          tickFn = this.populateNebulaLayer(group, glowCool);
           break;
-        case 'stellar_nurseries':
-          tickFn = this.populateStellarNurseryLayer(group, glowCool);
-          break;
-        case 'solar_systems':
+        case 'stellar_systems':
           tickFn = this.populateSolarSystemLayer(group, glowWarm);
+          break;
+        case 'planetary_system':
+          tickFn = this.populatePlanetarySystemLayer(group);
+          break;
+        case 'planet':
+          tickFn = this.populatePlanetGlobeLayer(group);
           break;
         case 'atmosphere':
           tickFn = this.populateAtmosphereLayer(group);
@@ -573,7 +716,118 @@ export class SeamlessUniverseSimulator {
     return entries;
   }
 
-  // --- 1. BIG BANG & PRIMORDIAL INFLATION PLASMA (+28.0) ---
+  // --- 1. MULTIVERSE & POCKET BUBBLE UNIVERSES (+30.0) ---
+  private populateMultiverseLayer(
+    group: THREE.Group,
+    glowTex: THREE.CanvasTexture
+  ): (dt: number, elapsed: number) => void {
+    // 1. Central Home Universe Bubble Sphere with iridescent Fresnel membrane
+    const homeBubbleGeo = new THREE.SphereGeometry(
+      9.8,
+      this.isSoftwareGl ? 32 : 56,
+      this.isSoftwareGl ? 24 : 40
+    );
+    const homeBubbleMat = createMultiverseBubbleMaterial({
+      isHomeUniverse: true,
+      opacity: 0.94,
+    });
+    const homeBubbleMesh = new THREE.Mesh(homeBubbleGeo, homeBubbleMat);
+    group.add(homeBubbleMesh);
+
+    // Radiant entrance corona halo sprite on home universe
+    const homeCorona = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: glowTex,
+        color: 0xc084fc,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        opacity: 0.78,
+      })
+    );
+    homeCorona.scale.setScalar(24.0);
+    group.add(homeCorona);
+
+    // 2. Surrounding pocket universe bubbles nucleating in the higher-dimensional quantum false vacuum
+    const pocketCount = this.isSoftwareGl ? 8 : 16;
+    const bubbleMat = createMultiverseBubbleMaterial({
+      isHomeUniverse: false,
+      opacity: 0.72,
+    });
+    for (let b = 0; b < pocketCount; b++) {
+      const radius = 2.4 + seededRand(b * 7 + 1) * 4.6;
+      const dist = 18.0 + seededRand(b * 7 + 2) * 22.0;
+      const theta = Math.acos(2 * seededRand(b * 7 + 3) - 1);
+      const phi = seededRand(b * 7 + 4) * Math.PI * 2;
+
+      const px = dist * Math.sin(theta) * Math.cos(phi);
+      const py = dist * Math.cos(theta) * 0.72;
+      const pz = dist * Math.sin(theta) * Math.sin(phi);
+
+      const pBubble = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, this.isSoftwareGl ? 18 : 28, 16),
+        bubbleMat
+      );
+      pBubble.position.set(px, py, pz);
+      group.add(pBubble);
+    }
+
+    // 3. Higher-dimensional quantum vacuum fluctuation glints
+    const glintCount = this.isSoftwareGl ? 400 : 1200;
+    const pos = new Float32Array(glintCount * 3);
+    const col = new Float32Array(glintCount * 3);
+    const sc = new Float32Array(glintCount);
+    const lum = new Float32Array(glintCount);
+    for (let i = 0; i < glintCount; i++) {
+      const r = 12.0 + Math.pow(seededRand(i * 5 + 1), 1.2) * 36.0;
+      const theta = Math.acos(2 * seededRand(i * 5 + 2) - 1);
+      const phi = seededRand(i * 5 + 3) * Math.PI * 2;
+      pos[i * 3] = r * Math.sin(theta) * Math.cos(phi);
+      pos[i * 3 + 1] = r * Math.cos(theta) * 0.65;
+      pos[i * 3 + 2] = r * Math.sin(theta) * Math.sin(phi);
+
+      const t = seededRand(i * 5 + 4);
+      _scratchColorA.setHSL(0.72 + t * 0.35, 0.85, 0.65);
+      col[i * 3] = _scratchColorA.r;
+      col[i * 3 + 1] = _scratchColorA.g;
+      col[i * 3 + 2] = _scratchColorA.b;
+      sc[i] = 0.6 + seededRand(i * 5 + 5) * 1.5;
+      lum[i] = 0.4 + seededRand(i * 7 + 1) * 0.6;
+    }
+    const gGeo = new THREE.BufferGeometry();
+    gGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    gGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    gGeo.setAttribute('aScale', new THREE.BufferAttribute(sc, 1));
+    gGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(lum, 1));
+    group.add(
+      new THREE.Points(
+        gGeo,
+        createStarPsfMaterial({ baseSize: 11.0, diffractionStrength: 0.45, opacity: 0.82 })
+      )
+    );
+
+    const homeBubbleAnchor = new THREE.Object3D();
+    group.add(homeBubbleAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_home_pocket_universe',
+      label: 'Home Universe Bubble',
+      sublabel: 'Nucleating Inflationary Singularity · 10^+28 m',
+      node: homeBubbleAnchor,
+      layerBandId: 'multiverse',
+      minLog: 28.5,
+      maxLog: 30.5,
+      targetLogMeters: 28.0,
+      colorCss: '#a855f7',
+      physicalRadiusWorldAtOneToOne: 9.8,
+    });
+
+    return (dt, elapsed) => {
+      group.rotation.y += dt * 0.02;
+      const coronaPulse = 23.5 + Math.sin(elapsed * 1.4) * 1.2;
+      homeCorona.scale.setScalar(coronaPulse);
+    };
+  }
+
+  // --- 2. BIG BANG & COSMIC INFLATION SINGULARITY (+28.0) ---
   private populateBigBangLayer(
     group: THREE.Group,
     glowTex: THREE.CanvasTexture
@@ -638,6 +892,21 @@ export class SeamlessUniverseSimulator {
       )
     );
 
+    const bigBangSingularityAnchor = new THREE.Object3D();
+    group.add(bigBangSingularityAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_inflation_singularity',
+      label: 'Cosmic Inflation Envelope',
+      sublabel: 'Relativistic Quark-Gluon Plasma · 10^+27.2 m',
+      node: bigBangSingularityAnchor,
+      layerBandId: 'big_bang',
+      minLog: 27.2,
+      maxLog: 29.5,
+      targetLogMeters: 27.2,
+      colorCss: '#fef08a',
+      physicalRadiusWorldAtOneToOne: 18.0,
+    });
+
     return (dt, elapsed) => {
       group.rotation.y += dt * 0.06 * this.bigBangSpeedScale;
       const pulse = 17.2 + Math.sin(elapsed * 1.8 * this.bigBangSpeedScale) * 1.1;
@@ -645,8 +914,80 @@ export class SeamlessUniverseSimulator {
     };
   }
 
-  // --- 2. ENTIRE OBSERVABLE COSMOS · 93.0 GLY CMB SPHERE (+26.94) ---
-  private populateEntireCosmosLayer(
+  // --- 3. ENTIRE EVOLVED UNIVERSE SPACETIME MANIFOLD (+27.2) ---
+  private populateUniverseManifoldLayer(
+    group: THREE.Group
+  ): (dt: number, elapsed: number) => void {
+    // 1. Metric expansion grid plane with BAO acoustic ripples
+    const manifoldMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(52, 52, this.isSoftwareGl ? 32 : 54, this.isSoftwareGl ? 32 : 54),
+      createSpacetimeManifoldMaterial({ opacity: 0.88 })
+    );
+    manifoldMesh.rotation.x = -Math.PI / 2.35;
+    group.add(manifoldMesh);
+
+    // 2. Cosmic horizon boundary sphere
+    const horizonSphere = new THREE.Mesh(
+      new THREE.SphereGeometry(22.0, this.isSoftwareGl ? 28 : 48, this.isSoftwareGl ? 20 : 36),
+      createCmbAnisotropyMaterial(0.38)
+    );
+    group.add(horizonSphere);
+
+    // 3. Primordial perturbation nodes seeding future cosmic web
+    const nodeCount = this.isSoftwareGl ? 500 : 1600;
+    const pos = new Float32Array(nodeCount * 3);
+    const col = new Float32Array(nodeCount * 3);
+    const sc = new Float32Array(nodeCount);
+    const lum = new Float32Array(nodeCount);
+    for (let i = 0; i < nodeCount; i++) {
+      const r = Math.pow(seededRand(i * 7 + 1), 0.75) * 20.0;
+      const theta = Math.acos(2 * seededRand(i * 7 + 2) - 1);
+      const phi = seededRand(i * 7 + 3) * Math.PI * 2;
+      pos[i * 3] = r * Math.sin(theta) * Math.cos(phi);
+      pos[i * 3 + 1] = r * Math.cos(theta) * 0.45;
+      pos[i * 3 + 2] = r * Math.sin(theta) * Math.sin(phi);
+
+      blackbodyKelvinToRgb(THREE.MathUtils.lerp(18000, 3800, r / 20.0), _scratchColorA);
+      col[i * 3] = _scratchColorA.r;
+      col[i * 3 + 1] = _scratchColorA.g;
+      col[i * 3 + 2] = _scratchColorA.b;
+      sc[i] = 0.5 + seededRand(i * 7 + 4) * 1.6;
+      lum[i] = 0.4 + seededRand(i * 7 + 5) * 0.6;
+    }
+    const nGeo = new THREE.BufferGeometry();
+    nGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    nGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    nGeo.setAttribute('aScale', new THREE.BufferAttribute(sc, 1));
+    nGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(lum, 1));
+    group.add(
+      new THREE.Points(
+        nGeo,
+        createStarPsfMaterial({ baseSize: 12.0, diffractionStrength: 0.28, opacity: 0.88 })
+      )
+    );
+
+    const observableAnchor = new THREE.Object3D();
+    group.add(observableAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_observable_horizon',
+      label: 'Observable Horizon (CMB)',
+      sublabel: '93.0 Gly Particle Horizon · 10^+26.94 m',
+      node: observableAnchor,
+      layerBandId: 'universe',
+      minLog: 26.8,
+      maxLog: 27.8,
+      targetLogMeters: 26.94,
+      colorCss: '#60a5fa',
+      physicalRadiusWorldAtOneToOne: 0.15,
+    });
+
+    return (dt) => {
+      group.rotation.y += dt * 0.024;
+    };
+  }
+
+  // --- 4. OBSERVABLE UNIVERSE · 93.0 GLY CMB SPHERE (+26.94) ---
+  private populateObservableUniverseLayer(
     group: THREE.Group
   ): (dt: number, elapsed: number) => void {
     const cmbShell = new THREE.Mesh(
@@ -655,7 +996,6 @@ export class SeamlessUniverseSimulator {
     );
     group.add(cmbShell);
 
-    // Interior Hubble Ultra Deep Field of 2,400 superclusters inside the 93 Gly particle horizon
     const count = this.isSoftwareGl ? 700 : 2400;
     const pos = new Float32Array(count * 3);
     const col = new Float32Array(count * 3);
@@ -668,7 +1008,6 @@ export class SeamlessUniverseSimulator {
       pos[i * 3] = r * Math.sin(theta) * Math.cos(phi);
       pos[i * 3 + 1] = r * Math.cos(theta);
       pos[i * 3 + 2] = r * Math.sin(theta) * Math.sin(phi);
-      // Cosmological redshift gradient (z = 0 blue/gold interior -> z > 8 redshifted outer shell)
       const redshift = r / 19.8;
       blackbodyKelvinToRgb(THREE.MathUtils.lerp(9500, 2900, redshift), _scratchColorA);
       col[i * 3] = _scratchColorA.r;
@@ -684,18 +1023,18 @@ export class SeamlessUniverseSimulator {
     geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
     group.add(new THREE.Points(geo, createDeepFieldGalaxyMaterial(0.92)));
 
-    const laniakeaAnchor = new THREE.Object3D();
-    group.add(laniakeaAnchor);
+    const cosmicWebAnchor = new THREE.Object3D();
+    group.add(cosmicWebAnchor);
     this.registerMarkerAnchor({
-      id: 'marker_laniakea',
-      label: 'Laniakea Supercluster',
-      sublabel: '520 Mly · Local Basin',
-      node: laniakeaAnchor,
-      layerBandId: 'entire_cosmos',
-      minLog: 25.4,
-      maxLog: 27.8,
-      targetLogMeters: 24.69,
-      colorCss: '#fbbf24',
+      id: 'marker_cosmic_web',
+      label: 'Cosmic Web Filaments',
+      sublabel: 'Dark Matter Halos & 100 Mly Boötes Voids · 10^+25.2 m',
+      node: cosmicWebAnchor,
+      layerBandId: 'observable',
+      minLog: 25.0,
+      maxLog: 27.2,
+      targetLogMeters: 25.2,
+      colorCss: '#818cf8',
       physicalRadiusWorldAtOneToOne: 0.12,
     });
 
@@ -704,12 +1043,242 @@ export class SeamlessUniverseSimulator {
     };
   }
 
-  // --- 3. SUPERCLUSTER A · LANIAKEA GRAVITATIONAL WATERSHED (+24.69 · 520 Mly) ---
-  private populateSuperclusterALayer(
+  // --- 5. COSMIC WEB & INTERGALACTIC VOIDS (+25.2 · 1.7 Gly) ---
+  private populateCosmicWebLayer(
+    group: THREE.Group
+  ): (dt: number, elapsed: number) => void {
+    const clusterNodes: THREE.Vector3[] = [new THREE.Vector3(0, 0, 0)];
+    const nodeCount = 18;
+    for (let i = 1; i < nodeCount; i++) {
+      const theta = Math.acos(2 * seededRand(i * 13 + 1) - 1);
+      const phi = seededRand(i * 13 + 2) * Math.PI * 2;
+      const r = 8.5 + seededRand(i * 13 + 3) * 15.0;
+      clusterNodes.push(
+        new THREE.Vector3(
+          r * Math.sin(theta) * Math.cos(phi),
+          r * Math.cos(theta) * 0.65,
+          r * Math.sin(theta) * Math.sin(phi)
+        )
+      );
+    }
+
+    const filamentCurves: THREE.QuadraticBezierCurve3[] = [];
+    const ribbonMat = createCosmicFilamentRibbonMaterial(0.42);
+
+    for (let i = 0; i < clusterNodes.length; i++) {
+      for (let j = i + 1; j < clusterNodes.length; j++) {
+        const a = clusterNodes[i];
+        const b = clusterNodes[j];
+        const d = a.distanceTo(b);
+        if (d < 14.5 || (i === 0 && d < 18.0)) {
+          const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+          const seed = i * 31 + j * 17;
+          mid.x += (seededRand(seed + 1) - 0.5) * d * 0.32;
+          mid.y += (seededRand(seed + 2) - 0.5) * d * 0.32;
+          mid.z += (seededRand(seed + 3) - 0.5) * d * 0.32;
+          const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
+          filamentCurves.push(curve);
+
+          const steps = this.isSoftwareGl ? 8 : 14;
+          for (let planeIdx = 0; planeIdx < 2; planeIdx++) {
+            const stripGeo = new THREE.PlaneGeometry(1, 1, 1, steps);
+            const posAttr = stripGeo.attributes.position;
+            const halfW = i === 0 ? 0.95 : 0.65;
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              curve.getPoint(t, _scratchVecA);
+              curve.getTangent(t, _scratchVecB);
+              if (planeIdx === 0) {
+                _scratchVecC.crossVectors(_scratchVecB, _upUnitVec);
+                if (_scratchVecC.lengthSq() < 0.001) _scratchVecC.set(1, 0, 0);
+                _scratchVecC.normalize();
+              } else {
+                _scratchVecC.crossVectors(_scratchVecB, _upUnitVec).normalize();
+                _scratchVecC.crossVectors(_scratchVecC, _scratchVecB).normalize();
+              }
+              const pinch = halfW * (1.35 - 0.55 * Math.sin(t * Math.PI));
+              posAttr.setXYZ(
+                s * 2,
+                _scratchVecA.x - _scratchVecC.x * pinch,
+                _scratchVecA.y - _scratchVecC.y * pinch,
+                _scratchVecA.z - _scratchVecC.z * pinch
+              );
+              posAttr.setXYZ(
+                s * 2 + 1,
+                _scratchVecA.x + _scratchVecC.x * pinch,
+                _scratchVecA.y + _scratchVecC.y * pinch,
+                _scratchVecA.z + _scratchVecC.z * pinch
+              );
+            }
+            group.add(new THREE.Mesh(stripGeo, ribbonMat));
+          }
+        }
+      }
+    }
+
+    const galCount = this.isSoftwareGl ? 1200 : 3800;
+    const gPos = new Float32Array(galCount * 3);
+    const gCol = new Float32Array(galCount * 3);
+    const gScale = new Float32Array(galCount);
+    const gSeed = new Float32Array(galCount);
+
+    for (let g = 0; g < galCount; g++) {
+      const curve = filamentCurves[g % Math.max(1, filamentCurves.length)];
+      const u = seededRand(g * 5 + 1);
+      const t = u < 0.5 ? 0.5 * Math.pow(u * 2, 1.5) : 1 - 0.5 * Math.pow((1 - u) * 2, 1.5);
+      curve.getPoint(t, _scratchVecA);
+
+      const sigma = 0.32 + 1.1 * Math.sin(t * Math.PI);
+      const rx = (seededRand(g * 5 + 2) + seededRand(g * 5 + 3) - 1.0) * sigma * 1.8;
+      const ry = (seededRand(g * 5 + 4) + seededRand(g * 7 + 1) - 1.0) * sigma * 1.8;
+      const rz = (seededRand(g * 7 + 2) + seededRand(g * 7 + 3) - 1.0) * sigma * 1.8;
+
+      gPos[g * 3] = _scratchVecA.x + rx;
+      gPos[g * 3 + 1] = _scratchVecA.y + ry;
+      gPos[g * 3 + 2] = _scratchVecA.z + rz;
+
+      const knotProx = 1 - Math.sin(t * Math.PI);
+      blackbodyKelvinToRgb(
+        THREE.MathUtils.lerp(9200, 4100, knotProx * 0.85 + seededRand(g * 3 + 4) * 0.15),
+        _scratchColorA
+      );
+      gCol[g * 3] = _scratchColorA.r;
+      gCol[g * 3 + 1] = _scratchColorA.g;
+      gCol[g * 3 + 2] = _scratchColorA.b;
+      gScale[g] = 0.55 + Math.pow(seededRand(g * 9 + 1), 2.4) * 2.2;
+      gSeed[g] = seededRand(g * 9 + 2);
+    }
+
+    const galGeo = new THREE.BufferGeometry();
+    galGeo.setAttribute('position', new THREE.BufferAttribute(gPos, 3));
+    galGeo.setAttribute('color', new THREE.BufferAttribute(gCol, 3));
+    galGeo.setAttribute('aScale', new THREE.BufferAttribute(gScale, 1));
+    galGeo.setAttribute('aSeed', new THREE.BufferAttribute(gSeed, 1));
+    group.add(new THREE.Points(galGeo, createDeepFieldGalaxyMaterial(0.95)));
+
+    const majorFilamentAnchor = new THREE.Object3D();
+    group.add(majorFilamentAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_major_filament',
+      label: 'Cosmic Filament Wall',
+      sublabel: '105 Mly · Dark Matter Bridge to Superclusters · 10^+24.0 m',
+      node: majorFilamentAnchor,
+      layerBandId: 'cosmic_web',
+      minLog: 23.8,
+      maxLog: 25.5,
+      targetLogMeters: 24.0,
+      colorCss: '#67e8f9',
+      physicalRadiusWorldAtOneToOne: 0.14,
+    });
+
+    return (dt) => {
+      group.rotation.y -= dt * 0.032;
+    };
+  }
+
+  // --- 6. COSMIC FILAMENT WALL (+24.0 · 105 Mly) ---
+  private populateFilamentLayer(
+    group: THREE.Group
+  ): (dt: number, elapsed: number) => void {
+    const spinePoints = [
+      new THREE.Vector3(-18.0, -4.5, -8.0),
+      new THREE.Vector3(-8.0, -1.2, -2.5),
+      new THREE.Vector3(0.0, 0.0, 0.0),
+      new THREE.Vector3(9.5, 2.1, 4.0),
+      new THREE.Vector3(20.0, 5.2, 9.5),
+    ];
+    const spineCurve = new THREE.CatmullRomCurve3(spinePoints);
+
+    const ribbonMat = createCosmicFilamentRibbonMaterial(0.55);
+    const steps = this.isSoftwareGl ? 14 : 28;
+    for (let p = 0; p < 3; p++) {
+      const planeGeo = new THREE.PlaneGeometry(1, 1, 1, steps);
+      const posAttr = planeGeo.attributes.position;
+      const angle = (p * Math.PI) / 3;
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        spineCurve.getPoint(t, _scratchVecA);
+        spineCurve.getTangent(t, _scratchVecB);
+        _scratchVecC.crossVectors(_scratchVecB, _upUnitVec);
+        if (_scratchVecC.lengthSq() < 0.001) _scratchVecC.set(1, 0, 0);
+        _scratchVecC.normalize().applyAxisAngle(_scratchVecB, angle);
+
+        const width = 2.4 * (1.15 - 0.45 * Math.sin(t * Math.PI));
+        posAttr.setXYZ(
+          s * 2,
+          _scratchVecA.x - _scratchVecC.x * width,
+          _scratchVecA.y - _scratchVecC.y * width,
+          _scratchVecA.z - _scratchVecC.z * width
+        );
+        posAttr.setXYZ(
+          s * 2 + 1,
+          _scratchVecA.x + _scratchVecC.x * width,
+          _scratchVecA.y + _scratchVecC.y * width,
+          _scratchVecA.z + _scratchVecC.z * width
+        );
+      }
+      group.add(new THREE.Mesh(planeGeo, ribbonMat));
+    }
+
+    const galCount = this.isSoftwareGl ? 900 : 2600;
+    const gPos = new Float32Array(galCount * 3);
+    const gCol = new Float32Array(galCount * 3);
+    const gScale = new Float32Array(galCount);
+    const gSeed = new Float32Array(galCount);
+
+    for (let g = 0; g < galCount; g++) {
+      const t = seededRand(g * 7 + 1);
+      spineCurve.getPoint(t, _scratchVecA);
+
+      const rScatter = Math.pow(seededRand(g * 7 + 2), 1.6) * 3.4;
+      const phi = seededRand(g * 7 + 3) * Math.PI * 2;
+      gPos[g * 3] = _scratchVecA.x + rScatter * Math.cos(phi);
+      gPos[g * 3 + 1] = _scratchVecA.y + rScatter * Math.sin(phi) * 0.75;
+      gPos[g * 3 + 2] = _scratchVecA.z + (seededRand(g * 7 + 4) - 0.5) * 1.5;
+
+      blackbodyKelvinToRgb(
+        THREE.MathUtils.lerp(8800, 4200, seededRand(g * 7 + 5)),
+        _scratchColorA
+      );
+      gCol[g * 3] = _scratchColorA.r;
+      gCol[g * 3 + 1] = _scratchColorA.g;
+      gCol[g * 3 + 2] = _scratchColorA.b;
+      gScale[g] = 0.6 + seededRand(g * 7 + 6) * 1.8;
+      gSeed[g] = seededRand(g * 7 + 7);
+    }
+
+    const galGeo = new THREE.BufferGeometry();
+    galGeo.setAttribute('position', new THREE.BufferAttribute(gPos, 3));
+    galGeo.setAttribute('color', new THREE.BufferAttribute(gCol, 3));
+    galGeo.setAttribute('aScale', new THREE.BufferAttribute(gScale, 1));
+    galGeo.setAttribute('aSeed', new THREE.BufferAttribute(gSeed, 1));
+    group.add(new THREE.Points(galGeo, createDeepFieldGalaxyMaterial(0.94)));
+
+    const superclusterAnchor = new THREE.Object3D();
+    group.add(superclusterAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_laniakea_supercluster',
+      label: 'Laniakea Supercluster',
+      sublabel: 'Gravitational Basin · 100,000 Galaxies Flow to Great Attractor · 10^+23.0 m',
+      node: superclusterAnchor,
+      layerBandId: 'filament',
+      minLog: 22.8,
+      maxLog: 24.3,
+      targetLogMeters: 23.0,
+      colorCss: '#fbbf24',
+      physicalRadiusWorldAtOneToOne: 0.16,
+    });
+
+    return (dt) => {
+      group.rotation.y += dt * 0.034;
+    };
+  }
+
+  // --- 7. SUPERCLUSTER · LANIAKEA GRAVITATIONAL WATERSHED (+23.0 · 10.5 Mly) ---
+  private populateSuperclusterLayer(
     group: THREE.Group,
     glowTex: THREE.CanvasTexture
   ): (dt: number, elapsed: number) => void {
-    // 100,000-galaxy Laniakea peculiar-velocity flow streams converging toward the Great Attractor
     const streamCount = this.isSoftwareGl ? 48 : 110;
     const ptsPerStream = this.isSoftwareGl ? 24 : 46;
     const totalPts = streamCount * ptsPerStream;
@@ -736,7 +1305,6 @@ export class SeamlessUniverseSimulator {
           r * Math.cos(theta) * 0.52 + Math.sin(t * 4.2 + curlB) * 1.1 + scatter;
         pos[idx * 3 + 2] = r * Math.sin(theta) * Math.sin(ang) + scatter;
 
-        // Golden-ivory dense cluster core -> sapphire-amber filament outskirts
         blackbodyKelvinToRgb(THREE.MathUtils.lerp(8200, 4100, Math.pow(t, 0.7)), _scratchColorA);
         col[idx * 3] = _scratchColorA.r;
         col[idx * 3 + 1] = _scratchColorA.g;
@@ -771,20 +1339,20 @@ export class SeamlessUniverseSimulator {
     attractorGlow.scale.setScalar(9.5);
     group.add(attractorGlow);
 
-    const virgoNode = new THREE.Object3D();
-    virgoNode.position.set(4.2, 0.8, 2.6);
-    group.add(virgoNode);
+    const virgoClusterAnchor = new THREE.Object3D();
+    virgoClusterAnchor.position.set(4.2, 0.8, 2.6);
+    group.add(virgoClusterAnchor);
     this.registerMarkerAnchor({
-      id: 'marker_virgo_strand',
-      label: 'Virgo Filament',
-      sublabel: '30 Mly · Local Web',
-      node: virgoNode,
-      layerBandId: 'supercluster_a',
-      minLog: 23.8,
-      maxLog: 25.5,
-      targetLogMeters: 23.45,
-      colorCss: '#818cf8',
-      physicalRadiusWorldAtOneToOne: 0.8,
+      id: 'marker_virgo_cluster',
+      label: 'Virgo Galaxy Cluster',
+      sublabel: '2,000 Bound Galaxies in Hot X-Ray Plasma · 10^+22.2 m',
+      node: virgoClusterAnchor,
+      layerBandId: 'supercluster',
+      minLog: 21.8,
+      maxLog: 23.4,
+      targetLogMeters: 22.2,
+      colorCss: '#f472b6',
+      physicalRadiusWorldAtOneToOne: 0.25,
     });
 
     return (dt) => {
@@ -792,148 +1360,88 @@ export class SeamlessUniverseSimulator {
     };
   }
 
-  // --- 4. GALAXY FILAMENTS & ILLUSTRIS-TNG COSMIC WEB (+23.45 · 30 Mly) ---
-  private populateGalaxyFilamentsLayer(
-    group: THREE.Group
+  // --- 8. GALAXY CLUSTER (VIRGO / COMA SWARM) (+22.2 · 1.7 Mly) ---
+  private populateClusterLayer(
+    group: THREE.Group,
+    glowCool: THREE.CanvasTexture
   ): (dt: number, elapsed: number) => void {
-    // Organic 3D Voronoi / curl-warped gravitational dark-matter & WHIM filaments (ZERO cylinder cages!)
-    const clusterNodes: THREE.Vector3[] = [new THREE.Vector3(0, 0, 0)];
-    const nodeCount = 18;
-    for (let i = 1; i < nodeCount; i++) {
-      const theta = Math.acos(2 * seededRand(i * 13 + 1) - 1);
-      const phi = seededRand(i * 13 + 2) * Math.PI * 2;
-      const r = 7.0 + seededRand(i * 13 + 3) * 14.5;
-      clusterNodes.push(
-        new THREE.Vector3(
-          r * Math.sin(theta) * Math.cos(phi),
-          r * Math.cos(theta) * 0.68,
-          r * Math.sin(theta) * Math.sin(phi)
-        )
-      );
-    }
+    const icmPlasma = new THREE.Mesh(
+      new THREE.PlaneGeometry(36, 36),
+      createVolumetricNebulaMaterial({
+        seedOffset: 7.8,
+        hubblePaletteMix: 0.35,
+        opacity: 0.48,
+        isInnerCore: true,
+      })
+    );
+    icmPlasma.rotation.x = -Math.PI / 2.2;
+    group.add(icmPlasma);
 
-    const filamentCurves: THREE.QuadraticBezierCurve3[] = [];
-    const ribbonMat = createCosmicFilamentRibbonMaterial(0.46);
+    const count = this.isSoftwareGl ? 700 : 2200;
+    const pos = new Float32Array(count * 3);
+    const col = new Float32Array(count * 3);
+    const sc = new Float32Array(count);
+    const lum = new Float32Array(count);
 
-    for (let i = 0; i < clusterNodes.length; i++) {
-      for (let j = i + 1; j < clusterNodes.length; j++) {
-        const a = clusterNodes[i];
-        const b = clusterNodes[j];
-        const d = a.distanceTo(b);
-        if (d < 13.2 || (i === 0 && d < 16.0)) {
-          // Organic gravitational saddle bow midpoint (never straight wireframe sticks!)
-          const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
-          const seed = i * 31 + j * 17;
-          mid.x += (seededRand(seed + 1) - 0.5) * d * 0.34;
-          mid.y += (seededRand(seed + 2) - 0.5) * d * 0.34;
-          mid.z += (seededRand(seed + 3) - 0.5) * d * 0.34;
-          const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
-          filamentCurves.push(curve);
+    for (let i = 0; i < count; i++) {
+      const u = seededRand(i * 9 + 1);
+      const r = 16.5 * (u / Math.sqrt(1 + (u * 14.0) * (u * 14.0)) * 14.0);
+      const theta = Math.acos(2 * seededRand(i * 9 + 2) - 1);
+      const phi = seededRand(i * 9 + 3) * Math.PI * 2;
 
-          // Crossed soft-Gaussian WHIM gas ribbons along curve (zero hard edges!)
-          const steps = this.isSoftwareGl ? 10 : 18;
-          for (let planeIdx = 0; planeIdx < 2; planeIdx++) {
-            const stripGeo = new THREE.PlaneGeometry(1, 1, 1, steps);
-            const posAttr = stripGeo.attributes.position;
-            const halfW = i === 0 ? 0.85 : 0.58;
-            for (let s = 0; s <= steps; s++) {
-              const t = s / steps;
-              curve.getPoint(t, _scratchVecA);
-              curve.getTangent(t, _scratchVecB);
-              if (planeIdx === 0) {
-                _scratchVecC.crossVectors(_scratchVecB, _upUnitVec);
-                if (_scratchVecC.lengthSq() < 0.001) _scratchVecC.set(1, 0, 0);
-                _scratchVecC.normalize();
-              } else {
-                _scratchVecC.crossVectors(_scratchVecB, _upUnitVec).normalize();
-                _scratchVecC.crossVectors(_scratchVecC, _scratchVecB).normalize();
-              }
-              const pinch = halfW * (1.35 - 0.55 * Math.sin(t * Math.PI));
-              posAttr.setXYZ(
-                s * 2,
-                _scratchVecA.x - _scratchVecC.x * pinch,
-                _scratchVecA.y - _scratchVecC.y * pinch,
-                _scratchVecA.z - _scratchVecC.z * pinch
-              );
-              posAttr.setXYZ(
-                s * 2 + 1,
-                _scratchVecA.x + _scratchVecC.x * pinch,
-                _scratchVecA.y + _scratchVecC.y * pinch,
-                _scratchVecA.z + _scratchVecC.z * pinch
-              );
-            }
-            group.add(new THREE.Mesh(stripGeo, ribbonMat));
-          }
-        }
-      }
-    }
+      pos[i * 3] = r * Math.sin(theta) * Math.cos(phi);
+      pos[i * 3 + 1] = r * Math.cos(theta) * 0.58;
+      pos[i * 3 + 2] = r * Math.sin(theta) * Math.sin(phi);
 
-    // 4,500 PSF Galaxies & Cluster Halos concentrated organically along curved cosmic web filaments
-    const galCount = this.isSoftwareGl ? 1400 : 4500;
-    const gPos = new Float32Array(galCount * 3);
-    const gCol = new Float32Array(galCount * 3);
-    const gScale = new Float32Array(galCount);
-    const gSeed = new Float32Array(galCount);
-
-    for (let g = 0; g < galCount; g++) {
-      const curve = filamentCurves[g % Math.max(1, filamentCurves.length)];
-      // Bias galaxies toward dense cluster intersections (t near 0 or 1)
-      const u = seededRand(g * 5 + 1);
-      const t = u < 0.5 ? 0.5 * Math.pow(u * 2, 1.5) : 1 - 0.5 * Math.pow((1 - u) * 2, 1.5);
-      curve.getPoint(t, _scratchVecA);
-
-      // Gaussian transverse filament thickness
-      const sigma = 0.28 + 0.95 * Math.sin(t * Math.PI);
-      const rx = (seededRand(g * 5 + 2) + seededRand(g * 5 + 3) - 1.0) * sigma * 1.8;
-      const ry = (seededRand(g * 5 + 4) + seededRand(g * 7 + 1) - 1.0) * sigma * 1.8;
-      const rz = (seededRand(g * 7 + 2) + seededRand(g * 7 + 3) - 1.0) * sigma * 1.8;
-
-      gPos[g * 3] = _scratchVecA.x + rx;
-      gPos[g * 3 + 1] = _scratchVecA.y + ry;
-      gPos[g * 3 + 2] = _scratchVecA.z + rz;
-
-      // Ellipticals in cluster knots are golden-amber (4,200K); field spirals along filaments are sapphire-white (8,500K)
-      const knotProx = 1 - Math.sin(t * Math.PI);
+      const coreFrac = THREE.MathUtils.clamp(1.0 - r / 12.0, 0, 1);
       blackbodyKelvinToRgb(
-        THREE.MathUtils.lerp(9200, 4100, knotProx * 0.85 + seededRand(g * 3 + 4) * 0.15),
+        THREE.MathUtils.lerp(8600, 3900, coreFrac * 0.8 + seededRand(i * 9 + 4) * 0.2),
         _scratchColorA
       );
-      gCol[g * 3] = _scratchColorA.r;
-      gCol[g * 3 + 1] = _scratchColorA.g;
-      gCol[g * 3 + 2] = _scratchColorA.b;
-      gScale[g] = 0.55 + Math.pow(seededRand(g * 9 + 1), 2.4) * 2.2;
-      gSeed[g] = seededRand(g * 9 + 2);
+      col[i * 3] = _scratchColorA.r;
+      col[i * 3 + 1] = _scratchColorA.g;
+      col[i * 3 + 2] = _scratchColorA.b;
+      sc[i] = 0.65 + coreFrac * 1.5 + seededRand(i * 9 + 5) * 1.2;
+      lum[i] = 0.4 + coreFrac * 0.6;
     }
 
-    const galGeo = new THREE.BufferGeometry();
-    galGeo.setAttribute('position', new THREE.BufferAttribute(gPos, 3));
-    galGeo.setAttribute('color', new THREE.BufferAttribute(gCol, 3));
-    galGeo.setAttribute('aScale', new THREE.BufferAttribute(gScale, 1));
-    galGeo.setAttribute('aSeed', new THREE.BufferAttribute(gSeed, 1));
-    group.add(new THREE.Points(galGeo, createDeepFieldGalaxyMaterial(0.95)));
+    const cGeo = new THREE.BufferGeometry();
+    cGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    cGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    cGeo.setAttribute('aScale', new THREE.BufferAttribute(sc, 1));
+    cGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(lum, 1));
+    group.add(
+      new THREE.Points(
+        cGeo,
+        createDeepFieldGalaxyMaterial(0.95)
+      )
+    );
 
-    const localGalaxyAnchor = new THREE.Object3D();
-    group.add(localGalaxyAnchor);
+    const localMilkyWayAnchor = new THREE.Object3D();
+    localMilkyWayAnchor.position.set(-2.8, -0.6, 3.4);
+    group.add(localMilkyWayAnchor);
     this.registerMarkerAnchor({
-      id: 'marker_milky_way_spiral',
-      label: 'Spiral Galaxy',
-      sublabel: '105,700 ly · Local Group',
-      node: localGalaxyAnchor,
-      layerBandId: 'galaxy_filaments',
-      minLog: 21.6,
-      maxLog: 24.1,
+      id: 'marker_milky_way_disc',
+      label: 'Milky Way Galaxy Disc',
+      sublabel: '105,700 ly Stellar Disc & Central Sgr A* Core · 10^+21.0 m',
+      node: localMilkyWayAnchor,
+      layerBandId: 'cluster',
+      minLog: 20.8,
+      maxLog: 22.6,
       targetLogMeters: 21.0,
       colorCss: '#60a5fa',
-      physicalRadiusWorldAtOneToOne: 0.08,
+      physicalRadiusWorldAtOneToOne: 0.12,
     });
 
     return (dt) => {
-      group.rotation.y -= dt * 0.035;
+      group.rotation.y -= dt * 0.045;
     };
   }
 
-  // --- 5. GRAND-DESIGN SPIRAL GALAXIES (+21.0 · 105,700 ly) ---
-  private populateSpiralGalaxyLayer(
+  // --- 9 & 10 UNIFIED. MILKY WAY GALAXY & SPIRAL ARMS (+21.0 -> +19.4 · ORION-CYGNUS SPUR) ---
+  // Combines galactic disc, Sagittarius A* bulge, globular halo, spiral arms, OB associations,
+  // and Orion-Cygnus Spur gas ribbons into ONE continuous structure across Galaxy & Spiral Arms.
+  private populateGalaxyLayer(
     group: THREE.Group,
     glowTex: THREE.CanvasTexture
   ): (dt: number, elapsed: number) => void {
@@ -941,16 +1449,51 @@ export class SeamlessUniverseSimulator {
     galaxyTilt.rotation.x = 0.58;
     galaxyTilt.rotation.z = -0.22;
     group.add(galaxyTilt);
+    this.spiralGalaxyTiltGroup = galaxyTilt;
 
-    // 1. Volumetric Stellar Continuum + Dark Absorbing Spiral Dust Lanes Shader Plane
+    const galaxySpin = new THREE.Group();
+    galaxyTilt.add(galaxySpin);
+    this.spiralGalaxySpinGroup = galaxySpin;
+
+    // 1. Morphology-reactive Volumetric Stellar Continuum + Dark Absorbing Spiral/Bar Dust Lanes
+    this.spiralGalaxyDiscMat = createSpiralGalaxyDiscMaterial({
+      arms: 2,
+      opacity: 0.95,
+      morphology: this.galaxyMorphology,
+    });
     const discMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(42, 42),
-      createSpiralGalaxyDiscMaterial({ arms: 2, opacity: 0.95 })
+      this.spiralGalaxyDiscMat
     );
     discMesh.rotation.x = -Math.PI / 2;
-    galaxyTilt.add(discMesh);
+    galaxySpin.add(discMesh);
+    this.spiralGalaxyDiscMesh = discMesh;
 
-    // 2. 4,200 PSF OB Star Associations, H-II Star-Forming Knots & 3D Globular Cluster Halo
+    // 2. Sagittarius A* Supermassive Black Hole Event Horizon + Gravitational Lensing Glint
+    const smbhAnchor = new THREE.Object3D();
+    smbhAnchor.position.set(0, 0, 0);
+    galaxySpin.add(smbhAnchor);
+    const smbhGlint = this.createSinglePointGlint(0xffedd5, 18.0, 0.95);
+    galaxySpin.add(smbhGlint);
+
+    this.registerMarkerAnchor({
+      id: 'marker_smbh_sagittarius_a',
+      label: 'Sagittarius A* SMBH',
+      sublabel: '4.15M Solar Masses · Galactic Core · 10^+21.0 m',
+      node: smbhAnchor,
+      layerBandId: 'galaxy',
+      minLog: 19.6,
+      maxLog: 22.2,
+      targetLogMeters: 21.0,
+      colorCss: '#fde68a',
+      physicalRadiusWorldAtOneToOne: 0.002,
+    });
+
+    // Earth / Solar System Milky Way position on Orion-Cygnus Spur (~26,000 ly out of 52,850 ly)
+    const armX = Math.cos(HOME_GALAXY_ARM_THETA) * HOME_GALAXY_ARM_RADIUS;
+    const armZ = -Math.sin(HOME_GALAXY_ARM_THETA) * HOME_GALAXY_ARM_RADIUS;
+
+    // 3. 4,400 PSF Galactic Disc Stars, Spiral Arm Clusters, Orion Spur Bridge & Globular Halo
     const starCount = this.isSoftwareGl ? 1400 : 4400;
     const pos = new Float32Array(starCount * 3);
     const col = new Float32Array(starCount * 3);
@@ -959,6 +1502,7 @@ export class SeamlessUniverseSimulator {
 
     for (let i = 0; i < starCount; i++) {
       const isHaloCluster = i % 16 === 0;
+      const isOrionBridge = !isHaloCluster && i % 11 === 0;
       if (isHaloCluster) {
         const r = 3.0 + Math.pow(seededRand(i * 7 + 1), 1.4) * 18.5;
         const theta = Math.acos(2 * seededRand(i * 7 + 2) - 1);
@@ -969,25 +1513,42 @@ export class SeamlessUniverseSimulator {
         blackbodyKelvinToRgb(4300, _scratchColorA);
         sc[i] = 0.85;
         lum[i] = 0.6;
+      } else if (isOrionBridge) {
+        // Dedicated Milky Way Orion-Cygnus Spur stellar bridge connecting through Earth's neighborhood
+        const uSpur = seededRand(i * 7 + 1) - 0.5;
+        const r = HOME_GALAXY_ARM_RADIUS + uSpur * 4.4;
+        const ang =
+          HOME_GALAXY_ARM_THETA +
+          uSpur * 0.62 +
+          (seededRand(i * 7 + 2) - 0.5) * 0.16;
+        const zThick = (seededRand(i * 7 + 4) - 0.5) * 0.45;
+        pos[i * 3] = Math.cos(ang) * r;
+        pos[i * 3 + 1] = zThick;
+        pos[i * 3 + 2] = -Math.sin(ang) * r;
+        blackbodyKelvinToRgb(11500 + seededRand(i * 3 + 1) * 14500, _scratchColorA);
+        sc[i] = 0.65 + seededRand(i * 3 + 2) * 1.05;
+        lum[i] = 0.6 + seededRand(i * 3 + 3) * 0.35;
       } else {
         const u = Math.max(0.02, Math.pow(seededRand(i * 7 + 1), 0.78));
         const r = u * 19.5;
         const armIdx = i % 2;
-        const logAngle = (armIdx * Math.PI) + 2.4 * Math.log(Math.max(0.035, u));
-        const scatter = (0.22 + u * 0.55) * (seededRand(i * 7 + 2) + seededRand(i * 7 + 3) - 1.0);
+        const logAngle = armIdx * Math.PI + 2.4 * Math.log(Math.max(0.035, u));
+        const scatter =
+          (0.22 + u * 0.52) *
+          (seededRand(i * 7 + 2) + seededRand(i * 7 + 3) - 1.0);
         const ang = logAngle + scatter;
         const zThick = (seededRand(i * 7 + 4) - 0.5) * (1.5 / (1 + r * 0.25));
 
         pos[i * 3] = Math.cos(ang) * r;
         pos[i * 3 + 1] = zThick;
-        pos[i * 3 + 2] = Math.sin(ang) * r;
+        pos[i * 3 + 2] = -Math.sin(ang) * r;
 
         if (r < 3.4) {
           blackbodyKelvinToRgb(4400 + seededRand(i * 3 + 1) * 1200, _scratchColorA);
           sc[i] = 0.8 + seededRand(i * 3 + 2) * 1.1;
           lum[i] = 0.85;
         } else if (i % 9 === 0) {
-          // H-alpha 656nm Crimson-Rose H-II Emission Nebula Knot!
+          // H-alpha 656nm Crimson-Rose H-II Emission Nebula Knot
           _scratchColorA.setRGB(0.98, 0.24, 0.46);
           sc[i] = 1.25 + seededRand(i * 3 + 2) * 1.2;
           lum[i] = 0.92;
@@ -1008,14 +1569,113 @@ export class SeamlessUniverseSimulator {
     starGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     starGeo.setAttribute('aScale', new THREE.BufferAttribute(sc, 1));
     starGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(lum, 1));
-    galaxyTilt.add(
+    galaxySpin.add(
       new THREE.Points(
         starGeo,
         createStarPsfMaterial({ baseSize: 11.5, diffractionStrength: 0.38, opacity: 0.95 })
       )
     );
 
-    // 3D Warm Old-Star Sersic Bulge Halo
+    // 4. Combined Spiral Arm Dense OB Supergiants, Open Clusters & H-II Star-Forming Knots
+    // Embedded directly along the Orion-Cygnus Spur around Earth's galactic coordinates so
+    // zooming into Spiral Arms (19.4) expands the exact same galactic starfield seamlessly.
+    const spurTangentAngle = HOME_GALAXY_ARM_THETA + Math.PI * 0.5 - 0.26;
+    const tangX = Math.cos(spurTangentAngle);
+    const tangZ = -Math.sin(spurTangentAngle);
+    const perpX = Math.cos(HOME_GALAXY_ARM_THETA);
+    const perpZ = -Math.sin(HOME_GALAXY_ARM_THETA);
+
+    const spurStarCount = this.isSoftwareGl ? 750 : 2600;
+    const sPos = new Float32Array(spurStarCount * 3);
+    const sCol = new Float32Array(spurStarCount * 3);
+    const sSc = new Float32Array(spurStarCount);
+    const sLum = new Float32Array(spurStarCount);
+
+    for (let i = 0; i < spurStarCount; i++) {
+      const isLocalNeighborhood = i % 3 === 0;
+      const along = isLocalNeighborhood
+        ? (seededRand(i * 11 + 1) - 0.5) * 1.15
+        : (seededRand(i * 11 + 1) - 0.5) * 6.4;
+      const across = isLocalNeighborhood
+        ? (seededRand(i * 11 + 2) + seededRand(i * 11 + 3) - 1.0) * 0.42
+        : (seededRand(i * 11 + 2) + seededRand(i * 11 + 3) - 1.0) * 1.05;
+      const vert = isLocalNeighborhood
+        ? (seededRand(i * 11 + 4) - 0.5) * 0.22
+        : (seededRand(i * 11 + 4) - 0.5) * 0.46;
+
+      // Subtle spiral curvature along the Orion-Cygnus Spur arc
+      const curveBend = along * along * 0.055;
+      sPos[i * 3] = armX + tangX * along + perpX * (across - curveBend);
+      sPos[i * 3 + 1] = vert;
+      sPos[i * 3 + 2] = armZ + tangZ * along + perpZ * (across - curveBend);
+
+      if (i % 7 === 0) {
+        // H-II ionized emission node
+        _scratchColorA.setRGB(0.96, 0.22, 0.44);
+        sSc[i] = isLocalNeighborhood ? 0.95 + seededRand(i * 7 + 5) * 0.95 : 1.15 + seededRand(i * 7 + 5) * 1.05;
+        sLum[i] = 0.88;
+      } else {
+        // Young OB Supergiants & Solar-type neighborhood stars (4,800–30,000 K)
+        const kelvin =
+          i % 4 === 0
+            ? 4800 + seededRand(i * 7 + 5) * 3200
+            : 12000 + seededRand(i * 7 + 5) * 18000;
+        blackbodyKelvinToRgb(kelvin, _scratchColorA);
+        sSc[i] = (isLocalNeighborhood ? 0.55 : 0.45) + seededRand(i * 7 + 6) * 1.15;
+        sLum[i] = 0.48 + seededRand(i * 7 + 7) * 0.52;
+      }
+      sCol[i * 3] = _scratchColorA.r;
+      sCol[i * 3 + 1] = _scratchColorA.g;
+      sCol[i * 3 + 2] = _scratchColorA.b;
+    }
+
+    const spurStarGeo = new THREE.BufferGeometry();
+    spurStarGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+    spurStarGeo.setAttribute('color', new THREE.BufferAttribute(sCol, 3));
+    spurStarGeo.setAttribute('aScale', new THREE.BufferAttribute(sSc, 1));
+    spurStarGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(sLum, 1));
+    galaxySpin.add(
+      new THREE.Points(
+        spurStarGeo,
+        createStarPsfMaterial({
+          baseSize: 12.6,
+          minPixelSize: 1.5,
+          maxPixelSize: 38.0,
+          diffractionStrength: 0.52,
+          opacity: 0.96,
+        })
+      )
+    );
+
+    // 5. Combined Orion-Cygnus Spur Density-Wave Nebula Ribbons & Dust Rifts (at physical 1:1 scale)
+    this.spiralGalaxyArmRibbons = [];
+    const ribbonCount = this.isSoftwareGl ? 3 : 6;
+    for (let r = 0; r < ribbonCount; r++) {
+      const frac = ribbonCount > 1 ? r / (ribbonCount - 1) - 0.5 : 0;
+      const along = frac * 0.85;
+      const across = (seededRand(r * 13 + 3) - 0.5) * 0.24;
+      const vert = (r - ribbonCount / 2) * 0.032;
+      const ribbonPlane = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.95, 0.34),
+        createVolumetricNebulaMaterial({
+          seedOffset: 12.4 + r * 3.1,
+          hubblePaletteMix: 0.22,
+          opacity: 0.62,
+          isInnerCore: r % 2 === 0,
+        })
+      );
+      ribbonPlane.position.set(
+        armX + tangX * along + perpX * across,
+        vert,
+        armZ + tangZ * along + perpZ * across
+      );
+      ribbonPlane.rotation.y = spurTangentAngle + (r % 2 === 0 ? 0.25 : -0.25);
+      ribbonPlane.rotation.x = (r - ribbonCount / 2) * 0.14;
+      galaxySpin.add(ribbonPlane);
+      this.spiralGalaxyArmRibbons.push(ribbonPlane);
+    }
+
+    // 6. 3D Warm Old-Star Sersic Bulge Halo
     const bulgeHalo = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: glowTex,
@@ -1026,36 +1686,76 @@ export class SeamlessUniverseSimulator {
       })
     );
     bulgeHalo.scale.set(11.0, 7.2, 1.0);
-    galaxyTilt.add(bulgeHalo);
+    galaxySpin.add(bulgeHalo);
+    this.spiralGalaxyBulgeHalo = bulgeHalo;
 
-    // Orion-Arm Nebula Marker inside Spiral Galaxy!
-    const armNebulaAnchor = new THREE.Object3D();
-    armNebulaAnchor.position.set(0, 0, 0);
-    galaxyTilt.add(armNebulaAnchor);
+    // 7. Orion-Cygnus Spur Marker Anchor (Earth's Milky Way Spiral Arm Location)
+    const armSpurAnchor = new THREE.Object3D();
+    armSpurAnchor.position.set(armX, 0, armZ);
+    galaxySpin.add(armSpurAnchor);
+
+    const homeSpurBeacon = this.createSinglePointGlint(0x60a5fa, 14.0, 0.45);
+    homeSpurBeacon.position.set(armX, 0, armZ);
+    galaxySpin.add(homeSpurBeacon);
+
     this.registerMarkerAnchor({
-      id: 'marker_h2_nebula',
-      label: 'Orion-Spur H-II Nebula',
-      sublabel: '30 ly · Star-Forming Cloud',
-      node: armNebulaAnchor,
-      layerBandId: 'galaxies',
-      minLog: 18.2,
-      maxLog: 21.6,
-      targetLogMeters: 17.45,
+      id: 'marker_orion_capy_spur',
+      label: 'Orion-Cygnus Spur (Milky Way)',
+      sublabel: '26,000 ly from Core · Solar Neighborhood · 10^+19.4 m',
+      node: armSpurAnchor,
+      layerBandId: 'galaxy',
+      minLog: 18.6,
+      maxLog: 22.0,
+      targetLogMeters: 19.4,
+      colorCss: '#60a5fa',
+      physicalRadiusWorldAtOneToOne: 0.008,
+    });
+
+    // 8. Local Giant Molecular Cloud Core Marker inside the Orion Spur leading down to Nebulas
+    const h2CoreAnchor = new THREE.Object3D();
+    h2CoreAnchor.position.set(armX + tangX * 0.035, 0.004, armZ + tangZ * 0.035);
+    galaxySpin.add(h2CoreAnchor);
+
+    const h2CoreBeacon = this.createSinglePointGlint(0xf43f5e, 15.0, 0.5);
+    h2CoreBeacon.position.copy(h2CoreAnchor.position);
+    galaxySpin.add(h2CoreBeacon);
+
+    this.registerMarkerAnchor({
+      id: 'marker_h2_nebula_core',
+      label: 'H-II Star-Forming Nebula',
+      sublabel: 'Giant Molecular Cloud & Pillars · 10^+17.2 m',
+      node: h2CoreAnchor,
+      layerBandId: 'galaxy',
+      minLog: 16.8,
+      maxLog: 20.0,
+      targetLogMeters: 17.2,
       colorCss: '#f43f5e',
-      physicalRadiusWorldAtOneToOne: 0.006,
+      physicalRadiusWorldAtOneToOne: 0.024,
     });
 
     return (dt) => {
-      galaxyTilt.rotation.y += dt * 0.08;
+      // Gently decelerate galactic spin once locked into the co-rotating Orion-Cygnus Spur frame
+      const spinRate = 0.045 * (1.0 - 0.84 * this.lastGalaxyFocusBlend);
+      galaxySpin.rotation.y += dt * spinRate;
     };
   }
 
-  // --- 6. EMISSION & REFLECTION NEBULAS (+17.45 · 30 ly · HUBBLE ORION / CARINA) ---
-  private populateNebulaLayer(
-    group: THREE.Group
+  // --- 10. SPIRAL ARMS (+19.4 · SHARED CONTINUOUS ORION-CYGNUS SPUR) ---
+  // Geometry, ribbons & stars are combined directly inside ScaleLayer_galaxy so zooming from Galaxy
+  // into Spiral Arms never swaps scenes; this band retains scale telemetry & sky interpolation.
+  private populateSpiralArmsLayer(
+    _group: THREE.Group,
+    _glowCool: THREE.CanvasTexture
   ): (dt: number, elapsed: number) => void {
-    // Multi-angle crossed volumetric FBM emission + Bok-globule extinction shader planes
-    // NormalBlending + ACES Filmic HDR Tone Mapping => ZERO #FFFFFF whiteout & ZERO polygon edges!
+    return () => {};
+  }
+
+  // --- 11. NEBULAS & MOLECULAR CLOUDS (+17.2 · 50 ly · M16 PILLARS & STELLAR NURSERY) ---
+  private populateNebulaLayer(
+    group: THREE.Group,
+    glowCool: THREE.CanvasTexture
+  ): (dt: number, elapsed: number) => void {
+    // 1. Multi-angle crossed volumetric FBM emission + Bok-globule extinction shader planes
     const sliceAngles: Array<[number, number, number, number, boolean]> = [
       [0.0, 0.0, 0.0, 1.1, false],
       [0.42, 0.78, 0.18, 2.7, false],
@@ -1072,7 +1772,7 @@ export class SeamlessUniverseSimulator {
         new THREE.PlaneGeometry(size, size),
         createVolumetricNebulaMaterial({
           seedOffset: seed,
-          hubblePaletteMix: 0.25,
+          hubblePaletteMix: 0.35,
           opacity: inner ? 0.68 : 0.76,
           isInnerCore: inner,
         })
@@ -1082,7 +1782,39 @@ export class SeamlessUniverseSimulator {
       group.add(plane);
     }
 
-    // Embedded Trapezium OB Young Open Star Cluster with crisp HST diffraction spikes!
+    // 2. Towering M16 Absorptive Molecular H2 Dust Pillars (crossed volumetric billboards)
+    const pillarConfigs = [
+      { x: -5.4, y: -1.2, z: -1.4, w: 11.5, h: 25.5, tiltZ: -0.20, seed: 1.3 },
+      { x: 0.2, y: 0.4, z: 0.0, w: 12.8, h: 28.5, tiltZ: -0.10, seed: 3.7 },
+      { x: 5.8, y: -2.8, z: 1.5, w: 9.8, h: 20.5, tiltZ: -0.24, seed: 6.1 },
+    ];
+
+    for (let i = 0; i < pillarConfigs.length; i++) {
+      const cfg = pillarConfigs[i];
+      const pillarHolder = new THREE.Group();
+      pillarHolder.position.set(cfg.x, cfg.y, cfg.z);
+      pillarHolder.rotation.z = cfg.tiltZ;
+
+      const matA = createDustPillarMaterial({ seed: cfg.seed, hubblePaletteMix: 0.5, opacity: 0.96 });
+      const quadA = new THREE.Mesh(new THREE.PlaneGeometry(cfg.w, cfg.h), matA);
+      quadA.renderOrder = 2 + i * 2;
+      pillarHolder.add(quadA);
+
+      if (!this.isSoftwareGl) {
+        const matB = createDustPillarMaterial({
+          seed: cfg.seed + 0.85,
+          hubblePaletteMix: 0.5,
+          opacity: 0.72,
+        });
+        const quadB = new THREE.Mesh(new THREE.PlaneGeometry(cfg.w * 0.92, cfg.h), matB);
+        quadB.rotation.y = Math.PI * 0.38;
+        quadB.renderOrder = 3 + i * 2;
+        pillarHolder.add(quadB);
+      }
+      group.add(pillarHolder);
+    }
+
+    // 3. Embedded Trapezium OB Young Open Star Cluster with crisp HST diffraction spikes
     const starCount = this.isSoftwareGl ? 180 : 520;
     const pos = new Float32Array(starCount * 3);
     const col = new Float32Array(starCount * 3);
@@ -1125,78 +1857,7 @@ export class SeamlessUniverseSimulator {
     obCluster.renderOrder = 10;
     group.add(obCluster);
 
-    const pillarsCoreAnchor = new THREE.Object3D();
-    group.add(pillarsCoreAnchor);
-    this.registerMarkerAnchor({
-      id: 'marker_pillars_nursery',
-      label: 'Molecular Dust Pillars',
-      sublabel: '4.5 ly · Stellar Nursery',
-      node: pillarsCoreAnchor,
-      layerBandId: 'nebulas',
-      minLog: 16.9,
-      maxLog: 18.4,
-      targetLogMeters: 16.63,
-      colorCss: '#f59e0b',
-      physicalRadiusWorldAtOneToOne: 3.2,
-    });
-
-    return (dt) => {
-      group.rotation.y += dt * 0.025;
-    };
-  }
-
-  // --- 7. STELLAR NURSERIES & HUBBLE M16 PILLARS OF CREATION (+16.63 · 4.5 ly) ---
-  private populateStellarNurseryLayer(
-    group: THREE.Group,
-    glowCool: THREE.CanvasTexture
-  ): (dt: number, elapsed: number) => void {
-    // Ambient [O III] cyan-sapphire ionized nursery cavity glow behind the dark absorptive pillars
-    const cavityBg = new THREE.Mesh(
-      new THREE.PlaneGeometry(44, 44),
-      createVolumetricNebulaMaterial({
-        seedOffset: 19.3,
-        hubblePaletteMix: 0.65,
-        opacity: 0.62,
-        isInnerCore: true,
-      })
-    );
-    cavityBg.position.z = -5.5;
-    cavityBg.renderOrder = 0;
-    group.add(cavityBg);
-
-    // 3 Towering M16-style Absorptive Molecular H2 Dust Pillars (crossed volumetric billboards -> 3D parallax, ZERO clay cylinder cones!)
-    const pillarConfigs = [
-      { x: -5.4, y: -1.2, z: -1.4, w: 11.5, h: 25.5, tiltZ: -0.20, seed: 1.3 },
-      { x: 0.2, y: 0.4, z: 0.0, w: 12.8, h: 28.5, tiltZ: -0.10, seed: 3.7 },
-      { x: 5.8, y: -2.8, z: 1.5, w: 9.8, h: 20.5, tiltZ: -0.24, seed: 6.1 },
-    ];
-
-    for (let i = 0; i < pillarConfigs.length; i++) {
-      const cfg = pillarConfigs[i];
-      const pillarHolder = new THREE.Group();
-      pillarHolder.position.set(cfg.x, cfg.y, cfg.z);
-      pillarHolder.rotation.z = cfg.tiltZ;
-
-      const matA = createDustPillarMaterial({ seed: cfg.seed, hubblePaletteMix: 0.5, opacity: 0.96 });
-      const quadA = new THREE.Mesh(new THREE.PlaneGeometry(cfg.w, cfg.h), matA);
-      quadA.renderOrder = 2 + i * 2;
-      pillarHolder.add(quadA);
-
-      if (!this.isSoftwareGl) {
-        const matB = createDustPillarMaterial({
-          seed: cfg.seed + 0.85,
-          hubblePaletteMix: 0.5,
-          opacity: 0.72,
-        });
-        const quadB = new THREE.Mesh(new THREE.PlaneGeometry(cfg.w * 0.92, cfg.h), matB);
-        quadB.rotation.y = Math.PI * 0.38;
-        quadB.renderOrder = 3 + i * 2;
-        pillarHolder.add(quadB);
-      }
-      group.add(pillarHolder);
-    }
-
-    // Delicate Collimated Herbig-Haro Bipolar Protostellar Shock Jet at (0,0,0) leading down to Solar System!
+    // 4. Collimated Herbig-Haro Bipolar Protostellar Shock Jet at (0,0,0) leading down to Solar System!
     const hhGroup = new THREE.Group();
     hhGroup.rotation.z = 0.26;
     const jetSpriteTop = new THREE.Sprite(
@@ -1218,50 +1879,21 @@ export class SeamlessUniverseSimulator {
     hhGroup.add(protostarPinpoint);
     group.add(hhGroup);
 
+    // 5. Nascent Solar System Marker Anchor at (0,0,0)
     const solAnchor = new THREE.Object3D();
     group.add(solAnchor);
     this.registerMarkerAnchor({
       id: 'marker_nascent_solar_system',
       label: 'G2V Solar System',
-      sublabel: '60.2 AU · 1/4,786 of Pillar',
+      sublabel: 'Protostellar Disk & Heliopause · 10^+12.95 m',
       node: solAnchor,
-      layerBandId: 'stellar_nurseries',
-      minLog: 13.5,
-      maxLog: 17.1,
+      layerBandId: 'nebulas',
+      minLog: 12.5,
+      maxLog: 17.5,
       targetLogMeters: 12.95,
       colorCss: '#facc15',
-      physicalRadiusWorldAtOneToOne: 0.0046,
+      physicalRadiusWorldAtOneToOne: 0.005,
     });
-
-    // Foreground & background young nursery stars with HST diffraction spikes
-    const starCount = this.isSoftwareGl ? 140 : 380;
-    const sPos = new Float32Array(starCount * 3);
-    const sCol = new Float32Array(starCount * 3);
-    const sSc = new Float32Array(starCount);
-    const sLum = new Float32Array(starCount);
-    for (let s = 0; s < starCount; s++) {
-      sPos[s * 3] = (seededRand(s * 5 + 1) - 0.5) * 42;
-      sPos[s * 3 + 1] = (seededRand(s * 5 + 2) - 0.35) * 38;
-      sPos[s * 3 + 2] = (seededRand(s * 5 + 3) - 0.5) * 28;
-      blackbodyKelvinToRgb(3400 + Math.pow(seededRand(s * 5 + 4), 2.0) * 22000, _scratchColorA);
-      sCol[s * 3] = _scratchColorA.r;
-      sCol[s * 3 + 1] = _scratchColorA.g;
-      sCol[s * 3 + 2] = _scratchColorA.b;
-      const bright = Math.pow(seededRand(s * 5 + 5), 3.0);
-      sSc[s] = 0.65 + bright * 2.4;
-      sLum[s] = 0.35 + bright * 0.65;
-    }
-    const sGeo = new THREE.BufferGeometry();
-    sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
-    sGeo.setAttribute('color', new THREE.BufferAttribute(sCol, 3));
-    sGeo.setAttribute('aScale', new THREE.BufferAttribute(sSc, 1));
-    sGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(sLum, 1));
-    const nurseryStars = new THREE.Points(
-      sGeo,
-      createStarPsfMaterial({ baseSize: 15.0, diffractionStrength: 0.78, opacity: 0.96 })
-    );
-    nurseryStars.renderOrder = 12;
-    group.add(nurseryStars);
 
     return (dt) => {
       group.rotation.y += dt * 0.022;
@@ -1315,7 +1947,7 @@ export class SeamlessUniverseSimulator {
       label: 'G2V Central Star',
       sublabel: '1.39M km · 0.0093 AU',
       node: sunAnchor,
-      layerBandId: 'solar_systems',
+      layerBandId: 'stellar_systems',
       minLog: 10.2,
       maxLog: 14.8,
       targetLogMeters: 9.14,
@@ -1549,7 +2181,7 @@ export class SeamlessUniverseSimulator {
         label: def.name,
         sublabel: def.sub,
         node: bodyMesh,
-        layerBandId: 'solar_systems',
+        layerBandId: 'stellar_systems',
         minLog: 10.6,
         maxLog: 14.5,
         targetLogMeters: def.targetLog,
@@ -1610,7 +2242,7 @@ export class SeamlessUniverseSimulator {
       label: 'Main Asteroid Belt',
       sublabel: '2.2–3.2 AU · Ceres & Silicates',
       node: asteroidBeltAnchor,
-      layerBandId: 'solar_systems',
+      layerBandId: 'stellar_systems',
       minLog: 10.4,
       maxLog: 14.2,
       targetLogMeters: 11.65,
@@ -1626,7 +2258,7 @@ export class SeamlessUniverseSimulator {
       label: 'Kuiper Belt & Scattered Disk',
       sublabel: '30–50 AU · Pluto & Icy Bodies',
       node: kuiperAnchor,
-      layerBandId: 'solar_systems',
+      layerBandId: 'stellar_systems',
       minLog: 10.8,
       maxLog: 14.8,
       targetLogMeters: 12.95,
@@ -1686,7 +2318,7 @@ export class SeamlessUniverseSimulator {
       label: 'Oort Cometary Cloud',
       sublabel: '2,000–100,000 AU · Spherical Reservoir',
       node: oortAnchor,
-      layerBandId: 'solar_systems',
+      layerBandId: 'stellar_systems',
       minLog: 11.2,
       maxLog: 15.2,
       targetLogMeters: 12.95,
@@ -1808,15 +2440,393 @@ export class SeamlessUniverseSimulator {
     if (this.solarOortPoints) {
       this.solarOortPoints.scale.setScalar(Math.pow(1.0, gamma));
     }
+  }
 
-    void sunWorldR;
+  // --- 8B. PLANETARY SYSTEM & MOON ORBITS (+8.85 · 7.1×10^8 m · HILL SPHERE & MOONS) ---
+  // Calibrated 1:1 to the single Capy-Earth in ScaleLayer_planet (R_earth = 9.0 at 7.10 => 0.160 at 8.85)
+  private populatePlanetarySystemLayer(
+    group: THREE.Group
+  ): (dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void {
+    const systemGroup = new THREE.Group();
+    systemGroup.rotation.x = 0.41; // 23.4° Earth equatorial / lunar orbital inclination
+    group.add(systemGroup);
+    this.planetarySystemGroup = systemGroup;
+
+    // 1. Capy-Moon (exact 60.3x Earth-radius orbit = 9.65 units, 0.2727x Earth radius = 0.04365 units)
+    const moonOrbitPlane = new THREE.Group();
+    moonOrbitPlane.rotation.z = THREE.MathUtils.degToRad(5.14); // 5.14° lunar orbital inclination
+    systemGroup.add(moonOrbitPlane);
+
+    const { line: moonOrbitLine } = this.createOrbitHairline(
+      MOON_ORBIT_RADIUS_AT_8_85,
+      0.055,
+      0x94a3b8
+    );
+    moonOrbitPlane.add(moonOrbitLine);
+
+    const moonPivot = new THREE.Group();
+    moonOrbitPlane.add(moonPivot);
+    this.planetaryMoonPivot = moonPivot;
+
+    const moonMat = createRockyBodyMaterial({
+      sunDir: _sharedSunDir,
+      baseColorHex: 0x94a3b8,
+      highlandColorHex: 0xf1f5f9,
+    });
+    const moonMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(MOON_RADIUS_AT_8_85, this.isSoftwareGl ? 14 : 22, 14),
+      moonMat
+    );
+    moonMesh.position.set(MOON_ORBIT_RADIUS_AT_8_85 * (1 - 0.055), 0, 0);
+    moonPivot.add(moonMesh);
+    this.planetaryMoonMesh = moonMesh;
+
+    const moonGlint = this.createSinglePointGlint(0xf1f5f9, 8.5, 0.24);
+    moonMesh.add(moonGlint);
+
+    // 2. Shepherd Asteroid / Minimoon "Yuzu-1" (5.0 units orbit, 0.032 units radius)
+    const minimoonPivot = new THREE.Group();
+    minimoonPivot.rotation.y = 1.85;
+    systemGroup.add(minimoonPivot);
+    this.planetaryMinimoonPivot = minimoonPivot;
+
+    const { line: miniOrbitLine } = this.createOrbitHairline(
+      MINIMOON_ORBIT_RADIUS_AT_8_85,
+      0.02,
+      0xfacc15
+    );
+    systemGroup.add(miniOrbitLine);
+
+    const minimoonMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(MINIMOON_RADIUS_AT_8_85, this.isSoftwareGl ? 10 : 16, 10),
+      createRockyBodyMaterial({
+        sunDir: _sharedSunDir,
+        baseColorHex: 0xfacc15,
+        highlandColorHex: 0xfef08a,
+      })
+    );
+    minimoonMesh.position.set(MINIMOON_ORBIT_RADIUS_AT_8_85, 0, 0);
+    minimoonPivot.add(minimoonMesh);
+
+    const miniGlint = this.createSinglePointGlint(0xfacc15, 6.5, 0.22);
+    minimoonMesh.add(miniGlint);
+
+    // 3. Outer Hill Sphere Gravitational Boundary Hairline (21.0 units)
+    const { line: hillLine } = this.createOrbitHairline(21.0, 0.0, 0x38bdf8);
+    systemGroup.add(hillLine);
+
+    // Registered Navigational Markers
+    const earthAnchor = new THREE.Object3D();
+    systemGroup.add(earthAnchor);
+    this.registerMarkerAnchor({
+      id: 'marker_capy_earth_globe',
+      label: 'Capy-Earth (Habitable)',
+      sublabel: '12,742 km · Primary World',
+      node: earthAnchor,
+      layerBandId: 'planetary_system',
+      minLog: 6.8,
+      maxLog: 10.5,
+      targetLogMeters: PLANET_CANON_LOG,
+      colorCss: '#34d399',
+      physicalRadiusWorldAtOneToOne: PLANET_BASE_RADIUS * Math.pow(10, PLANET_CANON_LOG - 8.85),
+    });
+
+    this.registerMarkerAnchor({
+      id: 'marker_capy_moon',
+      label: 'Capy-Moon',
+      sublabel: '3,474 km · 384,400 km Orbit',
+      node: moonMesh,
+      layerBandId: 'planetary_system',
+      minLog: 7.2,
+      maxLog: 10.5,
+      targetLogMeters: 7.85,
+      colorCss: '#94a3b8',
+      physicalRadiusWorldAtOneToOne: MOON_RADIUS_AT_8_85,
+    });
+
+    this.registerMarkerAnchor({
+      id: 'marker_planetary_ring_plane',
+      label: 'Ring Plane & Minimoon Yuzu-1',
+      sublabel: 'Ice & Silicate Ring System',
+      node: minimoonMesh,
+      layerBandId: 'planetary_system',
+      minLog: 7.4,
+      maxLog: 10.2,
+      targetLogMeters: 8.85,
+      colorCss: '#facc15',
+      physicalRadiusWorldAtOneToOne: MINIMOON_RADIUS_AT_8_85,
+    });
+
+    return (dt, _elapsed, _gamma, showMarkers) => {
+      moonPivot.rotation.y += dt * 0.018;
+      minimoonPivot.rotation.y += dt * 0.045;
+      moonOrbitLine.visible = showMarkers;
+      miniOrbitLine.visible = showMarkers;
+      hillLine.visible = showMarkers;
+    };
+  }
+
+  /**
+   * Generates a Float32-precision-safe curved spherical surface patch centered around `centerDir`
+   * at `localPos = (dir - centerDir) * radius` so deep orbital-to-surface magnifications (> 100,000x)
+   * exhibit zero vertex quantization jitter and share identical spherical coordinates (`aSphereDir`).
+   */
+  private createCurvedSurfacePatchGeometry(
+    centerDir: THREE.Vector3,
+    radius: number,
+    halfAngleRad: number,
+    segments: number
+  ): THREE.BufferGeometry {
+    const vertsPerAxis = segments + 1;
+    const vertCount = vertsPerAxis * vertsPerAxis;
+    const positions = new Float32Array(vertCount * 3);
+    const normals = new Float32Array(vertCount * 3);
+    const sphereDirs = new Float32Array(vertCount * 3);
+    const uvs = new Float32Array(vertCount * 2);
+
+    // Orthonormal tangent basis (tangentU, tangentV) perpendicular to centerDir
+    const tangentU = new THREE.Vector3(0, 1, 0).cross(centerDir);
+    if (tangentU.lengthSq() < 1e-6) {
+      tangentU.set(1, 0, 0).cross(centerDir);
+    }
+    tangentU.normalize();
+    const tangentV = new THREE.Vector3().crossVectors(centerDir, tangentU).normalize();
+
+    const maxTan = Math.tan(halfAngleRad);
+    const dir = new THREE.Vector3();
+
+    let vIdx = 0;
+    let uvIdx = 0;
+    for (let j = 0; j < vertsPerAxis; j++) {
+      const fy = j / segments;
+      const v = (fy * 2 - 1) * maxTan;
+      for (let i = 0; i < vertsPerAxis; i++) {
+        const fx = i / segments;
+        const u = (fx * 2 - 1) * maxTan;
+
+        dir
+          .set(centerDir.x, centerDir.y, centerDir.z)
+          .addScaledVector(tangentU, u)
+          .addScaledVector(tangentV, v)
+          .normalize();
+
+        positions[vIdx] = (dir.x - centerDir.x) * radius;
+        positions[vIdx + 1] = (dir.y - centerDir.y) * radius;
+        positions[vIdx + 2] = (dir.z - centerDir.z) * radius;
+
+        normals[vIdx] = dir.x;
+        normals[vIdx + 1] = dir.y;
+        normals[vIdx + 2] = dir.z;
+
+        sphereDirs[vIdx] = dir.x;
+        sphereDirs[vIdx + 1] = dir.y;
+        sphereDirs[vIdx + 2] = dir.z;
+
+        uvs[uvIdx] = fx;
+        uvs[uvIdx + 1] = fy;
+
+        vIdx += 3;
+        uvIdx += 2;
+      }
+    }
+
+    const indices: number[] = [];
+    for (let j = 0; j < segments; j++) {
+      for (let i = 0; i < segments; i++) {
+        const a = j * vertsPerAxis + i;
+        const b = a + 1;
+        const c = a + vertsPerAxis;
+        const d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geo.setAttribute('aSphereDir', new THREE.BufferAttribute(sphereDirs, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    geo.computeBoundingSphere();
+    return geo;
+  }
+
+  // --- 8C. UNIFIED SINGLE PLANET (+7.10 -> SURFACE · CONTINUOUS CAPY-EARTH LOD ARCHITECTURE) ---
+  private populatePlanetGlobeLayer(
+    group: THREE.Group
+  ): (dt: number, elapsed: number) => void {
+    const surfaceAlignGroup = new THREE.Group();
+    group.add(surfaceAlignGroup);
+    this.planetSurfaceAlignGroup = surfaceAlignGroup;
+
+    const globeContainer = new THREE.Group();
+    surfaceAlignGroup.add(globeContainer);
+    this.planetGlobeContainer = globeContainer;
+
+    const planetR = PLANET_BASE_RADIUS;
+
+    // 1. Primary 3D Habitable Planet Sphere (same single Capy-Earth from Moon orbit down to stratosphere)
+    const planetMat = createHabitablePlanetMaterial(_sharedSunDir, {
+      sanctuaryDir: _sanctuaryDir,
+    });
+    this.planetGlobeMat = planetMat;
+    const globeMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(planetR, this.isSoftwareGl ? 32 : 64, this.isSoftwareGl ? 22 : 42),
+      planetMat
+    );
+    globeContainer.add(globeMesh);
+    this.planetGlobeMesh = globeMesh;
+
+    // 2. Translucent Volumetric Cloud Sphere (1.005x planet radius ~ 32 km cloud tops)
+    const cloudMat = createPlanetCloudMaterial(_sharedSunDir, {
+      sanctuaryDir: _sanctuaryDir,
+    });
+    this.planetCloudSphereMat = cloudMat;
+    const cloudMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(planetR * 1.005, this.isSoftwareGl ? 28 : 52, this.isSoftwareGl ? 18 : 34),
+      cloudMat
+    );
+    globeContainer.add(cloudMesh);
+    this.planetCloudMesh = cloudMesh;
+
+    // 3. Rayleigh Scattering Atmospheric Limb Shell (1.018x planet radius ~ 115 km Kármán glow)
+    const rayleighMat = createAtmosphereScatteringMaterial({
+      sunDir: _sharedSunDir,
+      rayleighColor: new THREE.Color(0.2, 0.6, 1.0),
+      intensity: 1.85,
+    });
+    this.planetRayleighMat = rayleighMat;
+    this.atmosphereRayleighMat = rayleighMat;
+    const rayleighMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(planetR * 1.018, this.isSoftwareGl ? 28 : 52, this.isSoftwareGl ? 18 : 34),
+      rayleighMat
+    );
+    globeContainer.add(rayleighMesh);
+    this.planetRayleighMesh = rayleighMesh;
+
+    // 4. Concentric Planetary Ring Plane anchored directly to Capy-Earth (never clips Earth at any gamma)
+    const ringMat = createPlanetaryRingMaterial({
+      innerRadius: planetR * 1.65,
+      outerRadius: planetR * 2.85,
+      planetRadius: planetR,
+      sunDir: _sharedSunDir,
+    });
+    const ringMesh = new THREE.Mesh(
+      new THREE.RingGeometry(planetR * 1.65, planetR * 2.85, this.isSoftwareGl ? 36 : 64),
+      ringMat
+    );
+    ringMesh.rotation.x = Math.PI * 0.5;
+    ringMesh.visible = this.pendingProceduralBiome?.ringSystemEnabled ?? false;
+    globeContainer.add(ringMesh);
+    this.planetaryRingMesh = ringMesh;
+
+    // 5. Distant Orbital Pale-Blue-Dot Glint (visible when zoomed out to 8.85 Planetary System)
+    const orbitalGlint = this.createSinglePointGlint(0x38bdf8, 11.0, 0.48);
+    orbitalGlint.visible = false;
+    globeContainer.add(orbitalGlint);
+    this.planetOrbitalGlint = orbitalGlint;
+
+    // 6. Sanctuary Archipelago Surface Landmass Anchor & Waypoint (22.5°N, 42.0°E)
+    const surfacePoint = new THREE.Object3D();
+    surfacePoint.position.copy(_sanctuaryDir).multiplyScalar(planetR);
+    globeContainer.add(surfacePoint);
+
+    const surfaceBeacon = this.createSinglePointGlint(0x34d399, 13.0, 0.35);
+    surfaceBeacon.position.copy(_sanctuaryDir).multiplyScalar(planetR * 1.001);
+    globeContainer.add(surfaceBeacon);
+
+    this.registerMarkerAnchor({
+      id: 'marker_sanctuary_landmass',
+      label: 'Capybara Sanctuary Archipelago',
+      sublabel: 'Home Surface Landmass · 22.5°N 42.0°E',
+      node: surfacePoint,
+      layerBandId: 'planet',
+      minLog: 4.8,
+      maxLog: 8.2,
+      targetLogMeters: 4.90,
+      colorCss: '#34d399',
+      physicalRadiusWorldAtOneToOne: 0.15,
+    });
+
+    // 7. Nested Float32-Safe Curved Surface LOD Patches + Curved Cloud Decks
+    // Anchored identically on the ONE planet surface at `_sanctuaryDir * planetR` so zooming down
+    // never swaps to a flat square or a smaller fake sphere inside Earth!
+    const surfaceAnchorGroup = new THREE.Group();
+    surfaceAnchorGroup.position.copy(_sanctuaryDir).multiplyScalar(planetR);
+    surfaceAlignGroup.add(surfaceAnchorGroup);
+    this.planetSurfaceAnchorGroup = surfaceAnchorGroup;
+
+    this.planetLodMats = [];
+    const segs = this.isSoftwareGl ? 36 : 68;
+
+    const buildSurfaceLodPatch = (
+      radius: number,
+      halfAngleRad: number,
+      patchSegs: number,
+      polyFactor: number
+    ) => {
+      const mat = createHabitablePlanetMaterial(_sharedSunDir, {
+        useSphereDirAttr: true,
+        sanctuaryDir: _sanctuaryDir,
+      });
+      mat.polygonOffset = true;
+      mat.polygonOffsetFactor = polyFactor;
+      mat.polygonOffsetUnits = polyFactor;
+      const geo = this.createCurvedSurfacePatchGeometry(_sanctuaryDir, radius, halfAngleRad, patchSegs);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.visible = false;
+      surfaceAnchorGroup.add(mesh);
+      this.planetLodMats.push(mat);
+      return mesh;
+    };
+
+    this.planetLod1Mesh = buildSurfaceLodPatch(planetR, 0.40, segs, -1);
+    this.planetLod2Mesh = buildSurfaceLodPatch(planetR, 0.075, segs, -2);
+    this.planetLod3Mesh = buildSurfaceLodPatch(
+      planetR,
+      0.014,
+      this.isSoftwareGl ? 32 : 64,
+      -3
+    );
+
+    // Dual-layer curved troposphere & stratosphere cloud patches along the same sphere curvature
+    this.planetCloudPatchMeshes = [];
+    this.planetCloudPatchMats = [];
+    this.atmosphereCloudMats = [];
+    const cloudHeights = [1.005, 1.010];
+    for (let c = 0; c < cloudHeights.length; c++) {
+      const cMat = createPlanetCloudMaterial(_sharedSunDir, {
+        useSphereDirAttr: true,
+        sanctuaryDir: _sanctuaryDir,
+        doubleSide: true,
+      });
+      const cGeo = this.createCurvedSurfacePatchGeometry(
+        _sanctuaryDir,
+        planetR * cloudHeights[c],
+        0.42,
+        this.isSoftwareGl ? 24 : 44
+      );
+      const cMesh = new THREE.Mesh(cGeo, cMat);
+      cMesh.visible = false;
+      cMesh.renderOrder = 3 + c;
+      surfaceAnchorGroup.add(cMesh);
+      this.planetCloudPatchMeshes.push(cMesh);
+      this.planetCloudPatchMats.push(cMat);
+      this.atmosphereCloudMats.push(cMat);
+    }
+
+    return (dt) => {
+      if (ringMesh.visible) {
+        ringMesh.rotation.z += dt * 0.003;
+      }
+    };
   }
 
   // --- 9. ATMOSPHERE & STRATOSPHERIC CLOUD DECKS (+4.9 · 80 km KÁRMÁN LIMB) ---
+  // Sky optics + landing waypoint only; curved planet & cloud decks come directly from the single Capy-Earth!
   private populateAtmosphereLayer(
     group: THREE.Group
   ): (dt: number, elapsed: number) => void {
-    // Registered Atmospheric Entry waypoint for Capybara Forest Sanctuary
     const sanctuaryEntryAnchor = new THREE.Object3D();
     sanctuaryEntryAnchor.position.set(0, 0, 0);
     group.add(sanctuaryEntryAnchor);
@@ -1833,97 +2843,14 @@ export class SeamlessUniverseSimulator {
       physicalRadiusWorldAtOneToOne: 0.001,
     });
 
-    // Curved planetary Rayleigh limb + cumulus cloud sea below with open descent corridor at (0,0)
-    const limbMat = createHabitablePlanetMaterial(_sharedSunDir);
-    this.atmosphereLimbMat = limbMat as THREE.ShaderMaterial;
-    const limbCurvature = new THREE.Mesh(
-      new THREE.SphereGeometry(52, 48, 28, 0, Math.PI * 2, 0, Math.PI * 0.36),
-      limbMat
-    );
-    limbCurvature.position.y = -51.5;
-    group.add(limbCurvature);
-
-    const rayleighMat = createAtmosphereScatteringMaterial({
-      sunDir: _sharedSunDir,
-      rayleighColor: new THREE.Color(0.2, 0.58, 1.0),
-      intensity: 1.6,
-    });
-    this.atmosphereRayleighMat = rayleighMat as THREE.ShaderMaterial;
-    const rayleighCap = new THREE.Mesh(
-      new THREE.SphereGeometry(53.4, 48, 28, 0, Math.PI * 2, 0, Math.PI * 0.36),
-      rayleighMat
-    );
-    rayleighCap.position.y = -51.5;
-    group.add(rayleighCap);
-
-    // Multi-layered soft volumetric FBM cloud deck planes parting cleanly around (0,0)
-    this.atmosphereCloudMats = [];
-    for (let layerIdx = 0; layerIdx < 3; layerIdx++) {
-      const cMat = createPlanetCloudMaterial(_sharedSunDir);
-      this.atmosphereCloudMats.push(cMat as THREE.ShaderMaterial);
-      const deck = new THREE.Mesh(new THREE.PlaneGeometry(54, 54), cMat);
-      deck.rotation.x = -Math.PI / 2;
-      deck.position.y = -3.8 + layerIdx * 1.8;
-      deck.rotation.z = layerIdx * 1.1;
-      group.add(deck);
-    }
-
-    return (dt) => {
-      limbCurvature.rotation.y += dt * 0.015;
-    };
+    return () => {};
   }
 
   // --- 14. LAND MASSES & CORDILLERAS (+3.6 · 4.0 km) ---
+  // Uses the ONE continuous Capy-Earth LOD-2/LOD-3 spherical patches (zero duplicate flat island plane)
   private populateLandMassesLayer(
-    group: THREE.Group
+    _group: THREE.Group
   ): (dt: number, elapsed: number) => void {
-    const segs = this.isSoftwareGl ? 32 : 64;
-    const terrainGeo = new THREE.PlaneGeometry(46, 46, segs, segs);
-    terrainGeo.rotateX(-Math.PI / 2);
-    const pos = terrainGeo.attributes.position;
-    const colors = new Float32Array(pos.count * 3);
-
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const z = pos.getZ(i);
-      const r = Math.hypot(x, z);
-      const islandMask = Math.max(0, 1 - Math.pow(r / 21.0, 2.2));
-      const ridge =
-        Math.abs(Math.sin(x * 0.21 + 0.5) * Math.cos(z * 0.21)) * 5.4 +
-        Math.sin(x * 0.58 + z * 0.44) * 1.25 +
-        Math.cos(x * 1.2 - z * 1.1) * 0.42;
-      const centerBasin = smoothstep01(1.8, 7.8, r);
-      const h = -1.2 + islandMask * (1.5 + ridge * centerBasin);
-      pos.setY(i, h);
-
-      if (h < 0.0) {
-        _scratchColorA.setHex(0x0369a1);
-      } else if (h < 0.38) {
-        _scratchColorA.setHex(0xd6c79c);
-      } else if (h < 2.3) {
-        _scratchColorA.setHex(0x166534);
-      } else if (h < 3.8) {
-        _scratchColorA.setHex(0x57534e);
-      } else {
-        _scratchColorA.setHex(0xf1f5f9);
-      }
-      colors[i * 3] = _scratchColorA.r;
-      colors[i * 3 + 1] = _scratchColorA.g;
-      colors[i * 3 + 2] = _scratchColorA.b;
-    }
-    terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    terrainGeo.computeVertexNormals();
-
-    const terrain = new THREE.Mesh(
-      terrainGeo,
-      new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        roughness: 0.86,
-      })
-    );
-    terrain.position.y = -4.5;
-    group.add(terrain);
-
     return () => {};
   }
 
@@ -1940,7 +2867,7 @@ export class SeamlessUniverseSimulator {
       this.ecosystemMeadowMat
     );
     meadow.rotation.x = -Math.PI / 2;
-    meadow.position.y = -2.4;
+    meadow.position.y = -0.35;
     group.add(meadow);
 
     this.ecosystemRiverMat = new THREE.MeshStandardMaterial({
@@ -1955,7 +2882,7 @@ export class SeamlessUniverseSimulator {
       this.ecosystemRiverMat
     );
     river.rotation.x = -Math.PI / 2;
-    river.position.y = -2.34;
+    river.position.y = -0.30;
     group.add(river);
 
     const treeCount = this.isSoftwareGl ? 56 : 140;
@@ -1969,7 +2896,7 @@ export class SeamlessUniverseSimulator {
       const ang = seededRand(i * 3 + 1) * Math.PI * 2;
       const r = 2.8 + seededRand(i * 3 + 2) * 18.2;
       const s = 0.72 + seededRand(i * 3 + 3) * 0.95;
-      _dummyObj.position.set(Math.cos(ang) * r, -2.4 + 0.95 * s, Math.sin(ang) * r);
+      _dummyObj.position.set(Math.cos(ang) * r, -0.35 + 0.95 * s, Math.sin(ang) * r);
       _dummyObj.scale.set(s * 1.15, s * 0.92, s * 1.1);
       _dummyObj.rotation.y = ang;
       _dummyObj.updateMatrix();
@@ -3017,14 +3944,39 @@ export class SeamlessUniverseSimulator {
       const scaledDelta = deltaLog * gamma;
 
       // Neighbor-aware visibility bounds:
-      // At strict 1:1 (gamma = 1.0): parent layers fade out cleanly by 10^+1.18x (15x viewport) so giant
-      // dust pillars at +16.63 NEVER slice through Solar System orbits at +13.7!
-      // When viewing within the unified planetary stellar system (+5.2 to +14.5 m), keep Capy-Earth opaque
-      // and solid until atmospheric entry at +4.9 takes over seamlessly.
-      const isPlanetaryScaleBand = logScaleMeters >= 5.2 && logScaleMeters <= 14.5;
-      const isSolarSystem = layer.spec.id === 'solar_systems';
-      const maxExpandDex = isSolarSystem && isPlanetaryScaleBand ? 7.9 : 1.16;
-      const maxShrinkDex = -2.35;
+      // At strict 1:1 (gamma = 1.0): parent layers fade out cleanly so giant cosmic structures
+      // never slice through nested sub-systems.
+      // Stellar systems (12.95) expands smoothly into planetary_system (8.85),
+      // planetary_system hands off to planet globe (7.10), and planet globe hands off to atmosphere (4.90).
+      const isGalaxy = layer.spec.id === 'galaxy';
+      const isStellarSystems = layer.spec.id === 'stellar_systems';
+      const isNebulas = layer.spec.id === 'nebulas';
+      const isPlanetarySystem = layer.spec.id === 'planetary_system';
+      const isPlanet = layer.spec.id === 'planet';
+
+      let maxExpandDex = 1.45;
+      if (isGalaxy) {
+        // Unified Milky Way Galaxy + Spiral Arms stays continuous from Galaxy overview (21.0)
+        // through Spiral Arms (19.4) and hands off seamlessly to Nebulas (17.2).
+        maxExpandDex = 4.35;
+      } else if (isStellarSystems) {
+        maxExpandDex = 4.45;
+      } else if (isNebulas) {
+        maxExpandDex = 4.65;
+      } else if (isPlanetarySystem) {
+        maxExpandDex = 1.65;
+      } else if (isPlanet) {
+        maxExpandDex = 6.50;
+      }
+
+      let maxShrinkDex = -2.35;
+      if (isStellarSystems) {
+        maxShrinkDex = -4.6;
+      } else if (isPlanetarySystem) {
+        maxShrinkDex = -2.6;
+      } else if (isPlanet) {
+        maxShrinkDex = -3.45;
+      }
 
       if (scaledDelta > maxExpandDex || scaledDelta < maxShrinkDex) {
         if (layer.group.visible) {
@@ -3035,8 +3987,21 @@ export class SeamlessUniverseSimulator {
       }
 
       let alpha = 1.0;
-      if (isSolarSystem && isPlanetaryScaleBand) {
-        alpha = 1.0 - smoothstep01(6.8, maxExpandDex, scaledDelta);
+      if (isPlanet) {
+        // Unified Single Planet remains 100% continuous from Moon orbit (8.85) down through
+        // planet globe (7.10), stratosphere (4.90), and cordilleras (3.60), fading out only
+        // as ecosystems/forest take over on touchdown (2.35 -> 1.35).
+        if (scaledDelta < 0) {
+          alpha = smoothstep01(maxShrinkDex, -2.05, scaledDelta);
+        } else {
+          alpha = smoothstep01(1.35, 2.35, logScaleMeters);
+        }
+      } else if (isGalaxy) {
+        if (scaledDelta < 0) {
+          alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
+        } else {
+          alpha = 1.0 - smoothstep01(3.15, maxExpandDex, scaledDelta);
+        }
       } else if (scaledDelta < 0) {
         alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
       } else {
@@ -3065,12 +4030,22 @@ export class SeamlessUniverseSimulator {
       layer.group.scale.setScalar(visualScale);
 
       const densityMod =
-        layer.spec.id === 'atmosphere' && this.pendingProceduralBiome?.cloudDensity !== undefined
+        this.pendingProceduralBiome?.cloudDensity !== undefined
           ? this.pendingProceduralBiome.cloudDensity
           : 1.0;
 
       for (let m = 0; m < layer.materials.length; m++) {
         const entry = layer.materials[m];
+        if (isPlanet) {
+          // Planet LOD meshes, spheres, and cloud decks have dedicated multi-altitude crossfades below
+          if (entry.shaderTimeUniform) {
+            entry.shaderTimeUniform.value = this.elapsed;
+          }
+          if (entry.shaderHubbleUniform) {
+            entry.shaderHubbleUniform.value = hubbleMix;
+          }
+          continue;
+        }
         const isCloudMat = this.atmosphereCloudMats.includes(entry.mat as THREE.ShaderMaterial);
         const finalOpacity = Math.min(
           1.0,
@@ -3094,7 +4069,45 @@ export class SeamlessUniverseSimulator {
         layer.tickFn(dt, this.elapsed, gamma, showObjectMarkers);
       }
 
-      if (layer.spec.id === 'solar_systems' && this.solarEclipticGroup && this.capyEarthPlanet) {
+      // Reroute unified Milky Way galaxy in rotating-arm coordinates onto Earth's Orion-Cygnus Spur (~26,000 ly)
+      if (isGalaxy && this.spiralGalaxySpinGroup) {
+        const galaxyFocus = computeSpiralGalaxyFocusOffset(logScaleMeters);
+        this.lastGalaxyFocusBlend = galaxyFocus.galaxyFocusBlend;
+        const phi = this.spiralGalaxySpinGroup.rotation.y;
+        const cosP = Math.cos(phi);
+        const sinP = Math.sin(phi);
+        const ox = galaxyFocus.armOffsetX * cosP + galaxyFocus.armOffsetZ * sinP;
+        const oz = -galaxyFocus.armOffsetX * sinP + galaxyFocus.armOffsetZ * cosP;
+        this.spiralGalaxySpinGroup.position.set(ox, galaxyFocus.armOffsetY, oz);
+
+        // Fade giant flat continuum disc gently below Spiral Arms so far-plane clipping never hits
+        const discFade = alpha * smoothstep01(17.95, 19.45, logScaleMeters);
+        if (this.spiralGalaxyDiscMesh && this.spiralGalaxyDiscMat) {
+          this.spiralGalaxyDiscMesh.visible = discFade > 0.01;
+          if (this.spiralGalaxyDiscMat.uniforms?.uOpacity) {
+            this.spiralGalaxyDiscMat.uniforms.uOpacity.value = 0.95 * discFade;
+          }
+        }
+        if (this.spiralGalaxyBulgeHalo) {
+          const bMat = this.spiralGalaxyBulgeHalo.material as THREE.SpriteMaterial;
+          bMat.opacity = 0.62 * discFade;
+          this.spiralGalaxyBulgeHalo.visible = discFade > 0.01;
+        }
+        const ribbonScale = THREE.MathUtils.lerp(
+          0.34,
+          1.0,
+          smoothstep01(20.85, 19.55, logScaleMeters)
+        );
+        for (let r = 0; r < this.spiralGalaxyArmRibbons.length; r++) {
+          const rMat = this.spiralGalaxyArmRibbons[r].material as THREE.ShaderMaterial;
+          if (rMat.uniforms?.uOpacity) {
+            rMat.uniforms.uOpacity.value = 0.62 * alpha * ribbonScale;
+          }
+        }
+      }
+
+      // Reroute solar system from central Sun to Capy-Earth orbital position
+      if (layer.spec.id === 'stellar_systems' && this.solarEclipticGroup && this.capyEarthPlanet) {
         let focusBlend = 0;
         if (logScaleMeters >= 3.2 && logScaleMeters <= 14.5) {
           const orbitR = Math.hypot(
@@ -3135,6 +4148,145 @@ export class SeamlessUniverseSimulator {
         }
         if (this.sunStarBeacon) {
           this.sunStarBeacon.visible = sunGlareFade > 0.02;
+        }
+      }
+
+      // Unified Single Planet multi-LOD update + horizon alignment toward Sanctuary Archipelago (22.5°N, 42.0°E)
+      if (layer.spec.id === 'planet' && this.planetGlobeContainer && this.planetSurfaceAlignGroup) {
+        const planetFocus = computePlanetSurfaceLandmassFocusOffset(
+          logScaleMeters,
+          PLANET_BASE_RADIUS
+        );
+        const blend = planetFocus.surfaceFocusBlend;
+        this.planetGlobeContainer.position.set(
+          planetFocus.planetOffsetX,
+          planetFocus.planetOffsetY,
+          planetFocus.planetOffsetZ
+        );
+        if (this.planetSurfaceAnchorGroup) {
+          this.planetSurfaceAnchorGroup.position.set(
+            planetFocus.surfaceTargetX * (1 - blend),
+            planetFocus.surfaceTargetY * (1 - blend),
+            planetFocus.surfaceTargetZ * (1 - blend)
+          );
+        }
+        // Slerp Sanctuary normal smoothly to +Y as we enter the atmosphere so the curved horizon matches camera up
+        this.planetSurfaceAlignGroup.quaternion.slerpQuaternions(
+          _identityQuat,
+          _sanctuaryUpQuat,
+          blend
+        );
+
+        const detailScale = smoothstep01(6.8, 3.0, logScaleMeters);
+        const cloudClear = smoothstep01(5.4, 3.8, logScaleMeters);
+
+        // 1. Full globe sphere (visible from Planetary System 8.85 down to stratosphere 4.05)
+        const globeOpacity = alpha * smoothstep01(4.05, 4.75, logScaleMeters);
+        if (this.planetGlobeMesh && this.planetGlobeMat) {
+          this.planetGlobeMesh.visible = globeOpacity > 0.01;
+          if (this.planetGlobeMat.uniforms?.uOpacity) {
+            this.planetGlobeMat.uniforms.uOpacity.value = globeOpacity;
+          }
+          if (this.planetGlobeMat.uniforms?.uDetailScale) {
+            this.planetGlobeMat.uniforms.uDetailScale.value = detailScale;
+          }
+          this.planetGlobeMat.depthWrite = globeOpacity > 0.82 && logScaleMeters > 1.85;
+        }
+
+        // 2. Full globe cloud sphere (hands off smoothly to curved troposphere patches at 5.2 -> 4.25)
+        const cloudSphereOpacity =
+          Math.min(1.0, 0.86 * densityMod * alpha * smoothstep01(4.25, 5.20, logScaleMeters));
+        if (this.planetCloudMesh && this.planetCloudSphereMat) {
+          this.planetCloudMesh.visible = cloudSphereOpacity > 0.01;
+          if (this.planetCloudSphereMat.uniforms?.uOpacity) {
+            this.planetCloudSphereMat.uniforms.uOpacity.value = cloudSphereOpacity;
+          }
+          if (this.planetCloudSphereMat.uniforms?.uDetailScale) {
+            this.planetCloudSphereMat.uniforms.uDetailScale.value = detailScale;
+          }
+          if (this.planetCloudSphereMat.uniforms?.uCloudClear) {
+            this.planetCloudSphereMat.uniforms.uCloudClear.value = cloudClear;
+          }
+        }
+
+        // 3. Rayleigh atmospheric scattering limb shell (fades cleanly once inside troposphere)
+        const rayleighOpacity = alpha * smoothstep01(4.05, 5.10, logScaleMeters);
+        if (this.planetRayleighMesh && this.planetRayleighMat) {
+          this.planetRayleighMesh.visible = rayleighOpacity > 0.01;
+          if (this.planetRayleighMat.uniforms?.uOpacity) {
+            this.planetRayleighMat.uniforms.uOpacity.value = rayleighOpacity;
+          }
+        }
+
+        // 4. Concentric ring plane (fades gently before sweeping behind camera)
+        if (this.planetaryRingMesh) {
+          const wantRings = this.pendingProceduralBiome?.ringSystemEnabled ?? false;
+          const ringFade = smoothstep01(5.4, 6.4, logScaleMeters);
+          this.planetaryRingMesh.visible = wantRings && ringFade > 0.01;
+          const rMat = this.planetaryRingMesh.material as THREE.ShaderMaterial;
+          if (rMat?.uniforms?.uOpacity) {
+            rMat.uniforms.uOpacity.value = alpha * ringFade;
+          }
+        }
+
+        // 5. Orbital glint at 8.85 Moon-orbit distances so the 0.16-unit Earth reads crisply
+        if (this.planetOrbitalGlint) {
+          const glintFade = alpha * smoothstep01(7.95, 8.65, logScaleMeters);
+          this.planetOrbitalGlint.visible = glintFade > 0.01;
+          const gMat = this.planetOrbitalGlint.material as THREE.ShaderMaterial;
+          if (gMat?.uniforms?.uOpacity) {
+            gMat.uniforms.uOpacity.value = 0.95 * glintFade;
+          }
+        }
+
+        // 6. Nested Float32-safe curved surface LOD patches (zero seam, 100% overlapping handoffs)
+        const lod1Op =
+          alpha *
+          smoothstep01(5.95, 5.10, logScaleMeters) *
+          smoothstep01(3.05, 3.60, logScaleMeters);
+        const lod2Op =
+          alpha *
+          smoothstep01(4.65, 3.95, logScaleMeters) *
+          smoothstep01(2.10, 2.55, logScaleMeters);
+        const lod3Op = alpha * smoothstep01(3.35, 2.80, logScaleMeters);
+
+        const lodPairs: Array<[THREE.Mesh | null, THREE.ShaderMaterial | undefined, number]> = [
+          [this.planetLod1Mesh, this.planetLodMats[0], lod1Op],
+          [this.planetLod2Mesh, this.planetLodMats[1], lod2Op],
+          [this.planetLod3Mesh, this.planetLodMats[2], lod3Op],
+        ];
+        for (let l = 0; l < lodPairs.length; l++) {
+          const [mesh, mat, op] = lodPairs[l];
+          if (!mesh || !mat) continue;
+          mesh.visible = op > 0.01;
+          if (mat.uniforms?.uOpacity) mat.uniforms.uOpacity.value = op;
+          if (mat.uniforms?.uDetailScale) mat.uniforms.uDetailScale.value = detailScale;
+          mat.depthWrite = op > 0.82 && logScaleMeters > 1.85;
+        }
+
+        // 7. Curved Troposphere / Stratosphere Cloud Deck Patches
+        const cloudPatchFade =
+          Math.min(
+            1.0,
+            0.84 *
+              densityMod *
+              alpha *
+              smoothstep01(6.20, 5.25, logScaleMeters) *
+              smoothstep01(3.15, 3.95, logScaleMeters)
+          );
+        for (let c = 0; c < this.planetCloudPatchMeshes.length; c++) {
+          const cMesh = this.planetCloudPatchMeshes[c];
+          const cMat = this.planetCloudPatchMats[c];
+          cMesh.visible = cloudPatchFade > 0.01;
+          if (cMat?.uniforms?.uOpacity) {
+            cMat.uniforms.uOpacity.value = cloudPatchFade * (c === 0 ? 1.0 : 0.72);
+          }
+          if (cMat?.uniforms?.uDetailScale) {
+            cMat.uniforms.uDetailScale.value = detailScale;
+          }
+          if (cMat?.uniforms?.uCloudClear) {
+            cMat.uniforms.uCloudClear.value = cloudClear;
+          }
         }
       }
     }
@@ -3272,13 +4424,16 @@ export class SeamlessUniverseSimulator {
     if (this.capyEarthRingMesh && typeof opts.ringSystemEnabled === 'boolean') {
       this.capyEarthRingMesh.visible = opts.ringSystemEnabled;
     }
+    if (this.planetaryRingMesh && typeof opts.ringSystemEnabled === 'boolean') {
+      this.planetaryRingMesh.visible = opts.ringSystemEnabled;
+    }
     if (this.atmosphereRayleighMat && typeof opts.atmosphereColorHex === 'number') {
       const uColor = this.atmosphereRayleighMat.uniforms?.uRayleighColor;
       if (uColor && uColor.value instanceof THREE.Color) {
         uColor.value.setHex(opts.atmosphereColorHex);
       }
     }
-    for (const pMat of [this.capyEarthBodyMat, this.atmosphereLimbMat]) {
+    for (const pMat of [this.capyEarthBodyMat, this.planetGlobeMat, ...this.planetLodMats]) {
       if (!pMat?.uniforms) continue;
       if (typeof opts.oceanColorHex === 'number' && pMat.uniforms.uOceanColor?.value instanceof THREE.Color) {
         pMat.uniforms.uOceanColor.value.setHex(opts.oceanColorHex);

@@ -24,13 +24,20 @@ import {
   installSightlineEdgeFadeShader,
 } from './RealisticWorldEnvironment';
 import {
+  AdaptiveGpuMitigationResult,
   PerformanceLogTracker,
+  computeAdaptiveGpuMitigation,
   computeDistrictTickStride,
+  computeEffectiveCameraFar,
   computeEffectivePixelRatio,
   computeVesselOneToOneTransform,
   doesSphereBlockPlayerSightline,
+  findNextEffectiveMitigationLevel,
+  findPrevEffectiveMitigationLevel,
   shouldEnableOccluderDepthWrite,
+  shouldRenderDistrict,
 } from './gpu/FramePerformanceGovernor';
+import { PerformanceProfiler } from './gpu/PerformanceProfiler';
 import {
   AstrophysicsPaletteMode,
   BuildingType,
@@ -42,6 +49,7 @@ import {
   COSMIC_GALAXIES,
   CosmicStage,
   DEFAULT_CAPY_SETTINGS,
+  GalaxyMorphology,
   GpuEngineTelemetry,
   GpuPipelineConfig,
   GpuQualityPreset,
@@ -51,6 +59,7 @@ import {
   MIN_UNIVERSE_LOG_METERS,
   PLAYABLE_CAPY_HEROES,
   PerformanceLogSnapshot,
+  PerformanceAnalysisSnapshot,
   PlanetaryBiomeConfig,
   PlayableCapyHero,
   PlayStyle,
@@ -129,6 +138,9 @@ const _occProjectedNdc = new THREE.Vector3();
 const _pointerNdc = new THREE.Vector2();
 const _vesselUprightQuat = new THREE.Quaternion();
 const _vesselEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _galaxyArmWorldDir = new THREE.Vector3();
+const _vesselNavQuat = new THREE.Quaternion();
+const _vesselNavEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 const _colorHelper = new THREE.Color();
 const _colorHelper2 = new THREE.Color();
 const _seamlessSkyColor = new THREE.Color();
@@ -252,6 +264,7 @@ export class PlayStyleManager {
   public readonly isSoftwareGl: boolean;
   public readonly isWebGpu: boolean;
   public readonly performanceLog = new PerformanceLogTracker();
+  public readonly profiler = new PerformanceProfiler();
   private webGpuPipeline: WebGpuPostAndComputePipeline | null = null;
 
   public currentMode: PlayStyle = 'sanctuary';
@@ -259,6 +272,39 @@ export class PlayStyleManager {
   private settings: CapyGameSettings;
   private callbacks: GameEventCallbacks;
   private telemetryTimer: number = 0;
+
+  // Adaptive GPU FPS Optimizer state (zero per-frame allocations)
+  private adaptiveMitigationLevel: number = 0;
+  private adaptiveLastStepMs: number = 0;
+  private adaptiveRecoveryAccumSec: number = 0;
+  private adaptiveLowPerfStreak: number = 0;
+  private readonly adaptiveMitigationResult: AdaptiveGpuMitigationResult = {
+    level: 0,
+    postProcessingEnabled: true,
+    ssaoEnabled: true,
+    bloomEnabled: true,
+    shadowQuality: 'pcf_soft',
+    antiAliasing: 'msaa_fxaa',
+    resolutionScale: 1.0,
+    maxCapyLodTier: 3,
+    disabledFeatures: [],
+  };
+  private readonly effectiveGpuConfigScratch: GpuPipelineConfig = {
+    qualityPreset: 'high',
+    postProcessingEnabled: true,
+    visualFilterPreset: 'natural_pbr',
+    toneMapping: 'agx',
+    exposure: 1.02,
+    textureFilter: 'trilinear_aniso',
+    anisotropyLevel: 8,
+    shadowQuality: 'pcf_soft',
+    antiAliasing: 'msaa_fxaa',
+    resolutionScale: 1.0,
+    bloomEnabled: true,
+    bloomStrength: 0.24,
+    ssaoEnabled: true,
+    sharpenAmount: 0.26,
+  };
 
   // Shared 3D World Groups (all 5 game zones live simultaneously in one contiguous world)
   private worldBaseGroup = new THREE.Group();
@@ -276,7 +322,8 @@ export class PlayStyleManager {
   public chronoPad: SanctuaryChronoPadSystem | null = null;
   public seamlessZoomActive: boolean = false;
   private vesselMode: ChronoVesselViewMode = 'chase_pod';
-  private cruiseVelocityLogPerSec: number = -2.2;
+  private cruiseVelocityLogPerSec: number = 0;
+  private targetCruiseVelocityLogPerSec: number = 0;
   private proceduralConfig: ProceduralGameConfig = cloneProceduralConfig(
     DEFAULT_PROCEDURAL_GAME_CONFIG
   );
@@ -285,7 +332,7 @@ export class PlayStyleManager {
   );
   private currentLogScaleMeters: number = MAX_UNIVERSE_LOG_METERS;
   private targetLogScaleMeters: number = MAX_UNIVERSE_LOG_METERS;
-  private autoLandAtForestPending: boolean = true;
+  private autoLandAtForestPending: boolean = false;
   private quantumFocusMode: QuantumFocusMode = 'auto';
   private autoZoomDirection: -1 | 0 | 1 = 0;
   private seamlessTelemetryAccum: number = 0;
@@ -604,6 +651,8 @@ export class PlayStyleManager {
     this.settings = initialSettings;
     this.callbacks = callbacks;
     this.performanceLog.lock60FpsEnabled = initialSettings.lock60FpsGovernor !== false;
+    this.performanceLog.fpsTarget = initialSettings.fpsTarget ?? 60;
+    this.performanceLog.maxFpsLimit = initialSettings.maxFpsLimit ?? 60;
 
     this.isSoftwareGl = webGpuInit
       ? webGpuInit.probe.isFallbackAdapter
@@ -664,7 +713,8 @@ export class PlayStyleManager {
         window.devicePixelRatio || 1,
         this.settings.gpuQualityPreset ?? 'high',
         this.settings.gpuPostProcessing !== false,
-        this.isSoftwareGl
+        this.isSoftwareGl,
+        this.settings.gpuResolutionScale ?? 1.0
       )
     );
     this.renderer.setSize(width, height);
@@ -681,6 +731,11 @@ export class PlayStyleManager {
 
     container.innerHTML = '';
     container.appendChild(this.renderer.domElement);
+
+    if (this.renderer instanceof THREE.WebGLRenderer) {
+      this.profiler.initGlContext(this.renderer.getContext());
+    }
+    this.profiler.setEnabled(true);
 
     // 3. Studio Environment, Warm/Cool 5:1 Lighting Rig & Hardware-Accelerated 3D GPU Engine
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.08);
@@ -833,7 +888,6 @@ export class PlayStyleManager {
 
     if (this.isWebGpu) {
       convertLegacyShaderMaterialsToTsl(this.scene);
-      void (this.renderer as THREE_WEBGPU.WebGPURenderer).compileAsync(this.scene, this.camera);
     } else if (!this.isSoftwareGl) {
       (this.renderer as THREE.WebGLRenderer).compile(this.scene, this.camera);
     }
@@ -854,8 +908,8 @@ export class PlayStyleManager {
       this.seamlessZoomActive = true;
       this.vesselMode = 'chase_pod';
       this.chronoVessel.setMode('chase_pod');
-      this.cruiseVelocityLogPerSec = -2.2;
-      this.autoZoomDirection = -1;
+      this.cruiseVelocityLogPerSec = 0;
+      this.autoZoomDirection = 0;
       this.currentLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
       this.targetLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
       this.applyFogSetting();
@@ -905,33 +959,67 @@ export class PlayStyleManager {
   }
 
   private applyFogSetting() {
-    if (this.cosmicStage !== 'capy_selection' && this.cosmicStage !== 'playing') {
-      this.scene.fog = null;
-      return;
-    }
-    const fogColor = this.activeBiome?.fogHex ?? 0xbae6fd;
-    if (this.settings.worldFogEnabled) {
-      this.scene.fog = new THREE.Fog(fogColor, 68, 340);
-    } else {
-      this.scene.fog = new THREE.Fog(fogColor, 160, 520);
-    }
+    this.scene.fog = null;
   }
 
-  private buildGpuConfigFromSettings(s: CapyGameSettings): Partial<GpuPipelineConfig> {
+  private buildGpuConfigFromSettings(s: CapyGameSettings): GpuPipelineConfig {
     return {
       qualityPreset: s.gpuQualityPreset ?? 'high',
       postProcessingEnabled: s.gpuPostProcessing !== false,
+      visualFilterPreset: s.gpuVisualFilter ?? 'natural_pbr',
       toneMapping: s.gpuToneMapping ?? 'agx',
-      exposure: s.gpuExposure ?? 1.12,
+      exposure: s.gpuExposure ?? 1.02,
       textureFilter: s.gpuTextureFilter ?? 'trilinear_aniso',
       anisotropyLevel: s.gpuAnisotropy ?? 8,
       shadowQuality: s.gpuShadowQuality ?? 'pcf_soft',
-      visualFilterPreset: s.gpuVisualFilter ?? 'natural_pbr',
+      antiAliasing: s.gpuAntiAliasing ?? 'msaa_fxaa',
+      resolutionScale: s.gpuResolutionScale ?? 1.0,
       bloomEnabled: s.gpuBloomEnabled !== false,
-      bloomStrength: s.gpuBloomStrength ?? 0.28,
+      bloomStrength: s.gpuBloomStrength ?? 0.24,
       ssaoEnabled: s.gpuSsaoEnabled !== false,
-      sharpenAmount: s.gpuSharpenAmount ?? 0.24,
+      sharpenAmount: s.gpuSharpenAmount ?? 0.26,
+      drawDistance: s.drawDistance ?? 650,
     };
+  }
+
+  private buildEffectiveGpuConfig(s: CapyGameSettings, mitigationLevel: number): GpuPipelineConfig {
+    const out = this.effectiveGpuConfigScratch;
+    out.qualityPreset = s.gpuQualityPreset ?? 'high';
+    out.postProcessingEnabled = s.gpuPostProcessing !== false;
+    out.visualFilterPreset = s.gpuVisualFilter ?? 'natural_pbr';
+    out.toneMapping = s.gpuToneMapping ?? 'agx';
+    out.exposure = s.gpuExposure ?? 1.02;
+    out.textureFilter = s.gpuTextureFilter ?? 'trilinear_aniso';
+    out.anisotropyLevel = s.gpuAnisotropy ?? 8;
+    out.shadowQuality = s.gpuShadowQuality ?? 'pcf_soft';
+    out.antiAliasing = s.gpuAntiAliasing ?? 'msaa_fxaa';
+    out.resolutionScale = s.gpuResolutionScale ?? 1.0;
+    out.bloomEnabled = s.gpuBloomEnabled !== false;
+    out.bloomStrength = s.gpuBloomStrength ?? 0.24;
+    out.ssaoEnabled = s.gpuSsaoEnabled !== false;
+    out.sharpenAmount = s.gpuSharpenAmount ?? 0.26;
+    out.drawDistance = s.drawDistance ?? 650;
+
+    if (mitigationLevel > 0 && s.lock60FpsGovernor !== false) {
+      const m = computeAdaptiveGpuMitigation(
+        out,
+        s.autoCapyLod !== false,
+        s.manualCapyLodTier ?? 3,
+        mitigationLevel,
+        this.adaptiveMitigationResult
+      );
+      out.postProcessingEnabled = m.postProcessingEnabled;
+      out.ssaoEnabled = m.ssaoEnabled;
+      out.bloomEnabled = m.bloomEnabled;
+      out.shadowQuality = m.shadowQuality;
+      out.antiAliasing = m.antiAliasing;
+      out.resolutionScale = m.resolutionScale;
+    } else {
+      this.adaptiveMitigationResult.level = 0;
+      this.adaptiveMitigationResult.maxCapyLodTier = s.autoCapyLod !== false ? 3 : (s.manualCapyLodTier ?? 3);
+      this.adaptiveMitigationResult.disabledFeatures = [];
+    }
+    return out;
   }
 
   public static getPresetPatchForGpuQuality(preset: GpuQualityPreset): Partial<CapyGameSettings> {
@@ -942,9 +1030,14 @@ export class PlayStyleManager {
         gpuShadowQuality: 'off',
         gpuTextureFilter: 'bilinear',
         gpuAnisotropy: 1,
+        gpuAntiAliasing: 'none',
+        gpuResolutionScale: 0.7,
         gpuBloomEnabled: false,
         gpuSsaoEnabled: false,
         gpuSharpenAmount: 0,
+        drawDistance: 135,
+        autoCapyLod: false,
+        manualCapyLodTier: 0,
       };
     }
     if (preset === 'balanced') {
@@ -954,10 +1047,14 @@ export class PlayStyleManager {
         gpuShadowQuality: 'pcf',
         gpuTextureFilter: 'trilinear_aniso',
         gpuAnisotropy: 4,
+        gpuAntiAliasing: 'fxaa',
+        gpuResolutionScale: 1.0,
         gpuBloomEnabled: true,
         gpuBloomStrength: 0.22,
         gpuSsaoEnabled: false,
         gpuSharpenAmount: 0.18,
+        drawDistance: 280,
+        autoCapyLod: true,
       };
     }
     if (preset === 'ultra') {
@@ -967,10 +1064,14 @@ export class PlayStyleManager {
         gpuShadowQuality: 'pcf_soft',
         gpuTextureFilter: 'trilinear_aniso',
         gpuAnisotropy: 16,
+        gpuAntiAliasing: 'msaa_fxaa',
+        gpuResolutionScale: 1.0,
         gpuBloomEnabled: true,
         gpuBloomStrength: 0.34,
         gpuSsaoEnabled: true,
         gpuSharpenAmount: 0.32,
+        drawDistance: 1350,
+        autoCapyLod: true,
       };
     }
     return {
@@ -979,10 +1080,14 @@ export class PlayStyleManager {
       gpuShadowQuality: 'pcf_soft',
       gpuTextureFilter: 'trilinear_aniso',
       gpuAnisotropy: 8,
+      gpuAntiAliasing: 'msaa_fxaa',
+      gpuResolutionScale: 1.0,
       gpuBloomEnabled: true,
-      gpuBloomStrength: 0.28,
+      gpuBloomStrength: 0.24,
       gpuSsaoEnabled: true,
-      gpuSharpenAmount: 0.24,
+      gpuSharpenAmount: 0.26,
+      drawDistance: 650,
+      autoCapyLod: true,
     };
   }
 
@@ -993,12 +1098,25 @@ export class PlayStyleManager {
       Math.abs(newSettings.timeOfDayHours - prevManualTime) > 0.01;
     this.settings = newSettings;
     this.performanceLog.lock60FpsEnabled = newSettings.lock60FpsGovernor !== false;
+    this.performanceLog.fpsTarget = newSettings.fpsTarget ?? 60;
+    this.performanceLog.maxFpsLimit = newSettings.maxFpsLimit ?? 60;
+
+    // Reset adaptive degradation whenever user explicitly changes graphics/FPS settings
+    this.adaptiveMitigationLevel = 0;
+    this.adaptiveLowPerfStreak = 0;
+    this.adaptiveRecoveryAccumSec = 0;
+    this.performanceLog.activeGovernorTier = 0;
+    this.performanceLog.disabledFeatures = [];
+    this.performanceLog.notifyTransitionWarmup(2);
+
     this.camera.fov = newSettings.fov || 58;
     this.camera.updateProjectionMatrix();
     this.applyFogSetting();
-    this.gpuEngine?.applyConfig(this.buildGpuConfigFromSettings(newSettings));
+    this.gpuEngine?.applyConfig(this.buildEffectiveGpuConfig(newSettings, 0));
     if (!newSettings.autoCapyLod && newSettings.manualCapyLodTier !== undefined) {
       this.applyGlobalCapyLodTier(newSettings.manualCapyLodTier);
+    } else if (newSettings.autoCapyLod !== false && this.currentCapyLodTier < 3) {
+      this.applyGlobalCapyLodTier(3);
     }
     if (
       this.worldEnv &&
@@ -1015,6 +1133,7 @@ export class PlayStyleManager {
           this.performanceLog.notifyTransitionWarmup(4);
         }
       }
+      const isPerfMode = newSettings.gpuQualityPreset === 'performance';
       const exposureScale = (this.settings.gpuExposure ?? 1.12) / 1.12;
       this.worldEnv.tickAtmosphereAndWeather(
         0.016,
@@ -1025,9 +1144,12 @@ export class PlayStyleManager {
         this.heroCapy.position.z,
         this.scene,
         this.renderer,
-        this.settings.worldFogEnabled && !this.seamlessZoomActive,
+        false,
         this.homePool?.lanternLight,
-        exposureScale
+        exposureScale,
+        this.proceduralConfig.world.dayCycleSpeed ?? 1.0,
+        this.proceduralConfig.graphics.fogDensity ?? 1.0,
+        isPerfMode
       );
       this.updateBioluminescentNightGlow();
       if (manualTimeChanged && this.gpuEngine) {
@@ -1048,7 +1170,71 @@ export class PlayStyleManager {
         );
       }
     }
+    this.applySurfaceDrawDistanceAndCulling(
+      this.cosmicStage === 'playing' ||
+        this.cosmicStage === 'capy_selection' ||
+        (this.seamlessZoomActive && this.currentLogScaleMeters <= 3.1)
+    );
     this.emitTelemetry();
+  }
+
+  private applySurfaceDrawDistanceAndCulling(isSurfaceVisible: boolean): void {
+    const isPerfMode = this.settings.gpuQualityPreset === 'performance';
+    const drawDist = this.settings.drawDistance ?? 650;
+    const farInfo = computeEffectiveCameraFar(
+      drawDist,
+      this.settings.gpuQualityPreset ?? 'high',
+      isSurfaceVisible,
+      this.currentLogScaleMeters
+    );
+
+    if (Math.abs(this.camera.far - farInfo.cameraFar) > 0.5) {
+      this.camera.far = farInfo.cameraFar;
+      this.camera.updateProjectionMatrix();
+    }
+
+    if (this.worldEnv) {
+      this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
+      this.worldEnv.skyMesh.scale.setScalar(farInfo.skyScale);
+      this.worldEnv.mountainMesh.visible = isSurfaceVisible && farInfo.showMountains;
+    }
+
+    if (this.seamlessUniverse) {
+      const showForestGrove =
+        !isPerfMode &&
+        !this.isSoftwareGl &&
+        ((this.seamlessZoomActive && this.currentLogScaleMeters >= -0.85 && this.currentLogScaleMeters <= 3.1) ||
+          (!this.seamlessZoomActive && this.cosmicStage === 'playing' && this.currentMode === 'sanctuary'));
+      this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
+    }
+
+    if (
+      isSurfaceVisible &&
+      this.cosmicStage === 'playing' &&
+      !this.seamlessZoomActive &&
+      !this.zoneTransition.active
+    ) {
+      const camX = this.camera.position.x;
+      const camZ = this.camera.position.z;
+
+      const visSanctuary = shouldRenderDistrict(0, 0, 38, camX, camZ, drawDist, this.currentMode === 'sanctuary');
+      const visSpore = shouldRenderDistrict(-75, -75, 34, camX, camZ, drawDist, this.currentMode === 'spore');
+      const visBreakout = shouldRenderDistrict(75, -75, 28, camX, camZ, drawDist, this.currentMode === 'breakout');
+      const visRunner = shouldRenderDistrict(-75, 75, 36, camX, camZ, drawDist, this.currentMode === 'runner');
+      const visFallGuys = shouldRenderDistrict(75, 75, 38, camX, camZ, drawDist, this.currentMode === 'fallguys');
+
+      this.sanctuaryGroup.visible = visSanctuary;
+      this.sanctuaryGroup.matrixWorldAutoUpdate = visSanctuary;
+      this.sporeGroup.visible = visSpore;
+      this.sporeGroup.matrixWorldAutoUpdate = visSpore;
+      this.breakoutGroup.visible = visBreakout;
+      this.breakoutGroup.matrixWorldAutoUpdate = visBreakout;
+      this.runnerGroup.visible = visRunner;
+      this.runnerGroup.matrixWorldAutoUpdate = visRunner;
+      this.fallGuysGroup.visible = visFallGuys;
+      this.fallGuysGroup.matrixWorldAutoUpdate = visFallGuys;
+    }
   }
 
   private buildSharedArchipelagoBase() {
@@ -1731,9 +1917,16 @@ export class PlayStyleManager {
       this.chronoVessel?.setMode('landed');
       if (this.chronoVessel) this.chronoVessel.root.visible = false;
     }
-    if (this.camera.near !== 0.1 || this.camera.far !== 1350) {
+    const isSurfaceStage = stage === 'capy_selection' || stage === 'playing';
+    const stageFarInfo = computeEffectiveCameraFar(
+      this.settings.drawDistance ?? 650,
+      this.settings.gpuQualityPreset ?? 'high',
+      isSurfaceStage,
+      stage === 'playing' ? CAPYBARA_FOREST_LOG_METERS : 28.0
+    );
+    if (this.camera.near !== 0.1 || Math.abs(this.camera.far - stageFarInfo.cameraFar) > 0.5) {
       this.camera.near = 0.1;
-      this.camera.far = 1350;
+      this.camera.far = stageFarInfo.cameraFar;
       this.camera.updateProjectionMatrix();
     }
 
@@ -1752,8 +1945,6 @@ export class PlayStyleManager {
     this.targetLogScaleMeters = stageLogMap[stage];
     this.cosmicUiTelemetryAccum = 0;
 
-    const isSurfaceStage = stage === 'capy_selection' || stage === 'playing';
-
     this.worldBaseGroup.visible = isSurfaceStage;
     this.worldBaseGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.sanctuaryGroup.visible = isSurfaceStage;
@@ -1771,6 +1962,7 @@ export class PlayStyleManager {
     this.selectableCapyGroup.matrixWorldAutoUpdate = stage === 'capy_selection';
     this.heroCapy.visible = stage === 'playing';
     this.syncDachshundVisibility();
+    this.applySurfaceDrawDistanceAndCulling(isSurfaceStage);
 
     if (stage === 'singularity') {
       this.setSceneBackgroundHex(0x000000);
@@ -2036,15 +2228,51 @@ export class PlayStyleManager {
     return this.vesselMode;
   }
 
+  public isVesselFlying(): boolean {
+    return this.seamlessZoomActive || this.vesselMode !== 'landed' || this.cosmicStage !== 'playing';
+  }
+
+  public adjustVesselThrottle(wheelDelta: number): number {
+    if (!this.seamlessZoomActive) {
+      this.launchIntoCosmos(this.currentLogScaleMeters);
+    }
+    // wheelDelta > 0 is forward mouse wheel roll -> accelerate forward into the universe
+    // wheelDelta < 0 is backward mouse wheel roll -> reverse throttle / brake
+    const impulse = -wheelDelta * 2.8;
+    let nextTarget = this.targetCruiseVelocityLogPerSec + impulse;
+
+    // Smooth soft-clamp between -12.0 (forward warp) and +12.0 (reverse warp)
+    nextTarget = THREE.MathUtils.clamp(nextTarget, -12.0, 12.0);
+
+    // Provide a gentle deadband around 0 for clean zero-G station keeping
+    if (Math.abs(nextTarget) < 0.15) {
+      nextTarget = 0;
+    }
+
+    this.targetCruiseVelocityLogPerSec = nextTarget;
+    if (Math.abs(nextTarget) < 0.05) {
+      this.autoZoomDirection = 0;
+    } else if (nextTarget < 0) {
+      this.autoZoomDirection = -1;
+    } else {
+      this.autoZoomDirection = 1;
+    }
+
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+    return this.targetCruiseVelocityLogPerSec;
+  }
+
   public setCruiseVelocity(velLogPerSec: number): void {
     if (Math.abs(velLogPerSec) < 0.05) {
       this.autoZoomDirection = 0;
+      this.targetCruiseVelocityLogPerSec = 0;
+      this.cruiseVelocityLogPerSec = 0;
     } else if (velLogPerSec < 0) {
       this.autoZoomDirection = -1;
-      this.cruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -12.0, -0.25);
+      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -12.0, -0.25);
     } else {
       this.autoZoomDirection = 1;
-      this.cruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.25, 12.0);
+      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.25, 12.0);
     }
     if (this.autoZoomDirection !== 0 && !this.seamlessZoomActive) {
       this.launchIntoCosmos(this.currentLogScaleMeters);
@@ -2984,9 +3212,160 @@ export class PlayStyleManager {
     this.performanceLog.clear(Date.now());
   }
 
+  public isPerformanceAnalysisEnabled(): boolean {
+    return this.profiler.isEnabled();
+  }
+
+  public setPerformanceAnalysisEnabled(enabled: boolean): void {
+    this.profiler.setEnabled(enabled);
+  }
+
+  public getPerformanceAnalysisSnapshot(): PerformanceAnalysisSnapshot {
+    return this.profiler.getTelemetrySnapshot();
+  }
+
+  public formatPerformanceAnalysisReport(): string {
+    return this.profiler.formatAnalysisReport();
+  }
+
+  public generatePerformanceDebugReport(mode: 'summary' | 'detail' | 'analysis' = 'summary'): string {
+    if (mode === 'analysis') {
+      return this.profiler.formatAnalysisReport();
+    }
+
+    const perf = this.performanceLog.getSnapshot(Date.now());
+    const gpu = this.gpuEngine.getTelemetry();
+    const rInfo = (this.renderer as unknown as {
+      info?: {
+        render?: { calls?: number; triangles?: number; lines?: number; points?: number; frame?: number };
+        memory?: { geometries?: number; textures?: number };
+      };
+    })?.info;
+
+    const capLabel = perf.maxFpsLimit > 0 ? `${perf.maxFpsLimit}` : 'Unlim';
+    const disabledStr =
+      perf.disabledFeatures.length > 0 ? perf.disabledFeatures.join(', ') : 'None (Full Quality)';
+
+    if (mode === 'summary') {
+      const sLines: string[] = [];
+      sLines.push('=== CAPYGAME 3D PERF SUMMARY ===');
+      sLines.push(`Target: ${perf.fpsTarget} FPS | Max Cap: ${capLabel} (AutoOpt: ${perf.autoOptimizerEnabled ? `ON T${perf.activeGovernorTier}` : 'OFF'})`);
+      sLines.push(`Live: ${perf.liveFps} | Avg: ${perf.avgFps} | Min: ${perf.minFps} | Drops: ${perf.droppedFramesCount} | Avg ${perf.avgFrameMs}ms / P95 ${perf.p95FrameMs}ms / Spike ${perf.maxFrameMs}ms`);
+      sLines.push(`Scene: ${this.currentMode} · ${this.cosmicStage} | Scale: ${this.currentLogScaleMeters.toFixed(1)} log-m (T+${computeCosmicAgeGyr(this.currentLogScaleMeters).toFixed(2)} Gyr)`);
+      sLines.push(`Vessel: ${this.vesselMode} | Velocity: ${this.cruiseVelocityLogPerSec.toFixed(1)} log/s`);
+      sLines.push(`GPU: ${gpu.backendLabel} (${gpu.webGpuAdapterName || (gpu.gpuRenderer ? gpu.gpuRenderer.slice(0, 32) : 'Default')}) | Preset: ${gpu.qualityPreset}`);
+      sLines.push(`Pipeline: Shadows ${gpu.shadowCasterMode.toUpperCase()} (${gpu.shadowMapSize}px) | Bloom: ${gpu.bloomEnabled ? 'ON' : 'OFF'} | SSAO: ${gpu.ssaoEnabled ? 'ON' : 'OFF'} | AA: ${gpu.antiAliasing} | Scale: ${gpu.resolutionScale}x (DPR ${gpu.effectivePixelRatio})`);
+      sLines.push(`Opt Cuts: ${disabledStr}`);
+      sLines.push(`Draw: ${rInfo?.render?.calls ?? gpu.drawCalls} calls | ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()} tris | VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram} geos, ${rInfo?.memory?.textures ?? gpu.texturesInVram} texs`);
+      sLines.push('Incidents:');
+      if (perf.entries.length === 0) {
+        sLines.push(`- Zero frame drops recorded (steady ${perf.fpsTarget} FPS target).`);
+      } else {
+        perf.entries.slice(0, 8).forEach((e, i) => {
+          const rep = e.repeatCount && e.repeatCount > 1 ? ` [x${e.repeatCount}]` : '';
+          const fpsRange = e.minFps && e.maxFps && e.minFps !== e.maxFps ? `${e.minFps}-${e.maxFps}` : `${e.fps}`;
+          const timeRange = e.lastElapsedLabel && e.lastElapsedLabel !== e.elapsedLabel ? `${e.elapsedLabel}-${e.lastElapsedLabel}` : e.elapsedLabel;
+          sLines.push(`- (${i + 1})${rep} T+${timeRange} | ${fpsRange} FPS (${e.maxFrameMs ?? e.frameMs}ms) | ${e.stageLabel} | ${e.cause} -> ${e.mitigation}`);
+        });
+      }
+      sLines.push('================================');
+      return sLines.join('\n');
+    }
+
+    const lines: string[] = [];
+    lines.push('=== CAPYGAME 3D PERFORMANCE DEBUG REPORT ===');
+    lines.push(`Generated: ${new Date().toISOString()}`);
+    lines.push(`Uptime: ${Math.floor(performance.now() / 1000)}s`);
+    lines.push(`Target FPS: ${perf.fpsTarget} FPS | Max Cap: ${capLabel} (Auto GPU Optimizer: ${perf.autoOptimizerEnabled ? `ON Tier ${perf.activeGovernorTier}` : 'OFF'})`);
+    lines.push(`Active GPU Reductions: ${disabledStr}`);
+    lines.push('');
+    lines.push('--- REAL-TIME PACING & FPS ---');
+    lines.push(`Live FPS: ${perf.liveFps}`);
+    lines.push(`Average FPS: ${perf.avgFps}`);
+    lines.push(`Min FPS: ${perf.minFps}`);
+    lines.push(`Avg Frame Duration: ${perf.avgFrameMs} ms`);
+    lines.push(`P95 Frame Duration: ${perf.p95FrameMs} ms`);
+    lines.push(`Max Frame Spike: ${perf.maxFrameMs} ms`);
+    lines.push(`Total Dropped Frames: ${perf.droppedFramesCount}`);
+    lines.push(`Alert Count: ${perf.alertCount}`);
+    lines.push(`Last Alert: ${perf.lastAlertSummary ?? 'None'}`);
+    lines.push('');
+    lines.push('--- SCENE & SCALE CONTEXT ---');
+    lines.push(`Current Mode: ${this.currentMode}`);
+    lines.push(`Cosmic Stage: ${this.cosmicStage}`);
+    lines.push(`Seamless Zoom Active: ${this.seamlessZoomActive}`);
+    lines.push(`Log Scale Meters: ${this.currentLogScaleMeters.toFixed(2)} (Target: ${this.targetLogScaleMeters.toFixed(2)})`);
+    lines.push(`Vessel Mode: ${this.vesselMode}`);
+    lines.push(`Cruise Velocity: ${this.cruiseVelocityLogPerSec.toFixed(2)} log/s (Dir: ${this.autoZoomDirection})`);
+    lines.push(`Cosmic Age: ${computeCosmicAgeGyr(this.currentLogScaleMeters).toFixed(2)} Gyr`);
+    lines.push(`Buildings: ${this.stats.buildings.length} | Capy Heroes: ${PLAYABLE_CAPY_HEROES.length}`);
+    lines.push('');
+    lines.push('--- GRAPHICS PIPELINE & GPU TELEMETRY ---');
+    lines.push(`Backend: ${gpu.backendLabel} (WebGPU Active: ${gpu.webGpuActive})`);
+    lines.push(`Adapter: ${gpu.webGpuAdapterName || 'Unknown'}`);
+    lines.push(`GPU Renderer: ${gpu.gpuRenderer}`);
+    lines.push(`Software GL: ${gpu.isSoftwareGl}`);
+    lines.push(`Quality Preset: ${gpu.qualityPreset}`);
+    lines.push(`Tone Mapping: ${gpu.toneMapping} (Exposure: ${gpu.exposure.toFixed(2)})`);
+    lines.push(`Shadows: ${gpu.shadowCasterMode.toUpperCase()} (Map: ${gpu.shadowMapSize}px, Quality: ${gpu.shadowQuality})`);
+    lines.push(`Bloom: ${gpu.bloomEnabled ? 'ON' : 'OFF'} | SSAO/GTAO: ${gpu.ssaoEnabled ? 'ON' : 'OFF'}`);
+    lines.push(`PostProcessing: ${gpu.postProcessingActive ? 'ON' : 'OFF'} | Filter: ${gpu.visualFilterLabel}`);
+    lines.push(`Anti-Aliasing: ${gpu.antiAliasing} (MSAA Samples: ${gpu.msaaSamples}) | Render Scale: ${gpu.resolutionScale}x (DPR: ${gpu.effectivePixelRatio})`);
+    lines.push(`Anisotropy: ${gpu.activeAnisotropy}/${gpu.maxHardwareAnisotropy}`);
+    lines.push('');
+    lines.push('--- THREE.JS VRAM & DRAW METRICS ---');
+    lines.push(`Draw Calls: ${rInfo?.render?.calls ?? gpu.drawCalls}`);
+    lines.push(`Triangles: ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()}`);
+    lines.push(`Lines: ${rInfo?.render?.lines ?? 0} | Points: ${rInfo?.render?.points ?? 0}`);
+    lines.push(`Geometries in VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram}`);
+    lines.push(`Textures in VRAM: ${rInfo?.memory?.textures ?? gpu.texturesInVram}`);
+    lines.push(`Shader Programs: ${gpu.shaderPrograms}`);
+    lines.push('');
+    lines.push('--- INCIDENT LOG ENTRIES (GROUPED) ---');
+    if (perf.entries.length === 0) {
+      lines.push('Zero frame drops or lag spikes recorded.');
+    } else {
+      perf.entries.forEach((e, idx) => {
+        const rep = e.repeatCount && e.repeatCount > 1 ? ` (Grouped x${e.repeatCount} instances)` : '';
+        const fpsRange = e.minFps && e.maxFps && e.minFps !== e.maxFps ? `${e.minFps}-${e.maxFps}` : `${e.fps}`;
+        const timeRange = e.lastElapsedLabel && e.lastElapsedLabel !== e.elapsedLabel ? `${e.elapsedLabel}-${e.lastElapsedLabel}` : e.elapsedLabel;
+        lines.push(`[${idx + 1}] T+${timeRange} | ${fpsRange} FPS (Spike: ${e.maxFrameMs ?? e.frameMs} ms)${rep} | Severity: ${e.severity.toUpperCase()} | Stage: ${e.stageLabel}`);
+        lines.push(`    Cause: ${e.cause}`);
+        lines.push(`    Mitigation: ${e.mitigation}`);
+      });
+    }
+    lines.push('');
+    lines.push('--- CLIENT PLATFORM & RUNTIME ---');
+    if (typeof navigator !== 'undefined') {
+      lines.push(`User Agent: ${navigator.userAgent}`);
+      lines.push(`Cores: ${navigator.hardwareConcurrency ?? 'N/A'}`);
+      const devMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+      if (devMem) lines.push(`Device Memory: ~${devMem} GB`);
+    }
+    if (typeof window !== 'undefined') {
+      lines.push(`Viewport: ${window.innerWidth}x${window.innerHeight} (DevicePixelRatio: ${window.devicePixelRatio})`);
+      lines.push(`URL: ${window.location.href}`);
+    }
+    lines.push('=== END OF REPORT ===');
+
+    return lines.join('\n');
+  }
+
   public setLock60Fps(enabled: boolean): void {
     this.performanceLog.lock60FpsEnabled = enabled;
     this.settings = { ...this.settings, lock60FpsGovernor: enabled };
+    if (!enabled && this.adaptiveMitigationLevel > 0) {
+      this.adaptiveMitigationLevel = 0;
+      this.adaptiveLowPerfStreak = 0;
+      this.adaptiveRecoveryAccumSec = 0;
+      this.performanceLog.activeGovernorTier = 0;
+      this.performanceLog.disabledFeatures = [];
+      this.gpuEngine?.applyConfig(this.buildEffectiveGpuConfig(this.settings, 0));
+      if (this.settings.autoCapyLod !== false) {
+        this.applyGlobalCapyLodTier(3);
+      }
+      this.performanceLog.notifyTransitionWarmup(2);
+    }
     ProgressionService.saveSettings(this.settings);
   }
 
@@ -3876,33 +4255,40 @@ export class PlayStyleManager {
   }
 
   /**
-   * Feeds a live or simulated FPS measurement into the 60 FPS Capybara LOD governor.
-   * Scales Capybara anatomical & bristle-fur detail down if FPS dips below 55, and
-   * scales detail back up toward Tier 3 (Ultra) when smooth ~60 FPS headroom holds.
+   * Feeds a live or simulated FPS measurement into the FPS Capybara LOD governor.
+   * Scales Capybara anatomical & bristle-fur detail down if FPS dips below target * 0.9, and
+   * scales detail back up toward Tier 3 (Ultra) when smooth headroom holds.
    */
   public ingestFpsSample(fpsSample: number, stepSeconds: number = 0.4) {
-    const clampedFps = THREE.MathUtils.clamp(fpsSample, 15, 144);
+    const clampedFps = THREE.MathUtils.clamp(fpsSample, 15, 240);
     this.rollingFps = this.rollingFps * 0.78 + clampedFps * 0.22;
 
     if (this.settings.autoCapyLod === false) {
       return;
     }
 
+    const effTarget = this.performanceLog.getEffectiveTargetFps();
     this.lodGovernorAccum += stepSeconds;
     if (this.lodGovernorAccum < 0.35) return;
     this.lodGovernorAccum = 0;
 
-    if (this.rollingFps < 55.0) {
+    if (this.rollingFps < effTarget * 0.91) {
       this.lodLowFpsStreak++;
       this.lodHighFpsStreak = 0;
       if (this.lodLowFpsStreak >= 1 && this.currentCapyLodTier > 0) {
         const nextTier = (this.currentCapyLodTier - 1) as CapyLodTier;
         this.applyGlobalCapyLodTier(nextTier);
       }
-    } else if (this.rollingFps >= 58.0) {
+    } else if (this.rollingFps >= effTarget * 0.96) {
       this.lodHighFpsStreak++;
       this.lodLowFpsStreak = 0;
-      if (this.lodHighFpsStreak >= 2 && this.currentCapyLodTier < 3) {
+      const presetMaxTier: CapyLodTier =
+        this.settings.gpuQualityPreset === 'performance' ? 1 : 3;
+      const maxTier =
+        this.adaptiveMitigationLevel > 0
+          ? (Math.min(presetMaxTier, this.adaptiveMitigationResult.maxCapyLodTier) as CapyLodTier)
+          : presetMaxTier;
+      if (this.lodHighFpsStreak >= 2 && this.currentCapyLodTier < maxTier) {
         this.lodHighFpsStreak = 0;
         const nextTier = (this.currentCapyLodTier + 1) as CapyLodTier;
         this.applyGlobalCapyLodTier(nextTier);
@@ -5265,6 +5651,7 @@ export class PlayStyleManager {
   // PER-FRAME GAME LOOP (SHARED WORLD + 60 FPS LOD GOVERNOR + ATMOSPHERE/WEATHER)
   // ============================================================================
   public tick(delta: number, rawFrameDt?: number) {
+    this.profiler.beginFrame();
     const tickStartMs = performance.now();
     const dt = Math.min(delta, 0.1);
     if (this.portalCooldown > 0) this.portalCooldown -= dt;
@@ -5286,18 +5673,22 @@ export class PlayStyleManager {
         this.cosmicStage === 'playing' ||
         this.seamlessZoomActive)
     ) {
+      const isPerfMode = this.settings.gpuQualityPreset === 'performance';
+      this.profiler.startPhase('world_simulation');
       const rippleTex = RealisticWorldEnvironment.getWaterRippleTexture();
       const waveMult = this.proceduralConfig.world.waterWaveSpeed ?? 1.0;
       rippleTex.offset.x = (rippleTex.offset.x + dt * 0.032 * waveMult) % 1;
       rippleTex.offset.y = (rippleTex.offset.y + dt * 0.021 * waveMult) % 1;
 
-      const fluidBytes = this.physicsBridge?.fluidSolver.packRippleTextureBytes();
-      const rippleDataTex =
-        this.sporeRippleTexture ??
-        RealisticWorldEnvironment.createWaterRippleDataTexture();
-      if (fluidBytes && rippleDataTex.image?.data instanceof Uint8Array) {
-        rippleDataTex.image.data.set(fluidBytes);
-        rippleDataTex.needsUpdate = true;
+      if (!isPerfMode || (this.bgDistrictFrameCounter & 1) === 0) {
+        const fluidBytes = this.physicsBridge?.fluidSolver.packRippleTextureBytes();
+        const rippleDataTex =
+          this.sporeRippleTexture ??
+          RealisticWorldEnvironment.createWaterRippleDataTexture();
+        if (fluidBytes && rippleDataTex.image?.data instanceof Uint8Array) {
+          rippleDataTex.image.data.set(fluidBytes);
+          rippleDataTex.needsUpdate = true;
+        }
       }
       const sporeWaterUniforms = this.sporeWaterMat?.userData?.__waterUniforms as
         | { uWaterTime?: { value: number } }
@@ -5331,24 +5722,32 @@ export class PlayStyleManager {
         this.heroCapy.position.z,
         this.scene,
         this.renderer,
-        this.settings.worldFogEnabled && !this.seamlessZoomActive,
+        false,
         this.homePool?.lanternLight,
         exposureScale,
         this.proceduralConfig.world.dayCycleSpeed ?? 1.0,
-        this.proceduralConfig.graphics.fogDensity ?? 1.0
+        this.proceduralConfig.graphics.fogDensity ?? 1.0,
+        isPerfMode
       );
-      this.worldEnv.tickTrees(this.sanctuaryTrees, dt);
+      if (!isPerfMode) {
+        this.worldEnv.tickTrees(this.sanctuaryTrees, dt);
+      }
       if (this.seamlessUniverse.forestGroveGroup.visible) {
         this.seamlessUniverse.tickWoodlandCapys(dt);
       }
       this.updateBioluminescentNightGlow();
+      this.profiler.endPhase('world_simulation');
     }
 
     // 0. Handle Seamless 63-Orders-of-Magnitude Universe Zoom (+28 Big Bang <-> +0.8 Forest <-> -35 Photon)
     if (this.seamlessZoomActive) {
+      this.profiler.startPhase('cosmic_universe');
       this.tickSeamlessUniverse(dt);
+      this.profiler.endPhase('cosmic_universe');
+
       const inForestWindow =
         this.currentLogScaleMeters >= -0.85 && this.currentLogScaleMeters <= 3.1;
+      this.profiler.startPhase('gpu_shadow_cascade');
       this.gpuEngine.updateLightingAndShadowCascade(
         dt,
         this.heroCapy.position.x,
@@ -5364,13 +5763,18 @@ export class PlayStyleManager {
         this.worldEnv.timeOfDayHours,
         this.worldEnv.currentIblEnvIntensity
       );
+      this.profiler.endPhase('gpu_shadow_cascade');
       this.renderSceneFrame(rawFrameDt, tickStartMs);
       return;
     }
 
     // 1. Handle Cosmic Stages & Capybara Selection before active gameplay
     if (this.cosmicStage !== 'playing') {
+      this.profiler.startPhase('cosmic_universe');
       this.tickCosmicExperience(dt);
+      this.profiler.endPhase('cosmic_universe');
+
+      this.profiler.startPhase('gpu_shadow_cascade');
       this.gpuEngine.updateLightingAndShadowCascade(
         dt,
         this.heroCapy.position.x,
@@ -5386,7 +5790,12 @@ export class PlayStyleManager {
         this.worldEnv.timeOfDayHours,
         this.worldEnv.currentIblEnvIntensity
       );
+      this.profiler.endPhase('gpu_shadow_cascade');
+
+      this.profiler.startPhase('sightline_occlusion');
       this.updateHeadLineOfSightTransparency(dt);
+      this.profiler.endPhase('sightline_occlusion');
+
       this.renderSceneFrame(rawFrameDt, tickStartMs);
       return;
     }
@@ -5436,6 +5845,7 @@ export class PlayStyleManager {
         this.homePool ? _cachedPoolSpec : null,
         this.physicsBridge?.getSeeSawTiltAngle() ?? 0
       );
+      this.profiler.startPhase('gpu_shadow_cascade');
       this.gpuEngine.updateLightingAndShadowCascade(
         dt,
         this.heroCapy.position.x,
@@ -5451,14 +5861,21 @@ export class PlayStyleManager {
         this.worldEnv.timeOfDayHours,
         this.worldEnv.currentIblEnvIntensity
       );
+      this.profiler.endPhase('gpu_shadow_cascade');
+
+      this.profiler.startPhase('sightline_occlusion');
       this.updateHeadLineOfSightTransparency(dt);
+      this.profiler.endPhase('sightline_occlusion');
+
       this.renderSceneFrame(rawFrameDt, tickStartMs);
       return;
     }
 
     // Tick ALL 5 minigame ecosystems simultaneously in the unified contiguous world,
     // plus active player physics & seamless overland district handover!
+    this.profiler.startPhase('district_gameplay');
     this.tickContiguousUnifiedWorld(dt);
+    this.profiler.endPhase('district_gameplay');
 
     // Update texel-snapped directional solar & lunar shadow cascade across all 5 districts
     if (this.homePool) {
@@ -5472,6 +5889,7 @@ export class PlayStyleManager {
       this.homePool ? _cachedPoolSpec : null,
       this.physicsBridge?.getSeeSawTiltAngle() ?? 0
     );
+    this.profiler.startPhase('gpu_shadow_cascade');
     this.gpuEngine.updateLightingAndShadowCascade(
       dt,
       this.heroCapy.position.x,
@@ -5487,17 +5905,24 @@ export class PlayStyleManager {
       this.worldEnv.timeOfDayHours,
       this.worldEnv.currentIblEnvIntensity
     );
+    this.profiler.endPhase('gpu_shadow_cascade');
 
     // AAA Velocity-Reactive Dynamic FOV, Quadratic Camera Trauma & Zero-Allocation GPU VFX Step
+    this.profiler.startPhase('vfx_particles');
     this.updateAaaCameraFeelAndWorldVfx(dt, heroGroundY);
+    this.profiler.endPhase('vfx_particles');
 
     // Ensure nothing ever blocks the camera's sightline to the player's Capybara head!
+    this.profiler.startPhase('sightline_occlusion');
     this.updateHeadLineOfSightTransparency(dt);
+    this.profiler.endPhase('sightline_occlusion');
 
     this.telemetryTimer += dt;
     if (this.telemetryTimer >= 0.25) {
       this.telemetryTimer = 0;
+      this.profiler.startPhase('telemetry_hud');
       this.emitTelemetry();
+      this.profiler.endPhase('telemetry_hud');
     }
 
     this.renderSceneFrame(rawFrameDt, tickStartMs);
@@ -5515,7 +5940,21 @@ export class PlayStyleManager {
     } else if (this.isSoftwareGl) {
       this.lastSoftwareRenderMs = performance.now();
     }
+
+    this.applySurfaceDrawDistanceAndCulling(
+      this.cosmicStage === 'playing' ||
+        this.cosmicStage === 'capy_selection' ||
+        (this.seamlessZoomActive && this.currentLogScaleMeters <= 3.1)
+    );
+
+    this.profiler.startPhase('scene_graph_matrices');
+    this.scene.updateMatrixWorld();
+    this.camera.updateMatrixWorld();
+    this.profiler.endPhase('scene_graph_matrices');
+
+    this.profiler.beginGpuRender();
     this.gpuEngine.render();
+    this.profiler.endGpuRender();
 
     const endMs = performance.now();
     const workMs = tickStartMs !== undefined ? endMs - tickStartMs : 4.0;
@@ -5526,24 +5965,101 @@ export class PlayStyleManager {
         ).title
       : ZONE_LOCATIONS[this.currentMode]?.title || this.currentMode;
 
+    const nowMs = Date.now();
+    const effTarget = this.performanceLog.getEffectiveTargetFps();
+    const budgetMs = 1000 / effTarget;
+    const nextLodTier = Math.max(0, this.currentCapyLodTier - 1);
+    const activeOptLabel =
+      this.performanceLog.disabledFeatures.length > 0
+        ? this.performanceLog.disabledFeatures[this.performanceLog.disabledFeatures.length - 1]
+        : 'GPU Auto-Opt';
     const mitigation =
       this.performanceLog.lock60FpsEnabled && this.currentCapyLodTier > 0
-        ? `LOD->Tier ${this.currentCapyLodTier}`
+        ? `LOD->T${nextLodTier}`
         : this.performanceLog.lock60FpsEnabled
-          ? 'GPU DPR & FX Governor'
+          ? activeOptLabel
           : 'Monitoring Only';
 
+    this.profiler.startPhase('telemetry_hud');
     const res = this.performanceLog.recordFrame(
       workMs,
       intervalMs,
       this.isSoftwareGl,
       stageStr,
-      Date.now(),
+      nowMs,
       mitigation
     );
-    if (res.shouldReduceLoad && this.settings.autoCapyLod !== false && this.currentCapyLodTier > 0) {
-      this.applyGlobalCapyLodTier((this.currentCapyLodTier - 1) as CapyLodTier);
+
+    if (this.settings.lock60FpsGovernor !== false) {
+      if (res.shouldReduceLoad) {
+        this.adaptiveRecoveryAccumSec = 0;
+        if (this.settings.autoCapyLod !== false && this.currentCapyLodTier > 0) {
+          this.applyGlobalCapyLodTier((this.currentCapyLodTier - 1) as CapyLodTier);
+        }
+        if (!this.isSoftwareGl && nowMs - this.adaptiveLastStepMs >= 1400) {
+          this.adaptiveLowPerfStreak++;
+          if (this.adaptiveLowPerfStreak >= 2) {
+            this.adaptiveLowPerfStreak = 0;
+            const baseCfg = this.buildGpuConfigFromSettings(this.settings);
+            const nextLevel = findNextEffectiveMitigationLevel(
+              this.adaptiveMitigationLevel,
+              baseCfg,
+              this.settings.autoCapyLod !== false,
+              this.settings.manualCapyLodTier ?? 3
+            );
+            if (nextLevel > this.adaptiveMitigationLevel) {
+              this.adaptiveMitigationLevel = nextLevel;
+              this.adaptiveLastStepMs = nowMs;
+              const effCfg = this.buildEffectiveGpuConfig(this.settings, nextLevel);
+              this.gpuEngine.applyConfig(effCfg);
+              if (
+                this.settings.autoCapyLod !== false &&
+                this.currentCapyLodTier > this.adaptiveMitigationResult.maxCapyLodTier
+              ) {
+                this.applyGlobalCapyLodTier(this.adaptiveMitigationResult.maxCapyLodTier);
+              }
+              this.performanceLog.activeGovernorTier = nextLevel;
+              this.performanceLog.disabledFeatures = this.adaptiveMitigationResult.disabledFeatures.slice();
+              this.performanceLog.notifyTransitionWarmup(2);
+              this.profiler.recordAction(
+                `Auto GPU Opt Tier ${nextLevel}`,
+                0,
+                this.performanceLog.disabledFeatures.join(', ')
+              );
+            }
+          }
+        }
+      } else {
+        this.adaptiveLowPerfStreak = 0;
+        if (this.adaptiveMitigationLevel > 0 && !this.isSoftwareGl) {
+          this.adaptiveRecoveryAccumSec += intervalMs / 1000;
+          if (
+            this.adaptiveRecoveryAccumSec >= 6.5 &&
+            nowMs - this.adaptiveLastStepMs >= 6500 &&
+            this.performanceLog.getAvgFrameMs() <= budgetMs * 0.88
+          ) {
+            this.adaptiveRecoveryAccumSec = 0;
+            this.adaptiveLastStepMs = nowMs;
+            const baseCfg = this.buildGpuConfigFromSettings(this.settings);
+            const prevLevel = findPrevEffectiveMitigationLevel(
+              this.adaptiveMitigationLevel,
+              baseCfg,
+              this.settings.autoCapyLod !== false,
+              this.settings.manualCapyLodTier ?? 3
+            );
+            this.adaptiveMitigationLevel = prevLevel;
+            const effCfg = this.buildEffectiveGpuConfig(this.settings, prevLevel);
+            this.gpuEngine.applyConfig(effCfg);
+            this.performanceLog.activeGovernorTier = prevLevel;
+            this.performanceLog.disabledFeatures = this.adaptiveMitigationResult.disabledFeatures.slice();
+            this.performanceLog.notifyTransitionWarmup(2);
+          }
+        }
+      }
     }
+    this.profiler.endPhase('telemetry_hud');
+
+    this.profiler.endFrame();
   }
 
   /**
@@ -6950,8 +7466,16 @@ export class PlayStyleManager {
     const camWx = this.camera.position.x;
     const camWz = this.camera.position.z;
 
-    const stepBgDistrict = (mode: PlayStyle, fn: (stepDt: number) => void) => {
+    const stepBgDistrict = (
+      mode: PlayStyle,
+      group: THREE.Group,
+      fn: (stepDt: number) => void
+    ) => {
       if (this.currentMode === mode) {
+        this.bgDistrictDtAccum[mode] = 0;
+        return;
+      }
+      if (!group.visible) {
         this.bgDistrictDtAccum[mode] = 0;
         return;
       }
@@ -6967,11 +7491,11 @@ export class PlayStyleManager {
       }
     };
 
-    stepBgDistrict('sanctuary', (sDt) => this.tickSanctuaryAmbientOnly(sDt));
-    stepBgDistrict('spore', (sDt) => this.tickSporeEcosystemOnly(sDt));
-    stepBgDistrict('breakout', (sDt) => this.tickBreakoutEcosystemOnly(sDt));
-    stepBgDistrict('runner', (sDt) => this.tickRunnerEcosystemOnly(sDt));
-    stepBgDistrict('fallguys', (sDt) => this.tickFallGuysEcosystemOnly(sDt));
+    stepBgDistrict('sanctuary', this.sanctuaryGroup, (sDt) => this.tickSanctuaryAmbientOnly(sDt));
+    stepBgDistrict('spore', this.sporeGroup, (sDt) => this.tickSporeEcosystemOnly(sDt));
+    stepBgDistrict('breakout', this.breakoutGroup, (sDt) => this.tickBreakoutEcosystemOnly(sDt));
+    stepBgDistrict('runner', this.runnerGroup, (sDt) => this.tickRunnerEcosystemOnly(sDt));
+    stepBgDistrict('fallguys', this.fallGuysGroup, (sDt) => this.tickFallGuysEcosystemOnly(sDt));
 
     // Step player + active district gameplay
     if (this.currentMode === 'sanctuary') {
@@ -8099,27 +8623,44 @@ export class PlayStyleManager {
   // ============================================================================
 
   private tickSeamlessUniverse(dt: number) {
-    if (this.autoZoomDirection !== 0) {
+    // Smoothly damp cruiseVelocity toward targetCruiseVelocity with realistic aerospace momentum
+    this.cruiseVelocityLogPerSec = THREE.MathUtils.damp(
+      this.cruiseVelocityLogPerSec,
+      this.targetCruiseVelocityLogPerSec,
+      5.0,
+      dt
+    );
+
+    const activeVelocity = this.cruiseVelocityLogPerSec;
+    if (Math.abs(activeVelocity) > 0.04) {
       const prevTarget = this.targetLogScaleMeters;
-      const stepVel = Math.max(0.25, Math.abs(this.cruiseVelocityLogPerSec));
-      const nextTarget = prevTarget + this.autoZoomDirection * stepVel * dt;
+      const nextTarget = prevTarget + activeVelocity * dt;
 
       if (
         this.autoLandAtForestPending &&
-        this.autoZoomDirection === -1 &&
+        activeVelocity < 0 &&
         prevTarget >= CAPYBARA_FOREST_LOG_METERS - 0.05 &&
         nextTarget <= CAPYBARA_FOREST_LOG_METERS
       ) {
         this.targetLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
+        this.targetCruiseVelocityLogPerSec = 0;
+        this.cruiseVelocityLogPerSec = 0;
+        this.autoZoomDirection = 0;
       } else if (nextTarget >= MAX_UNIVERSE_LOG_METERS) {
         this.targetLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
+        this.targetCruiseVelocityLogPerSec = 0;
+        this.cruiseVelocityLogPerSec = 0;
         this.autoZoomDirection = 0;
       } else if (nextTarget <= MIN_UNIVERSE_LOG_METERS) {
         this.targetLogScaleMeters = MIN_UNIVERSE_LOG_METERS;
+        this.targetCruiseVelocityLogPerSec = 0;
+        this.cruiseVelocityLogPerSec = 0;
         this.autoZoomDirection = 0;
       } else {
         this.targetLogScaleMeters = nextTarget;
       }
+    } else if (this.autoZoomDirection === 0 && Math.abs(this.targetCruiseVelocityLogPerSec) < 0.05) {
+      this.cruiseVelocityLogPerSec = 0;
     }
 
     this.currentLogScaleMeters = THREE.MathUtils.damp(
@@ -8199,11 +8740,7 @@ export class PlayStyleManager {
     if (this.dachshundGroup) {
       this.dachshundGroup.visible = inForestWindow && this.currentMode === 'sanctuary';
     }
-    if (inForestWindow && logVal <= 2.35 && this.settings.worldFogEnabled) {
-      this.applyFogSetting();
-    } else {
-      this.scene.fog = null;
-    }
+    this.scene.fog = null;
 
     if (!inForestWindow && this.worldEnv) {
       // Dedicated calibrated deep-space key/fill rig so UFO & cosmic bodies retain crisp contrast
@@ -8245,11 +8782,16 @@ export class PlayStyleManager {
       }
     }
 
-    // Free orbital camera steering with drag / WASD across every cosmic & quantum scale
+    // Free orbital camera steering with drag / WASD across every cosmic & quantum scale.
+    // Smoothly keep camera pitch above the curved planetary horizon as we approach the surface (log < 5.8).
+    const horizonMinPitch =
+      inForestWindow
+        ? 0.14
+        : THREE.MathUtils.lerp(-0.68, 0.14, THREE.MathUtils.smoothstep(logVal, 5.8, 4.7));
     this.cosmicOrbitYaw += (0.04 - this.moveInput.x * 1.45) * dt;
     this.cosmicOrbitPitch = THREE.MathUtils.clamp(
       this.cosmicOrbitPitch + this.moveInput.z * 0.95 * dt,
-      inForestWindow ? 0.14 : -0.68,
+      horizonMinPitch,
       1.18
     );
 
@@ -8279,17 +8821,29 @@ export class PlayStyleManager {
         const s = t * t * (3 - 2 * t);
         camRadius = THREE.MathUtils.lerp(canonicalRadius, 1.25, s);
       }
-      if (this.camera.near !== 0.04 || this.camera.far !== 3500) {
+      const forestFar = computeEffectiveCameraFar(
+        this.settings.drawDistance ?? 650,
+        this.settings.gpuQualityPreset ?? 'high',
+        true,
+        logVal
+      ).cameraFar;
+      if (this.camera.near !== 0.04 || Math.abs(this.camera.far - forestFar) > 0.5) {
         this.camera.near = 0.04;
-        this.camera.far = 3500;
+        this.camera.far = forestFar;
         this.camera.updateProjectionMatrix();
       }
     } else {
       _seamlessFocalPos.set(0, 0, 0);
       const desiredNear = logVal > 14 ? 0.25 : 0.08;
-      if (this.camera.near !== desiredNear || this.camera.far !== 3500) {
+      const cosmicFar = computeEffectiveCameraFar(
+        this.settings.drawDistance ?? 650,
+        this.settings.gpuQualityPreset ?? 'high',
+        false,
+        logVal
+      ).cameraFar;
+      if (this.camera.near !== desiredNear || Math.abs(this.camera.far - cosmicFar) > 0.5) {
         this.camera.near = desiredNear;
-        this.camera.far = 3500;
+        this.camera.far = cosmicFar;
         this.camera.updateProjectionMatrix();
       }
     }
@@ -8366,6 +8920,25 @@ export class PlayStyleManager {
         );
         this.chronoVessel.root.position.set(vt.worldX, vt.worldY, vt.worldZ);
         this.chronoVessel.root.scale.setScalar(vt.uniformScale);
+
+        const scaleVel =
+          this.autoZoomDirection !== 0
+            ? this.autoZoomDirection * Math.abs(this.cruiseVelocityLogPerSec)
+            : (this.targetLogScaleMeters - this.currentLogScaleMeters) * 4.0;
+
+        // Autopilot banking & nose lead when navigating off-center into Earth's Milky Way Orion-Cygnus Spur
+        let navSteerX = 0;
+        let navPitchZ = 0;
+        if (vt.worldSpaceBlend <= 0.001 && logVal >= 18.8 && logVal <= 21.1) {
+          const armNav = this.seamlessUniverse.getSpiralArmNavigationState(_galaxyArmWorldDir);
+          if (armNav.navActiveWeight > 0.005) {
+            _camRight.crossVectors(_camForward, _camUp).normalize();
+            const dirSign = scaleVel > 0.08 ? -1 : 1;
+            navSteerX = _galaxyArmWorldDir.dot(_camRight) * armNav.navActiveWeight * 1.15 * dirSign;
+            navPitchZ = _galaxyArmWorldDir.dot(_camUp) * armNav.navActiveWeight * 0.85 * dirSign;
+          }
+        }
+
         if (vt.worldSpaceBlend > 0.001) {
           _vesselEuler.set(0, this.cosmicOrbitYaw, 0);
           _vesselUprightQuat.setFromEuler(_vesselEuler);
@@ -8374,12 +8947,18 @@ export class PlayStyleManager {
             .slerp(_vesselUprightQuat, vt.worldSpaceBlend);
         } else {
           this.chronoVessel.root.quaternion.copy(this.camera.quaternion);
+          if (navSteerX !== 0 || navPitchZ !== 0) {
+            _vesselNavEuler.set(navPitchZ * 0.34, -navSteerX * 0.42, 0);
+            _vesselNavQuat.setFromEuler(_vesselNavEuler);
+            this.chronoVessel.root.quaternion.multiply(_vesselNavQuat);
+          }
         }
-        const scaleVel =
-          this.autoZoomDirection !== 0
-            ? this.autoZoomDirection * Math.abs(this.cruiseVelocityLogPerSec)
-            : (this.targetLogScaleMeters - this.currentLogScaleMeters) * 4.0;
-        this.chronoVessel.update(dt, scaleVel, this.moveInput.x, this.moveInput.z);
+        this.chronoVessel.update(
+          dt,
+          scaleVel,
+          this.moveInput.x + navSteerX,
+          this.moveInput.z + navPitchZ
+        );
       }
     }
 
@@ -8432,6 +9011,18 @@ export class PlayStyleManager {
       this.tickSeamlessUniverse(0.001);
     }
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+  }
+
+  public setGalaxyMorphology(morphology: GalaxyMorphology) {
+    this.seamlessUniverse.setGalaxyMorphology(morphology);
+    if (this.seamlessZoomActive) {
+      this.tickSeamlessUniverse(0.001);
+    }
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+  }
+
+  public getGalaxyMorphology(): GalaxyMorphology {
+    return this.seamlessUniverse.getGalaxyMorphology();
   }
 
   public getUniverseScaleTelemetry(): UniverseScaleTelemetry {
@@ -8491,6 +9082,7 @@ export class PlayStyleManager {
       vesselMode: this.vesselMode,
       fineStructureInverse: +(this.proceduralConfig.universe.fineStructureInverse ?? 137.036).toFixed(3),
       fineStructureAlpha: +(1.0 / (this.proceduralConfig.universe.fineStructureInverse ?? 137.036)).toFixed(6),
+      galaxyMorphology: this.seamlessUniverse.getGalaxyMorphology(),
     };
   }
 
@@ -8619,12 +9211,15 @@ export class PlayStyleManager {
   }
 
   public adjustZoom(delta: number): number {
-    // Seamless orders-of-magnitude zoom across all 63 powers of 10 (+28 Big Bang <-> -35 Photon)
-    // Positive delta zooms IN (smaller logScaleMeters); negative delta zooms OUT (larger logScaleMeters)
-    this.autoZoomDirection = 0;
-    const nextLog = this.targetLogScaleMeters - delta * 6.5;
-    this.setSeamlessLogScale(nextLog, false);
-    return this.currentLogScaleMeters;
+    if (this.isVesselFlying()) {
+      return this.adjustVesselThrottle(delta);
+    }
+    // On the ground in sanctuary, mouse wheel gently adjusts chase camera follow distance
+    const curDist = this.settings.cameraDistance ?? 1.0;
+    const nextDist = THREE.MathUtils.clamp(curDist - delta * 0.35, 0.5, 2.0);
+    this.settings.cameraDistance = Math.round(nextDist * 100) / 100;
+    this.updateSettings(this.settings);
+    return this.settings.cameraDistance;
   }
 
   public addCameraTrauma(amount: number): void {
@@ -8707,7 +9302,8 @@ export class PlayStyleManager {
         this.worldEnv?.currentSunDir ?? this.gpuEngine.sunLight.position,
         this.worldEnv?.currentNightFactor ?? 0,
         this.settings.weatherMode === 'storm' ? 1 : this.settings.weatherMode === 'rain' ? 0.5 : 0,
-        !this.seamlessZoomActive && this.cosmicStage === 'playing'
+        !this.seamlessZoomActive && this.cosmicStage === 'playing',
+        this.settings.gpuQualityPreset === 'performance'
       );
     }
   }

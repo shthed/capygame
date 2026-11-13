@@ -59,7 +59,7 @@ async function captureGallery() {
   await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return;
-    mgr.jumpToScaleBand('galaxies', true);
+    mgr.jumpToScaleBand('galaxy', true);
     mgr.tick(0.05, 0.06);
   });
   await page.getByTestId('toggle-scale-atlas-btn').click({ force: true });

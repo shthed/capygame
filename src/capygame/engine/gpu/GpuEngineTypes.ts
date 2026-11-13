@@ -131,10 +131,12 @@ export interface GpuPipelineConfig {
   anisotropyLevel: 1 | 4 | 8 | 16;
   shadowQuality: GpuShadowQualityMode;
   antiAliasing: GpuAntiAliasingMode;
+  resolutionScale: number;
   bloomEnabled: boolean;
   bloomStrength: number;
   ssaoEnabled: boolean;
   sharpenAmount: number;
+  drawDistance?: number;
 }
 
 export const DEFAULT_GPU_PIPELINE_CONFIG: GpuPipelineConfig = {
@@ -147,10 +149,12 @@ export const DEFAULT_GPU_PIPELINE_CONFIG: GpuPipelineConfig = {
   anisotropyLevel: 8,
   shadowQuality: 'pcf_soft',
   antiAliasing: 'msaa_fxaa',
+  resolutionScale: 1.0,
   bloomEnabled: true,
   bloomStrength: 0.24,
   ssaoEnabled: true,
   sharpenAmount: 0.26,
+  drawDistance: 650,
 };
 
 export type GpuRenderBackendMode = 'auto' | 'webgpu' | 'webgl2';
@@ -160,13 +164,19 @@ export type PerformanceLogSeverity = 'warn' | 'critical';
 export interface PerformanceLogEntry {
   id: number;
   timestampMs: number;
+  lastTimestampMs?: number;
   elapsedLabel: string;
+  lastElapsedLabel?: string;
   severity: PerformanceLogSeverity;
   fps: number;
+  minFps?: number;
+  maxFps?: number;
   frameMs: number;
+  maxFrameMs?: number;
   stageLabel: string;
   cause: string;
   mitigation: string;
+  repeatCount?: number;
 }
 
 export interface PerformanceLogSnapshot {
@@ -181,6 +191,11 @@ export interface PerformanceLogSnapshot {
   activeAlert: boolean;
   lastAlertSummary: string | null;
   lock60FpsEnabled: boolean;
+  fpsTarget: number;
+  maxFpsLimit: number;
+  autoOptimizerEnabled: boolean;
+  activeGovernorTier: number;
+  disabledFeatures: string[];
   entries: PerformanceLogEntry[];
 }
 
@@ -208,6 +223,9 @@ export interface GpuEngineTelemetry {
   maxTextureSize: number;
   shadowQuality: GpuShadowQualityMode;
   shadowMapSize: number;
+  antiAliasing: GpuAntiAliasingMode;
+  resolutionScale: number;
+  effectivePixelRatio: number;
   msaaSamples: number;
   bloomEnabled: boolean;
   ssaoEnabled: boolean;
@@ -218,5 +236,51 @@ export interface GpuEngineTelemetry {
   geometriesInVram: number;
   shaderPrograms: number;
   registeredPbrTextures: number;
+}
+
+export type ProfilerPhaseId =
+  | 'input_camera'
+  | 'physics_bridge'
+  | 'biomechanics'
+  | 'world_simulation'
+  | 'district_gameplay'
+  | 'cosmic_universe'
+  | 'chrono_vessel'
+  | 'vfx_particles'
+  | 'sightline_occlusion'
+  | 'scene_graph_matrices'
+  | 'gpu_shadow_cascade'
+  | 'gpu_render_submit'
+  | 'telemetry_hud';
+
+export interface ProfilerModuleMetric {
+  id: ProfilerPhaseId;
+  label: string;
+  avgMs: number;
+  p95Ms: number;
+  maxMs: number;
+  curMs: number;
+  budgetPercent: number;
+  status: 'nominal' | 'elevated' | 'critical';
+}
+
+export interface ProfilerActionEvent {
+  id: number;
+  timestampMs: number;
+  elapsedLabel: string;
+  name: string;
+  durationMs: number;
+  details?: string;
+}
+
+export interface PerformanceAnalysisSnapshot {
+  enabled: boolean;
+  totalCpuMs: number;
+  gpuExecutionMs: number;
+  gpuTimerAvailable: boolean;
+  bottleneck: 'cpu' | 'gpu' | 'balanced';
+  frameBudgetPercent: number;
+  modules: ProfilerModuleMetric[];
+  recentEvents: ProfilerActionEvent[];
 }
 

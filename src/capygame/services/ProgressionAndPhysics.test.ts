@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { INITIAL_PLAYER_STATS, UNIVERSE_SCALE_BANDS } from '../types';
+import * as THREE from 'three';
+import { PbrTextureSynthesizer } from '../engine/gpu/PbrTextureSynthesizer';
+import {
+  DEFAULT_CAPY_SETTINGS,
+  INITIAL_PLAYER_STATS,
+  UNIVERSE_SCALE_BANDS,
+  MAX_UNIVERSE_LOG_METERS,
+  GalaxyMorphology,
+} from '../types';
+import { createSpiralGalaxyDiscMaterial } from '../engine/UniverseShaders';
 import { ProgressionService } from './ProgressionService';
 import {
   clampStarSystemIndex,
@@ -15,22 +24,41 @@ import {
   parseAndValidateProceduralConfig,
 } from '../config/ProceduralGameConfig';
 import { ShallowWaterFluidSolver } from '../engine/physics/ContiguousWorldTopology';
-import { computeCosmicAgeGyr } from '../engine/SeamlessUniverseSimulator';
+import {
+  MOON_ORBIT_RADIUS_AT_8_85,
+  MOON_RADIUS_AT_8_85,
+  PLANET_BASE_RADIUS,
+  PLANET_CANON_LOG,
+  computeCosmicAgeGyr,
+  computeSinglePlanetWorldRadius,
+} from '../engine/SeamlessUniverseSimulator';
 import {
   CHRONO_VESSEL_HUD_SCALE,
   CHRONO_VESSEL_ONE_TO_ONE_SCALE,
   PerformanceLogTracker,
+  computeAdaptiveGpuMitigation,
   computeBloomRenderScale,
   computeDayNightAtmosphereRig,
   computeDistrictTickStride,
+  computeEffectiveCameraFar,
   computeEffectivePixelRatio,
   computeSolarPlanetFocusOffset,
+  computePlanetSurfaceLandmassFocusOffset,
+  computeSpiralGalaxyFocusOffset,
+  findNextEffectiveMitigationLevel,
+  findPrevEffectiveMitigationLevel,
+  SANCTUARY_SURFACE_LAT_DEG,
+  SANCTUARY_SURFACE_LON_DEG,
   computeTexelSnappedShadowOrigin,
   computeVesselOneToOneTransform,
   doesSphereBlockPlayerSightline,
   evaluateWholeScreenSightlineClearAlpha,
   shouldEnableOccluderDepthWrite,
+  shouldRenderDistrict,
 } from '../engine/gpu/FramePerformanceGovernor';
+import { DEFAULT_GPU_PIPELINE_CONFIG } from '../engine/gpu/GpuEngineTypes';
+import { PerformanceProfiler } from '../engine/gpu/PerformanceProfiler';
+import { PlayStyleManager } from '../engine/PlayStyleManager';
 
 test('Sightline Occlusion Regression: offscreen/ahead objects stay 100% solid; player-blocking objects clear >=95% of the whole screen', () => {
   // Camera at (0, 6.8, 15.5) looking at Hero at (0, 1.0, 4.0) (distance ~12.88m)
@@ -128,15 +156,44 @@ test('BUG-11: clampStarSystemIndex honors non-zero indices and clamps out-of-ran
   assert.equal(clampStarSystemIndex(-4, 3), 0);
 });
 
-test('Consolidated UNIVERSE_SCALE_BANDS contains 21 unified logarithmic bands including solar_systems', () => {
-  assert.equal(UNIVERSE_SCALE_BANDS.length, 21);
-  assert.ok(UNIVERSE_SCALE_BANDS.some((b) => b.id === 'solar_systems'));
-  assert.equal(
-    UNIVERSE_SCALE_BANDS.some((b) =>
-      ['asteroid_clouds', 'gas_giants', 'rocky_planets_moons', 'habitable_planets'].includes(b.id)
-    ),
-    false
-  );
+test('UNIVERSE_SCALE_BANDS contains 27 astrophysical bands in monotonic descending order from Multiverse to Planck', () => {
+  assert.equal(UNIVERSE_SCALE_BANDS.length, 27);
+  assert.equal(UNIVERSE_SCALE_BANDS[0].id, 'multiverse');
+  assert.equal(UNIVERSE_SCALE_BANDS[0].logMeters, 30.0);
+  assert.equal(UNIVERSE_SCALE_BANDS[UNIVERSE_SCALE_BANDS.length - 1].id, 'planck_quantum_foam');
+  assert.equal(UNIVERSE_SCALE_BANDS[UNIVERSE_SCALE_BANDS.length - 1].logMeters, -35.0);
+
+  // Assert strictly monotonic descending log scales
+  for (let i = 0; i < UNIVERSE_SCALE_BANDS.length - 1; i++) {
+    assert.ok(
+      UNIVERSE_SCALE_BANDS[i].logMeters > UNIVERSE_SCALE_BANDS[i + 1].logMeters,
+      `Band ${UNIVERSE_SCALE_BANDS[i].id} (${UNIVERSE_SCALE_BANDS[i].logMeters}) must be strictly greater than ${UNIVERSE_SCALE_BANDS[i + 1].id} (${UNIVERSE_SCALE_BANDS[i + 1].logMeters})`
+    );
+  }
+
+  // Verify 12 cosmic layers in sequential order
+  const expectedCosmic = [
+    'multiverse',
+    'big_bang',
+    'universe',
+    'observable',
+    'cosmic_web',
+    'filament',
+    'supercluster',
+    'cluster',
+    'galaxy',
+    'spiral_arms',
+    'nebulas',
+    'stellar_systems',
+    'planetary_system',
+    'planet',
+    'atmosphere',
+  ];
+  for (let k = 0; k < expectedCosmic.length - 1; k++) {
+    const a = UNIVERSE_SCALE_BANDS.findIndex((b) => b.id === expectedCosmic[k]);
+    const b = UNIVERSE_SCALE_BANDS.findIndex((b) => b.id === expectedCosmic[k + 1]);
+    assert.ok(a !== -1 && b !== -1 && a < b, `Expected ${expectedCosmic[k]} before ${expectedCosmic[k + 1]}`);
+  }
 });
 
 test('BUG-04: resolveCircleRotatedBox2D accurately resolves penetration against yaw-rotated OBBs', () => {
@@ -384,6 +441,63 @@ test('Solar System Zoom Focus: locks onto Capy-Earth instead of Sun center (0,0,
   assert.ok(Math.abs(sunLen - 1.0) < 1e-6);
 });
 
+test('Planet Surface Landmass Zoom Focus: picks point on surface landmass (22.5°N, 42.0°E) instead of planet center (0,0,0)', () => {
+  const planetR = 8.5;
+  // Full planet overview (log 7.80): focusBlend === 0 (planet stays centered at 0,0,0)
+  const overview = computePlanetSurfaceLandmassFocusOffset(7.80, planetR);
+  assert.equal(overview.surfaceFocusBlend, 0);
+  assert.equal(overview.planetOffsetX, 0);
+  assert.equal(overview.planetOffsetY, 0);
+  assert.equal(overview.planetOffsetZ, 0);
+
+  // Verify surface target point lies on sphere surface of radius planetR
+  const surfaceDist = Math.hypot(
+    overview.surfaceTargetX,
+    overview.surfaceTargetY,
+    overview.surfaceTargetZ
+  );
+  assert.ok(Math.abs(surfaceDist - planetR) < 1e-5);
+
+  // Zoomed into planet toward atmosphere (log 4.80): focusBlend === 1
+  // Planet container is shifted by exact (-surfaceTargetX, -surfaceTargetY, -surfaceTargetZ)
+  // so the Sanctuary archipelago on the surface is at (0,0,0), NOT the planet core!
+  const surface = computePlanetSurfaceLandmassFocusOffset(4.80, planetR);
+  assert.equal(surface.surfaceFocusBlend, 1);
+  assert.ok(Math.abs(surface.planetOffsetX + surface.surfaceTargetX) < 1e-6);
+  assert.ok(Math.abs(surface.planetOffsetY + surface.surfaceTargetY) < 1e-6);
+  assert.ok(Math.abs(surface.planetOffsetZ + surface.surfaceTargetZ) < 1e-6);
+});
+
+test('Spiral Galaxy Spiral Arm Zoom Focus: navigates off-center into Milky Way Earth Orion-Cygnus Spur by Spiral Arms (19.4)', () => {
+  // Galaxy overview (log 22.0 & 21.0): focusBlend === 0 (centered on Sagittarius A*)
+  const outer = computeSpiralGalaxyFocusOffset(22.0);
+  assert.equal(outer.galaxyFocusBlend, 0);
+  assert.equal(outer.armOffsetX, 0);
+  assert.equal(outer.armOffsetZ, 0);
+
+  const galaxyView = computeSpiralGalaxyFocusOffset(21.0);
+  assert.equal(galaxyView.galaxyFocusBlend, 0);
+
+  // Mid-transit between Galaxy (21.0) and Spiral Arms (19.4): actively steering off-center
+  const midTransit = computeSpiralGalaxyFocusOffset(20.2);
+  assert.ok(midTransit.galaxyFocusBlend > 0.25 && midTransit.galaxyFocusBlend < 0.75);
+
+  // Arriving at Spiral Arms (log 19.4): craft has navigated into Earth's ~26,000 ly (~0.495 * 21 = 10.4u) Orion Spur
+  const spiralArms = computeSpiralGalaxyFocusOffset(19.4);
+  assert.equal(spiralArms.galaxyFocusBlend, 1);
+  const offsetMag = Math.hypot(spiralArms.armOffsetX, spiralArms.armOffsetZ);
+  assert.ok(
+    Math.abs(offsetMag - 10.4) < 1e-4,
+    `Expected Orion Spur offset magnitude ~10.4 (0.495 * R_gal), got ${offsetMag}`
+  );
+
+  // Zooming further toward stellar nursery (log 17.5): stays locked onto Orion Spur (focusBlend === 1)
+  const inner = computeSpiralGalaxyFocusOffset(17.5);
+  assert.equal(inner.galaxyFocusBlend, 1);
+  assert.ok(inner.armOffsetX !== 0);
+  assert.ok(inner.armOffsetZ !== 0);
+});
+
 test('Chrono-Vessel 1:1 Physical Scale: transitions smoothly from HUD scale to true 1:1 Sanctuary scale', () => {
   const outer = computeVesselOneToOneTransform(
     18.0,
@@ -477,5 +591,297 @@ test('PerformanceLogTracker: ignores startup/transition warmup stalls, caps read
   assert.equal(cleared.alertCount, 0);
   assert.equal(cleared.droppedFramesCount, 0);
   assert.equal(cleared.liveFps, 60);
+});
+
+test('WebGPU Pipeline Guard: LatheGeometry PBR tangents & closed Line orbits', () => {
+  const saucerPoints = [
+    new THREE.Vector2(0.0, -0.14),
+    new THREE.Vector2(0.18, -0.125),
+    new THREE.Vector2(0.36, -0.075),
+    new THREE.Vector2(0.47, -0.015),
+    new THREE.Vector2(0.465, 0.025),
+    new THREE.Vector2(0.35, 0.07),
+    new THREE.Vector2(0.24, 0.09),
+    new THREE.Vector2(0.22, 0.03),
+    new THREE.Vector2(0.0, 0.015),
+  ];
+  const saucerGeo = new THREE.LatheGeometry(saucerPoints, 32);
+  assert.equal(saucerGeo.index?.count, 1536);
+  PbrTextureSynthesizer.prepareGeometryForPbr(saucerGeo);
+  assert.ok(saucerGeo.getAttribute('uv1'));
+  assert.ok(saucerGeo.getAttribute('uv2'));
+  assert.ok(saucerGeo.getAttribute('tangent'));
+
+  // Test segments + 1 closed orbit line
+  const segments = 96;
+  const pointCount = segments + 1;
+  const positions = new Float32Array(pointCount * 3);
+  for (let i = 0; i <= segments; i++) {
+    const ang = (i / segments) * Math.PI * 2;
+    positions[i * 3] = Math.cos(ang);
+    positions[i * 3 + 1] = 0;
+    positions[i * 3 + 2] = Math.sin(ang);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const line = new THREE.Line(geo);
+  assert.equal(line.type, 'Line');
+  assert.equal(geo.getAttribute('position').count, 97);
+  // First and last points match to form a closed loop without LineLoop
+  assert.ok(Math.abs(positions[0] - positions[segments * 3]) < 1e-6);
+  assert.ok(Math.abs(positions[2] - positions[segments * 3 + 2]) < 1e-6);
+});
+
+test('Multiverse Stationary Load: initial boot starts at Multiverse (10^+30 m) and waits for user interaction without auto-zoom', () => {
+  // Verifies that at Multiverse (10^+30 m), initial zoom velocity and autoZoomDirection are 0
+  assert.equal(MAX_UNIVERSE_LOG_METERS, 30.0);
+  const initialAgeGyr = computeCosmicAgeGyr(MAX_UNIVERSE_LOG_METERS);
+  assert.equal(initialAgeGyr, 0.0);
+  // Verify that an autoZoomDirection of 0 produces 0 scale delta across simulation frames
+  const prevTarget = MAX_UNIVERSE_LOG_METERS;
+  const autoZoomDirection = 0;
+  const cruiseVelocity = 0;
+  const dt = 0.016;
+  const nextTarget = prevTarget + autoZoomDirection * Math.abs(cruiseVelocity) * dt;
+  assert.equal(nextTarget, 30.0);
+});
+
+test('Galaxy Morphology: supports grand spiral, barred spiral, elliptical, and irregular spur modes', () => {
+  const morphologies: GalaxyMorphology[] = ['spiral', 'barred_spiral', 'elliptical', 'irregular'];
+  for (const m of morphologies) {
+    const mat = createSpiralGalaxyDiscMaterial({ morphology: m });
+    const code =
+      m === 'spiral' ? 0.0 : m === 'barred_spiral' ? 1.0 : m === 'elliptical' ? 2.0 : 3.0;
+    assert.equal(mat.uniforms.uMorphology.value, code);
+  }
+});
+
+test('Performance Debug Report: contains complete diagnostic telemetry to resolve frame drops', () => {
+  const tracker = new PerformanceLogTracker(1000);
+  tracker.recordSyntheticLagSpike(38.5, 'Solar Systems', 'Throttled shadow cascade');
+  const snap = tracker.getSnapshot(1500);
+  assert.equal(snap.entries.length, 1);
+  assert.equal(snap.entries[0].stageLabel, 'Solar Systems');
+  assert.ok(snap.entries[0].cause.includes('38.5 ms'));
+  assert.ok(snap.entries[0].mitigation.includes('Throttled shadow cascade'));
+});
+
+test('PerformanceLogTracker Grouping: groups repeated incidents within rolling window to reduce log spam and save chat tokens', () => {
+  const tracker = new PerformanceLogTracker(10000);
+
+  // Trigger 3 spikes with identical cause/stage within 3 seconds
+  tracker.recordSyntheticLagSpike(38.5, 'Solar Systems', 'Throttled shadow cascade', 2000);
+  tracker.recordSyntheticLagSpike(42.0, 'Solar Systems', 'Throttled shadow cascade', 2800);
+  tracker.recordSyntheticLagSpike(35.0, 'Solar Systems', 'Throttled shadow cascade', 3500);
+
+  const snap = tracker.getSnapshot(4000);
+
+  // Must group into a single consolidated incident entry
+  assert.equal(snap.entries.length, 1);
+  const entry = snap.entries[0];
+  assert.equal(entry.repeatCount, 3);
+  assert.equal(entry.stageLabel, 'Solar Systems');
+  assert.ok(entry.maxFrameMs! >= 42.0);
+  assert.ok(entry.minFps! <= 24);
+  assert.ok(entry.maxFps! >= 28);
+  assert.ok(snap.lastAlertSummary?.includes('(x3)'));
+
+  // A different cause or stage after grouping window creates a separate entry
+  tracker.recordSyntheticLagSpike(50.0, 'Cosmic Web', 'Reduced particle density', 15000);
+  const snap2 = tracker.getSnapshot(16000);
+  assert.equal(snap2.entries.length, 2);
+  assert.equal(snap2.entries[0].stageLabel, 'Cosmic Web');
+  assert.equal(snap2.entries[1].stageLabel, 'Solar Systems');
+});
+
+test('PerformanceProfiler: measures subsystem CPU/GPU times, traces actions, and formats diagnostic breakdown', () => {
+  const profiler = new PerformanceProfiler(1000);
+  profiler.setEnabled(true);
+
+  // Simulate 5 frames of phase execution
+  for (let f = 0; f < 5; f++) {
+    profiler.beginFrame();
+    profiler.startPhase('physics_bridge');
+    // Simulate ~2ms work
+    profiler.endPhase('physics_bridge');
+
+    profiler.startPhase('cosmic_universe');
+    profiler.endPhase('cosmic_universe');
+
+    profiler.beginGpuRender();
+    profiler.recordGpuSample(8.4);
+    profiler.endGpuRender();
+    profiler.endFrame();
+  }
+
+  profiler.recordAction('Switch District: sanctuary', 2.4, 'Target: sanctuary');
+  profiler.recordAction('Scale Jump', 1.0, 'Target: 22.0 log-m');
+
+  const snap = profiler.getTelemetrySnapshot();
+  assert.equal(snap.enabled, true);
+  assert.ok(snap.modules.length >= 12);
+  assert.ok(snap.recentEvents.length === 2);
+  assert.equal(snap.recentEvents[0].name, 'Scale Jump');
+  assert.equal(snap.recentEvents[1].name, 'Switch District: sanctuary');
+
+  const report = profiler.formatAnalysisReport();
+  assert.ok(report.includes('=== CAPYGAME 3D PERFORMANCE ANALYSIS ==='));
+  assert.ok(report.includes('MODULE / SUBSYSTEM CPU BREAKDOWN:'));
+  assert.ok(report.includes('RECENT ACTIONS & TIMED EVENTS:'));
+  assert.ok(report.includes('ANALYSIS INSIGHTS & HOTSPOTS:'));
+});
+
+test('Spaceship Flight Throttle: mousewheel smoothly controls velocity instead of discrete zoom snapping', () => {
+  // Test smooth velocity impulse and continuous scale integration
+  let cruiseVel = 0;
+  let targetCruiseVel = 0;
+  let autoZoomDir = 0;
+  let curScale = 28.0;
+  let targetScale = 28.0;
+
+  // Forward wheel roll (wheelDelta = +0.1) -> accelerates forward into space
+  const wheelDelta = 0.1;
+  const impulse = -wheelDelta * 2.8;
+  targetCruiseVel = THREE.MathUtils.clamp(targetCruiseVel + impulse, -12.0, 12.0);
+  assert.ok(targetCruiseVel < 0, 'Forward wheel roll imparts negative scale-rate velocity');
+  autoZoomDir = targetCruiseVel < 0 ? -1 : 1;
+  assert.equal(autoZoomDir, -1);
+
+  // Step 10 simulation frames with dt = 0.016
+  const dt = 0.016;
+  for (let i = 0; i < 10; i++) {
+    cruiseVel = THREE.MathUtils.damp(cruiseVel, targetCruiseVel, 5.0, dt);
+    targetScale += cruiseVel * dt;
+    curScale = THREE.MathUtils.damp(curScale, targetScale, 12.0, dt);
+  }
+
+  // Scale must have progressed continuously and smoothly without snapping
+  assert.ok(curScale < 28.0, 'Scale progressed forward smoothly');
+  assert.ok(curScale > 27.5, 'Scale did not snap down to next band');
+  assert.ok(cruiseVel < -0.1, 'Cruise velocity smoothly accelerated');
+
+  // Reverse wheel roll -> brakes and stops
+  const reverseWheel = -0.1;
+  targetCruiseVel = THREE.MathUtils.clamp(targetCruiseVel + (-reverseWheel * 2.8), -12.0, 12.0);
+  if (Math.abs(targetCruiseVel) < 0.15) targetCruiseVel = 0;
+  assert.equal(targetCruiseVel, 0, 'Reverse wheel roll cleanly brakes to zero velocity');
+});
+
+test('FPS Limiter & Adaptive GPU Optimizer: respects 30 FPS max cap, cuts heavy GPU features toward target, and scales DPR', () => {
+  // 1. Resolution Scale DPR checks
+  assert.equal(computeEffectivePixelRatio(2.0, 'high', true, false, 0.75), 1.24);
+  assert.equal(computeEffectivePixelRatio(1.0, 'high', true, false, 1.25), 1.25);
+  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, true, 0.6), 0.6);
+
+  // 2. Max FPS Limit = 30 FPS (33.3ms pacing) should NOT report false lag drops
+  const tracker = new PerformanceLogTracker(1000);
+  tracker.maxFpsLimit = 30;
+  tracker.fpsTarget = 60; // Effective target clamps cleanly to min(fpsTarget, maxFpsLimit) = 30
+  assert.equal(tracker.getEffectiveTargetFps(), 30);
+
+  for (let i = 0; i < 8; i++) {
+    const res = tracker.recordFrame(4.5, 33.3, false, 'Sanctuary', 1100 + i * 33);
+    assert.equal(res.isLagDrop, false);
+  }
+  const cappedSnap = tracker.getSnapshot(1500);
+  assert.equal(cappedSnap.alertCount, 0);
+  assert.equal(cappedSnap.maxFpsLimit, 30);
+  assert.equal(cappedSnap.fpsTarget, 30);
+  assert.ok(cappedSnap.liveFps <= 30 && cappedSnap.liveFps >= 29);
+
+  // Real heavy 58ms hitch still triggers lag alert and load reduction
+  const hitch = tracker.recordFrame(58.0, 58.0, false, 'Sanctuary', 2000, 'SSAO OFF');
+  assert.equal(hitch.isLagDrop, true);
+  assert.equal(hitch.shouldReduceLoad, true);
+
+  // 3. Unlimited cap (0) allows reporting 120 FPS cleanly
+  const highRefreshTracker = new PerformanceLogTracker(1000);
+  highRefreshTracker.maxFpsLimit = 0;
+  highRefreshTracker.fpsTarget = 120;
+  for (let i = 0; i < 12; i++) {
+    const res = highRefreshTracker.recordFrame(3.0, 8.33, false, 'Universe', 1100 + i * 8);
+    assert.equal(res.isLagDrop, false);
+  }
+  assert.ok(highRefreshTracker.getSnapshot(1500).liveFps >= 95);
+
+  // 4. Progressive GPU feature mitigation ladder skips redundant steps cleanly
+  const customCfg = { ...DEFAULT_GPU_PIPELINE_CONFIG, ssaoEnabled: false };
+  const lvl1 = findNextEffectiveMitigationLevel(0, customCfg, true, 3);
+  assert.equal(lvl1, 1); // LOD step-down
+  const lvl2 = findNextEffectiveMitigationLevel(lvl1, customCfg, true, 3);
+  assert.equal(lvl2, 3); // Skips Level 2 (SSAO already OFF) -> goes directly to Resolution Scale 0.8x!
+  const plan3 = computeAdaptiveGpuMitigation(customCfg, true, 3, lvl2);
+  assert.equal(plan3.resolutionScale, 0.8);
+  assert.ok(plan3.disabledFeatures.includes('Scale 0.80x'));
+
+  // Stepping back recovers cleanly
+  const back = findPrevEffectiveMitigationLevel(lvl2, customCfg, true, 3);
+  assert.equal(back, 1);
+});
+
+test('Unified Single Planet Scale & FPS Button Setting: continuous 1:1 lunar-to-surface scaling and showFpsButton default/toggle', () => {
+  // 1. Verify unified Capy-Earth physical scaling across planetary_system (8.85) -> planet (7.10) -> atmosphere (4.90) -> land_masses (3.60)
+  const rAtLunarOrbit = computeSinglePlanetWorldRadius(8.85, 1.0);
+  const rAtPlanetCanon = computeSinglePlanetWorldRadius(PLANET_CANON_LOG, 1.0);
+  const rAtAtmosphere = computeSinglePlanetWorldRadius(4.90, 1.0);
+  const rAtLandMasses = computeSinglePlanetWorldRadius(3.60, 1.0);
+
+  // Exact Earth radius at Moon orbit scale (8.85) = 9.0 * 10^(-1.75) = ~0.160045
+  assert.ok(Math.abs(rAtLunarOrbit - 0.160045) < 1e-4);
+  // Real Moon orbit (~60.3x Earth radius) & Moon radius (~0.2727x Earth radius)
+  const orbitRatio = MOON_ORBIT_RADIUS_AT_8_85 / rAtLunarOrbit;
+  assert.ok(orbitRatio > 59.5 && orbitRatio < 61.5);
+  const moonSizeRatio = MOON_RADIUS_AT_8_85 / rAtLunarOrbit;
+  assert.ok(Math.abs(moonSizeRatio - 0.2727) < 0.005);
+
+  // Strict monotonic continuous 10^deltaLog expansion from single sphere
+  assert.equal(rAtPlanetCanon, PLANET_BASE_RADIUS);
+  assert.ok(Math.abs(rAtAtmosphere / rAtPlanetCanon - Math.pow(10, 2.2)) < 1e-6);
+  assert.ok(Math.abs(rAtLandMasses / rAtAtmosphere - Math.pow(10, 1.3)) < 1e-6);
+
+  // 2. Verify showFpsButton defaults to true and persists false/true across saveSettings & loadSettings
+  assert.equal(DEFAULT_CAPY_SETTINGS.showFpsButton, true);
+  const prevSettings = ProgressionService.loadSettings();
+  assert.equal(prevSettings.showFpsButton, true);
+
+  ProgressionService.saveSettings({ ...prevSettings, showFpsButton: false });
+  assert.equal(ProgressionService.loadSettings().showFpsButton, false);
+
+  ProgressionService.saveSettings({ ...prevSettings, showFpsButton: true });
+  assert.equal(ProgressionService.loadSettings().showFpsButton, true);
+});
+
+test('Fog Removal, Draw Distance Culling & Fast PERF Preset: unobstructed views, sky dome scaling, and reduced draw distance', () => {
+  // 1. Atmospheric fog disabled cleanly by default
+  assert.equal(DEFAULT_CAPY_SETTINGS.worldFogEnabled, false);
+  assert.equal(DEFAULT_CAPY_SETTINGS.drawDistance, 650);
+
+  // 2. PERF preset cuts resolution scale (0.7x), drops drawDistance to 135m, disables expensive passes & caps LOD at Tier 0
+  const perfPatch = PlayStyleManager.getPresetPatchForGpuQuality('performance');
+  assert.equal(perfPatch.gpuQualityPreset, 'performance');
+  assert.equal(perfPatch.gpuResolutionScale, 0.7);
+  assert.equal(perfPatch.drawDistance, 135);
+  assert.equal(perfPatch.gpuShadowQuality, 'off');
+  assert.equal(perfPatch.gpuPostProcessing, false);
+  assert.equal(perfPatch.autoCapyLod, false);
+  assert.equal(perfPatch.manualCapyLodTier, 0);
+
+  // 3. Camera far & proportional sky dome scaling keep sky inside far clip at short draw distances
+  const shortFar = computeEffectiveCameraFar(135, 'performance', true, 0.8);
+  assert.equal(shortFar.cameraFar, 135);
+  assert.ok(shortFar.skyScale * 720 < shortFar.cameraFar);
+  assert.equal(shortFar.showMountains, false); // Skips 175m+ alpine ring when drawDistance < 185m
+
+  const farView = computeEffectiveCameraFar(650, 'high', true, 0.8);
+  assert.equal(farView.cameraFar, 650);
+  assert.equal(farView.showMountains, true);
+
+  const cosmicPerfFar = computeEffectiveCameraFar(135, 'performance', false, 21.0);
+  assert.equal(cosmicPerfFar.cameraFar, 1400);
+
+  // 4. District culling renders active & nearby districts and skips far inactive ones
+  assert.equal(shouldRenderDistrict(75, 75, 38, 0, 0, 135, true), true); // Active always kept
+  assert.equal(shouldRenderDistrict(-75, -75, 34, 0, 0, 135, false), true); // 106m <= 135+34
+  assert.equal(shouldRenderDistrict(75, 75, 38, -75, -75, 135, false), false); // 212m > 135+38 -> culled
 });
 

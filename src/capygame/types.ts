@@ -247,9 +247,14 @@ export type {
   PerformanceLogEntry,
   PerformanceLogSeverity,
   PerformanceLogSnapshot,
+  PerformanceAnalysisSnapshot,
+  ProfilerModuleMetric,
+  ProfilerActionEvent,
+  ProfilerPhaseId,
 } from './engine/gpu/GpuEngineTypes';
 
 import type {
+  GpuAntiAliasingMode,
   GpuQualityPreset,
   GpuRenderBackendMode,
   GpuShadowQualityMode,
@@ -264,11 +269,15 @@ export interface CapyGameSettings {
   turnSensitivity: number;
   fov: number;
   worldFogEnabled: boolean;
+  drawDistance: number;
   touchControlsMode: 'auto' | 'always' | 'hidden';
   showAboutOnStartup: boolean;
   autoCapyLod: boolean;
   manualCapyLodTier: CapyLodTier;
   lock60FpsGovernor: boolean;
+  maxFpsLimit: number;
+  fpsTarget: number;
+  showFpsButton: boolean;
   dayNightAutoCycle: boolean;
   timeOfDayHours: number;
   weatherMode: 'auto' | WeatherType;
@@ -284,6 +293,8 @@ export interface CapyGameSettings {
   gpuTextureFilter: GpuTextureFilterMode;
   gpuAnisotropy: 1 | 4 | 8 | 16;
   gpuShadowQuality: GpuShadowQualityMode;
+  gpuAntiAliasing: GpuAntiAliasingMode;
+  gpuResolutionScale: number;
   gpuBloomEnabled: boolean;
   gpuBloomStrength: number;
   gpuSsaoEnabled: boolean;
@@ -295,12 +306,16 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   cameraDistance: 1.0,
   turnSensitivity: 1.0,
   fov: 58,
-  worldFogEnabled: true,
+  worldFogEnabled: false,
+  drawDistance: 650,
   touchControlsMode: 'auto',
   showAboutOnStartup: false,
   autoCapyLod: true,
   manualCapyLodTier: 3,
   lock60FpsGovernor: true,
+  maxFpsLimit: 60,
+  fpsTarget: 60,
+  showFpsButton: true,
   dayNightAutoCycle: true,
   timeOfDayHours: 9.5,
   weatherMode: 'auto',
@@ -316,6 +331,8 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   gpuTextureFilter: 'trilinear_aniso',
   gpuAnisotropy: 8,
   gpuShadowQuality: 'pcf_soft',
+  gpuAntiAliasing: 'msaa_fxaa',
+  gpuResolutionScale: 1.0,
   gpuBloomEnabled: true,
   gpuBloomStrength: 0.24,
   gpuSsaoEnabled: true,
@@ -1355,14 +1372,20 @@ export const COSMIC_GALAXIES: CosmicGalaxySpec[] = [
 // ============================================================================
 
 export type UniverseScaleBandId =
+  | 'multiverse'
   | 'big_bang'
-  | 'entire_cosmos'
-  | 'supercluster_a'
-  | 'galaxy_filaments'
-  | 'galaxies'
+  | 'universe'
+  | 'observable'
+  | 'cosmic_web'
+  | 'filament'
+  | 'supercluster'
+  | 'cluster'
+  | 'galaxy'
+  | 'spiral_arms'
   | 'nebulas'
-  | 'stellar_nurseries'
-  | 'solar_systems'
+  | 'stellar_systems'
+  | 'planetary_system'
+  | 'planet'
   | 'atmosphere'
   | 'land_masses'
   | 'ecosystems'
@@ -1376,6 +1399,8 @@ export type UniverseScaleBandId =
   | 'single_electron'
   | 'single_photon'
   | 'planck_quantum_foam';
+
+export type GalaxyMorphology = 'spiral' | 'barred_spiral' | 'elliptical' | 'irregular';
 
 export type QuantumFocusMode = 'auto' | 'electron' | 'photon';
 
@@ -1392,26 +1417,48 @@ export interface UniverseScaleBandSpec {
 }
 
 export const MIN_UNIVERSE_LOG_METERS = -35.0;
-export const MAX_UNIVERSE_LOG_METERS = 28.0;
+export const MAX_UNIVERSE_LOG_METERS = 30.0;
 export const CAPYBARA_FOREST_LOG_METERS = 0.8;
 
 export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
   {
+    id: 'multiverse',
+    title: 'Multiverse & Pocket Bubble Universes',
+    shortLabel: 'Multiverse',
+    subtitle: 'Higher-dimensional false vacuum void spawning nucleating inflationary universe bubbles',
+    logMeters: 30.0,
+    typicalSizeLabel: '1.0×10^30 m · Eternal Inflation Landscape',
+    domain: 'cosmic',
+    skyHex: 0x010006,
+    accentHex: 0xa855f7,
+  },
+  {
     id: 'big_bang',
-    title: 'Big Bang & Inflation Horizon',
+    title: 'Big Bang & Cosmic Inflation Singularity',
     shortLabel: 'Big Bang',
-    subtitle: 'Primordial quark-gluon plasma & relativistic inflationary horizon',
+    subtitle: 'Primordial singularity expanding via exponential cosmic inflation and relativistic plasma',
     logMeters: 28.0,
-    typicalSizeLabel: '10^28 m · Inflation Envelope',
+    typicalSizeLabel: '1.0×10^28 m · Inflation Envelope',
     domain: 'cosmic',
     skyHex: 0x030208,
     accentHex: 0xfef08a,
   },
   {
-    id: 'entire_cosmos',
-    title: 'Entire Observable Cosmos',
-    shortLabel: 'Cosmos',
-    subtitle: '93.0 billion light-year comoving CMB acoustic anisotropy sphere',
+    id: 'universe',
+    title: 'Entire Evolved Universe',
+    shortLabel: 'Universe',
+    subtitle: 'Total flat spacetime manifold evolved from the Big Bang beyond the visible horizon',
+    logMeters: 27.2,
+    typicalSizeLabel: '1.6×10^27 m · Total Spacetime Continuum',
+    domain: 'cosmic',
+    skyHex: 0x02030b,
+    accentHex: 0x60a5fa,
+  },
+  {
+    id: 'observable',
+    title: 'Observable Universe (CMB Horizon)',
+    shortLabel: 'Observable',
+    subtitle: '93.0 billion light-year particle horizon bounded by the 2.725 K Cosmic Microwave Background sphere',
     logMeters: 26.94,
     typicalSizeLabel: '8.8×10^26 m · 93.0 Gly',
     domain: 'cosmic',
@@ -1419,32 +1466,54 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     accentHex: 0x38bdf8,
   },
   {
-    id: 'supercluster_a',
-    title: 'Supercluster A (Laniakea)',
-    shortLabel: 'Supercluster A',
-    subtitle: '520 Mly gravitational watershed of 100,000 galaxies flowing to the Great Attractor',
-    logMeters: 24.69,
-    typicalSizeLabel: '4.9×10^24 m · 520 Mly',
+    id: 'cosmic_web',
+    title: 'Cosmic Web & Intergalactic Voids',
+    shortLabel: 'Cosmic Web',
+    subtitle: 'Large-scale gravitational structure of dark matter halos, gas sheets, and 100 Mly cosmic voids',
+    logMeters: 25.2,
+    typicalSizeLabel: '1.6×10^25 m · 1.7 Gly',
+    domain: 'cosmic',
+    skyHex: 0x02030a,
+    accentHex: 0x818cf8,
+  },
+  {
+    id: 'filament',
+    title: 'Cosmic Filament Wall',
+    shortLabel: 'Filament',
+    subtitle: 'Gravitational dark matter and baryon bridge linking galaxy superclusters across intergalactic space',
+    logMeters: 24.0,
+    typicalSizeLabel: '1.0×10^24 m · 105 Mly',
+    domain: 'cosmic',
+    skyHex: 0x02040c,
+    accentHex: 0x67e8f9,
+  },
+  {
+    id: 'supercluster',
+    title: 'Supercluster (Laniakea & Great Attractor)',
+    shortLabel: 'Supercluster',
+    subtitle: 'Gravitational basin of 100,000 galaxies streaming along cosmic streamlines toward the Great Attractor',
+    logMeters: 23.0,
+    typicalSizeLabel: '1.0×10^23 m · 10.5 Mly',
     domain: 'cosmic',
     skyHex: 0x02040a,
     accentHex: 0xfbbf24,
   },
   {
-    id: 'galaxy_filaments',
-    title: 'Galaxy Filaments & Cosmic Web',
-    shortLabel: 'Filaments',
-    subtitle: 'Warm-hot baryon & dark-matter bridges spanning 30 Mly cosmic voids',
-    logMeters: 23.45,
-    typicalSizeLabel: '2.8×10^23 m · 30 Mly',
+    id: 'cluster',
+    title: 'Galaxy Cluster (Virgo / Coma Swarm)',
+    shortLabel: 'Cluster',
+    subtitle: 'Gravitationally bound swarm of thousands of galaxies immersed in hot X-ray intracluster plasma',
+    logMeters: 22.2,
+    typicalSizeLabel: '1.6×10^22 m · 1.7 Mly',
     domain: 'cosmic',
-    skyHex: 0x020309,
-    accentHex: 0x818cf8,
+    skyHex: 0x03040e,
+    accentHex: 0xf472b6,
   },
   {
-    id: 'galaxies',
-    title: 'Grand-Design Spiral Galaxies',
-    shortLabel: 'Galaxies',
-    subtitle: '105,700 ly stellar disk, dark dust lanes, H-II knots & Sersic bulge',
+    id: 'galaxy',
+    title: 'Milky Way Galaxy & Spiral Arms',
+    shortLabel: 'Galaxy',
+    subtitle: '105,700 ly stellar disc, central bulge, Sagittarius A* SMBH & continuous spiral arms',
     logMeters: 21.0,
     typicalSizeLabel: '1.0×10^21 m · 105,700 ly',
     domain: 'cosmic',
@@ -1452,37 +1521,59 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     accentHex: 0x60a5fa,
   },
   {
+    id: 'spiral_arms',
+    title: 'Spiral Arms (Orion-Cygnus Spur · 26,000 ly)',
+    shortLabel: 'Spiral Arms',
+    subtitle: 'Solar neighborhood inside the Milky Way Orion-Cygnus Spur, ~50% radius from core, OB supergiants & dust rifts',
+    logMeters: 19.4,
+    typicalSizeLabel: '2.5×10^19 m · 2,600 ly',
+    domain: 'cosmic',
+    skyHex: 0x030209,
+    accentHex: 0x38bdf8,
+  },
+  {
     id: 'nebulas',
-    title: 'Emission & Reflection Nebulas',
+    title: 'Nebulas, Molecular Clouds & Dust Pillars',
     shortLabel: 'Nebulas',
-    subtitle: '30 ly H-alpha, O-III & S-II ionized filaments with dark Bok globules',
-    logMeters: 17.45,
-    typicalSizeLabel: '2.8×10^17 m · 30 ly',
+    subtitle: 'Ionized H-II gas clouds, dark absorptive Bok globules, M16 pillars of creation, and Herbig-Haro shock jets',
+    logMeters: 17.2,
+    typicalSizeLabel: '1.6×10^17 m · 17 ly',
     domain: 'stellar',
     skyHex: 0x030208,
     accentHex: 0xf43f5e,
   },
   {
-    id: 'stellar_nurseries',
-    title: 'Stellar Nurseries & Dust Pillars',
-    shortLabel: 'Nurseries',
-    subtitle: '4.5 ly absorptive molecular H2 pillars, UV ionization rims & HH jets',
-    logMeters: 16.63,
-    typicalSizeLabel: '4.3×10^16 m · 4.5 ly',
-    domain: 'stellar',
-    skyHex: 0x030207,
-    accentHex: 0xf59e0b,
-  },
-  {
-    id: 'solar_systems',
-    title: 'Solar & Planetary Systems (Oort Cloud to Inner Worlds)',
-    shortLabel: 'Solar System',
+    id: 'stellar_systems',
+    title: 'Stellar & Planetary Systems (Solar System)',
+    shortLabel: 'Stellar System',
     subtitle: '0.005–50,000 AU · Central Star, Terrestrial Planets, Asteroids, Jovian Giants, Kuiper Belt & Oort Cloud',
     logMeters: 12.95,
-    typicalSizeLabel: '1.5×10^13 m · 100 AU (to 10^16 m Oort Cloud)',
+    typicalSizeLabel: '1.5×10^13 m · 100 AU',
     domain: 'stellar',
     skyHex: 0x010308,
     accentHex: 0xfacc15,
+  },
+  {
+    id: 'planetary_system',
+    title: 'Planetary System & Moon Orbits',
+    shortLabel: 'Planetary System',
+    subtitle: 'Planetary Hill sphere, Capy-Moon orbital ellipse (384,400 km), and ring plane',
+    logMeters: 8.85,
+    typicalSizeLabel: '7.1×10^8 m · Hill Sphere & Moon Orbit',
+    domain: 'planetary',
+    skyHex: 0x010206,
+    accentHex: 0x38bdf8,
+  },
+  {
+    id: 'planet',
+    title: 'Planet & Continents (Capy-Earth)',
+    shortLabel: 'Planet',
+    subtitle: '12,742 km terrestrial sphere, azure oceans, green continents, and polar ice caps',
+    logMeters: 7.10,
+    typicalSizeLabel: '1.27×10^7 m · Planetary Diameter',
+    domain: 'planetary',
+    skyHex: 0x04132b,
+    accentHex: 0x22c55e,
   },
   {
     id: 'atmosphere',
@@ -1664,6 +1755,7 @@ export interface UniverseScaleTelemetry {
   vesselMode: ChronoVesselViewMode;
   fineStructureInverse: number;
   fineStructureAlpha: number;
+  galaxyMorphology: GalaxyMorphology;
 }
 
 export function findNearestScaleBandIndex(logMeters: number): number {

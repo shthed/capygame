@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { ChronoVesselViewMode } from '../types';
+import { PbrTextureSynthesizer } from './gpu/PbrTextureSynthesizer';
 
 export interface ChronoVesselConfigOptions {
   vesselScale?: number;
@@ -73,6 +74,7 @@ export class ChronoVesselRig {
       new THREE.Vector2(0.0, 0.015),
     ];
     const saucerGeo = new THREE.LatheGeometry(saucerPoints, 32);
+    PbrTextureSynthesizer.prepareGeometryForPbr(saucerGeo);
     this.saucerHullMesh = new THREE.Mesh(saucerGeo, titaniumMat);
     this.saucerHullMesh.castShadow = true;
     this.saucerHullMesh.receiveShadow = true;

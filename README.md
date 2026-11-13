@@ -5,7 +5,7 @@
 
 **CapyGame 3D** is a hardware-accelerated 3D multi-scale universe simulator, sandbox island builder, and multiphysics mini-game archipelago built with React 19, TypeScript, Three.js, Vite 6, Tailwind CSS 4, and `@dimforge/rapier3d-compat` WebAssembly physics.
 
-- **63-Orders-of-Magnitude `1:1` Chrono-Vessel Continuum**: Pilot a time-traveling Future Capybara Chrono-Vessel continuously from the `10^+28 m` (`0.00 Gyr`) Big Bang through superclusters, spiral galaxies, emission nebulae, Keplerian solar systems, and planetary touchdown onto the Sanctuary Chrono-Pad (`10^+0.8 m`), down to `10^-35 m` Planck Quantum Foam, with `Chase Pod 3P` / `Telescope 1P` optics, Chrono-Throttle auto-cruise, unlockable **Object Finder Markers**, and a **Logarithmic/Exponential Reality Rescaler**.
+- **65-Orders-of-Magnitude `1:1` Chrono-Vessel Continuum**: Pilot a time-traveling Future Capybara Chrono-Vessel continuously across 27 astrophysical bands from the `10^+30 m` Multiverse through Big Bang cosmic inflation, spacetime manifold, observable particle horizon, cosmic web filaments, superclusters, clusters, selectable galaxy morphologies (grand-design spiral, barred spiral, elliptical, irregular), Orion-Capy spiral arms, emission nebulae & dust pillars, Keplerian stellar systems, planetary systems, and planetary touchdown onto the Sanctuary Chrono-Pad (`10^+0.8 m`), down to `10^-35 m` Planck Quantum Foam, with `Chase Pod 3P` / `Telescope 1P` optics, Chrono-Throttle auto-cruise, unlockable **Object Finder Markers**, and a **Logarithmic/Exponential Reality Rescaler**.
 - **First-Time Chrono-Genesis Setup & Fine-Structure Constant ($\alpha$)**: On initial launch (and anytime via **Genesis Setup**), players customize their Capybara pilot archetype/fur/headgear, `ChronoVesselRig` Cherenkov/brass/canopy finish & scale, and the universe's Fine-Structure Constant ($\alpha^{-1} \in [60, 220]$, default CODATA `137.036`), dynamically scaling atomic Bohr orbitals, Dirac electron spinor velocity, QED photon wave-packets, and solar photosphere fusion tint in real time.
 - **Built-In Live Procedural JSON Engine**: Customize and hot-reload universe gravity, star/galaxy density, planetary biomes, terrain elevation, weather, Chrono-Vessel colors, economy multipliers, and all 5 districts via deterministic `mulberry32` seeds and 5 one-click presets stored in `capy_game_procedural_config_v1` (`capy_game_onboarding_v1` tracks initial setup completion).
 - **Contiguous Single-World Archipelago**: Walk seamlessly overland between **Capy Sanctuary**, **Spore Lagoon**, **Yuzu Breakout**, **Number Stampede**, and **Yuzu Mountain Parkour** across four `9.6 m`-wide **Grand Promenade Causeways** without loading screens.
@@ -95,7 +95,7 @@ graph TD
 
 ## Documentation Index
 
-- **Technical Architecture & Engine Reference**: [`WEB.md`](./WEB.md)
+- **Technical Architecture & Engine Reference**: [`GAME.md`](./GAME.md)
 - **Automated Testing & Verification Guide**: [`TESTING.md`](./TESTING.md)
 - **Active Roadmap**: [`TODO.md`](./TODO.md)
 - **Contributor & Operational Playbook**: [`AGENTS.md`](./AGENTS.md)
@@ -120,5 +120,5 @@ npm run build                # Production bundle compilation into dist/
 npm run test:game            # End-to-end Playwright suite (scripts/test-capygame.mjs)
 npm run test:pwa             # Offline Service Worker & PWA manifest verification
 npm run gallery:capture      # Capture 3D district showcase screenshots
-npm run gallery:capture:zoom # Capture all 21 logarithmic universe scale screenshots
+npm run gallery:capture:zoom # Capture all 27 logarithmic universe scale screenshots
 ```

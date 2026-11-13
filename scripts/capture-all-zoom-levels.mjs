@@ -14,14 +14,20 @@ const ZOOM_GALLERY_DIRS = [
 ];
 
 const ALL_SCALE_BANDS = [
+  'multiverse',
   'big_bang',
-  'entire_cosmos',
-  'supercluster_a',
-  'galaxy_filaments',
-  'galaxies',
+  'universe',
+  'observable',
+  'cosmic_web',
+  'filament',
+  'supercluster',
+  'cluster',
+  'galaxy',
+  'spiral_arms',
   'nebulas',
-  'stellar_nurseries',
-  'solar_systems',
+  'stellar_systems',
+  'planetary_system',
+  'planet',
   'atmosphere',
   'land_masses',
   'ecosystems',
@@ -193,7 +199,7 @@ async function captureCdpPng(cdp) {
     mgr.setShowObjectMarkers(true);
     mgr.cosmicOrbitYaw = 0.52;
     mgr.cosmicOrbitPitch = 0.38;
-    const spec = mgr.seamlessUniverse.getBandById('solar_systems');
+    const spec = mgr.seamlessUniverse.getBandById('stellar_systems');
     mgr.setSeamlessLogScale(spec.logMeters, true);
     mgr.tick(0.09);
     mgr.tick(0.05, 0.06);
@@ -211,7 +217,7 @@ async function captureCdpPng(cdp) {
     mgr.setRealityScaleGamma(0.30);
     mgr.cosmicOrbitYaw = 0.58;
     mgr.cosmicOrbitPitch = 0.36;
-    const spec = mgr.seamlessUniverse.getBandById('solar_systems');
+    const spec = mgr.seamlessUniverse.getBandById('stellar_systems');
     mgr.setSeamlessLogScale(spec.logMeters, true);
     mgr.tick(0.09);
     mgr.tick(0.05, 0.06);
@@ -356,7 +362,7 @@ async function captureCdpPng(cdp) {
   await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return;
-    mgr.jumpToScaleBand('galaxies', true);
+    mgr.jumpToScaleBand('galaxy', true);
     mgr.tick(0.05, 0.06);
   });
   await page.getByTestId('toggle-scale-atlas-btn').click({ force: true });

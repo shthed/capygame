@@ -104,9 +104,7 @@ const CapyGpuMasterFilterShader = {
       }
 
       float dCenter = (uHasDepth > 0.5) ? readLinearDepth(vUv) : 18.0;
-      float farDofMix = (uHasDepth > 0.5 && dCenter < uCameraFar * 0.90)
-        ? smoothstep(95.0, 265.0, dCenter) * 0.42
-        : 0.0;
+      float farDofMix = 0.0;
 
       // 2. Contrast-Adaptive Unsharp Mask (CAS) Foreground Sharpening + Far-Horizon Optical Depth-of-Field Bokeh
       if (uSharpen > 0.005 || farDofMix > 0.005) {
@@ -651,6 +649,8 @@ export class HardwareGpuEngine {
         anisotropyLevel: 1,
         shadowQuality: 'off',
         antiAliasing: 'none',
+        resolutionScale: 0.7,
+        drawDistance: 135,
       };
     } else if (preset === 'balanced') {
       next = {
@@ -658,13 +658,15 @@ export class HardwareGpuEngine {
         qualityPreset: 'balanced',
         postProcessingEnabled: true,
         bloomEnabled: true,
-        bloomStrength: 0.28,
+        bloomStrength: 0.22,
         ssaoEnabled: false,
         sharpenAmount: 0.18,
         textureFilter: 'trilinear_aniso',
         anisotropyLevel: 4,
         shadowQuality: 'pcf',
         antiAliasing: 'fxaa',
+        resolutionScale: 1.0,
+        drawDistance: 280,
       };
     } else if (preset === 'ultra') {
       next = {
@@ -672,13 +674,15 @@ export class HardwareGpuEngine {
         qualityPreset: 'ultra',
         postProcessingEnabled: true,
         bloomEnabled: true,
-        bloomStrength: 0.44,
+        bloomStrength: 0.34,
         ssaoEnabled: true,
-        sharpenAmount: 0.36,
+        sharpenAmount: 0.32,
         textureFilter: 'trilinear_aniso',
         anisotropyLevel: 16,
         shadowQuality: 'pcf_soft',
         antiAliasing: 'msaa_fxaa',
+        resolutionScale: 1.0,
+        drawDistance: 1350,
       };
     } else {
       next = {
@@ -686,13 +690,15 @@ export class HardwareGpuEngine {
         qualityPreset: 'high',
         postProcessingEnabled: true,
         bloomEnabled: true,
-        bloomStrength: 0.36,
+        bloomStrength: 0.24,
         ssaoEnabled: true,
-        sharpenAmount: 0.28,
+        sharpenAmount: 0.26,
         textureFilter: 'trilinear_aniso',
         anisotropyLevel: 8,
         shadowQuality: 'pcf_soft',
         antiAliasing: 'msaa_fxaa',
+        resolutionScale: 1.0,
+        drawDistance: 650,
       };
     }
     this.applyConfig(next);
@@ -722,9 +728,31 @@ export class HardwareGpuEngine {
     }
     this.renderer.toneMappingExposure = THREE.MathUtils.clamp(this.config.exposure, 0.4, 2.2);
 
+    const isPerfMode = this.config.qualityPreset === 'performance';
+    // Strip heavy per-pixel PMREM IBL cubemap + auxiliary fill lights in PERF mode
+    if (isPerfMode) {
+      this.scene.environment = null;
+      this.rimLight.visible = false;
+      if (this.studioAreaLight) {
+        this.studioAreaLight.visible = false;
+        this.studioAreaLight.intensity = 0;
+      }
+    } else {
+      if (!this.isSoftwareGl && this.iblEnvironmentTexture) {
+        this.scene.environment = this.iblEnvironmentTexture;
+      }
+      this.rimLight.visible = true;
+      if (this.studioAreaLight) {
+        this.studioAreaLight.visible = true;
+      }
+    }
+
     // 2. Shadow Map Mode & Resolution
     if (this.config.shadowQuality === 'off') {
       this.renderer.shadowMap.enabled = false;
+      if (!this.isWebGpu) {
+        (this.renderer as THREE.WebGLRenderer).shadowMap.autoUpdate = false;
+      }
       this.sunLight.castShadow = false;
       if (this.moonLight) this.moonLight.castShadow = false;
       this.activeShadowMapSize = 0;
@@ -732,6 +760,9 @@ export class HardwareGpuEngine {
       const prevEnabled = this.renderer.shadowMap.enabled;
       const prevType = this.renderer.shadowMap.type;
       this.renderer.shadowMap.enabled = true;
+      if (!this.isWebGpu) {
+        (this.renderer as THREE.WebGLRenderer).shadowMap.autoUpdate = true;
+      }
       this.sunLight.castShadow = this.lastShadowCasterMode === 'sun';
       if (this.moonLight) {
         this.moonLight.castShadow = this.lastShadowCasterMode === 'moon';
@@ -780,12 +811,13 @@ export class HardwareGpuEngine {
       this.maxHardwareAnisotropy
     );
 
-    // 4. Cap Device Pixel Ratio smartly to sustain locked 60 FPS on HiDPI displays
+    // 4. Cap & Scale Device Pixel Ratio smartly to balance crisp silhouettes & GPU fillrate
     const desiredPr = computeEffectivePixelRatio(
       typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
       this.config.qualityPreset,
       this.shouldActivateComposer(),
-      this.isSoftwareGl
+      this.isSoftwareGl,
+      this.config.resolutionScale ?? 1.0
     );
     const prChanged = Math.abs(this.renderer.getPixelRatio() - desiredPr) > 0.01;
     if (prChanged) {
@@ -794,6 +826,9 @@ export class HardwareGpuEngine {
     }
 
     if (this.webGpuPipeline) {
+      if (prChanged) {
+        this.webGpuPipeline.setSize(this.viewportWidth, this.viewportHeight, desiredPr);
+      }
       this.webGpuPipeline.applyConfig(this.config);
       return;
     }
@@ -881,8 +916,13 @@ export class HardwareGpuEngine {
       this.heroContactShadowMat.opacity = opacityFade;
     }
 
-    // Dynamic Sky IBL scaling across Day / Golden Hour / Starlight Night
-    this.scene.environmentIntensity = isSurfaceVisible ? iblEnvIntensity : 0.78;
+    const isPerfMode = this.config.qualityPreset === 'performance';
+    // Dynamic Sky IBL scaling across Day / Golden Hour / Starlight Night (0 in PERF to skip cubemap lookups)
+    this.scene.environmentIntensity = isPerfMode
+      ? 0
+      : isSurfaceVisible
+        ? iblEnvIntensity
+        : 0.78;
 
     // 2. Texel-Snapped Dual Sun + Moon Directional Shadow Cascade (tight 38m half-extent)
     if (isSurfaceVisible) {
@@ -941,23 +981,25 @@ export class HardwareGpuEngine {
       }
       casterLight.position.set(snappedPose.lightX, snappedPose.lightY, snappedPose.lightZ);
 
-      // Position grazing Rim/Backlight opposite active key light azimuth for 3-point separation
-      this.rimLight.position.set(
-        heroWorldX - _sunOffsetDir.x * 58,
-        24,
-        heroWorldZ - _sunOffsetDir.z * 58
-      );
-      this.rimLight.target.position.set(heroWorldX, 1.0, heroWorldZ);
-      if (!this.rimLight.target.parent) {
-        this.scene.add(this.rimLight.target);
-      }
-      this.rimLight.target.updateMatrixWorld();
-      this.rimLight.intensity = THREE.MathUtils.lerp(0.14, 0.24, nightFactor);
+      if (!isPerfMode) {
+        // Position grazing Rim/Backlight opposite active key light azimuth for 3-point separation
+        this.rimLight.position.set(
+          heroWorldX - _sunOffsetDir.x * 58,
+          24,
+          heroWorldZ - _sunOffsetDir.z * 58
+        );
+        this.rimLight.target.position.set(heroWorldX, 1.0, heroWorldZ);
+        if (!this.rimLight.target.parent) {
+          this.scene.add(this.rimLight.target);
+        }
+        this.rimLight.target.updateMatrixWorld();
+        this.rimLight.intensity = THREE.MathUtils.lerp(0.14, 0.24, nightFactor);
 
-      if (this.studioAreaLight) {
-        this.studioAreaLight.position.set(heroWorldX + 4.5, heroWorldY + 8.5, heroWorldZ + 9.5);
-        this.studioAreaLight.lookAt(heroWorldX, heroWorldY + 0.6, heroWorldZ);
-        this.studioAreaLight.intensity = 0.16 * (1.0 - nightFactor * 0.7);
+        if (this.studioAreaLight) {
+          this.studioAreaLight.position.set(heroWorldX + 4.5, heroWorldY + 8.5, heroWorldZ + 9.5);
+          this.studioAreaLight.lookAt(heroWorldX, heroWorldY + 0.6, heroWorldZ);
+          this.studioAreaLight.intensity = 0.16 * (1.0 - nightFactor * 0.7);
+        }
       }
     }
 
@@ -1089,6 +1131,9 @@ export class HardwareGpuEngine {
       maxTextureSize: this.maxTextureSize,
       shadowQuality: this.isSoftwareGl ? 'off' : this.config.shadowQuality,
       shadowMapSize: this.activeShadowMapSize,
+      antiAliasing: this.config.antiAliasing,
+      resolutionScale: +(this.config.resolutionScale ?? 1.0).toFixed(2),
+      effectivePixelRatio: +this.renderer.getPixelRatio().toFixed(2),
       msaaSamples: this.activeMsaaSamples,
       bloomEnabled: this.config.bloomEnabled,
       ssaoEnabled: this.webGpuPipeline

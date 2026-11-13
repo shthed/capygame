@@ -1201,14 +1201,20 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     if (!mgr || !mgr.seamlessUniverse) return null;
 
     const checkpoints = [
+      'multiverse',
       'big_bang',
-      'entire_cosmos',
-      'supercluster_a',
-      'galaxy_filaments',
-      'galaxies',
+      'universe',
+      'observable',
+      'cosmic_web',
+      'filament',
+      'supercluster',
+      'cluster',
+      'galaxy',
+      'spiral_arms',
       'nebulas',
-      'stellar_nurseries',
-      'solar_systems',
+      'stellar_systems',
+      'planetary_system',
+      'planet',
       'atmosphere',
       'land_masses',
       'ecosystems',
@@ -1357,7 +1363,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return;
-    const spec = mgr.seamlessUniverse.getBandById('solar_systems');
+    const spec = mgr.seamlessUniverse.getBandById('stellar_systems');
     mgr.cosmicOrbitYaw = 0.52;
     mgr.cosmicOrbitPitch = 0.38;
     mgr.setSeamlessLogScale(spec.logMeters, true);

@@ -476,13 +476,19 @@ export class AaaWorldVfxEngine {
     sunDirection: THREE.Vector3,
     nightFactor: number,
     stormFactor: number,
-    visible: boolean
+    visible: boolean,
+    perfMode: boolean = false
   ): void {
     this.rootGroup.visible = visible;
     if (!visible) return;
 
+    this.motesPoints.visible = !perfMode;
+    if (perfMode) {
+      this.godRayGroup.visible = false;
+    }
+
     // 1. Update Atmospheric Sun-Motes / Bioluminescent Fireflies Uniforms (WebGL2 only)
-    if (this.motesMat) {
+    if (!perfMode && this.motesMat) {
       this.motesMat.uniforms.uTime.value = elapsedTime;
       this.motesMat.uniforms.uNightFactor.value = nightFactor;
       (this.motesMat.uniforms.uFocusCenter.value as THREE.Vector3).set(
@@ -493,7 +499,7 @@ export class AaaWorldVfxEngine {
     }
 
     // 2. Align Crepuscular Solar God-Rays to Live Sun Vector (Hardware GPUs)
-    if (!this.isSoftwareGl) {
+    if (!perfMode && !this.isSoftwareGl) {
       this._sunDirNorm.copy(sunDirection).normalize();
       const sunElev = this._sunDirNorm.y;
       const dayClear = Math.max(0, 1.0 - nightFactor * 1.35) * (1.0 - stormFactor * 0.85);

@@ -1,4 +1,6 @@
 import { GpuQualityPreset } from '../../types';
+import type { GpuPipelineConfig, PerformanceLogEntry } from './GpuEngineTypes';
+import type { CapyLodTier } from '../../types';
 
 export interface SnappedShadowRigPose {
   targetX: number;
@@ -22,6 +24,179 @@ const _snappedRigResult: SnappedShadowRigPose = {
 
 export type AnyGpuPreset = GpuQualityPreset | 'performance' | 'low';
 
+export const MAX_GPU_MITIGATION_LEVEL = 6;
+
+export interface AdaptiveGpuMitigationResult {
+  level: number;
+  postProcessingEnabled: boolean;
+  ssaoEnabled: boolean;
+  bloomEnabled: boolean;
+  shadowQuality: GpuPipelineConfig['shadowQuality'];
+  antiAliasing: GpuPipelineConfig['antiAliasing'];
+  resolutionScale: number;
+  maxCapyLodTier: CapyLodTier;
+  disabledFeatures: string[];
+}
+
+/**
+ * Computes progressive GPU feature reductions for a given mitigation tier `level` (0..6)
+ * relative to the user's base `GpuPipelineConfig` without mutating user preferences.
+ */
+export function computeAdaptiveGpuMitigation(
+  baseConfig: GpuPipelineConfig,
+  baseAutoLod: boolean,
+  baseLodTier: CapyLodTier,
+  level: number,
+  out?: AdaptiveGpuMitigationResult
+): AdaptiveGpuMitigationResult {
+  const clampedLevel = Math.max(0, Math.min(MAX_GPU_MITIGATION_LEVEL, Math.round(level)));
+  const baseScale = Math.max(0.5, Math.min(1.5, baseConfig.resolutionScale ?? 1.0));
+
+  let postProcessingEnabled = baseConfig.postProcessingEnabled;
+  let ssaoEnabled = baseConfig.ssaoEnabled;
+  let bloomEnabled = baseConfig.bloomEnabled;
+  let shadowQuality = baseConfig.shadowQuality;
+  let antiAliasing = baseConfig.antiAliasing;
+  let resolutionScale = baseScale;
+  let maxCapyLodTier: CapyLodTier = baseAutoLod ? 3 : baseLodTier;
+
+  if (clampedLevel >= 1 && baseAutoLod) {
+    maxCapyLodTier = clampedLevel >= 5 ? 0 : clampedLevel >= 3 ? 1 : 2;
+  }
+  if (clampedLevel >= 2 && ssaoEnabled) {
+    ssaoEnabled = false;
+  }
+  if (clampedLevel >= 3) {
+    resolutionScale = Math.min(resolutionScale, 0.8);
+  }
+  if (clampedLevel >= 4 && bloomEnabled) {
+    bloomEnabled = false;
+  }
+  if (clampedLevel >= 5) {
+    resolutionScale = Math.min(resolutionScale, 0.7);
+    if (shadowQuality === 'pcf_soft' || shadowQuality === 'vsm') {
+      shadowQuality = 'pcf';
+    } else if (shadowQuality === 'pcf') {
+      shadowQuality = 'off';
+    }
+    if (antiAliasing === 'msaa_fxaa') {
+      antiAliasing = 'fxaa';
+    } else if (antiAliasing === 'fxaa') {
+      antiAliasing = 'none';
+    }
+  }
+  if (clampedLevel >= 6) {
+    resolutionScale = Math.min(resolutionScale, 0.65);
+    shadowQuality = 'off';
+    postProcessingEnabled = false;
+    bloomEnabled = false;
+    ssaoEnabled = false;
+    antiAliasing = 'none';
+  }
+
+  const features: string[] = [];
+  if (baseAutoLod && maxCapyLodTier < 3) {
+    features.push(`LOD<=T${maxCapyLodTier}`);
+  }
+  if (baseConfig.ssaoEnabled && !ssaoEnabled) features.push('SSAO OFF');
+  if (baseConfig.bloomEnabled && !bloomEnabled) features.push('Bloom OFF');
+  if (resolutionScale < baseScale - 0.01) {
+    features.push(`Scale ${resolutionScale.toFixed(2)}x`);
+  }
+  if (shadowQuality !== baseConfig.shadowQuality) {
+    features.push(shadowQuality === 'off' ? 'Shadows OFF' : `Shadows ${shadowQuality.toUpperCase()}`);
+  }
+  if (antiAliasing !== baseConfig.antiAliasing) {
+    features.push(antiAliasing === 'none' ? 'AA OFF' : `AA ${antiAliasing.toUpperCase()}`);
+  }
+  if (baseConfig.postProcessingEnabled && !postProcessingEnabled) {
+    features.push('Direct Pass');
+  }
+
+  if (out) {
+    out.level = clampedLevel;
+    out.postProcessingEnabled = postProcessingEnabled;
+    out.ssaoEnabled = ssaoEnabled;
+    out.bloomEnabled = bloomEnabled;
+    out.shadowQuality = shadowQuality;
+    out.antiAliasing = antiAliasing;
+    out.resolutionScale = resolutionScale;
+    out.maxCapyLodTier = maxCapyLodTier;
+    out.disabledFeatures = features;
+    return out;
+  }
+
+  return {
+    level: clampedLevel,
+    postProcessingEnabled,
+    ssaoEnabled,
+    bloomEnabled,
+    shadowQuality,
+    antiAliasing,
+    resolutionScale,
+    maxCapyLodTier,
+    disabledFeatures: features,
+  };
+}
+
+function mitigationSignature(m: AdaptiveGpuMitigationResult): string {
+  return `${m.postProcessingEnabled}|${m.ssaoEnabled}|${m.bloomEnabled}|${m.shadowQuality}|${m.antiAliasing}|${m.resolutionScale.toFixed(2)}|${m.maxCapyLodTier}`;
+}
+
+/**
+ * Advances to the next effective mitigation level that actually disables or reduces an active feature,
+ * skipping no-op steps if the user already turned those features off manually.
+ */
+export function findNextEffectiveMitigationLevel(
+  currentLevel: number,
+  baseConfig: GpuPipelineConfig,
+  baseAutoLod: boolean,
+  baseLodTier: CapyLodTier
+): number {
+  const curSig = mitigationSignature(
+    computeAdaptiveGpuMitigation(baseConfig, baseAutoLod, baseLodTier, currentLevel)
+  );
+  for (let lvl = currentLevel + 1; lvl <= MAX_GPU_MITIGATION_LEVEL; lvl++) {
+    const next = computeAdaptiveGpuMitigation(baseConfig, baseAutoLod, baseLodTier, lvl);
+    if (mitigationSignature(next) !== curSig) {
+      return lvl;
+    }
+  }
+  return currentLevel;
+}
+
+/**
+ * Steps back to the previous effective mitigation level when sustained FPS headroom returns.
+ */
+export function findPrevEffectiveMitigationLevel(
+  currentLevel: number,
+  baseConfig: GpuPipelineConfig,
+  baseAutoLod: boolean,
+  baseLodTier: CapyLodTier
+): number {
+  const curSig = mitigationSignature(
+    computeAdaptiveGpuMitigation(baseConfig, baseAutoLod, baseLodTier, currentLevel)
+  );
+  for (let lvl = currentLevel - 1; lvl >= 0; lvl--) {
+    const prevSig = mitigationSignature(
+      computeAdaptiveGpuMitigation(baseConfig, baseAutoLod, baseLodTier, lvl)
+    );
+    if (prevSig !== curSig) {
+      let canonical = lvl;
+      while (
+        canonical > 0 &&
+        mitigationSignature(
+          computeAdaptiveGpuMitigation(baseConfig, baseAutoLod, baseLodTier, canonical - 1)
+        ) === prevSig
+      ) {
+        canonical--;
+      }
+      return canonical;
+    }
+  }
+  return 0;
+}
+
 /**
  * Computes resolution scale factor for UnrealBloomPass relative to drawing buffer dimensions.
  * Bloom is an intrinsically low-frequency Gaussian convolution; rendering its 5-mip chain at
@@ -37,26 +212,33 @@ export function computeBloomRenderScale(
 }
 
 /**
- * Computes optimal WebGL devicePixelRatio cap to sustain locked 60 FPS on 2x-3x HiDPI displays
- * without sacrificing crisp silhouette edges.
+ * Computes optimal WebGL devicePixelRatio cap scaled by user `resolutionScale` (`0.5`..`1.5`)
+ * to sustain smooth FPS on 2x-3x HiDPI displays or allow crisp supersampling.
  */
 export function computeEffectivePixelRatio(
   devicePixelRatio: number,
   preset: AnyGpuPreset,
   postProcessingEnabled: boolean,
-  isSoftwareGl: boolean
+  isSoftwareGl: boolean,
+  resolutionScale: number = 1.0
 ): number {
   const safeDpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
-  if (isSoftwareGl || preset === 'low' || preset === 'performance') {
-    return 1.0;
+  const safeScale = Number.isFinite(resolutionScale)
+    ? Math.max(0.5, Math.min(1.5, resolutionScale))
+    : 1.0;
+  if (isSoftwareGl) {
+    return Math.max(0.5, Math.min(1.0, safeScale));
   }
-  if (preset === 'balanced') {
-    return Math.min(safeDpr, postProcessingEnabled ? 1.35 : 1.5);
+  let baseCap = 2.0;
+  if (preset === 'low' || preset === 'performance') {
+    baseCap = 1.0;
+  } else if (preset === 'balanced') {
+    baseCap = postProcessingEnabled ? 1.35 : 1.5;
+  } else if (preset === 'high') {
+    baseCap = postProcessingEnabled ? 1.65 : 2.0;
   }
-  if (preset === 'high') {
-    return Math.min(safeDpr, postProcessingEnabled ? 1.65 : 2.0);
-  }
-  return Math.min(safeDpr, 2.0);
+  const scaled = Math.min(safeDpr, baseCap) * safeScale;
+  return Math.max(0.5, Math.min(2.25, Math.round(scaled * 100) / 100));
 }
 
 /**
@@ -160,6 +342,67 @@ export function computeDistrictTickStride(minViewerDistSq: number): 1 | 2 | 4 {
   if (minViewerDistSq <= 85 * 85) return 1;
   if (minViewerDistSq <= 135 * 135) return 2;
   return 4;
+}
+
+export interface EffectiveCameraFarResult {
+  cameraFar: number;
+  skyScale: number;
+  showMountains: boolean;
+}
+
+const _effectiveCameraFarResult: EffectiveCameraFarResult = {
+  cameraFar: 1350,
+  skyScale: 1.0,
+  showMountains: true,
+};
+
+/**
+ * Pure zero-allocation distance check determining whether a background minigame district
+ * lies within the active `drawDistanceMeters` frustum budget.
+ */
+export function shouldRenderDistrict(
+  districtX: number,
+  districtZ: number,
+  districtRadius: number,
+  camX: number,
+  camZ: number,
+  drawDistanceMeters: number,
+  isActiveDistrict: boolean
+): boolean {
+  if (isActiveDistrict) return true;
+  const maxReach = Math.max(40, drawDistanceMeters) + Math.max(0, districtRadius);
+  const dx = camX - districtX;
+  const dz = camZ - districtZ;
+  return dx * dx + dz * dz <= maxReach * maxReach;
+}
+
+/**
+ * Computes optimal `camera.far`, proportional sky dome scale (keeping the sky sphere inside
+ * `camera.far` around the camera so reduced draw distance never clips the sky to black),
+ * and whether distant alpine mountains (`innerR = 175m`) should render.
+ */
+export function computeEffectiveCameraFar(
+  drawDistanceMeters: number,
+  qualityPreset: AnyGpuPreset,
+  isSurfaceVisible: boolean,
+  logScaleMeters: number
+): EffectiveCameraFarResult {
+  if (!isSurfaceVisible && logScaleMeters > 3.1) {
+    _effectiveCameraFarResult.cameraFar =
+      qualityPreset === 'performance' || qualityPreset === 'low' ? 1400 : 3500;
+    _effectiveCameraFarResult.skyScale = 1.0;
+    _effectiveCameraFarResult.showMountains = false;
+    return _effectiveCameraFarResult;
+  }
+
+  const safeDraw = Number.isFinite(drawDistanceMeters)
+    ? Math.max(90, Math.min(1350, drawDistanceMeters))
+    : 650;
+  const effectiveFar = Math.max(115, safeDraw);
+  _effectiveCameraFarResult.cameraFar = effectiveFar;
+  _effectiveCameraFarResult.skyScale = Math.min(1.0, (effectiveFar * 0.88) / 720);
+  _effectiveCameraFarResult.showMountains = safeDraw >= 185;
+  return _effectiveCameraFarResult;
 }
 
 /**
@@ -275,6 +518,111 @@ export function computeSolarPlanetFocusOffset(
     _solarFocusResult.sunDirZ = 0.65;
   }
   return _solarFocusResult;
+}
+
+// ============================================================================
+// SPIRAL GALAXY SPIRAL ARM (ORION-CAPY SPUR) FOCUS REROUTING
+// ============================================================================
+export interface SpiralGalaxyFocusResult {
+  galaxyFocusBlend: number;
+  armOffsetX: number;
+  armOffsetY: number;
+  armOffsetZ: number;
+}
+
+const _spiralGalaxyFocusResult: SpiralGalaxyFocusResult = {
+  galaxyFocusBlend: 0,
+  armOffsetX: 0,
+  armOffsetY: 0,
+  armOffsetZ: 0,
+};
+
+export const GALAXY_DISC_RADIUS_UNITS = 21.0;
+// Milky Way Solar System / Earth sits ~26,000 ly out of ~52,850 ly radius (~0.495 * R_gal = 10.4 units)
+// along the inner Orion-Cygnus Spur between the Sagittarius and Perseus spiral arms.
+export const HOME_GALAXY_ARM_RADIUS = 10.4;
+export const HOME_GALAXY_ARM_THETA = 1.22;
+
+/**
+ * Computes spiral-galaxy focal frame offset so zooming from grand galaxy overview (logVal >= 20.95)
+ * into Spiral Arms (logVal = 19.40) and down through Nebulas navigates smoothly off-center into
+ * Earth's Orion-Cygnus Spur inside the Milky Way spiral arms rather than diving into Sagittarius A*.
+ */
+export function computeSpiralGalaxyFocusOffset(
+  logScaleMeters: number,
+  armRadius: number = HOME_GALAXY_ARM_RADIUS,
+  armTheta: number = HOME_GALAXY_ARM_THETA
+): SpiralGalaxyFocusResult {
+  const blend = smoothstepRange(20.95, 19.4, logScaleMeters);
+  const armX = Math.cos(armTheta) * armRadius;
+  const armZ = -Math.sin(armTheta) * armRadius;
+
+  _spiralGalaxyFocusResult.galaxyFocusBlend = blend;
+  _spiralGalaxyFocusResult.armOffsetX = -armX * blend || 0;
+  _spiralGalaxyFocusResult.armOffsetY = 0;
+  _spiralGalaxyFocusResult.armOffsetZ = -armZ * blend || 0;
+  return _spiralGalaxyFocusResult;
+}
+
+// ============================================================================
+// PLANET SURFACE LANDMASS (CAPYBARA SANCTUARY ARCHIPELAGO) FOCUS REROUTING
+// ============================================================================
+export interface PlanetSurfaceFocusResult {
+  surfaceFocusBlend: number;
+  planetOffsetX: number;
+  planetOffsetY: number;
+  planetOffsetZ: number;
+  surfaceTargetX: number;
+  surfaceTargetY: number;
+  surfaceTargetZ: number;
+}
+
+const _planetSurfaceFocusResult: PlanetSurfaceFocusResult = {
+  surfaceFocusBlend: 0,
+  planetOffsetX: 0,
+  planetOffsetY: 0,
+  planetOffsetZ: 0,
+  surfaceTargetX: 0,
+  surfaceTargetY: 0,
+  surfaceTargetZ: 0,
+};
+
+export const SANCTUARY_SURFACE_LAT_DEG = 22.5;
+export const SANCTUARY_SURFACE_LON_DEG = 42.0;
+
+/**
+ * Computes the planet-globe focal offset so zooming into Capy-Earth (logVal 7.3 down to 4.9)
+ * picks a designated point on the sunny surface landmass (Capybara Sanctuary Archipelago at 22.5°N, 42.0°E)
+ * rather than diving into the center of the planet sphere (0,0,0).
+ */
+export function computePlanetSurfaceLandmassFocusOffset(
+  logScaleMeters: number,
+  planetRadius: number = 8.5,
+  latDeg: number = SANCTUARY_SURFACE_LAT_DEG,
+  lonDeg: number = SANCTUARY_SURFACE_LON_DEG
+): PlanetSurfaceFocusResult {
+  const latRad = latDeg * (Math.PI / 180);
+  const lonRad = lonDeg * (Math.PI / 180);
+  const nx = Math.cos(latRad) * Math.sin(lonRad);
+  const ny = Math.sin(latRad);
+  const nz = Math.cos(latRad) * Math.cos(lonRad);
+
+  const surfaceX = nx * planetRadius;
+  const surfaceY = ny * planetRadius;
+  const surfaceZ = nz * planetRadius;
+
+  // Blends smoothly from 0.0 at full globe overview (log >= 7.30) to 1.0 approaching atmosphere (log <= 4.90)
+  const blend = smoothstepRange(7.30, 4.90, logScaleMeters);
+
+  _planetSurfaceFocusResult.surfaceFocusBlend = blend;
+  _planetSurfaceFocusResult.planetOffsetX = -surfaceX * blend || 0;
+  _planetSurfaceFocusResult.planetOffsetY = -surfaceY * blend || 0;
+  _planetSurfaceFocusResult.planetOffsetZ = -surfaceZ * blend || 0;
+  _planetSurfaceFocusResult.surfaceTargetX = surfaceX;
+  _planetSurfaceFocusResult.surfaceTargetY = surfaceY;
+  _planetSurfaceFocusResult.surfaceTargetZ = surfaceZ;
+
+  return _planetSurfaceFocusResult;
 }
 
 // ============================================================================
@@ -481,17 +829,7 @@ export class PerformanceLogTracker {
   private readonly sortedScratch = new Float32Array(PERF_HISTORY_LEN);
   private writeIdx = 0;
   private sampleCount = 0;
-  private entries: Array<{
-    id: number;
-    timestampMs: number;
-    elapsedLabel: string;
-    severity: 'warn' | 'critical';
-    fps: number;
-    frameMs: number;
-    stageLabel: string;
-    cause: string;
-    mitigation: string;
-  }> = [];
+  private entries: PerformanceLogEntry[] = [];
   private nextEntryId = 1;
   private droppedFramesCount = 0;
   private lastAlertTimestampMs = -10000;
@@ -501,11 +839,27 @@ export class PerformanceLogTracker {
   private warmupFramesRemaining = 4;
   private startTimestampMs = 0;
   public lock60FpsEnabled = true;
+  public fpsTarget = 60;
+  public maxFpsLimit = 60;
+  public activeGovernorTier = 0;
+  public disabledFeatures: string[] = [];
 
   constructor(startTimeMs: number = Date.now()) {
     this.startTimestampMs = startTimeMs;
     this.fpsHistory.fill(60);
     this.msHistory.fill(16.67);
+  }
+
+  public getEffectiveTargetFps(): number {
+    const safeTarget = Math.max(24, Math.min(240, Math.round(this.fpsTarget || 60)));
+    if (this.maxFpsLimit > 0) {
+      return Math.max(24, Math.min(safeTarget, Math.round(this.maxFpsLimit)));
+    }
+    return safeTarget;
+  }
+
+  public getDisplayFpsCap(): number {
+    return this.maxFpsLimit > 0 ? Math.max(24, Math.min(240, Math.round(this.maxFpsLimit))) : 240;
   }
 
   public notifyTransitionWarmup(frames: number = 4) {
@@ -520,21 +874,23 @@ export class PerformanceLogTracker {
     nowMs: number,
     mitigationLabel: string = 'Monitor'
   ): { isLagDrop: boolean; shouldReduceLoad: boolean } {
+    const effTarget = this.getEffectiveTargetFps();
+    const displayCap = this.getDisplayFpsCap();
+
     if (this.warmupFramesRemaining > 0) {
       this.warmupFramesRemaining--;
-      this.liveFps = this.lock60FpsEnabled
-        ? Math.min(60, Math.round(this.smoothedFps))
-        : Math.round(this.smoothedFps);
+      this.liveFps = Math.min(displayCap, Math.round(this.smoothedFps));
       return { isLagDrop: false, shouldReduceLoad: false };
     }
 
-    // On software GL headless pacing, measure actual CPU+GL draw execution time against 16.67ms budget
-    // so intentional sleep timers aren't misreported as lag, while real frame execution >22ms IS caught.
+    // On software GL headless pacing, measure actual CPU+GL draw execution time against budget
+    // so intentional sleep timers aren't misreported as lag. When hardware maxFpsLimit intentionally paces
+    // frames below monitor vsync (e.g. 30 FPS cap = 33.3ms), compare against effective budget too.
     const effectiveMs = isSoftwareGl
       ? Math.max(0.5, frameWorkMs)
       : Math.max(0.5, wallIntervalMs);
     const rawInstantFps = Math.min(240, Math.round((1000 / Math.max(4, effectiveMs)) * 10) / 10);
-    const recordedFps = this.lock60FpsEnabled ? Math.min(60, rawInstantFps) : rawInstantFps;
+    const recordedFps = Math.min(displayCap, rawInstantFps);
 
     this.fpsHistory[this.writeIdx] = recordedFps;
     this.msHistory[this.writeIdx] = effectiveMs;
@@ -543,11 +899,18 @@ export class PerformanceLogTracker {
 
     this.lastSampleMs = effectiveMs;
     this.smoothedFps = this.smoothedFps * 0.72 + recordedFps * 0.28;
-    const maxCap = this.lock60FpsEnabled ? 60 : 240;
-    this.liveFps = Math.max(1, Math.min(maxCap, Math.round(this.smoothedFps)));
+    this.liveFps = Math.max(1, Math.min(displayCap, Math.round(this.smoothedFps)));
 
-    const isCrit = effectiveMs > 33.4 || rawInstantFps < 35;
-    const isWarn = effectiveMs > 20.5 || rawInstantFps < 54;
+    const budgetMs = 1000 / effTarget;
+    const warnMs = effTarget === 60 ? 20.5 : Math.max(budgetMs * 1.23, budgetMs + 3.8);
+    const critMs = effTarget === 60 ? 33.4 : Math.max(budgetMs * 2.0, budgetMs + 14.0);
+    const warnFps = effTarget * 0.9;
+    const critFps = effTarget * 0.583;
+
+    // Also inspect CPU/GPU work time directly when capped so genuine heavy frames are caught
+    const workOverBudget = this.maxFpsLimit > 0 && !isSoftwareGl && frameWorkMs > warnMs;
+    const isCrit = effectiveMs > critMs || rawInstantFps < critFps || (workOverBudget && frameWorkMs > critMs);
+    const isWarn = effectiveMs > warnMs || rawInstantFps < warnFps || workOverBudget;
     const isLagDrop = isWarn || isCrit;
 
     if (isLagDrop) {
@@ -560,7 +923,11 @@ export class PerformanceLogTracker {
           Math.max(1, Math.round(rawInstantFps)),
           effectiveMs,
           stageLabel,
-          isSoftwareGl ? 'Software GL CPU raster spike' : isCrit ? 'Heavy GPU/physics frame hitch (>33ms)' : 'Frame budget exceeded (>20.5ms)',
+          isSoftwareGl
+            ? 'Software GL CPU raster spike'
+            : isCrit
+              ? `Heavy GPU/physics frame hitch (>${critMs.toFixed(0)}ms)`
+              : `Frame budget exceeded (>${warnMs.toFixed(1)}ms for ${effTarget} FPS)`,
           mitigationLabel
         );
       }
@@ -568,18 +935,19 @@ export class PerformanceLogTracker {
 
     return {
       isLagDrop,
-      shouldReduceLoad: this.lock60FpsEnabled && (isLagDrop || this.getAvgFrameMs() > 18.2),
+      shouldReduceLoad:
+        this.lock60FpsEnabled && (isLagDrop || this.getAvgFrameMs() > budgetMs * 1.09),
     };
   }
 
   public recordSyntheticLagSpike(
     frameMs: number,
     stageLabel: string,
-    mitigation: string = 'Dropped LOD / Post-FX load to restore 60 FPS',
+    mitigation: string = 'Dropped LOD / GPU load to hit FPS target',
     nowMs: number = Date.now()
   ) {
     const fps = Math.max(1, Math.round(1000 / Math.max(4, frameMs)));
-    const cappedFps = this.lock60FpsEnabled ? Math.min(60, fps) : fps;
+    const cappedFps = Math.min(this.getDisplayFpsCap(), fps);
     this.fpsHistory[this.writeIdx] = cappedFps;
     this.msHistory[this.writeIdx] = frameMs;
     this.writeIdx = (this.writeIdx + 1) % PERF_HISTORY_LEN;
@@ -613,17 +981,57 @@ export class PerformanceLogTracker {
     const mins = Math.floor(elapsedSec / 60);
     const secs = Math.floor(elapsedSec % 60);
     const elapsedLabel = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    const roundedMs = Math.round(frameMs * 10) / 10;
+
+    // Group repeated instances of the same incident within 8 seconds
+    const latest = this.entries[0];
+    const sameIncident =
+      latest &&
+      latest.stageLabel === stageLabel &&
+      (latest.cause === cause ||
+        latest.mitigation === mitigation ||
+        (latest.cause.startsWith('Detected') && cause.startsWith('Detected')) ||
+        nowMs - (latest.lastTimestampMs ?? latest.timestampMs) < 5000);
+
+    if (latest && sameIncident && nowMs - (latest.lastTimestampMs ?? latest.timestampMs) < 8000) {
+      latest.repeatCount = (latest.repeatCount ?? 1) + 1;
+      latest.lastTimestampMs = nowMs;
+      latest.lastElapsedLabel = elapsedLabel;
+      latest.minFps = Math.min(latest.minFps ?? latest.fps, fps);
+      latest.maxFps = Math.max(latest.maxFps ?? latest.fps, fps);
+      latest.frameMs = roundedMs;
+      latest.maxFrameMs = Math.max(latest.maxFrameMs ?? latest.frameMs, roundedMs);
+      if (severity === 'critical') latest.severity = 'critical';
+      return;
+    }
+
+    // Rate-limit creating brand-new distinct entries (at least 1200ms between new entries in same stage)
+    if (latest && nowMs - (latest.lastTimestampMs ?? latest.timestampMs) < 1200 && latest.stageLabel === stageLabel) {
+      latest.repeatCount = (latest.repeatCount ?? 1) + 1;
+      latest.lastTimestampMs = nowMs;
+      latest.lastElapsedLabel = elapsedLabel;
+      latest.minFps = Math.min(latest.minFps ?? latest.fps, fps);
+      latest.maxFps = Math.max(latest.maxFps ?? latest.fps, fps);
+      latest.maxFrameMs = Math.max(latest.maxFrameMs ?? latest.frameMs, roundedMs);
+      return;
+    }
 
     this.entries.unshift({
       id: this.nextEntryId++,
       timestampMs: nowMs,
+      lastTimestampMs: nowMs,
       elapsedLabel,
+      lastElapsedLabel: elapsedLabel,
       severity,
       fps,
-      frameMs: Math.round(frameMs * 10) / 10,
+      minFps: fps,
+      maxFps: fps,
+      frameMs: roundedMs,
+      maxFrameMs: roundedMs,
       stageLabel,
       cause,
       mitigation,
+      repeatCount: 1,
     });
     if (this.entries.length > PERF_MAX_LOG_ENTRIES) {
       this.entries.length = PERF_MAX_LOG_ENTRIES;
@@ -631,14 +1039,16 @@ export class PerformanceLogTracker {
   }
 
   public clear(nowMs: number = Date.now()) {
+    const resetFps = this.getEffectiveTargetFps();
+    const resetMs = Math.round((1000 / resetFps) * 100) / 100;
     this.entries.length = 0;
     this.droppedFramesCount = 0;
     this.lastAlertTimestampMs = nowMs - 10000;
-    this.fpsHistory.fill(60);
-    this.msHistory.fill(16.67);
-    this.lastSampleMs = 16.67;
-    this.smoothedFps = 60;
-    this.liveFps = 60;
+    this.fpsHistory.fill(resetFps);
+    this.msHistory.fill(resetMs);
+    this.lastSampleMs = resetMs;
+    this.smoothedFps = resetFps;
+    this.liveFps = resetFps;
   }
 
   public getAvgFrameMs(): number {
@@ -676,6 +1086,13 @@ export class PerformanceLogTracker {
     const p95Idx = Math.min(n - 1, Math.floor(n * 0.95));
     const latest = this.entries[0] ?? null;
     const activeAlert = Boolean(latest && nowMs - this.lastAlertTimestampMs < 4000);
+    const effTarget = this.getEffectiveTargetFps();
+    const summaryFps = latest
+      ? latest.minFps && latest.maxFps && latest.minFps !== latest.maxFps
+        ? `${latest.minFps}-${latest.maxFps}`
+        : `${latest.fps}`
+      : String(effTarget);
+    const repStr = latest && latest.repeatCount && latest.repeatCount > 1 ? ` (x${latest.repeatCount})` : '';
 
     return {
       liveFps: this.liveFps,
@@ -687,8 +1104,15 @@ export class PerformanceLogTracker {
       droppedFramesCount: this.droppedFramesCount,
       alertCount: this.entries.length,
       activeAlert,
-      lastAlertSummary: latest ? `${latest.fps} FPS (${latest.frameMs}ms) · ${latest.stageLabel}` : null,
+      lastAlertSummary: latest
+        ? `${summaryFps} FPS (${latest.maxFrameMs ?? latest.frameMs}ms)${repStr} · ${latest.stageLabel}`
+        : null,
       lock60FpsEnabled: this.lock60FpsEnabled,
+      fpsTarget: effTarget,
+      maxFpsLimit: this.maxFpsLimit,
+      autoOptimizerEnabled: this.lock60FpsEnabled,
+      activeGovernorTier: this.activeGovernorTier,
+      disabledFeatures: this.disabledFeatures.slice(),
       entries: this.entries.slice(),
     };
   }

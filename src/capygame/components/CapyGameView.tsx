@@ -17,7 +17,9 @@ import {
   COSMIC_GALAXIES,
   CosmicStage,
   ChronoVesselViewMode,
+  GalaxyMorphology,
   GPU_VISUAL_FILTER_PROFILES,
+  GpuAntiAliasingMode,
   GpuEngineTelemetry,
   GpuQualityPreset,
   GpuRenderBackendMode,
@@ -346,10 +348,13 @@ export const CapyGameView: React.FC = () => {
     maxTextureSize: 4096,
     shadowQuality: 'pcf_soft',
     shadowMapSize: 2048,
+    antiAliasing: 'msaa_fxaa',
+    resolutionScale: 1.0,
+    effectivePixelRatio: 1.0,
     msaaSamples: 0,
     bloomEnabled: true,
     ssaoEnabled: true,
-    sharpenAmount: 0.24,
+    sharpenAmount: 0.26,
     drawCalls: 0,
     triangles: 0,
     texturesInVram: 0,
@@ -358,6 +363,11 @@ export const CapyGameView: React.FC = () => {
     registeredPbrTextures: 0,
   });
   const [isPerfLogOpen, setIsPerfLogOpen] = useState<boolean>(false);
+  const [isDebugReportOpen, setIsDebugReportOpen] = useState<boolean>(false);
+  const [debugReportMode, setDebugReportMode] = useState<'summary' | 'analysis' | 'detail'>('summary');
+  const [debugReportText, setDebugReportText] = useState<string>('');
+  const [selectedSnippet, setSelectedSnippet] = useState<string>('');
+  const [isReportCopied, setIsReportCopied] = useState<boolean>(false);
   const [perfLog, setPerfLog] = useState<PerformanceLogSnapshot>({
     liveFps: 60,
     avgFps: 60,
@@ -370,11 +380,16 @@ export const CapyGameView: React.FC = () => {
     activeAlert: false,
     lastAlertSummary: null,
     lock60FpsEnabled: true,
+    fpsTarget: 60,
+    maxFpsLimit: 60,
+    autoOptimizerEnabled: true,
+    activeGovernorTier: 0,
+    disabledFeatures: [],
     entries: [],
   });
 
   const modalOpenRef = useRef<boolean>(false);
-  modalOpenRef.current = isSettingsOpen || isAboutOpen || isJsonEditorOpen;
+  modalOpenRef.current = isSettingsOpen || isAboutOpen || isJsonEditorOpen || isDebugReportOpen;
   const menuOpenRef = useRef<boolean>(false);
   menuOpenRef.current = isMenuOpen;
 
@@ -469,11 +484,11 @@ export const CapyGameView: React.FC = () => {
   const [isOpticsOpen, setIsOpticsOpen] = useState<boolean>(false);
   const [universeScale, setUniverseScale] = useState<UniverseScaleTelemetry>(() => ({
     active: false,
-    logScaleMeters: 28.0,
-    targetLogScaleMeters: 28.0,
-    scaleFormatted: formatPhysicalScaleMeters(28.0),
-    scientificLabel: '10^+28.0 m',
-    bandId: 'big_bang',
+    logScaleMeters: 30.0,
+    targetLogScaleMeters: 30.0,
+    scaleFormatted: formatPhysicalScaleMeters(30.0),
+    scientificLabel: '10^+30.0 m',
+    bandId: 'multiverse',
     bandIndex: 0,
     totalBands: UNIVERSE_SCALE_BANDS.length,
     bandTitle: UNIVERSE_SCALE_BANDS[0].title,
@@ -485,10 +500,11 @@ export const CapyGameView: React.FC = () => {
     showObjectMarkers: false,
     markers: [],
     cosmicAgeGyr: 0.0,
-    cruiseVelocityLogPerSec: -2.2,
+    cruiseVelocityLogPerSec: 0,
     vesselMode: 'chase_pod',
     fineStructureInverse: CODATA_FINE_STRUCTURE_INVERSE,
     fineStructureAlpha: 1 / CODATA_FINE_STRUCTURE_INVERSE,
+    galaxyMorphology: 'spiral',
   }));
 
   // Mobile Touch Virtual Joystick visual state
@@ -669,6 +685,13 @@ export const CapyGameView: React.FC = () => {
           if (cancelled) {
             wgpuRenderer.dispose();
             return;
+          }
+          const gpuDev = (wgpuRenderer.backend as { device?: GPUDevice })?.device;
+          if (gpuDev && typeof gpuDev.addEventListener === 'function') {
+            gpuDev.addEventListener('uncapturederror', (evt: Event) => {
+              const gpuErr = evt as { error?: { message?: string } };
+              console.warn('[WebGPU Uncaptured Error]', gpuErr.error?.message ?? gpuErr);
+            });
           }
           webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe };
         } catch {
@@ -892,11 +915,23 @@ export const CapyGameView: React.FC = () => {
           mountRef.current.style.opacity = '1';
         }
 
-        const dt = Math.min(0.1, Math.max(0.001, (now - lastTime) / 1000));
+        // Hardware Max FPS Frame Limiter (prevents burning unneeded GPU cycles on 120/144Hz panels)
+        const maxFpsCap = manager.performanceLog.maxFpsLimit;
+        if (!manager.isSoftwareGl && maxFpsCap > 0) {
+          const targetIntervalMs = 1000 / maxFpsCap;
+          const elapsedMs = now - lastTime;
+          if (elapsedMs < targetIntervalMs - 1.75) {
+            scheduleNextFrame(false);
+            return;
+          }
+        }
+
+        const rawDtSec = Math.max(0.001, (now - lastTime) / 1000);
+        const dt = Math.min(0.1, rawDtSec);
         lastTime = now;
         uiSyncAccum += dt;
 
-        manager.tick(dt, dt);
+        manager.tick(dt, rawDtSec);
 
         if (uiSyncAccum >= 0.35) {
           uiSyncAccum = 0;
@@ -990,6 +1025,7 @@ export const CapyGameView: React.FC = () => {
         e.preventDefault();
         const zoomDelta = -e.deltaY * 0.0012;
         managerRef.current.adjustZoom(zoomDelta);
+        setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
       };
 
       containerEl.addEventListener('touchstart', handleTouchStart, { passive: true });
@@ -1476,7 +1512,7 @@ export const CapyGameView: React.FC = () => {
         managerRef.current.launchIntoCosmos(28.0);
         managerRef.current.setSeamlessLogScale(28.0, true);
         managerRef.current.setVesselMode(cfg.player.startingVesselMode);
-        managerRef.current.setCruiseVelocity(-2.2);
+        managerRef.current.setCruiseVelocity(0);
       }
       setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
       setSnakeTelemetry(managerRef.current.getCapySnakeTelemetry());
@@ -1487,6 +1523,59 @@ export const CapyGameView: React.FC = () => {
     showToast(
       `Chrono-Vessel Launched · ${activeHeroName} · α⁻¹=${cfg.universe.fineStructureInverse.toFixed(1)}`
     );
+  };
+
+  const handleOpenDebugReport = (mode?: 'summary' | 'analysis' | 'detail') => {
+    AudioService.playCoin();
+    const effectiveMode = mode ?? debugReportMode;
+    const report = managerRef.current
+      ? managerRef.current.generatePerformanceDebugReport(effectiveMode)
+      : 'CapyGame 3D: Engine not initialized';
+    setDebugReportText(report);
+    setSelectedSnippet('');
+    setIsDebugReportOpen(true);
+    setIsReportCopied(false);
+  };
+
+  const handleToggleDebugReportMode = (mode: 'summary' | 'analysis' | 'detail') => {
+    setDebugReportMode(mode);
+    if (managerRef.current) {
+      const report = managerRef.current.generatePerformanceDebugReport(mode);
+      setDebugReportText(report);
+      setSelectedSnippet('');
+      setIsReportCopied(false);
+    }
+  };
+
+  const handleCopyDebugReport = async (textToCopy?: string) => {
+    const text = textToCopy || (selectedSnippet ? selectedSnippet : debugReportText);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setIsReportCopied(true);
+      AudioService.playCoin();
+      const msg = textToCopy
+        ? 'Incident log entry copied'
+        : selectedSnippet
+        ? `Selected snippet copied (${text.length} chars)`
+        : debugReportMode === 'summary'
+        ? 'Summary performance report copied (~120 tokens)'
+        : debugReportMode === 'analysis'
+        ? 'Fine-grained performance analysis copied'
+        : 'Full diagnostic report copied';
+      showToast(msg);
+      setTimeout(() => setIsReportCopied(false), 2500);
+    } catch {
+      showToast('Could not copy automatically. Select text below.');
+    }
   };
 
   const handlePlaceBuilding = (def: BuildingCatalogItem) => {
@@ -2222,61 +2311,50 @@ export const CapyGameView: React.FC = () => {
             )}
           </button>
 
-          <button
-            type="button"
-            data-testid="top-right-fps-btn"
-            onClick={() => {
-              AudioService.playCoin();
-              setIsPerfLogOpen((prev) => {
-                const next = !prev;
-                if (next) {
-                  setIsScaleAtlasOpen(false);
-                  setIsOpticsOpen(false);
-                  setIsInfographicExpanded(false);
-                  setIsMenuOpen(false);
-                }
-                return next;
-              });
-            }}
-            aria-expanded={isPerfLogOpen}
-            aria-label="Open 60 FPS Performance Log"
-            title="Live 60 FPS Telemetry & Frame-Drop Alert Log"
-            className={`h-6 sm:h-7 px-1 sm:px-2 rounded border flex items-center gap-0.5 sm:gap-1 text-[9px] sm:text-[10px] font-mono font-semibold tabular-nums transition-colors cursor-pointer shrink-0 ${
-              isPerfLogOpen
-                ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200'
-                : perfLog.liveFps >= 55
-                  ? 'bg-zinc-900 hover:bg-zinc-800 border-emerald-400/35 text-emerald-300'
-                  : perfLog.liveFps >= 40
-                    ? 'bg-amber-950/90 hover:bg-amber-900/90 border-amber-400/50 text-amber-200'
-                    : 'bg-rose-950/90 hover:bg-rose-900/90 border-rose-500/60 text-rose-200'
-            }`}
-          >
-            <Activity className="hidden sm:block w-3 h-3 shrink-0" />
-            <span>{perfLog.liveFps} FPS</span>
-            {perfLog.alertCount > 0 && (
-              <span
-                data-testid="fps-alert-count-badge"
-                className="px-0.5 sm:px-1 rounded bg-rose-500/25 border border-rose-400/50 text-rose-200 text-[8px] sm:text-[9px] leading-tight"
-              >
-                !{perfLog.alertCount}
-              </span>
-            )}
-          </button>
+          {gameSettings.showFpsButton !== false && (
+            <button
+              type="button"
+              data-testid="top-right-fps-btn"
+              onClick={() => {
+                AudioService.playCoin();
+                setIsPerfLogOpen((prev) => {
+                  const next = !prev;
+                  if (next) {
+                    setIsScaleAtlasOpen(false);
+                    setIsOpticsOpen(false);
+                    setIsInfographicExpanded(false);
+                    setIsMenuOpen(false);
+                  }
+                  return next;
+                });
+              }}
+              aria-expanded={isPerfLogOpen}
+              aria-label="Open 60 FPS Performance Log"
+              title="Live 60 FPS Telemetry & Frame-Drop Alert Log"
+              className={`h-6 sm:h-7 px-1 sm:px-2 rounded border flex items-center gap-0.5 sm:gap-1 text-[9px] sm:text-[10px] font-mono font-semibold tabular-nums transition-colors cursor-pointer shrink-0 ${
+                isPerfLogOpen
+                  ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200'
+                  : perfLog.liveFps >= 55
+                    ? 'bg-zinc-900 hover:bg-zinc-800 border-emerald-400/35 text-emerald-300'
+                    : perfLog.liveFps >= 40
+                      ? 'bg-amber-950/90 hover:bg-amber-900/90 border-amber-400/50 text-amber-200'
+                      : 'bg-rose-950/90 hover:bg-rose-900/90 border-rose-500/60 text-rose-200'
+              }`}
+            >
+              <Activity className="hidden sm:block w-3 h-3 shrink-0" />
+              <span>{perfLog.liveFps} FPS</span>
+              {perfLog.alertCount > 0 && (
+                <span
+                  data-testid="fps-alert-count-badge"
+                  className="px-0.5 sm:px-1 rounded bg-rose-500/25 border border-rose-400/50 text-rose-200 text-[8px] sm:text-[9px] leading-tight"
+                >
+                  !{perfLog.alertCount}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </nav>
-
-      {/* Transient Top-Right Lag / Frame-Drop Alert Strip */}
-      {perfLog.activeAlert && !isPerfLogOpen && perfLog.lastAlertSummary && (
-        <button
-          type="button"
-          data-testid="perf-lag-alert-banner"
-          onClick={() => setIsPerfLogOpen(true)}
-          className="fixed top-11 right-2 z-30 pointer-events-auto max-w-[calc(100vw-16px)] px-2.5 py-1 rounded-lg bg-rose-950/95 border border-rose-500/55 text-rose-100 text-[10px] font-mono flex items-center gap-1.5 shadow-xl cursor-pointer"
-        >
-          <AlertTriangle className="w-3 h-3 text-amber-300 shrink-0" />
-          <span className="truncate">FRAME DROP · {perfLog.lastAlertSummary}</span>
-        </button>
-      )}
 
       {/* TOP-ANCHORED PERFORMANCE LOG POPOVER (right-aligned under top-right FPS badge) */}
       {isPerfLogOpen && (
@@ -2288,7 +2366,7 @@ export const CapyGameView: React.FC = () => {
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 text-[10px] font-mono text-emerald-300">
                 <Activity className="w-3 h-3 shrink-0" />
-                <span>60 FPS PERFORMANCE GOVERNOR</span>
+                <span>PERFORMANCE &amp; FPS GOVERNOR</span>
               </div>
               <p className="text-[10px] font-mono text-zinc-400 truncate mt-0.5">
                 {gpuTelemetry.webGpuActive
@@ -2316,9 +2394,9 @@ export const CapyGameView: React.FC = () => {
               </span>
             </div>
             <div>
-              <span className="text-zinc-500 block">MIN FPS</span>
-              <span className={perfLog.minFps < 54 ? 'text-amber-300 font-semibold' : 'text-zinc-200'}>
-                {perfLog.minFps} FPS
+              <span className="text-zinc-500 block">MIN / CAP</span>
+              <span className={perfLog.minFps < perfLog.fpsTarget * 0.9 ? 'text-amber-300 font-semibold' : 'text-zinc-200'}>
+                {perfLog.minFps} / {perfLog.maxFpsLimit > 0 ? perfLog.maxFpsLimit : 'Unlim'}
               </span>
             </div>
             <div>
@@ -2329,7 +2407,7 @@ export const CapyGameView: React.FC = () => {
             </div>
             <div>
               <span className="text-zinc-500 block">MAX SPIKE</span>
-              <span className={perfLog.maxFrameMs > 20.5 ? 'text-rose-300' : 'text-zinc-200'}>
+              <span className={perfLog.maxFrameMs > (1000 / Math.max(24, perfLog.fpsTarget)) * 1.25 ? 'text-rose-300' : 'text-zinc-200'}>
                 {perfLog.maxFrameMs} ms
               </span>
             </div>
@@ -2340,12 +2418,18 @@ export const CapyGameView: React.FC = () => {
               </span>
             </div>
             <div>
-              <span className="text-zinc-500 block">SHADOW RIG</span>
+              <span className="text-zinc-500 block">SHADOW / DPR</span>
               <span className="text-amber-200 uppercase">
-                {gpuTelemetry.shadowCasterMode} · {gpuTelemetry.shadowMapSize || 'OFF'}
+                {gpuTelemetry.shadowCasterMode} · {gpuTelemetry.effectivePixelRatio}x
               </span>
             </div>
           </div>
+
+          {perfLog.disabledFeatures.length > 0 && (
+            <div className="px-2 py-1 rounded-lg bg-amber-950/50 border border-amber-400/35 text-amber-200 text-[10px] font-mono">
+              Auto-Opt Tier {perfLog.activeGovernorTier} ({perfLog.fpsTarget} FPS target): {perfLog.disabledFeatures.join(' · ')}
+            </div>
+          )}
 
           {/* Governor Controls & Log Actions */}
           <div className="flex items-center justify-between gap-1.5">
@@ -2366,7 +2450,27 @@ export const CapyGameView: React.FC = () => {
                   : 'bg-zinc-900 border-white/10 text-zinc-400'
               }`}
             >
-              Lock 60 FPS: {perfLog.lock60FpsEnabled ? 'ON' : 'OFF'}
+              Auto Opt ({perfLog.fpsTarget}): {perfLog.lock60FpsEnabled ? 'ON' : 'OFF'}
+            </button>
+            <button
+              type="button"
+              data-testid="perf-copy-debug-btn"
+              onClick={() => handleOpenDebugReport('summary')}
+              className="py-1.5 px-2.5 rounded-lg bg-cyan-950/80 hover:bg-cyan-900/90 text-cyan-200 border border-cyan-400/40 text-[10px] font-mono flex items-center gap-1 cursor-pointer shrink-0"
+              title="View and Copy Full Diagnostic Debug Log"
+            >
+              <Copy className="w-3 h-3" />
+              <span>Debug Log</span>
+            </button>
+            <button
+              type="button"
+              data-testid="perf-analysis-btn"
+              onClick={() => handleOpenDebugReport('analysis')}
+              className="py-1.5 px-2.5 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-200 border border-indigo-400/40 text-[10px] font-mono flex items-center gap-1 cursor-pointer shrink-0"
+              title="View Detailed CPU & GPU Subsystem Profiler Analysis"
+            >
+              <Activity className="w-3 h-3" />
+              <span>Analysis</span>
             </button>
             <button
               type="button"
@@ -2391,34 +2495,275 @@ export const CapyGameView: React.FC = () => {
           >
             {perfLog.entries.length === 0 ? (
               <div className="p-2.5 rounded-lg bg-emerald-950/35 border border-emerald-500/25 text-emerald-200 text-[11px] font-mono">
-                Locked 60 FPS — Zero frame drops or lag spikes logged.
+                Steady {perfLog.fpsTarget} FPS target — Zero frame drops logged.
               </div>
             ) : (
-              perfLog.entries.map((entry) => (
-                <div
-                  key={entry.id}
-                  data-testid="perf-log-entry-row"
-                  className={`p-2 rounded-lg border text-[10px] font-mono space-y-0.5 ${
-                    entry.severity === 'critical'
-                      ? 'bg-rose-950/55 border-rose-500/40 text-rose-100'
-                      : 'bg-amber-950/45 border-amber-400/35 text-amber-100'
+              perfLog.entries.map((entry) => {
+                const isGrouped = (entry.repeatCount ?? 1) > 1;
+                const fpsLabel =
+                  entry.minFps !== undefined &&
+                  entry.maxFps !== undefined &&
+                  entry.minFps !== entry.maxFps
+                    ? `${entry.minFps}-${entry.maxFps} FPS`
+                    : `${entry.fps} FPS`;
+                const timeLabel =
+                  entry.lastElapsedLabel && entry.lastElapsedLabel !== entry.elapsedLabel
+                    ? `T+${entry.elapsedLabel}-${entry.lastElapsedLabel}`
+                    : `T+${entry.elapsedLabel}`;
+                const incidentLine = `[${timeLabel}] ${fpsLabel} (${
+                  entry.maxFrameMs ? entry.maxFrameMs.toFixed(1) : entry.frameMs
+                }ms)${isGrouped ? ` (x${entry.repeatCount})` : ''} · ${entry.stageLabel} · ${
+                  entry.cause
+                } → ${entry.mitigation}`;
+
+                return (
+                  <div
+                    key={entry.id}
+                    data-testid="perf-log-entry-row"
+                    className={`p-2 rounded-lg border text-[10px] font-mono space-y-0.5 group transition-colors ${
+                      entry.severity === 'critical'
+                        ? 'bg-rose-950/55 border-rose-500/40 text-rose-100'
+                        : 'bg-amber-950/45 border-amber-400/35 text-amber-100'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold flex items-center gap-1 min-w-0">
+                        <AlertTriangle className="w-3 h-3 shrink-0" />
+                        <span className="truncate">
+                          {timeLabel} · {fpsLabel} ({entry.frameMs}ms)
+                          {isGrouped && (
+                            <span className="ml-1 px-1 py-0.2 bg-white/15 text-[9px] rounded font-bold">
+                              x{entry.repeatCount}
+                            </span>
+                          )}
+                        </span>
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[9px] opacity-80 truncate">{entry.stageLabel}</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCopyDebugReport(incidentLine);
+                          }}
+                          className="p-1 rounded bg-black/40 hover:bg-black/70 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                          title="Copy this incident to clipboard"
+                          aria-label="Copy incident entry"
+                        >
+                          <Copy className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="text-[9px] opacity-85 truncate">
+                      {entry.cause} → {entry.mitigation}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Copyable Performance Debug Log Modal */}
+      {isDebugReportOpen && (
+        <div
+          data-testid="perf-debug-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/80 backdrop-blur-xs pointer-events-auto"
+        >
+          <div className="w-full max-w-2xl max-h-[85vh] bg-zinc-950 border border-cyan-400/35 rounded-2xl p-3.5 sm:p-4 text-zinc-100 shadow-2xl flex flex-col space-y-3">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <Activity className="w-4 h-4 text-emerald-400 shrink-0" />
+                <h3 className="text-xs sm:text-sm font-mono font-bold text-zinc-100 truncate">
+                  FRAME DROP DEBUG LOG & TELEMETRY
+                </h3>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {selectedSnippet ? (
+                  <button
+                    type="button"
+                    data-testid="copy-selected-snippet-btn"
+                    onClick={() => handleCopyDebugReport(selectedSnippet)}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-500/25 hover:bg-emerald-500/35 border border-emerald-400/50 text-emerald-200 text-[11px] font-mono font-semibold flex items-center gap-1.5 cursor-pointer shadow transition-colors"
+                  >
+                    {isReportCopied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-300" />
+                        <span className="text-emerald-200">Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Selected ({selectedSnippet.length} ch)</span>
+                      </>
+                    )}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  data-testid="copy-debug-report-btn"
+                  onClick={() => handleCopyDebugReport()}
+                  className="px-2.5 py-1 rounded-lg bg-cyan-500/25 hover:bg-cyan-500/35 border border-cyan-400/50 text-cyan-200 text-[11px] font-mono font-semibold flex items-center gap-1.5 cursor-pointer shadow transition-colors"
+                >
+                  {isReportCopied && !selectedSnippet ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-300" />
+                      <span className="text-emerald-200">Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>
+                        {selectedSnippet
+                          ? 'Copy All'
+                          : debugReportMode === 'summary'
+                          ? 'Copy Summary'
+                          : debugReportMode === 'analysis'
+                          ? 'Copy Analysis'
+                          : 'Copy Full Detail'}
+                      </span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  data-testid="close-debug-modal-btn"
+                  onClick={() => setIsDebugReportOpen(false)}
+                  className="w-7 h-7 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 flex items-center justify-center text-zinc-400 cursor-pointer"
+                  aria-label="Close Debug Modal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Mode Selector and Quick Stats Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
+              {/* Mode Toggle Pills */}
+              <div
+                data-testid="perf-report-mode-toggle"
+                className="flex items-center p-0.5 rounded-lg bg-zinc-900 border border-white/10"
+              >
+                <button
+                  type="button"
+                  data-testid="perf-mode-summary-btn"
+                  onClick={() => handleToggleDebugReportMode('summary')}
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                    debugReportMode === 'summary'
+                      ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-400/40 shadow-xs'
+                      : 'text-zinc-400 hover:text-zinc-200'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold flex items-center gap-1">
-                      <AlertTriangle className="w-3 h-3 shrink-0" />
-                      <span>
-                        T+{entry.elapsedLabel} · {entry.fps} FPS ({entry.frameMs}ms)
-                      </span>
-                    </span>
-                    <span className="text-[9px] opacity-80 truncate">{entry.stageLabel}</span>
-                  </div>
-                  <div className="text-[9px] opacity-85 truncate">
-                    {entry.cause} → {entry.mitigation}
-                  </div>
-                </div>
-              ))
-            )}
+                  Summary (~120 tokens · Chat)
+                </button>
+                <button
+                  type="button"
+                  data-testid="perf-mode-analysis-btn"
+                  onClick={() => handleToggleDebugReportMode('analysis')}
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                    debugReportMode === 'analysis'
+                      ? 'bg-indigo-500/30 text-indigo-200 border border-indigo-400/50 shadow-xs'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  CPU/GPU Profiler (Analysis)
+                </button>
+                <button
+                  type="button"
+                  data-testid="perf-mode-detail-btn"
+                  onClick={() => handleToggleDebugReportMode('detail')}
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                    debugReportMode === 'detail'
+                      ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-400/40 shadow-xs'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  Full Detail (Deep Telemetry)
+                </button>
+              </div>
+
+              {/* Quick telemetry metrics */}
+              <div className="flex items-center gap-1.5">
+                <span className="px-2 py-0.5 rounded bg-zinc-900 border border-white/10 text-emerald-300">
+                  Live: {perfLog.liveFps} FPS
+                </span>
+                <span className="px-2 py-0.5 rounded bg-zinc-900 border border-white/10 text-rose-300">
+                  Drops: {perfLog.droppedFramesCount}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-zinc-900 border border-white/10 text-sky-300 truncate">
+                  {gpuTelemetry.webGpuActive ? 'WebGPU' : gpuTelemetry.backendLabel}
+                </span>
+              </div>
+            </div>
+
+            {/* Selection Guidance / Helper Bar */}
+            <div className="flex items-center justify-between text-[9.5px] font-mono text-zinc-400 bg-zinc-900/60 px-2.5 py-1 rounded-lg border border-white/5">
+              <span className="truncate">
+                {selectedSnippet
+                  ? `Selected ${selectedSnippet.split('\n').length} line(s) (${selectedSnippet.length} chars). Click "Copy Selected" or right-click to copy.`
+                  : 'Select any specific line or text with your cursor, or use Summary mode for minimal tokens.'}
+              </span>
+              <button
+                type="button"
+                data-testid="select-all-log-btn"
+                onClick={() => {
+                  const pre = document.querySelector('[data-testid="perf-debug-log-text"]');
+                  if (pre) {
+                    const range = document.createRange();
+                    range.selectNodeContents(pre);
+                    const sel = window.getSelection();
+                    sel?.removeAllRanges();
+                    sel?.addRange(range);
+                    setSelectedSnippet(pre.textContent || '');
+                  }
+                }}
+                className="text-[9px] text-cyan-400 hover:underline cursor-pointer ml-2 shrink-0"
+              >
+                Select All
+              </button>
+            </div>
+
+            {/* Scrollable diagnostic text area */}
+            <div
+              className="flex-1 min-h-0 overflow-y-auto bg-black/90 rounded-xl p-3 border border-white/10"
+              onMouseUp={() => {
+                const sel = window.getSelection()?.toString() || '';
+                setSelectedSnippet(sel.trim());
+              }}
+              onTouchEnd={() => {
+                const sel = window.getSelection()?.toString() || '';
+                setSelectedSnippet(sel.trim());
+              }}
+              onKeyUp={() => {
+                const sel = window.getSelection()?.toString() || '';
+                setSelectedSnippet(sel.trim());
+              }}
+            >
+              <pre
+                data-testid="perf-debug-log-text"
+                className="font-mono text-[10.5px] leading-relaxed text-zinc-300 whitespace-pre font-normal select-text cursor-text selection:bg-cyan-500/40 selection:text-white"
+              >
+                {debugReportText}
+              </pre>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 pt-1 border-t border-white/10">
+              <span className="truncate">
+                {debugReportMode === 'summary'
+                  ? 'Ultra-compact grouped log (~110-140 tokens) ready to paste into chat.'
+                  : 'Full GPU buffer, shadow cascades & engine memory specs.'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsDebugReportOpen(false)}
+                className="px-3 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/15 cursor-pointer shrink-0"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2783,6 +3128,43 @@ export const CapyGameView: React.FC = () => {
               >
                 Hubble SHO
               </button>
+            </div>
+          </div>
+
+          {/* 4. GALAXY MORPHOLOGY (Spiral, Barred Spiral, Elliptical, Irregular) */}
+          <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-zinc-900/85 border border-white/10">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-medium text-zinc-200">Galaxy Morphology</span>
+              <span className="text-[10px] font-mono text-zinc-400 capitalize">
+                {(universeScale.galaxyMorphology || 'spiral').replace('_', ' ')}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 text-[10px] font-mono">
+              {(
+                [
+                  { id: 'spiral' as const, label: 'Grand Spiral' },
+                  { id: 'barred_spiral' as const, label: 'Barred' },
+                  { id: 'elliptical' as const, label: 'Elliptical' },
+                  { id: 'irregular' as const, label: 'Irregular' },
+                ]
+              ).map((morph) => (
+                <button
+                  key={morph.id}
+                  type="button"
+                  data-testid={`morphology-btn-${morph.id}`}
+                  onClick={() => {
+                    AudioService.playCoin();
+                    managerRef.current?.setGalaxyMorphology(morph.id);
+                  }}
+                  className={`px-1.5 py-1 rounded border text-center cursor-pointer truncate ${
+                    (universeScale.galaxyMorphology || 'spiral') === morph.id
+                      ? 'bg-purple-500/25 border-purple-400 text-purple-200'
+                      : 'bg-zinc-950 text-zinc-400 border-white/10 hover:text-zinc-200'
+                  }`}
+                >
+                  {morph.label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -4431,6 +4813,150 @@ export const CapyGameView: React.FC = () => {
               </div>
 
               <div
+                data-testid="settings-fps-governor-panel"
+                className="p-3 rounded-lg bg-zinc-950/90 border border-emerald-400/25 space-y-3"
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-zinc-100">
+                      Frame Rate Limit &amp; Adaptive FPS Target
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Cap FPS to save GPU power, or auto-cut heavy FX to hit target FPS
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-400/35 shrink-0 tabular-nums">
+                    {perfLog.liveFps} FPS
+                  </span>
+                </div>
+
+                {/* Corner FPS Button Visibility Toggle */}
+                <div className="flex items-center justify-between gap-2 pb-1 border-b border-white/8">
+                  <div className="min-w-0">
+                    <span className="text-[11px] text-zinc-300 font-medium block">
+                      Top-Right FPS Button
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-400">
+                      Show or hide the live FPS button in the corner
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="settings-toggle-fps-btn"
+                    onClick={() => {
+                      const next = !(gameSettings.showFpsButton !== false);
+                      updateGameSettings({ showFpsButton: next });
+                      if (!next) setIsPerfLogOpen(false);
+                    }}
+                    className={`px-2.5 py-1 rounded text-[10px] font-mono font-semibold cursor-pointer shrink-0 border ${
+                      gameSettings.showFpsButton !== false
+                        ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/45'
+                        : 'bg-zinc-900 text-zinc-400 border-white/10'
+                    }`}
+                  >
+                    {gameSettings.showFpsButton !== false ? 'SHOWN' : 'HIDDEN'}
+                  </button>
+                </div>
+
+                {/* Maximum Frame Rate Limit */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">Max FPS Limit (Power Saver)</span>
+                    <span className="font-mono text-sky-300 tabular-nums">
+                      {(gameSettings.maxFpsLimit ?? 60) > 0
+                        ? `${gameSettings.maxFpsLimit} FPS Cap`
+                        : 'Unlimited (VSync)'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-7 gap-1">
+                    {([0, 30, 45, 60, 90, 120, 144] as const).map((cap) => (
+                      <button
+                        key={cap}
+                        type="button"
+                        data-testid={`settings-max-fps-${cap}`}
+                        onClick={() => updateGameSettings({ maxFpsLimit: cap })}
+                        className={`px-1 py-1 rounded text-[10px] font-mono cursor-pointer border text-center ${
+                          (gameSettings.maxFpsLimit ?? 60) === cap
+                            ? 'bg-sky-500/20 text-sky-200 border-sky-400/45'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {cap === 0 ? 'Unlim' : cap}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* FPS Target & Auto GPU Feature Reducer */}
+                <div className="space-y-1.5 pt-1 border-t border-white/8">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[11px] text-zinc-300 font-medium block">
+                        FPS Target (Auto Disable GPU FX)
+                      </span>
+                      <span className="text-[10px] font-mono text-zinc-400">
+                        Effective: {perfLog.fpsTarget} FPS
+                        {(gameSettings.maxFpsLimit ?? 60) > 0 &&
+                          (gameSettings.fpsTarget ?? 60) > (gameSettings.maxFpsLimit ?? 60) &&
+                          ` (capped by ${gameSettings.maxFpsLimit})`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="settings-toggle-fps-optimizer"
+                      onClick={() =>
+                        updateGameSettings({
+                          lock60FpsGovernor: !(gameSettings.lock60FpsGovernor !== false),
+                        })
+                      }
+                      className={`px-2.5 py-1 rounded text-[10px] font-mono font-semibold cursor-pointer shrink-0 border ${
+                        gameSettings.lock60FpsGovernor !== false
+                          ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/45'
+                          : 'bg-zinc-900 text-zinc-400 border-white/10'
+                      }`}
+                    >
+                      {gameSettings.lock60FpsGovernor !== false ? 'AUTO OPT ON' : 'MANUAL'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {([30, 45, 60, 90, 120] as const).map((target) => (
+                      <button
+                        key={target}
+                        type="button"
+                        data-testid={`settings-fps-target-${target}`}
+                        onClick={() =>
+                          updateGameSettings({
+                            fpsTarget: target,
+                            lock60FpsGovernor: true,
+                          })
+                        }
+                        className={`px-1.5 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                          (gameSettings.fpsTarget ?? 60) === target
+                            ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/45'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {target} FPS
+                      </button>
+                    ))}
+                  </div>
+                  {gameSettings.lock60FpsGovernor !== false && (
+                    <div className="text-[10px] font-mono text-zinc-400 bg-zinc-900/80 px-2 py-1 rounded border border-white/8">
+                      {perfLog.disabledFeatures.length > 0 ? (
+                        <span className="text-amber-300">
+                          Tier {perfLog.activeGovernorTier} Cuts: {perfLog.disabledFeatures.join(' · ')}
+                        </span>
+                      ) : (
+                        <span className="text-emerald-300">
+                          Holding {perfLog.fpsTarget} FPS · All requested GPU FX active
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div
                 data-testid="settings-gpu-engine-panel"
                 className="p-3 rounded-lg bg-zinc-950/90 border border-sky-400/20 space-y-3"
               >
@@ -4440,7 +4966,7 @@ export const CapyGameView: React.FC = () => {
                       3D Hardware GPU Engine, WebGPU WGSL, Lighting &amp; Filters
                     </div>
                     <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
-                      {gpuTelemetry.backendLabel} · {gpuTelemetry.registeredPbrTextures} PBR maps · Shadow {gpuTelemetry.shadowMapSize || 'OFF'} ({gpuTelemetry.shadowCasterMode.toUpperCase()})
+                      {gpuTelemetry.backendLabel} · DPR {gpuTelemetry.effectivePixelRatio}x · Shadow {gpuTelemetry.shadowMapSize || 'OFF'} ({gpuTelemetry.shadowCasterMode.toUpperCase()})
                     </p>
                   </div>
                   <button
@@ -4528,6 +5054,117 @@ export const CapyGameView: React.FC = () => {
                         </button>
                       )
                     )}
+                  </div>
+                </div>
+
+                {/* Draw Distance (Camera Far Clip + Background District Culling) */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-medium">Draw Distance</span>
+                    <span className="font-mono text-sky-300 tabular-nums">
+                      {Math.round(gameSettings.drawDistance ?? 650)} m
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(
+                      [
+                        { dist: 135, label: 'Short' },
+                        { dist: 280, label: 'Med' },
+                        { dist: 650, label: 'Far' },
+                        { dist: 1350, label: 'Max' },
+                      ] as const
+                    ).map(({ dist, label }) => (
+                      <button
+                        key={dist}
+                        type="button"
+                        data-testid={`settings-draw-distance-${dist}`}
+                        onClick={() => updateGameSettings({ drawDistance: dist })}
+                        className={`px-1 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                          Math.abs((gameSettings.drawDistance ?? 650) - dist) < 25
+                            ? 'bg-sky-500/20 text-sky-200 border-sky-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="range"
+                    data-testid="settings-draw-distance-slider"
+                    min={90}
+                    max={1350}
+                    step={15}
+                    value={gameSettings.drawDistance ?? 650}
+                    onChange={(e) =>
+                      updateGameSettings({ drawDistance: parseInt(e.target.value, 10) })
+                    }
+                    className="w-full accent-sky-400 cursor-pointer"
+                  />
+                </div>
+
+                {/* Render Resolution Scale & Anti-Aliasing */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-300 font-medium">Render Scale</span>
+                      <span className="font-mono text-sky-300 tabular-nums">
+                        {(gameSettings.gpuResolutionScale ?? 1.0).toFixed(2)}x ({gpuTelemetry.effectivePixelRatio} DPR)
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {([0.6, 0.75, 1.0, 1.25] as const).map((scale) => (
+                        <button
+                          key={scale}
+                          type="button"
+                          data-testid={`settings-res-scale-${scale}`}
+                          onClick={() => updateGameSettings({ gpuResolutionScale: scale })}
+                          className={`px-1 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                            Math.abs((gameSettings.gpuResolutionScale ?? 1.0) - scale) < 0.02
+                              ? 'bg-sky-500/20 text-sky-200 border-sky-400/40'
+                              : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                          }`}
+                        >
+                          {scale}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-300 font-medium">Anti-Aliasing</span>
+                      <span className="font-mono text-sky-300 uppercase">
+                        {gameSettings.gpuAntiAliasing ?? 'msaa_fxaa'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(
+                        [
+                          { id: 'msaa_fxaa', label: 'MSAA+FX' },
+                          { id: 'fxaa', label: 'FXAA' },
+                          { id: 'none', label: 'Off' },
+                        ] as Array<{ id: GpuAntiAliasingMode; label: string }>
+                      ).map(({ id, label }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          data-testid={`settings-aa-${id}`}
+                          onClick={() =>
+                            updateGameSettings({
+                              gpuAntiAliasing: id,
+                              gpuPostProcessing: id !== 'none' ? true : gameSettings.gpuPostProcessing,
+                            })
+                          }
+                          className={`px-1 py-1 rounded text-[10px] font-mono cursor-pointer border ${
+                            (gameSettings.gpuAntiAliasing ?? 'msaa_fxaa') === id
+                              ? 'bg-sky-500/20 text-sky-200 border-sky-400/40'
+                              : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -4642,13 +5279,18 @@ export const CapyGameView: React.FC = () => {
                       </button>
                     ))}
                   </div>
-                  <div className="grid grid-cols-4 gap-1.5">
+                  <div className={`grid grid-cols-4 gap-1.5 ${gameSettings.gpuTextureFilter !== 'trilinear_aniso' ? 'opacity-45' : ''}`}>
                     {([1, 4, 8, 16] as Array<1 | 4 | 8 | 16>).map((aniso) => (
                       <button
                         key={aniso}
                         type="button"
                         data-testid={`settings-aniso-${aniso}`}
-                        onClick={() => updateGameSettings({ gpuAnisotropy: aniso })}
+                        onClick={() =>
+                          updateGameSettings({
+                            gpuAnisotropy: aniso,
+                            gpuTextureFilter: 'trilinear_aniso',
+                          })
+                        }
                         className={`px-2 py-1 rounded text-[10px] font-mono cursor-pointer border ${
                           gameSettings.gpuAnisotropy === aniso
                             ? 'bg-zinc-800 text-emerald-300 border-emerald-400/40'
@@ -4695,7 +5337,7 @@ export const CapyGameView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Bloom, Depth SSAO & CAS Texture Sharpening */}
+                {/* Bloom, Depth SSAO, Bloom Intensity & CAS Texture Sharpening */}
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
@@ -4735,9 +5377,37 @@ export const CapyGameView: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="space-y-1">
+                {gameSettings.gpuBloomEnabled && (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-300 font-medium">HDR Bloom Intensity</span>
+                      <span className="font-mono text-sky-300 tabular-nums">
+                        {Math.round((gameSettings.gpuBloomStrength ?? 0.24) * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      data-testid="settings-bloom-slider"
+                      min={0.05}
+                      max={0.8}
+                      step={0.02}
+                      value={gameSettings.gpuBloomStrength ?? 0.24}
+                      onChange={(e) =>
+                        updateGameSettings({
+                          gpuBloomStrength: parseFloat(e.target.value),
+                          gpuPostProcessing: true,
+                        })
+                      }
+                      className="w-full accent-sky-400 cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                <div className={`space-y-1 ${!gameSettings.gpuPostProcessing ? 'opacity-50' : ''}`}>
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-zinc-300 font-medium">CAS Texture Sharpening</span>
+                    <span className="text-zinc-300 font-medium">
+                      CAS Texture Sharpening {!gameSettings.gpuPostProcessing && '(Needs Post-FX)'}
+                    </span>
                     <span className="font-mono text-sky-300 tabular-nums">
                       {Math.round(gameSettings.gpuSharpenAmount * 100)}%
                     </span>
@@ -4764,7 +5434,7 @@ export const CapyGameView: React.FC = () => {
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-zinc-100">
-                      Capybara Mesh Detail (60 FPS Governor)
+                      Capybara Mesh Detail (Adaptive LOD)
                     </div>
                     <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
                       Active: {snakeTelemetry.lodLabel} (~{snakeTelemetry.trianglesPerCapy.toLocaleString()} tris · {snakeTelemetry.fps} FPS)
@@ -4784,7 +5454,7 @@ export const CapyGameView: React.FC = () => {
                         : 'bg-zinc-900 text-zinc-400 border-white/10'
                     }`}
                   >
-                    {gameSettings.autoCapyLod ? 'AUTO 60 FPS' : 'MANUAL'}
+                    {gameSettings.autoCapyLod ? 'AUTO LOD' : 'MANUAL'}
                   </button>
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
@@ -4914,8 +5584,8 @@ export const CapyGameView: React.FC = () => {
                     {snakeTelemetry.weatherLabel}
                   </span>
                 </div>
-                <div className="grid grid-cols-6 gap-1">
-                  {(['auto', 'clear', 'rain', 'storm', 'mist', 'snow'] as Array<
+                <div className="grid grid-cols-5 gap-1">
+                  {(['auto', 'clear', 'rain', 'storm', 'snow'] as Array<
                     'auto' | WeatherType
                   >).map((wMode) => (
                     <button
@@ -4995,44 +5665,22 @@ export const CapyGameView: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/80 border border-white/10">
-                  <div>
-                    <div className="text-xs font-medium text-zinc-200">Atmospheric Fog</div>
-                    <div className="text-[10px] text-zinc-500">Horizon attenuation</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateGameSettings({ worldFogEnabled: !gameSettings.worldFogEnabled })
-                    }
-                    className={`px-2.5 py-1 rounded text-xs font-mono border cursor-pointer ${
-                      gameSettings.worldFogEnabled
-                        ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
-                        : 'bg-zinc-900 text-zinc-400 border-white/10'
-                    }`}
-                  >
-                    {gameSettings.worldFogEnabled ? 'ON' : 'OFF'}
-                  </button>
+              <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                <div>
+                  <div className="text-xs font-medium text-zinc-200">Audio Synthesis</div>
+                  <div className="text-[10px] text-zinc-500">WebAudio harmonic output</div>
                 </div>
-
-                <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/80 border border-white/10">
-                  <div>
-                    <div className="text-xs font-medium text-zinc-200">Audio Synthesis</div>
-                    <div className="text-[10px] text-zinc-500">WebAudio harmonic output</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleToggleMute}
-                    className={`px-2.5 py-1 rounded text-xs font-mono border cursor-pointer ${
-                      !isMuted
-                        ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
-                        : 'bg-zinc-900 text-zinc-400 border-white/10'
-                    }`}
-                  >
-                    {!isMuted ? 'ON' : 'MUTED'}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  className={`px-2.5 py-1 rounded text-xs font-mono border cursor-pointer ${
+                    !isMuted
+                      ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
+                      : 'bg-zinc-900 text-zinc-400 border-white/10'
+                  }`}
+                >
+                  {!isMuted ? 'ON' : 'MUTED'}
+                </button>
               </div>
 
               <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 flex items-center justify-between gap-2">
