@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { GpuQualityPreset } from '../../types';
 import type { GpuPipelineConfig, PerformanceLogEntry } from './GpuEngineTypes';
 import type { CapyLodTier } from '../../types';
@@ -1180,6 +1181,114 @@ export function dampShortestAngle(
 ): number {
   const diff = Math.atan2(Math.sin(target - current), Math.cos(target - current));
   return current + diff * (1 - Math.exp(-lambda * dt));
+}
+
+// ============================================================================
+// SCENE MATRIX GRAPH CULLING & WEBGPU TELEMETRY HELPERS
+// ============================================================================
+
+/**
+ * Installs an O(1) subtree skip on `root.updateMatrixWorld(force)` so Three.js does NOT
+ * waste CPU walking thousands of hidden or `matrixWorldAutoUpdate === false` descendants
+ * every frame (Three.js's built-in `Object3D.updateMatrixWorld` recurses into children even when
+ * `visible` or `matrixWorldAutoUpdate` is false). Calling `updateMatrixWorld(true)` still forces
+ * a full recursive refresh when needed.
+ */
+export function installFastMatrixCull<T extends THREE.Object3D>(root: T): T {
+  if (!root || root.userData.__fastMatrixCullInstalled) {
+    return root;
+  }
+  root.userData.__fastMatrixCullInstalled = true;
+  root.updateMatrixWorld = function fastUpdateMatrixWorld(force?: boolean): void {
+    if (!this.visible || !this.matrixWorldAutoUpdate) {
+      this.matrixWorldNeedsUpdate = true;
+      return;
+    }
+    THREE.Object3D.prototype.updateMatrixWorld.call(this, force);
+  };
+  return root;
+}
+
+/**
+ * Extracts accurate per-frame draw call counts across WebGPURenderer and WebGLRenderer.
+ * In Three.js WebGPURenderer, `info.render.calls` counts lifetime `_renderScene` invocations
+ * rather than current-frame draw calls, whereas `info.render.drawCalls` holds per-frame draws.
+ */
+export function extractWebGpuRenderDrawCalls(
+  renderInfo: { calls?: number; drawCalls?: number } | undefined,
+  isWebGpu: boolean
+): number {
+  if (!renderInfo) return 0;
+  if (isWebGpu && typeof renderInfo.drawCalls === 'number') {
+    return renderInfo.drawCalls;
+  }
+  return renderInfo.calls ?? 0;
+}
+
+export interface BackendBenchSample {
+  supported: boolean;
+  avgMs: number;
+  maxMs: number;
+  hadError: boolean;
+}
+
+export interface BackendBenchSelection {
+  winner: 'webgpu' | 'webgl2';
+  webGpuScoreMs: number;
+  webGl2ScoreMs: number;
+  reason: string;
+}
+
+/**
+ * Picks the faster, cleaner graphics backend from live startup micro-benchmark results.
+ * Weights average frame execution (72%) alongside worst-case tail spike (28%) so drivers with
+ * severe command-queue stalls automatically yield to the smoother backend.
+ */
+export function selectBestGpuBackend(
+  webGpu: BackendBenchSample,
+  webGl2: BackendBenchSample
+): BackendBenchSelection {
+  const wgScore =
+    webGpu.supported && !webGpu.hadError && Number.isFinite(webGpu.avgMs) && webGpu.avgMs > 0
+      ? Math.round((webGpu.avgMs * 0.72 + Math.max(webGpu.avgMs, webGpu.maxMs) * 0.28) * 100) / 100
+      : Number.POSITIVE_INFINITY;
+  const glScore =
+    webGl2.supported && !webGl2.hadError && Number.isFinite(webGl2.avgMs) && webGl2.avgMs > 0
+      ? Math.round((webGl2.avgMs * 0.72 + Math.max(webGl2.avgMs, webGl2.maxMs) * 0.28) * 100) / 100
+      : Number.POSITIVE_INFINITY;
+
+  if (!Number.isFinite(wgScore)) {
+    return {
+      winner: 'webgl2',
+      webGpuScoreMs: wgScore,
+      webGl2ScoreMs: glScore,
+      reason: webGpu.hadError ? 'WebGPU driver error during bench -> WebGL2' : 'WebGPU unavailable -> WebGL2',
+    };
+  }
+  if (!Number.isFinite(glScore)) {
+    return {
+      winner: 'webgpu',
+      webGpuScoreMs: wgScore,
+      webGl2ScoreMs: glScore,
+      reason: 'WebGL2 unavailable -> WebGPU',
+    };
+  }
+
+  // Slight <= 3% tolerance favors WebGPU compute capability on genuine ties; otherwise strictly faster wins
+  if (wgScore <= glScore * 1.03) {
+    return {
+      winner: 'webgpu',
+      webGpuScoreMs: wgScore,
+      webGl2ScoreMs: glScore,
+      reason: `WebGPU faster/tied (${webGpu.avgMs.toFixed(1)}ms vs WebGL2 ${webGl2.avgMs.toFixed(1)}ms)`,
+    };
+  }
+  return {
+    winner: 'webgl2',
+    webGpuScoreMs: wgScore,
+    webGl2ScoreMs: glScore,
+    reason: `WebGL2 faster (${webGl2.avgMs.toFixed(1)}ms vs WebGPU ${webGpu.avgMs.toFixed(1)}ms)`,
+  };
 }
 
 

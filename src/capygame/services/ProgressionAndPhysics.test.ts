@@ -57,6 +57,9 @@ import {
   computeVesselOneToOneTransform,
   doesSphereBlockPlayerSightline,
   evaluateWholeScreenSightlineClearAlpha,
+  extractWebGpuRenderDrawCalls,
+  installFastMatrixCull,
+  selectBestGpuBackend,
   shouldEnableOccluderDepthWrite,
   shouldRenderDistrict,
 } from '../engine/gpu/FramePerformanceGovernor';
@@ -916,4 +919,78 @@ test('Mouselook Integrator & Settings: directional sign conventions, Y-inversion
   assert.ok(damped > Math.PI - 0.11, 'Crosses seam eastward rather than spinning 340 degrees');
 });
 
+test('Scene Matrix Cull & GPU Auto-Bench Regression: O(1) hidden subtree skip, catch-up update, and backend scoring', () => {
+  const scene = new THREE.Scene();
+  scene.matrixAutoUpdate = false;
+  const group = new THREE.Group();
+  const child = new THREE.Mesh();
+  let childMatrixUpdates = 0;
+  const origChildUpdate = child.updateMatrix.bind(child);
+  child.updateMatrix = () => {
+    childMatrixUpdates++;
+    origChildUpdate();
+  };
+  group.add(child);
+  scene.add(group);
+  installFastMatrixCull(group);
+
+  // 1. Visible + enabled updates child normally
+  group.visible = true;
+  group.matrixWorldAutoUpdate = true;
+  group.position.set(1, 2, 3);
+  scene.updateMatrixWorld();
+  assert.equal(childMatrixUpdates, 1);
+
+  // 2. Hidden subtree skips child updateMatrix() completely in O(1), even when parent uses force=true
+  group.visible = false;
+  child.position.set(4, 5, 6);
+  scene.updateMatrixWorld(true);
+  assert.equal(childMatrixUpdates, 1);
+
+  // 3. Visible but matrixWorldAutoUpdate = false also skips child recursion
+  group.visible = true;
+  group.matrixWorldAutoUpdate = false;
+  scene.updateMatrixWorld();
+  assert.equal(childMatrixUpdates, 1);
+
+  // 4. Re-enabling visibility + matrixWorldAutoUpdate catches up dirty matrices cleanly
+  group.visible = true;
+  group.matrixWorldAutoUpdate = true;
+  scene.updateMatrixWorld();
+  assert.equal(childMatrixUpdates, 2);
+
+  // 5. WebGPU telemetry prefers per-frame drawCalls over cumulative lifetime calls
+  assert.equal(extractWebGpuRenderDrawCalls({ calls: 4509, drawCalls: 42 }, true), 42);
+  assert.equal(extractWebGpuRenderDrawCalls({ calls: 61, drawCalls: 0 }, false), 61);
+
+  // 6. Auto-benchmark selects faster backend, rejects driver stalls, and respects 3% WebGPU tie margin
+  assert.equal(
+    selectBestGpuBackend(
+      { supported: true, avgMs: 14.5, maxMs: 28.0, hadError: false },
+      { supported: true, avgMs: 2.1, maxMs: 3.4, hadError: false }
+    ).winner,
+    'webgl2'
+  );
+  assert.equal(
+    selectBestGpuBackend(
+      { supported: true, avgMs: 1.8, maxMs: 2.5, hadError: false },
+      { supported: true, avgMs: 4.5, maxMs: 8.0, hadError: false }
+    ).winner,
+    'webgpu'
+  );
+  assert.equal(
+    selectBestGpuBackend(
+      { supported: true, avgMs: 1.2, maxMs: 2.0, hadError: true },
+      { supported: true, avgMs: 6.0, maxMs: 9.0, hadError: false }
+    ).winner,
+    'webgl2'
+  );
+  assert.equal(
+    selectBestGpuBackend(
+      { supported: true, avgMs: 2.04, maxMs: 3.0, hadError: false },
+      { supported: true, avgMs: 2.0, maxMs: 3.0, hadError: false }
+    ).winner,
+    'webgpu'
+  );
+});
 

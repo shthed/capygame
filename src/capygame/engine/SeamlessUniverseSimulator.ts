@@ -40,6 +40,7 @@ import {
   HOME_GALAXY_ARM_THETA,
   SANCTUARY_SURFACE_LAT_DEG,
   SANCTUARY_SURFACE_LON_DEG,
+  installFastMatrixCull,
 } from './gpu/FramePerformanceGovernor';
 import { convertLegacyShaderMaterialsToTsl } from './gpu/WebGpuPipeline';
 
@@ -338,15 +339,21 @@ export class SeamlessUniverseSimulator {
     this.isWebGpu = isWebGpu;
     this.rootGroup.name = 'SeamlessUniverseSimulatorRoot';
     this.rootGroup.visible = false;
+    this.rootGroup.matrixWorldAutoUpdate = false;
     this.rootGroup.userData.ignoreCameraFade = true;
+    installFastMatrixCull(this.rootGroup);
 
     this.celestialBackdropGroup.name = 'DeepSkyCelestialBackdrop';
     this.celestialBackdropGroup.visible = false;
+    this.celestialBackdropGroup.matrixWorldAutoUpdate = false;
     this.celestialBackdropGroup.userData.ignoreCameraFade = true;
+    installFastMatrixCull(this.celestialBackdropGroup);
 
     this.forestGroveGroup.name = 'WoodlandCapybaraForestGrove';
     this.forestGroveGroup.visible = !isSoftwareGl;
+    this.forestGroveGroup.matrixWorldAutoUpdate = !isSoftwareGl;
     this.forestGroveGroup.userData.ignoreCameraFade = true;
+    installFastMatrixCull(this.forestGroveGroup);
 
     for (let i = 0; i < MAX_PROJECTED_MARKERS; i++) {
       this.projectedMarkerPool.push({
@@ -573,7 +580,9 @@ export class SeamlessUniverseSimulator {
       const group = new THREE.Group();
       group.name = `ScaleLayer_${spec.id}`;
       group.visible = false;
+      group.matrixWorldAutoUpdate = false;
       group.userData.ignoreCameraFade = true;
+      installFastMatrixCull(group);
 
       let tickFn:
         | ((dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void)

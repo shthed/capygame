@@ -236,6 +236,7 @@ export interface GpuEngineTelemetry {
   geometriesInVram: number;
   shaderPrograms: number;
   registeredPbrTextures: number;
+  backendBenchmarkSummary?: string;
 }
 
 export type ProfilerPhaseId =

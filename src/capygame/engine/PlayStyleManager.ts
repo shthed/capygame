@@ -36,6 +36,7 @@ import {
   doesSphereBlockPlayerSightline,
   findNextEffectiveMitigationLevel,
   findPrevEffectiveMitigationLevel,
+  installFastMatrixCull,
   shouldEnableOccluderDepthWrite,
   shouldRenderDistrict,
 } from './gpu/FramePerformanceGovernor';
@@ -651,7 +652,7 @@ export class PlayStyleManager {
     initialSettings: CapyGameSettings = DEFAULT_CAPY_SETTINGS,
     callbacks: GameEventCallbacks,
     webGpuInit?: {
-      renderer: THREE_WEBGPU.WebGPURenderer;
+      renderer?: THREE_WEBGPU.WebGPURenderer | null;
       probe: WebGpuProbeResult;
     } | null
   ) {
@@ -682,6 +683,7 @@ export class PlayStyleManager {
 
     // 1. Scene & Camera (Long far-plane so all 5 game zones are visible in the same world)
     this.scene = new THREE.Scene();
+    this.scene.matrixAutoUpdate = false;
     this.scene.background = new THREE.Color(0x38bdf8);
     this.applyFogSetting();
 
@@ -787,10 +789,10 @@ export class PlayStyleManager {
       width,
       height,
       gpuCfg,
-      this.isWebGpu
+      webGpuInit?.probe || this.webGpuPipeline
         ? {
             webGpuPipeline: this.webGpuPipeline ?? undefined,
-            webGpuProbe: webGpuInit?.probe,
+            webGpuProbe: webGpuInit?.probe ?? null,
           }
         : undefined
     );
@@ -890,9 +892,25 @@ export class PlayStyleManager {
     this.sanctuaryGroup.add(this.seamlessUniverse.forestGroveGroup);
     this.chronoVessel = new ChronoVesselRig();
     this.chronoVessel.root.visible = false;
+    this.chronoVessel.root.matrixWorldAutoUpdate = false;
     this.scene.add(this.chronoVessel.root);
     this.buildSelectableCapyHeroCircle();
     this.prewarmOccluderShaderPrograms();
+
+    // Install O(1) matrix-tree skip on hidden/disabled top-level subtrees so Three.js never
+    // walks ~13,000 hidden descendants every frame.
+    installFastMatrixCull(this.worldBaseGroup);
+    installFastMatrixCull(this.sanctuaryGroup);
+    installFastMatrixCull(this.sporeGroup);
+    installFastMatrixCull(this.breakoutGroup);
+    installFastMatrixCull(this.runnerGroup);
+    installFastMatrixCull(this.fallGuysGroup);
+    installFastMatrixCull(this.cosmicBuilder.rootGroup);
+    installFastMatrixCull(this.vfxEngine.rootGroup);
+    installFastMatrixCull(this.selectableCapyGroup);
+    installFastMatrixCull(this.heroCapy);
+    installFastMatrixCull(this.dachshundGroup);
+    installFastMatrixCull(this.chronoVessel.root);
 
     if (this.isWebGpu) {
       convertLegacyShaderMaterialsToTsl(this.scene);
@@ -1934,7 +1952,10 @@ export class PlayStyleManager {
     if (stage === 'playing') {
       this.vesselMode = 'landed';
       this.chronoVessel?.setMode('landed');
-      if (this.chronoVessel) this.chronoVessel.root.visible = false;
+      if (this.chronoVessel) {
+        this.chronoVessel.root.visible = false;
+        this.chronoVessel.root.matrixWorldAutoUpdate = false;
+      }
     }
     const isSurfaceStage = stage === 'capy_selection' || stage === 'playing';
     const stageFarInfo = computeEffectiveCameraFar(
@@ -1980,6 +2001,7 @@ export class PlayStyleManager {
     this.selectableCapyGroup.visible = stage === 'capy_selection';
     this.selectableCapyGroup.matrixWorldAutoUpdate = stage === 'capy_selection';
     this.heroCapy.visible = stage === 'playing';
+    this.heroCapy.matrixWorldAutoUpdate = stage === 'playing';
     this.syncDachshundVisibility();
     this.applySurfaceDrawDistanceAndCulling(isSurfaceStage);
 
@@ -3273,9 +3295,12 @@ export class PlayStyleManager {
       sLines.push(`Scene: ${this.currentMode} · ${this.cosmicStage} | Scale: ${this.currentLogScaleMeters.toFixed(1)} log-m (T+${computeCosmicAgeGyr(this.currentLogScaleMeters).toFixed(2)} Gyr)`);
       sLines.push(`Vessel: ${this.vesselMode} | Velocity: ${this.cruiseVelocityLogPerSec.toFixed(1)} log/s`);
       sLines.push(`GPU: ${gpu.backendLabel} (${gpu.webGpuAdapterName || (gpu.gpuRenderer ? gpu.gpuRenderer.slice(0, 32) : 'Default')}) | Preset: ${gpu.qualityPreset}`);
+      if (gpu.backendBenchmarkSummary) {
+        sLines.push(`Auto-Bench: ${gpu.backendBenchmarkSummary}`);
+      }
       sLines.push(`Pipeline: Shadows ${gpu.shadowCasterMode.toUpperCase()} (${gpu.shadowMapSize}px) | Bloom: ${gpu.bloomEnabled ? 'ON' : 'OFF'} | SSAO: ${gpu.ssaoEnabled ? 'ON' : 'OFF'} | AA: ${gpu.antiAliasing} | Scale: ${gpu.resolutionScale}x (DPR ${gpu.effectivePixelRatio})`);
       sLines.push(`Opt Cuts: ${disabledStr}`);
-      sLines.push(`Draw: ${rInfo?.render?.calls ?? gpu.drawCalls} calls | ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()} tris | VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram} geos, ${rInfo?.memory?.textures ?? gpu.texturesInVram} texs`);
+      sLines.push(`Draw: ${gpu.drawCalls} calls | ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()} tris | VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram} geos, ${rInfo?.memory?.textures ?? gpu.texturesInVram} texs`);
       sLines.push('Incidents:');
       if (perf.entries.length === 0) {
         sLines.push(`- Zero frame drops recorded (steady ${perf.fpsTarget} FPS target).`);
@@ -3321,6 +3346,9 @@ export class PlayStyleManager {
     lines.push('');
     lines.push('--- GRAPHICS PIPELINE & GPU TELEMETRY ---');
     lines.push(`Backend: ${gpu.backendLabel} (WebGPU Active: ${gpu.webGpuActive})`);
+    if (gpu.backendBenchmarkSummary) {
+      lines.push(`Auto-Bench: ${gpu.backendBenchmarkSummary}`);
+    }
     lines.push(`Adapter: ${gpu.webGpuAdapterName || 'Unknown'}`);
     lines.push(`GPU Renderer: ${gpu.gpuRenderer}`);
     lines.push(`Software GL: ${gpu.isSoftwareGl}`);
@@ -3333,7 +3361,7 @@ export class PlayStyleManager {
     lines.push(`Anisotropy: ${gpu.activeAnisotropy}/${gpu.maxHardwareAnisotropy}`);
     lines.push('');
     lines.push('--- THREE.JS VRAM & DRAW METRICS ---');
-    lines.push(`Draw Calls: ${rInfo?.render?.calls ?? gpu.drawCalls}`);
+    lines.push(`Draw Calls: ${gpu.drawCalls}`);
     lines.push(`Triangles: ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()}`);
     lines.push(`Lines: ${rInfo?.render?.lines ?? 0} | Points: ${rInfo?.render?.points ?? 0}`);
     lines.push(`Geometries in VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram}`);
@@ -4323,6 +4351,7 @@ export class PlayStyleManager {
       this.currentMode === 'sanctuary' &&
       !this.zoneTransition.active;
     this.dachshundGroup.visible = activeInSanctuary;
+    this.dachshundGroup.matrixWorldAutoUpdate = activeInSanctuary;
     if (this.heroCapy?.userData?.rearAssemblyGroup) {
       this.heroCapy.userData.rearAssemblyGroup.visible = !activeInSanctuary;
     }
@@ -5971,9 +6000,20 @@ export class PlayStyleManager {
     this.camera.updateMatrixWorld();
     this.profiler.endPhase('scene_graph_matrices');
 
+    // Matrices were just updated cleanly above; suppress redundant internal
+    // scene.updateMatrixWorld() inside WebGPURenderer._renderScene / WebGLRenderer.render.
+    const prevSceneMatrixAuto = this.scene.matrixWorldAutoUpdate;
+    const prevCamMatrixAuto = this.camera.matrixWorldAutoUpdate;
+    this.scene.matrixWorldAutoUpdate = false;
+    this.camera.matrixWorldAutoUpdate = false;
     this.profiler.beginGpuRender();
-    this.gpuEngine.render();
-    this.profiler.endGpuRender();
+    try {
+      this.gpuEngine.render();
+    } finally {
+      this.profiler.endGpuRender();
+      this.scene.matrixWorldAutoUpdate = prevSceneMatrixAuto;
+      this.camera.matrixWorldAutoUpdate = prevCamMatrixAuto;
+    }
 
     const endMs = performance.now();
     const workMs = tickStartMs !== undefined ? endMs - tickStartMs : 4.0;
@@ -8781,6 +8821,7 @@ export class PlayStyleManager {
     this.selectableCapyGroup.visible = false;
     this.selectableCapyGroup.matrixWorldAutoUpdate = false;
     this.heroCapy.visible = inForestWindow;
+    this.heroCapy.matrixWorldAutoUpdate = inForestWindow;
     if (this.vfxEngine) {
       this.vfxEngine.rootGroup.visible = inForestWindow;
       this.vfxEngine.rootGroup.matrixWorldAutoUpdate = inForestWindow;
@@ -8789,7 +8830,9 @@ export class PlayStyleManager {
       }
     }
     if (this.dachshundGroup) {
-      this.dachshundGroup.visible = inForestWindow && this.currentMode === 'sanctuary';
+      const showDachshund = inForestWindow && this.currentMode === 'sanctuary';
+      this.dachshundGroup.visible = showDachshund;
+      this.dachshundGroup.matrixWorldAutoUpdate = showDachshund;
     }
     this.scene.fog = null;
 
@@ -8953,7 +8996,9 @@ export class PlayStyleManager {
     if (this.chronoVessel) {
       if (this.vesselMode === 'landed') {
         this.chronoVessel.root.visible = false;
+        this.chronoVessel.root.matrixWorldAutoUpdate = false;
       } else {
+        this.chronoVessel.root.matrixWorldAutoUpdate = true;
         this.camera.updateMatrixWorld();
         _camForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
         _camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);

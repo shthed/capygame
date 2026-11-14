@@ -20,6 +20,7 @@ import {
   computeBloomRenderScale,
   computeEffectivePixelRatio,
   computeTexelSnappedShadowOrigin,
+  extractWebGpuRenderDrawCalls,
 } from './FramePerformanceGovernor';
 import type { WebGpuPostAndComputePipeline, WebGpuProbeResult } from './WebGpuPipeline';
 
@@ -347,6 +348,10 @@ export class HardwareGpuEngine {
     this.isWebGpu = Boolean(this.webGpuPipeline);
     this.viewportWidth = Math.max(1, initialWidth);
     this.viewportHeight = Math.max(1, initialHeight);
+    if (this.isWebGpu) {
+      const wgpuInternal = renderer as unknown as { samples?: number; _samples?: number };
+      this.activeMsaaSamples = wgpuInternal.samples ?? wgpuInternal._samples ?? 0;
+    }
 
     // Probe real hardware GPU limits and renderer string safely across WebGPU & WebGL2
     this.gpuRendererString = this.isWebGpu
@@ -1140,7 +1145,10 @@ export class HardwareGpuEngine {
         ? this.config.ssaoEnabled
         : this.config.ssaoEnabled && Boolean(this.depthTexture),
       sharpenAmount: +this.config.sharpenAmount.toFixed(2),
-      drawCalls: renderInfo.calls,
+      drawCalls: extractWebGpuRenderDrawCalls(
+        renderInfo as { calls?: number; drawCalls?: number },
+        this.isWebGpu
+      ),
       triangles: renderInfo.triangles,
       texturesInVram: memInfo.textures,
       geometriesInVram: memInfo.geometries,
@@ -1150,6 +1158,7 @@ export class HardwareGpuEngine {
       webGpuSupported: Boolean(this.webGpuProbe?.supported),
       webGpuAdapterName: this.webGpuProbe?.adapterName || this.gpuRendererString,
       computeParticlesActive: this.isWebGpu,
+      backendBenchmarkSummary: this.webGpuProbe?.benchmarkSummary,
       shadowCasterMode:
         this.isSoftwareGl || this.config.shadowQuality === 'off'
           ? 'off'

@@ -50,7 +50,7 @@ import {
 } from '../engine/PlayStyleManager';
 import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
 import { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
-import { probeWebGpuBackend } from '../engine/gpu/WebGpuPipeline';
+import { clearGpuBackendBenchmarkCache, probeWebGpuBackend } from '../engine/gpu/WebGpuPipeline';
 import { AudioService } from '../services/AudioService';
 import { NativeBridge } from '../../services/NativeBridge';
 import { PwaService } from '../../services/PwaService';
@@ -736,14 +736,18 @@ export const CapyGameView: React.FC = () => {
       if (cancelled || !mountRef.current) return;
 
       let webGpuInit: {
-        renderer: THREE_WEBGPU.WebGPURenderer;
+        renderer: THREE_WEBGPU.WebGPURenderer | null;
         probe: typeof webGpuProbe;
-      } | null = null;
+      } = { renderer: null, probe: webGpuProbe };
 
       if (webGpuProbe.shouldUseWebGpu) {
         try {
+          const initPreset = initialSettings.gpuQualityPreset ?? 'high';
+          const initAa = initialSettings.gpuAntiAliasing ?? 'msaa_fxaa';
+          const enableWebGpuMsaa =
+            initAa === 'msaa_fxaa' && initPreset !== 'performance' && initPreset !== 'balanced';
           const wgpuRenderer = new THREE_WEBGPU.WebGPURenderer({
-            antialias: true,
+            antialias: enableWebGpuMsaa,
             powerPreference: 'high-performance',
           });
           await wgpuRenderer.init();
@@ -760,7 +764,7 @@ export const CapyGameView: React.FC = () => {
           }
           webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe };
         } catch {
-          webGpuInit = null;
+          webGpuInit = { renderer: null, probe: webGpuProbe };
         }
       }
 
@@ -5275,21 +5279,39 @@ export const CapyGameView: React.FC = () => {
                   </button>
                 </div>
 
-                {/* WebGPU / WebGL2 Backend Capability Strip & Preference */}
+                {/* WebGPU / WebGL2 Backend Capability Strip & Auto-Benchmark Selector */}
                 <div className="p-2 rounded-lg bg-zinc-900/90 border border-white/8 space-y-1.5">
                   <div className="flex items-center justify-between gap-2 text-[10px] font-mono">
                     <span className="text-zinc-400 truncate">
                       Adapter: <span className="text-cyan-300">{gpuTelemetry.webGpuAdapterName}</span>
                     </span>
                     <span className={gpuTelemetry.webGpuActive ? 'text-emerald-300 font-semibold shrink-0' : 'text-sky-300 shrink-0'}>
-                      {gpuTelemetry.webGpuActive ? 'WEBGPU WGSL ACTIVE' : 'WEBGL2 PARITY'}
+                      {gpuTelemetry.webGpuActive ? 'WEBGPU WGSL' : 'WEBGL2'}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5">
+                  {gpuTelemetry.backendBenchmarkSummary && (
+                    <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-zinc-300 bg-zinc-950/70 px-2 py-1 rounded border border-white/5">
+                      <span className="truncate">{gpuTelemetry.backendBenchmarkSummary}</span>
+                      <button
+                        type="button"
+                        data-testid="settings-backend-retest"
+                        onClick={() => {
+                          clearGpuBackendBenchmarkCache();
+                          updateGameSettings({ gpuBackendPreference: 'auto' });
+                          showToast('Cleared GPU bench cache — reload page to re-benchmark WebGPU vs WebGL2');
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-200 border border-cyan-400/35 hover:bg-cyan-500/25 cursor-pointer shrink-0"
+                      >
+                        Re-Test
+                      </button>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-3 gap-1.5">
                     {(
                       [
-                        { id: 'auto', label: 'Auto (WebGPU WGSL)' },
-                        { id: 'webgl2', label: 'Force WebGL2' },
+                        { id: 'auto', label: 'Auto (Bench)' },
+                        { id: 'webgpu', label: 'WebGPU' },
+                        { id: 'webgl2', label: 'WebGL2' },
                       ] as Array<{ id: GpuRenderBackendMode; label: string }>
                     ).map(({ id, label }) => (
                       <button

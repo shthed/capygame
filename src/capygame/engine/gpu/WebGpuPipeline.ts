@@ -26,6 +26,7 @@ import {
   output,
   pass,
   positionLocal,
+  positionView,
   positionWorld,
   pow,
   screenUV,
@@ -46,6 +47,28 @@ import {
   type GpuPipelineConfig,
   type GpuRenderBackendMode,
 } from './GpuEngineTypes';
+import {
+  selectBestGpuBackend,
+  type BackendBenchSample,
+} from './FramePerformanceGovernor';
+import { createStarPsfMaterial } from '../UniverseShaders';
+import { disposeObject3DTree } from './ThreeDisposal';
+
+const GPU_BENCH_CACHE_KEY = 'capy_gpu_backend_bench_v1';
+const GPU_BENCH_VERSION = 1;
+const GPU_BENCH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface WebGpuBenchmarkCacheEntry {
+  version: number;
+  signature: string;
+  winner: 'webgpu' | 'webgl2';
+  webGpuAvgMs: number;
+  webGpuMaxMs: number;
+  webGl2AvgMs: number;
+  webGl2MaxMs: number;
+  summary: string;
+  testedAtMs: number;
+}
 
 export interface WebGpuProbeResult {
   supported: boolean;
@@ -53,11 +76,307 @@ export interface WebGpuProbeResult {
   adapterName: string;
   isFallbackAdapter: boolean;
   features: string[];
+  benchmarkedWinner?: 'webgpu' | 'webgl2';
+  benchmarkSummary?: string;
+}
+
+function queryGlRendererIdentity(): string {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (!gl) return 'no-webgl';
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+    const str = String(gl.getParameter(param) || 'WebGL2');
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return str;
+  } catch {
+    return 'webgl-error';
+  }
+}
+
+export function getCachedGpuBackendBenchmark(signature?: string): WebGpuBenchmarkCacheEntry | null {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    const raw = window.localStorage.getItem(GPU_BENCH_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<WebGpuBenchmarkCacheEntry>;
+    if (
+      parsed.version !== GPU_BENCH_VERSION ||
+      (parsed.winner !== 'webgpu' && parsed.winner !== 'webgl2') ||
+      typeof parsed.testedAtMs !== 'number' ||
+      Date.now() - parsed.testedAtMs > GPU_BENCH_TTL_MS
+    ) {
+      return null;
+    }
+    if (signature && parsed.signature !== signature) {
+      return null;
+    }
+    return parsed as WebGpuBenchmarkCacheEntry;
+  } catch {
+    return null;
+  }
+}
+
+export function clearGpuBackendBenchmarkCache(): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(GPU_BENCH_CACHE_KEY);
+    }
+  } catch {
+    // Ignore storage issues
+  }
+}
+
+function buildGpuBenchmarkScene(forWebGpu: boolean): {
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+} {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x050816);
+  const camera = new THREE.PerspectiveCamera(58, 320 / 240, 0.1, 250);
+  camera.position.set(0, 3.2, 18.0);
+  camera.lookAt(0, 0, 0);
+
+  const amb = new THREE.AmbientLight(0xffffff, 0.35);
+  const dir = new THREE.DirectionalLight(0xfff4dc, 2.2);
+  dir.position.set(12, 18, 14);
+  scene.add(amb, dir);
+
+  const sphereGeo = new THREE.SphereGeometry(0.85, 20, 14);
+  const sphereMat = new THREE.MeshStandardMaterial({
+    color: 0xd99b66,
+    roughness: 0.45,
+    metalness: 0.25,
+  });
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const mesh = new THREE.Mesh(sphereGeo, sphereMat);
+    mesh.position.set(Math.cos(a) * 5.2, Math.sin(i * 1.3) * 1.4, Math.sin(a) * 5.2);
+    scene.add(mesh);
+  }
+
+  const starCount = 480;
+  const pos = new Float32Array(starCount * 3);
+  const col = new Float32Array(starCount * 3);
+  const scales = new Float32Array(starCount);
+  const lums = new Float32Array(starCount);
+  for (let i = 0; i < starCount; i++) {
+    const a = i * 2.39996;
+    const r = 4.0 + (i / starCount) * 14.0;
+    pos[i * 3] = Math.cos(a) * r;
+    pos[i * 3 + 1] = ((i % 17) - 8) * 0.55;
+    pos[i * 3 + 2] = Math.sin(a) * r;
+    col[i * 3] = 0.72 + (i % 5) * 0.06;
+    col[i * 3 + 1] = 0.84;
+    col[i * 3 + 2] = 1.0;
+    scales[i] = 0.6 + (i % 7) * 0.22;
+    lums[i] = 0.4 + (i % 4) * 0.18;
+  }
+  const starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  starGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  starGeo.setAttribute('aScale', new THREE.BufferAttribute(scales, 1));
+  starGeo.setAttribute('aLuminosity', new THREE.BufferAttribute(lums, 1));
+  scene.add(
+    new THREE.Points(
+      starGeo,
+      createStarPsfMaterial({
+        baseSize: 11.0,
+        minPixelSize: 1.8,
+        maxPixelSize: 20.0,
+        diffractionStrength: 0.35,
+        opacity: 0.88,
+      })
+    )
+  );
+
+  if (forWebGpu) {
+    convertLegacyShaderMaterialsToTsl(scene);
+  }
+  return { scene, camera };
+}
+
+async function runWithTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+export async function benchmarkGpuBackends(
+  adapterName: string,
+  glIdentity: string
+): Promise<WebGpuBenchmarkCacheEntry> {
+  const signature = `${GPU_BENCH_VERSION}|${adapterName}|${glIdentity}`;
+  const FRAME_COUNT = 10;
+
+  // 1. Benchmark WebGL2 sequentially in isolation
+  const glSample: BackendBenchSample = { supported: false, avgMs: 999, maxMs: 999, hadError: true };
+  {
+    const glCanvas = document.createElement('canvas');
+    glCanvas.width = 320;
+    glCanvas.height = 240;
+    let glRenderer: THREE.WebGLRenderer | null = null;
+    const { scene, camera } = buildGpuBenchmarkScene(false);
+    try {
+      glRenderer = new THREE.WebGLRenderer({
+        canvas: glCanvas,
+        antialias: false,
+        powerPreference: 'high-performance',
+      });
+      glRenderer.setPixelRatio(1);
+      glRenderer.setSize(320, 240, false);
+      const gl = glRenderer.getContext();
+      glRenderer.compile(scene, camera);
+      for (let w = 0; w < 2; w++) {
+        glRenderer.render(scene, camera);
+      }
+      gl.finish();
+
+      let totalMs = 0;
+      let maxMs = 0;
+      for (let i = 0; i < FRAME_COUNT; i++) {
+        const ang = i * 0.14;
+        camera.position.set(Math.sin(ang) * 18, 3.2, Math.cos(ang) * 18);
+        camera.lookAt(0, 0, 0);
+        const t0 = performance.now();
+        glRenderer.render(scene, camera);
+        gl.finish();
+        const dt = Math.max(0.05, performance.now() - t0);
+        totalMs += dt;
+        if (dt > maxMs) maxMs = dt;
+      }
+      glSample.supported = true;
+      glSample.hadError = false;
+      glSample.avgMs = totalMs / FRAME_COUNT;
+      glSample.maxMs = maxMs;
+    } catch {
+      glSample.hadError = true;
+    } finally {
+      disposeObject3DTree(scene);
+      try {
+        glRenderer?.getContext()?.getExtension('WEBGL_lose_context')?.loseContext();
+      } catch {
+        // Ignore
+      }
+      glRenderer?.dispose();
+    }
+  }
+
+  // Yield briefly so previous GL context tears down cleanly before WebGPU bench
+  await new Promise((r) => setTimeout(r, 12));
+
+  // 2. Benchmark WebGPU WGSL + TSL Sprites sequentially in isolation
+  const wgSample: BackendBenchSample = await runWithTimeout(
+    (async (): Promise<BackendBenchSample> => {
+      const sample: BackendBenchSample = { supported: false, avgMs: 999, maxMs: 999, hadError: false };
+      const wgCanvas = document.createElement('canvas');
+      wgCanvas.width = 320;
+      wgCanvas.height = 240;
+      let wgRenderer: THREE_WEBGPU.WebGPURenderer | null = null;
+      const { scene, camera } = buildGpuBenchmarkScene(true);
+      try {
+        wgRenderer = new THREE_WEBGPU.WebGPURenderer({
+          canvas: wgCanvas,
+          antialias: false,
+          powerPreference: 'high-performance',
+        });
+        wgRenderer.setPixelRatio(1);
+        wgRenderer.setSize(320, 240, false);
+        await wgRenderer.init();
+        const gpuDev = (wgRenderer.backend as { device?: GPUDevice })?.device;
+        const onUncaptured = () => {
+          sample.hadError = true;
+        };
+        if (gpuDev && typeof gpuDev.addEventListener === 'function') {
+          gpuDev.addEventListener('uncapturederror', onUncaptured);
+        }
+        try {
+          for (let w = 0; w < 2; w++) {
+            wgRenderer.render(scene, camera);
+            if (gpuDev?.queue?.onSubmittedWorkDone) {
+              await gpuDev.queue.onSubmittedWorkDone();
+            }
+          }
+
+          let totalMs = 0;
+          let maxMs = 0;
+          for (let i = 0; i < FRAME_COUNT; i++) {
+            const ang = i * 0.14;
+            camera.position.set(Math.sin(ang) * 18, 3.2, Math.cos(ang) * 18);
+            camera.lookAt(0, 0, 0);
+            const t0 = performance.now();
+            wgRenderer.render(scene, camera);
+            if (gpuDev?.queue?.onSubmittedWorkDone) {
+              await gpuDev.queue.onSubmittedWorkDone();
+            }
+            const dt = Math.max(0.05, performance.now() - t0);
+            totalMs += dt;
+            if (dt > maxMs) maxMs = dt;
+          }
+          sample.supported = true;
+          sample.avgMs = totalMs / FRAME_COUNT;
+          sample.maxMs = maxMs;
+        } finally {
+          if (gpuDev && typeof gpuDev.removeEventListener === 'function') {
+            gpuDev.removeEventListener('uncapturederror', onUncaptured);
+          }
+        }
+      } catch {
+        sample.hadError = true;
+      } finally {
+        disposeObject3DTree(scene);
+        try {
+          wgRenderer?.dispose();
+        } catch {
+          // Ignore
+        }
+      }
+      return sample;
+    })(),
+    2200,
+    { supported: false, avgMs: 999, maxMs: 999, hadError: true }
+  );
+
+  const selection = selectBestGpuBackend(wgSample, glSample);
+  const wgLabel =
+    wgSample.supported && !wgSample.hadError ? `${wgSample.avgMs.toFixed(1)}ms` : 'ERR';
+  const glLabel =
+    glSample.supported && !glSample.hadError ? `${glSample.avgMs.toFixed(1)}ms` : 'ERR';
+  const entry: WebGpuBenchmarkCacheEntry = {
+    version: GPU_BENCH_VERSION,
+    signature,
+    winner: selection.winner,
+    webGpuAvgMs: Number.isFinite(wgSample.avgMs) ? +wgSample.avgMs.toFixed(2) : 999,
+    webGpuMaxMs: Number.isFinite(wgSample.maxMs) ? +wgSample.maxMs.toFixed(2) : 999,
+    webGl2AvgMs: Number.isFinite(glSample.avgMs) ? +glSample.avgMs.toFixed(2) : 999,
+    webGl2MaxMs: Number.isFinite(glSample.maxMs) ? +glSample.maxMs.toFixed(2) : 999,
+    summary: `Auto-Bench picked ${selection.winner === 'webgpu' ? 'WebGPU' : 'WebGL2'} (WebGPU ${wgLabel} vs WebGL2 ${glLabel})`,
+    testedAtMs: Date.now(),
+  };
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(GPU_BENCH_CACHE_KEY, JSON.stringify(entry));
+    }
+  } catch {
+    // Ignore storage issues
+  }
+  return entry;
 }
 
 export async function probeWebGpuBackend(
   preference: GpuRenderBackendMode = 'auto',
-  isSoftwareGl: boolean = false
+  isSoftwareGl: boolean = false,
+  forceRetest: boolean = false
 ): Promise<WebGpuProbeResult> {
   if (typeof navigator === 'undefined' || !('gpu' in navigator)) {
     return {
@@ -107,13 +426,40 @@ export async function probeWebGpuBackend(
         if (featureList.length < 8) featureList.push(f);
       });
     }
-    const shouldUseWebGpu = !isFallback && preference !== 'webgl2';
+    if (isFallback || preference === 'webgl2') {
+      return {
+        supported: !isFallback,
+        shouldUseWebGpu: false,
+        adapterName: desc,
+        isFallbackAdapter: isFallback,
+        features: featureList,
+      };
+    }
+    if (preference === 'webgpu') {
+      return {
+        supported: true,
+        shouldUseWebGpu: true,
+        adapterName: desc,
+        isFallbackAdapter: false,
+        features: featureList,
+      };
+    }
+
+    // preference === 'auto': run or reuse hardware benchmark comparing WebGPU vs WebGL2
+    const glId = queryGlRendererIdentity();
+    const signature = `${GPU_BENCH_VERSION}|${desc}|${glId}`;
+    const bench =
+      (!forceRetest ? getCachedGpuBackendBenchmark(signature) : null) ??
+      (await benchmarkGpuBackends(desc, glId));
+
     return {
-      supported: !isFallback,
-      shouldUseWebGpu,
+      supported: true,
+      shouldUseWebGpu: bench.winner === 'webgpu',
       adapterName: desc,
-      isFallbackAdapter: isFallback,
+      isFallbackAdapter: false,
       features: featureList,
+      benchmarkedWinner: bench.winner,
+      benchmarkSummary: bench.summary,
     };
   } catch {
     return {
@@ -310,22 +656,39 @@ export function createTslStarPsfSprite(
   posAttr: THREE.BufferAttribute,
   colAttr: THREE.BufferAttribute,
   scaleAttr?: THREE.BufferAttribute,
-  opts: { baseSize?: number; opacity?: number; additive?: boolean } = {}
+  opts: {
+    baseSize?: number;
+    distFactor?: number;
+    minPixelSize?: number;
+    maxPixelSize?: number;
+    opacity?: number;
+    additive?: boolean;
+  } = {}
 ): { sprite: THREE_WEBGPU.Sprite; opacityUniform: { value: number } } {
   const mat = new THREE_WEBGPU.PointsNodeMaterial();
   mat.transparent = true;
   mat.depthWrite = false;
+  mat.sizeAttenuation = false;
   mat.blending = opts.additive === false ? THREE.NormalBlending : THREE.AdditiveBlending;
   mat.normalNode = vec3(0.0, 0.0, 1.0);
 
   const uOpacity = uniform(opts.opacity ?? 1.0);
   const uBaseSize = uniform(opts.baseSize ?? 14.0);
+  const distFactor = opts.distFactor ?? 28.0;
+  const minPixelSize = opts.minPixelSize ?? 1.8;
+  const maxPixelSize = opts.maxPixelSize ?? 22.0;
 
   mat.positionNode = instancedBufferAttribute(posAttr);
   mat.colorNode = instancedBufferAttribute(colAttr);
-  mat.sizeNode = scaleAttr
+  const dist = max(float(0.35), positionView.z.negate());
+  const rawSize = scaleAttr
     ? instancedBufferAttribute(scaleAttr).mul(uBaseSize)
     : uBaseSize;
+  mat.sizeNode = clamp(
+    rawSize.mul(float(distFactor).div(dist)),
+    float(minPixelSize),
+    float(maxPixelSize)
+  );
 
   mat.opacityNode = Fn(() => {
     const p = uv().sub(0.5).mul(2.0);
@@ -373,8 +736,14 @@ export function convertLegacyShaderMaterialsToTsl(root: THREE.Object3D): number 
           colAttr = new THREE.BufferAttribute(fallbackCols, 3);
         }
         const scaleAttr = points.geometry.getAttribute('aScale') as THREE.BufferAttribute | undefined;
+        const hasBaseSize = typeof mat.uniforms?.uBaseSize?.value === 'number';
         const { sprite } = createTslStarPsfSprite(posAttr, colAttr, scaleAttr, {
-          baseSize: (mat.uniforms?.uBaseSize?.value as number | undefined) ?? 12.0,
+          baseSize: hasBaseSize ? (mat.uniforms.uBaseSize.value as number) : 1.0,
+          distFactor: hasBaseSize ? 28.0 : 120.0,
+          minPixelSize:
+            (mat.uniforms?.uMinPx?.value as number | undefined) ?? (hasBaseSize ? 1.8 : 2.2),
+          maxPixelSize:
+            (mat.uniforms?.uMaxPx?.value as number | undefined) ?? (hasBaseSize ? 22.0 : 26.0),
           opacity: (mat.uniforms?.uOpacity?.value as number | undefined) ?? 0.9,
           additive: mat.blending === THREE.AdditiveBlending,
         });
@@ -552,10 +921,16 @@ export class WebGpuPostAndComputePipeline {
     const moteMat = new THREE_WEBGPU.PointsNodeMaterial();
     moteMat.transparent = true;
     moteMat.depthWrite = false;
+    moteMat.sizeAttenuation = false;
     moteMat.blending = THREE.AdditiveBlending;
     moteMat.normalNode = vec3(0.0, 0.0, 1.0);
     moteMat.positionNode = positions.element(instanceIndex);
-    moteMat.sizeNode = float(8.5).add(this.computeNight.mul(7.0));
+    const moteDist = max(float(1.5), positionView.z.negate());
+    moteMat.sizeNode = clamp(
+      float(5.5).add(this.computeNight.mul(4.5)).mul(float(14.0).div(moteDist)),
+      float(2.5),
+      float(14.0)
+    );
     moteMat.colorNode = Fn(() => {
       const dayCol = vec3(1.0, 0.94, 0.72);
       const nightCol = vec3(0.45, 0.98, 0.75);
@@ -580,8 +955,11 @@ export class WebGpuPostAndComputePipeline {
   }
 
   public rebuildPostProcessing(): void {
-    if (!this.config.postProcessingEnabled) {
+    if (this.postProcessing) {
+      this.postProcessing.dispose();
       this.postProcessing = null;
+    }
+    if (!this.config.postProcessingEnabled) {
       return;
     }
 
@@ -693,6 +1071,10 @@ export class WebGpuPostAndComputePipeline {
     surfaceParticlesVisible: boolean
   ): void {
     if (this.disposed) return;
+
+    if (this.renderer.info?.autoReset !== false) {
+      this.renderer.info?.reset?.();
+    }
 
     this.computeSprite.visible = surfaceParticlesVisible;
     if (surfaceParticlesVisible && this.computeInitNode && this.computeUpdateNode) {

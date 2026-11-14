@@ -889,7 +889,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     `✓ Procedural Botany (${advancedSimCheck.branchCount} branches, ${advancedSimCheck.leafCount} V-folded leaves, 4-stage fruit), Zero Static Clipping, Sightline-Only Whole-Screen Clear Shader (${(advancedSimCheck.clearWholeScreenFraction * 100).toFixed(1)}% whole screen clear when blocking player, offscreenAheadFaded=${advancedSimCheck.fadedWhenTreeAheadOffscreen}, yuzu=${advancedSimCheck.yuzuChildMeshCount} meshes, restored=${advancedSimCheck.restoredTreeCenterAlpha}), Solid Reverse Gait (squash <= ${advancedSimCheck.maxObservedSquash}) & 0-Feet-Touching Stuck Traction verified!`
   );
 
-  // 6E. Verify Dynamic 60 FPS Capybara LOD Governor scales detail down under heavy load and back up at 60 FPS
+  // 6E. Verify Dynamic 60 FPS Capybara LOD Governor scales detail down under heavy load and back up at 60 FPS,
+  //     plus O(1) hidden-subtree matrix cull invariants across scene subtrees
   const lodScaleResult = await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return null;
@@ -911,19 +912,45 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
         mgr.ingestFpsSample(36, 0.4);
       }
     }
-    return { initialTier, droppedTier, droppedFurCount, recoveredTier, recoveredFurCount };
+    const hiddenLayer = mgr.seamlessUniverse?.rootGroup?.children?.find((c) => !c.visible);
+    let hiddenChildUpdated = false;
+    if (hiddenLayer && hiddenLayer.children.length > 0) {
+      const probeChild = hiddenLayer.children[0];
+      const origUpdate = probeChild.updateMatrix;
+      probeChild.updateMatrix = function () {
+        hiddenChildUpdated = true;
+        return origUpdate.call(this);
+      };
+      mgr.scene.updateMatrixWorld();
+      probeChild.updateMatrix = origUpdate;
+    }
+    const heroHasCull = Boolean(mgr.heroCapy?.userData?.__fastMatrixCullInstalled);
+    const sanctuaryHasCull = Boolean(mgr.sanctuaryGroup?.userData?.__fastMatrixCullInstalled);
+    return {
+      initialTier,
+      droppedTier,
+      droppedFurCount,
+      recoveredTier,
+      recoveredFurCount,
+      hiddenChildUpdated,
+      heroHasCull,
+      sanctuaryHasCull,
+    };
   });
   if (
     !lodScaleResult ||
     lodScaleResult.droppedTier >= lodScaleResult.initialTier ||
     lodScaleResult.droppedFurCount !== 0 ||
     lodScaleResult.recoveredTier !== 3 ||
-    lodScaleResult.recoveredFurCount !== 96
+    lodScaleResult.recoveredFurCount !== 96 ||
+    lodScaleResult.hiddenChildUpdated ||
+    !lodScaleResult.heroHasCull ||
+    !lodScaleResult.sanctuaryHasCull
   ) {
-    throw new Error(`Dynamic 60 FPS Capybara LOD scaling check failed: ${JSON.stringify(lodScaleResult)}`);
+    throw new Error(`Dynamic 60 FPS Capybara LOD / matrix cull check failed: ${JSON.stringify(lodScaleResult)}`);
   }
   console.log(
-    `✓ Dynamic 60 FPS LOD Governor verified: Tier ${lodScaleResult.initialTier} -> Tier ${lodScaleResult.droppedTier} under load -> recovered to Tier ${lodScaleResult.recoveredTier} (96 bristle tufts) at 60 FPS`
+    `✓ Dynamic 60 FPS LOD Governor & O(1) Matrix Cull verified: Tier ${lodScaleResult.initialTier} -> Tier ${lodScaleResult.droppedTier} -> Tier ${lodScaleResult.recoveredTier} (hiddenChildUpdated=${lodScaleResult.hiddenChildUpdated})`
   );
 
   // 7. Verify Mobile Touch-and-Drag Steering & Tap-to-Jump on Planet Surface

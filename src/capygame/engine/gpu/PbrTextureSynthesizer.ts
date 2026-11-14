@@ -137,6 +137,7 @@ export class PbrTextureSynthesizer {
 
   private static currentFilterMode: GpuTextureFilterMode = 'trilinear_aniso';
   private static currentAnisotropy: number = 8;
+  private static lastAppliedFilterKey: string = '';
 
   public static registerManagedTexture(tex: THREE.Texture): THREE.Texture {
     this.managedTextures.add(tex);
@@ -154,8 +155,14 @@ export class PbrTextureSynthesizer {
     maxHardwareAniso: number
   ): void {
     const clampedAniso = Math.max(1, Math.min(maxHardwareAniso, anisotropy));
+    const effectiveAniso = mode === 'trilinear_aniso' ? clampedAniso : 1;
+    const filterKey = `${mode}:${effectiveAniso}`;
+    if (filterKey === this.lastAppliedFilterKey) {
+      return;
+    }
+    this.lastAppliedFilterKey = filterKey;
     this.currentFilterMode = mode;
-    this.currentAnisotropy = mode === 'trilinear_aniso' ? clampedAniso : 1;
+    this.currentAnisotropy = effectiveAniso;
 
     for (const tex of this.managedTextures) {
       this.applyFilterStateToTexture(tex);
