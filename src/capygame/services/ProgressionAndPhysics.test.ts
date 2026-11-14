@@ -35,6 +35,8 @@ import {
 import {
   CHRONO_VESSEL_HUD_SCALE,
   CHRONO_VESSEL_ONE_TO_ONE_SCALE,
+  MOUSELOOK_MAX_DELTA_PX,
+  MOUSELOOK_RAD_PER_PX,
   PerformanceLogTracker,
   computeAdaptiveGpuMitigation,
   computeBloomRenderScale,
@@ -42,9 +44,11 @@ import {
   computeDistrictTickStride,
   computeEffectiveCameraFar,
   computeEffectivePixelRatio,
+  computeMouseLookAngles,
   computeSolarPlanetFocusOffset,
   computePlanetSurfaceLandmassFocusOffset,
   computeSpiralGalaxyFocusOffset,
+  dampShortestAngle,
   findNextEffectiveMitigationLevel,
   findPrevEffectiveMitigationLevel,
   SANCTUARY_SURFACE_LAT_DEG,
@@ -884,4 +888,32 @@ test('Fog Removal, Draw Distance Culling & Fast PERF Preset: unobstructed views,
   assert.equal(shouldRenderDistrict(-75, -75, 34, 0, 0, 135, false), true); // 106m <= 135+34
   assert.equal(shouldRenderDistrict(75, 75, 38, -75, -75, 135, false), false); // 212m > 135+38 -> culled
 });
+
+test('Mouselook Integrator & Settings: directional sign conventions, Y-inversion, spike clamping, and persistence', () => {
+  // 1. Default persisted mouselook settings
+  assert.equal(DEFAULT_CAPY_SETTINGS.mouselookEnabled, true);
+  assert.equal(DEFAULT_CAPY_SETTINGS.mouselookSensitivity, 1.0);
+  assert.equal(DEFAULT_CAPY_SETTINGS.invertMouseY, false);
+
+  // 2. Standard mode: mouse right (+100px) decreases yaw (turns right); mouse up (-50px) decreases pitch (tilts view up)
+  const rightLook = computeMouseLookAngles(0.0, 0.3, 100, -50, 1.0, false, -0.38, 1.18);
+  assert.ok(Math.abs(rightLook.yaw - -100 * MOUSELOOK_RAD_PER_PX) < 1e-6);
+  assert.ok(Math.abs(rightLook.pitch - (0.3 - 50 * MOUSELOOK_RAD_PER_PX)) < 1e-6);
+
+  // 3. Inverted Y mode flips pitch delta sign
+  const invertedLook = computeMouseLookAngles(0.0, 0.3, 0, -50, 1.0, true, -0.38, 1.18);
+  assert.ok(Math.abs(invertedLook.pitch - (0.3 + 50 * MOUSELOOK_RAD_PER_PX)) < 1e-6);
+
+  // 4. Browser pointer-warp spike guard (220px cap) and pitch ceiling clamping (1.18 rad)
+  const spiked = computeMouseLookAngles(0.0, 0.0, 9999, 9999, 1.0, false, -0.38, 1.18);
+  assert.ok(Math.abs(spiked.yaw - -MOUSELOOK_MAX_DELTA_PX * MOUSELOOK_RAD_PER_PX) < 1e-6);
+  assert.ok(Math.abs(spiked.pitch - MOUSELOOK_MAX_DELTA_PX * MOUSELOOK_RAD_PER_PX) < 1e-6);
+  const clamped = computeMouseLookAngles(0.0, 0.8, 0, 9999, 1.0, false, -0.38, 1.18);
+  assert.equal(clamped.pitch, 1.18);
+
+  // 5. Shortest-arc angle damping wraps cleanly across PI / -PI seam without spinning
+  const damped = dampShortestAngle(Math.PI - 0.1, -Math.PI + 0.1, 10.0, 0.05);
+  assert.ok(damped > Math.PI - 0.11, 'Crosses seam eastward rather than spinning 340 degrees');
+});
+
 

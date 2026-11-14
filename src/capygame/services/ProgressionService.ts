@@ -187,6 +187,19 @@ export class ProgressionService {
               parsed.showFpsButton === undefined
                 ? DEFAULT_CAPY_SETTINGS.showFpsButton
                 : Boolean(parsed.showFpsButton),
+            mouselookEnabled:
+              parsed.mouselookEnabled === undefined
+                ? DEFAULT_CAPY_SETTINGS.mouselookEnabled
+                : Boolean(parsed.mouselookEnabled),
+            mouselookSensitivity:
+              typeof parsed.mouselookSensitivity === 'number' &&
+              Number.isFinite(parsed.mouselookSensitivity)
+                ? Math.max(0.2, Math.min(2.5, Math.round(parsed.mouselookSensitivity * 20) / 20))
+                : DEFAULT_CAPY_SETTINGS.mouselookSensitivity,
+            invertMouseY:
+              parsed.invertMouseY === undefined
+                ? DEFAULT_CAPY_SETTINGS.invertMouseY
+                : Boolean(parsed.invertMouseY),
             gpuResolutionScale:
               typeof parsed.gpuResolutionScale === 'number' &&
               Number.isFinite(parsed.gpuResolutionScale)

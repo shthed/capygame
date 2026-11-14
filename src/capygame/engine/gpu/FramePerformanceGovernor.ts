@@ -1118,3 +1118,68 @@ export class PerformanceLogTracker {
   }
 }
 
+// ============================================================================
+// ZERO-ALLOCATION MOUSELOOK CAMERA INTEGRATOR
+// ============================================================================
+export interface MouseLookAngleResult {
+  yaw: number;
+  pitch: number;
+}
+
+const _mouseLookAngleResult: MouseLookAngleResult = {
+  yaw: 0,
+  pitch: 0,
+};
+
+/** Base angular sensitivity (~0.0042 rad/px ≈ 0.24 deg/px at 1.0x sensitivity). */
+export const MOUSELOOK_RAD_PER_PX = 0.0042;
+export const MOUSELOOK_MAX_DELTA_PX = 220;
+
+/**
+ * Zero-allocation mouselook integrator mapping pointer X/Y pixel deltas
+ * to clamped camera yaw & pitch angles across both cosmic orbit and surface chase views.
+ * Moving mouse right (+deltaX) decreases yaw (turns camera right);
+ * moving mouse up (-deltaY) decreases orbit pitch (tilts view up unless invertY is true).
+ */
+export function computeMouseLookAngles(
+  yaw: number,
+  pitch: number,
+  deltaX: number,
+  deltaY: number,
+  sensitivity: number = 1.0,
+  invertY: boolean = false,
+  minPitch: number = -0.68,
+  maxPitch: number = 1.18
+): MouseLookAngleResult {
+  const safeDx = Number.isFinite(deltaX)
+    ? Math.max(-MOUSELOOK_MAX_DELTA_PX, Math.min(MOUSELOOK_MAX_DELTA_PX, deltaX))
+    : 0;
+  const safeDy = Number.isFinite(deltaY)
+    ? Math.max(-MOUSELOOK_MAX_DELTA_PX, Math.min(MOUSELOOK_MAX_DELTA_PX, deltaY))
+    : 0;
+  const safeSens = Number.isFinite(sensitivity)
+    ? Math.max(0.2, Math.min(2.5, sensitivity))
+    : 1.0;
+  const radPerPx = MOUSELOOK_RAD_PER_PX * safeSens;
+  const ySign = invertY ? -1 : 1;
+
+  _mouseLookAngleResult.yaw = yaw - safeDx * radPerPx;
+  const rawPitch = pitch + safeDy * ySign * radPerPx;
+  _mouseLookAngleResult.pitch = Math.max(minPitch, Math.min(maxPitch, rawPitch));
+  return _mouseLookAngleResult;
+}
+
+/**
+ * Zero-allocation shortest-arc exponential angle damping helper.
+ */
+export function dampShortestAngle(
+  current: number,
+  target: number,
+  lambda: number,
+  dt: number
+): number {
+  const diff = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  return current + diff * (1 - Math.exp(-lambda * dt));
+}
+
+

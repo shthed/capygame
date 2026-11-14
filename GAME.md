@@ -108,6 +108,9 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 | Setting Property | TypeScript Type | Default | UI Location & Behavior |
 | :--- | :--- | :--- | :--- |
 | `cameraFollowBehind` | `boolean` | `true` | World Dock & Simulation Settings Modal; aligns chase camera azimuth behind the Capybara heading. |
+| `mouselookEnabled` | `boolean` | `true` | Simulation Settings Modal; enables desktop left/right-drag mouselook and `M`-key free mouselook across cosmic orbit and surface modes. |
+| `mouselookSensitivity` | `number` (`0.2` – `2.5`) | `1.0` | Simulation Settings Modal; scales pointer angular look rate across space and surface cameras. |
+| `invertMouseY` | `boolean` | `false` | Simulation Settings Modal; reverses vertical pitch direction for flight-sim style mouselook. |
 | `autoCapyLod` | `boolean` | `true` | Simulation Settings Modal; dynamically steps Capybara LOD (`0` to `3`) to maintain 60 FPS. |
 | `manualCapyLodTier` | `0 \| 1 \| 2 \| 3` | `3` | Simulation Settings Modal (`Perf`, `Balanced`, `High`, `Ultra`); locks Capybara LOD when `autoCapyLod` is `false`. |
 | `dayNightAutoCycle` | `boolean` | `true` | Simulation Settings Modal; advances solar/lunar time continuously across 24 hours. |
@@ -159,9 +162,11 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 - **Fine-Grained CPU/GPU Subsystem Profiler (`PerformanceProfiler.ts`)**: Measures per-frame CPU execution times across 13 distinct engine phases (`input_camera`, `physics_bridge`, `biomechanics`, `world_simulation`, `district_gameplay`, `cosmic_universe`, `chrono_vessel`, `vfx_particles`, `sightline_occlusion`, `scene_graph_matrices`, `gpu_shadow_cascade`, `gpu_render_submit`, `telemetry_hud`) using zero-allocation rolling ring buffers.
 - **Hardware GPU Timer Queries**: Supports non-blocking `EXT_disjoint_timer_query_webgl2` on WebGL2 to measure true hardware GPU execution times in milliseconds, identifying whether bottlenecks are CPU-bound or GPU-bound.
 - **Action & Event Tracer**: Automatically logs and times discrete asynchronous and user actions (e.g., district transitions, cosmic launches, scale jumps, LOD adaptations) with timestamps and durations.
-- **Continuous Spaceship Flight & Mouse Wheel Throttle**:
+- **Continuous Spaceship Flight & Mouselook Controls**:
   - In spaceship mode, mouse wheel directly controls cruise velocity (`targetCruiseVelocityLogPerSec`) instead of jumping discrete zoom levels.
   - Smooth aerospace momentum damping (`damp(..., 5.0, dt)`) continuously accelerates or brakes the vessel between `-12.0` and `+12.0` log-meters per second with zero snapping.
   - Cherenkov thruster flares, plume length, flight pitch attitude, and velocity-reactive FOV dynamically respond to active throttle.
+  - Across both spaceship/cosmic zoom and surface gameplay, dragging with Left/Right mouse smoothly orbits (`applyMouseLookDelta`) without interfering with `WASD` steering or mobile touch joysticks, and pressing `M` toggles Free Mouselook (`requestPointerLock` with seamless cursor-delta fallback inside sandboxed iframes).
+
 
 

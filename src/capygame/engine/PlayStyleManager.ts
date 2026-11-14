@@ -30,7 +30,9 @@ import {
   computeDistrictTickStride,
   computeEffectiveCameraFar,
   computeEffectivePixelRatio,
+  computeMouseLookAngles,
   computeVesselOneToOneTransform,
+  dampShortestAngle,
   doesSphereBlockPlayerSightline,
   findNextEffectiveMitigationLevel,
   findPrevEffectiveMitigationLevel,
@@ -363,6 +365,12 @@ export class PlayStyleManager {
   private cosmicCamLook = new THREE.Vector3(0, 0, 0);
   private cosmicOrbitYaw: number = 0;
   private cosmicOrbitPitch: number = 0.28;
+  private surfaceCamYaw: number = Math.PI;
+  private surfaceCamPitch: number = 0.44;
+  private mouselookLastActiveTimeMs: number = -100000;
+  private mouselookLocked: boolean = false;
+  private mouselookBankX: number = 0;
+  private mouselookPitchZ: number = 0;
   public cosmicZoomMultiplier: number = 1.0;
   private cosmicDescentElapsed: number = 0;
 
@@ -1568,16 +1576,23 @@ export class PlayStyleManager {
     const wy = this.heroLocalPos.y;
     const wz = zone.z + this.heroLocalPos.z;
     const distScale = this.settings.cameraDistance || 1.0;
+    this.mouselookLastActiveTimeMs = -100000;
 
     if (this.currentMode === 'breakout') {
+      this.surfaceCamYaw = Math.PI;
+      this.surfaceCamPitch = 0.85;
       this.camera.position.set(zone.x, 17.5 * distScale, zone.z + 15.5 * distScale);
       this.camera.lookAt(zone.x, 0, zone.z - 1.5);
     } else if (this.currentMode === 'runner') {
+      this.surfaceCamYaw = Math.PI;
+      this.surfaceCamPitch = 0.46;
       this.camera.position.set(wx, wy + 5.8 * distScale, wz + 10.2 * distScale);
       this.camera.lookAt(wx, wy + 1.2, wz - 12);
     } else if (this.settings.cameraFollowBehind) {
       const camDist = 11.5 * distScale;
       const camHeight = 6.8 * distScale;
+      this.surfaceCamYaw = this.heroYaw;
+      this.surfaceCamPitch = Math.atan2(Math.max(0.5, camHeight - 1.25), camDist);
       this.camera.position.set(
         wx - Math.sin(this.heroYaw) * camDist,
         wy + camHeight,
@@ -1589,7 +1604,11 @@ export class PlayStyleManager {
         wz + Math.cos(this.heroYaw) * 3.5
       );
     } else {
-      this.camera.position.set(wx, wy + 7.5 * distScale, wz + 12.0 * distScale);
+      const camDist = 12.0 * distScale;
+      const camHeight = 7.5 * distScale;
+      this.surfaceCamYaw = Math.PI;
+      this.surfaceCamPitch = Math.atan2(Math.max(0.5, camHeight - 1.25), camDist);
+      this.camera.position.set(wx, wy + camHeight, wz + camDist);
       this.camera.lookAt(wx, wy + 1.0, wz - 2);
     }
     if (this.cosmicStage === 'playing') {
@@ -6154,7 +6173,10 @@ export class PlayStyleManager {
 
     if (this.cosmicStage === 'big_bang') {
       // Free 3D orbital camera during the Big Bang explosion & N-Body/Fluid galaxy formation
-      this.cosmicOrbitYaw += (0.14 - this.moveInput.x * 1.45) * dt;
+      const nowMs = performance.now();
+      const idleDrift =
+        !this.mouselookLocked && nowMs - this.mouselookLastActiveTimeMs > 3200 ? 0.14 : 0;
+      this.cosmicOrbitYaw += (idleDrift - this.moveInput.x * 1.45) * dt;
       this.cosmicOrbitPitch = THREE.MathUtils.clamp(
         this.cosmicOrbitPitch + this.moveInput.z * 0.95 * dt,
         -0.75,
@@ -6441,6 +6463,14 @@ export class PlayStyleManager {
         // Reverse steering direction slightly slower & natural when walking backward
         const yawRate = isReversing ? 2.1 : 2.6;
         this.heroYaw -= this.moveInput.x * yawRate * turnSens * dt;
+      } else if (
+        Math.abs(forwardRaw) > 0.04 &&
+        tractionMult > 0 &&
+        this.settings.mouselookEnabled !== false &&
+        (this.mouselookLocked || performance.now() - this.mouselookLastActiveTimeMs < 2400)
+      ) {
+        // Steer Capybara heading toward active mouselook aim direction when walking with W/S
+        this.heroYaw = dampShortestAngle(this.heroYaw, this.surfaceCamYaw, 9.0 * turnSens, dt);
       }
 
       const forwardInput =
@@ -6507,27 +6537,48 @@ export class PlayStyleManager {
     const distScale = this.settings.cameraDistance || 1.0;
     const camDist = baseCamDist * distScale;
     const camHeight = baseCamHeight * distScale;
+    const lookBaseY = wy + 1.25;
+    const defaultHeightOffset = Math.max(0.5, camHeight - 1.25);
+    const defaultPitch = Math.atan2(defaultHeightOffset, Math.max(1.0, camDist));
+    const orbitRadius = Math.hypot(camDist, defaultHeightOffset);
+
+    const nowMs = performance.now();
+    const mouselookActive =
+      this.settings.mouselookEnabled !== false &&
+      (this.mouselookLocked || nowMs - this.mouselookLastActiveTimeMs < 2400);
 
     if (this.settings.cameraFollowBehind) {
-      // Position camera directly behind the Capybara's current heading
-      _camTarget.set(
-        wx - Math.sin(this.heroYaw) * camDist,
-        wy + camHeight,
-        wz - Math.cos(this.heroYaw) * camDist
-      );
-      this.camera.position.lerp(_camTarget, 1 - Math.exp(-8 * dt));
-      _lookTarget.set(
-        wx + Math.sin(this.heroYaw) * 3.5,
-        wy + 1.2,
-        wz + Math.cos(this.heroYaw) * 3.5
-      );
-      this.camera.lookAt(_lookTarget);
-    } else {
-      _camTarget.set(wx, wy + camHeight, wz + camDist);
-      this.camera.position.lerp(_camTarget, 1 - Math.exp(-7 * dt));
-      _lookTarget.set(wx, wy + 1.0, wz - 2.5);
-      this.camera.lookAt(_lookTarget);
+      if (!mouselookActive) {
+        this.surfaceCamYaw = dampShortestAngle(this.surfaceCamYaw, this.heroYaw, 6.0, dt);
+        this.surfaceCamPitch = THREE.MathUtils.damp(this.surfaceCamPitch, defaultPitch, 4.5, dt);
+      }
+    } else if (this.settings.mouselookEnabled === false) {
+      this.surfaceCamYaw = dampShortestAngle(this.surfaceCamYaw, Math.PI, 6.0, dt);
+      this.surfaceCamPitch = THREE.MathUtils.damp(this.surfaceCamPitch, defaultPitch, 4.5, dt);
     }
+
+    const cosPitch = Math.cos(this.surfaceCamPitch);
+    const sinPitch = Math.sin(this.surfaceCamPitch);
+    const horizDist = Math.max(2.2, cosPitch * orbitRadius);
+    const rawCamY = lookBaseY + sinPitch * orbitRadius;
+    const clampedCamY = Math.max(wy + 0.55, rawCamY);
+    const lookUpLift = Math.max(0, -sinPitch) * 5.2;
+
+    _camTarget.set(
+      wx - Math.sin(this.surfaceCamYaw) * horizDist,
+      clampedCamY,
+      wz - Math.cos(this.surfaceCamYaw) * horizDist
+    );
+    const camSmooth = mouselookActive ? 18.0 : 8.0;
+    this.camera.position.lerp(_camTarget, 1 - Math.exp(-camSmooth * dt));
+
+    const lookAhead = this.settings.cameraFollowBehind && !mouselookActive ? 3.5 : 1.8;
+    _lookTarget.set(
+      wx + Math.sin(this.surfaceCamYaw) * lookAhead,
+      lookBaseY + lookUpLift,
+      wz + Math.cos(this.surfaceCamYaw) * lookAhead
+    );
+    this.camera.lookAt(_lookTarget);
   }
 
   // --- 1. SANCTUARY: SOLID SLIGHTLY-SQUASHABLE SPINE, REVERSE WALKING & ZERO-CLIPPING PBD ---
@@ -8782,13 +8833,17 @@ export class PlayStyleManager {
       }
     }
 
-    // Free orbital camera steering with drag / WASD across every cosmic & quantum scale.
+    // Free orbital camera steering with mouselook / drag / WASD across every cosmic & quantum scale.
     // Smoothly keep camera pitch above the curved planetary horizon as we approach the surface (log < 5.8).
     const horizonMinPitch =
       inForestWindow
         ? 0.14
         : THREE.MathUtils.lerp(-0.68, 0.14, THREE.MathUtils.smoothstep(logVal, 5.8, 4.7));
-    this.cosmicOrbitYaw += (0.04 - this.moveInput.x * 1.45) * dt;
+    const idleSpaceDrift =
+      !this.mouselookLocked && performance.now() - this.mouselookLastActiveTimeMs > 3200
+        ? 0.04
+        : 0;
+    this.cosmicOrbitYaw += (idleSpaceDrift - this.moveInput.x * 1.45) * dt;
     this.cosmicOrbitPitch = THREE.MathUtils.clamp(
       this.cosmicOrbitPitch + this.moveInput.z * 0.95 * dt,
       horizonMinPitch,
@@ -8953,11 +9008,15 @@ export class PlayStyleManager {
             this.chronoVessel.root.quaternion.multiply(_vesselNavQuat);
           }
         }
+        const bankDecay = Math.exp(-9.0 * dt);
+        this.mouselookBankX = Math.abs(this.mouselookBankX * bankDecay) < 1e-4 ? 0 : this.mouselookBankX * bankDecay;
+        this.mouselookPitchZ = Math.abs(this.mouselookPitchZ * bankDecay) < 1e-4 ? 0 : this.mouselookPitchZ * bankDecay;
+
         this.chronoVessel.update(
           dt,
           scaleVel,
-          this.moveInput.x + navSteerX,
-          this.moveInput.z + navPitchZ
+          this.moveInput.x + navSteerX + this.mouselookBankX,
+          this.moveInput.z + navPitchZ + this.mouselookPitchZ
         );
       }
     }
@@ -9201,6 +9260,8 @@ export class PlayStyleManager {
     AudioService.playCoin();
     this.setCosmicStage('playing');
     if (!snapCamera) {
+      this.surfaceCamYaw = this.cosmicOrbitYaw + Math.PI;
+      this.surfaceCamPitch = THREE.MathUtils.clamp(this.cosmicOrbitPitch, 0.14, 1.05);
       this.camera.position.copy(savedCamPos);
       this.camera.lookAt(
         this.heroCapy.position.x,
@@ -9208,6 +9269,93 @@ export class PlayStyleManager {
         this.heroCapy.position.z
       );
     }
+  }
+
+  public setMouselookLocked(locked: boolean): void {
+    this.mouselookLocked = locked;
+    if (locked) {
+      this.mouselookLastActiveTimeMs = performance.now();
+    }
+  }
+
+  public applyMouseLookDelta(deltaX: number, deltaY: number): void {
+    if (this.settings.mouselookEnabled === false) return;
+    if (deltaX === 0 && deltaY === 0) return;
+
+    const sens = this.settings.mouselookSensitivity ?? 1.0;
+    const invertY = Boolean(this.settings.invertMouseY);
+    this.mouselookLastActiveTimeMs = performance.now();
+
+    if (this.seamlessZoomActive) {
+      const logVal = this.currentLogScaleMeters;
+      const inForestWindow = logVal >= -0.85 && logVal <= 3.1;
+      const horizonMinPitch = inForestWindow
+        ? 0.14
+        : THREE.MathUtils.lerp(-0.68, 0.14, THREE.MathUtils.smoothstep(logVal, 5.8, 4.7));
+      const res = computeMouseLookAngles(
+        this.cosmicOrbitYaw,
+        this.cosmicOrbitPitch,
+        deltaX,
+        deltaY,
+        sens,
+        invertY,
+        horizonMinPitch,
+        1.18
+      );
+      this.cosmicOrbitYaw = res.yaw;
+      this.cosmicOrbitPitch = res.pitch;
+      this.mouselookBankX = THREE.MathUtils.clamp(
+        this.mouselookBankX + THREE.MathUtils.clamp(deltaX * 0.012 * sens, -0.85, 0.85),
+        -1.1,
+        1.1
+      );
+      const ySign = invertY ? -1 : 1;
+      this.mouselookPitchZ = THREE.MathUtils.clamp(
+        this.mouselookPitchZ + THREE.MathUtils.clamp(deltaY * ySign * 0.01 * sens, -0.7, 0.7),
+        -0.9,
+        0.9
+      );
+      return;
+    }
+
+    if (this.cosmicStage !== 'playing') {
+      if (
+        this.cosmicStage === 'big_bang' ||
+        this.cosmicStage === 'universe_flight' ||
+        this.cosmicStage === 'galaxy_view' ||
+        this.cosmicStage === 'star_system_view' ||
+        this.cosmicStage === 'planet_orbit'
+      ) {
+        const minPitch = this.cosmicStage === 'big_bang' ? -0.75 : -0.55;
+        const maxPitch = this.cosmicStage === 'big_bang' ? 1.2 : 1.15;
+        const res = computeMouseLookAngles(
+          this.cosmicOrbitYaw,
+          this.cosmicOrbitPitch,
+          deltaX,
+          deltaY,
+          sens,
+          invertY,
+          minPitch,
+          maxPitch
+        );
+        this.cosmicOrbitYaw = res.yaw;
+        this.cosmicOrbitPitch = res.pitch;
+      }
+      return;
+    }
+
+    const res = computeMouseLookAngles(
+      this.surfaceCamYaw,
+      this.surfaceCamPitch,
+      deltaX,
+      deltaY,
+      sens,
+      invertY,
+      -0.38,
+      1.18
+    );
+    this.surfaceCamYaw = res.yaw;
+    this.surfaceCamPitch = res.pitch;
   }
 
   public adjustZoom(delta: number): number {

@@ -252,6 +252,16 @@ export const CapyGameView: React.FC = () => {
   const [gameSettings, setGameSettings] = useState<CapyGameSettings>(() =>
     ProgressionService.loadSettings()
   );
+  const gameSettingsRef = useRef<CapyGameSettings>(gameSettings);
+  gameSettingsRef.current = gameSettings;
+  const [isFreeMouselook, setIsFreeMouselook] = useState<boolean>(false);
+  const isFreeMouselookRef = useRef<boolean>(false);
+  isFreeMouselookRef.current = isFreeMouselook;
+  const freeMouseFallbackLastRef = useRef<{ x: number | null; y: number | null }>({
+    x: null,
+    y: null,
+  });
+  const wasPointerLockedRef = useRef<boolean>(false);
   const [activeMode, setActiveMode] = useState<PlayStyle>(
     () => stats.selectedPlayStyle || 'sanctuary'
   );
@@ -518,15 +528,23 @@ export const CapyGameView: React.FC = () => {
 
   const pointerGestureRef = useRef<{
     pointerId: number | null;
+    pointerType: 'mouse' | 'touch' | 'pen';
+    button: number;
     originX: number;
     originY: number;
+    lastX: number;
+    lastY: number;
     startTime: number;
     maxDist: number;
     pinchDist: number | null;
   }>({
     pointerId: null,
+    pointerType: 'mouse',
+    button: 0,
     originX: 0,
     originY: 0,
+    lastX: 0,
+    lastY: 0,
     startTime: 0,
     maxDist: 0,
     pinchDist: null,
@@ -583,6 +601,50 @@ export const CapyGameView: React.FC = () => {
     }, 2600);
   };
 
+  const setFreeMouselookActive = (enable: boolean) => {
+    if (!enable) {
+      isFreeMouselookRef.current = false;
+      setIsFreeMouselook(false);
+      freeMouseFallbackLastRef.current.x = null;
+      freeMouseFallbackLastRef.current.y = null;
+      wasPointerLockedRef.current = false;
+      managerRef.current?.setMouselookLocked(false);
+      if (typeof document !== 'undefined' && document.pointerLockElement === mountRef.current) {
+        try {
+          document.exitPointerLock?.();
+        } catch {
+          // Ignore pointer lock exit errors
+        }
+      }
+      return;
+    }
+
+    if (gameSettingsRef.current.mouselookEnabled === false) {
+      showToast('Enable Mouselook in Settings first');
+      return;
+    }
+
+    freeMouseFallbackLastRef.current.x = null;
+    freeMouseFallbackLastRef.current.y = null;
+    isFreeMouselookRef.current = true;
+    setIsFreeMouselook(true);
+    managerRef.current?.setMouselookLocked(true);
+
+    const el = mountRef.current;
+    if (el && typeof el.requestPointerLock === 'function') {
+      try {
+        const lockMaybePromise = el.requestPointerLock() as unknown as Promise<void> | undefined;
+        if (lockMaybePromise && typeof lockMaybePromise.catch === 'function') {
+          lockMaybePromise.catch(() => {
+            // Sandboxed iframes may block native pointer lock; delta fallback remains active
+          });
+        }
+      } catch {
+        // Delta fallback remains active when native pointer lock is restricted
+      }
+    }
+  };
+
   useEffect(() => {
     return PwaService.subscribe(() => {
       setPwaStatus({
@@ -613,6 +675,9 @@ export const CapyGameView: React.FC = () => {
       else if (isInfographicExpanded) setIsInfographicExpanded(false);
       else if (isMenuOpen) setIsMenuOpen(false);
     });
+    if (anyOpen && isFreeMouselookRef.current) {
+      setFreeMouselookActive(false);
+    }
   }, [
     isAboutOpen,
     isSettingsOpen,
@@ -960,12 +1025,32 @@ export const CapyGameView: React.FC = () => {
 
       const handleKeyDown = (e: KeyboardEvent) => {
         if (!managerRef.current) return;
+        const target = e.target;
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement
+        ) {
+          if (e.key.toLowerCase() === 'escape') {
+            (target as HTMLElement).blur();
+          }
+          return;
+        }
         const key = e.key.toLowerCase();
         if (key === 'w' || key === 'arrowup') managerRef.current.moveInput.z = -1;
         if (key === 's' || key === 'arrowdown') managerRef.current.moveInput.z = 1;
         if (key === 'a' || key === 'arrowleft') managerRef.current.moveInput.x = -1;
         if (key === 'd' || key === 'arrowright') managerRef.current.moveInput.x = 1;
         if (key === ' ') managerRef.current.isJumping = true;
+        if (
+          key === 'm' &&
+          !e.repeat &&
+          !modalOpenRef.current &&
+          !menuOpenRef.current &&
+          !firstRunSetupOpenRef.current
+        ) {
+          setFreeMouselookActive(!isFreeMouselookRef.current);
+        }
         if (key === '=' || key === '+' || key === ']') {
           managerRef.current.adjustZoom(0.18);
         }
@@ -973,6 +1058,7 @@ export const CapyGameView: React.FC = () => {
           managerRef.current.adjustZoom(-0.18);
         }
         if (key === 'escape') {
+          setFreeMouselookActive(false);
           managerRef.current.cancelBuildingPlacementGhost();
           setIsScaleAtlasOpen(false);
           setIsOpticsOpen(false);
@@ -993,6 +1079,58 @@ export const CapyGameView: React.FC = () => {
         }
         if (key === 'a' || key === 'arrowleft' || key === 'd' || key === 'arrowright') {
           managerRef.current.moveInput.x = 0;
+        }
+      };
+
+      const handleWindowMouseMove = (e: MouseEvent) => {
+        if (
+          !isFreeMouselookRef.current ||
+          !managerRef.current ||
+          gameSettingsRef.current.mouselookEnabled === false ||
+          modalOpenRef.current ||
+          menuOpenRef.current ||
+          firstRunSetupOpenRef.current
+        ) {
+          return;
+        }
+        if (typeof document !== 'undefined' && document.pointerLockElement === mountRef.current) {
+          managerRef.current.applyMouseLookDelta(e.movementX || 0, e.movementY || 0);
+          return;
+        }
+        const last = freeMouseFallbackLastRef.current;
+        if (last.x === null || last.y === null) {
+          last.x = e.clientX;
+          last.y = e.clientY;
+          return;
+        }
+        const dx = e.clientX - last.x;
+        const dy = e.clientY - last.y;
+        last.x = e.clientX;
+        last.y = e.clientY;
+        if (dx !== 0 || dy !== 0) {
+          managerRef.current.applyMouseLookDelta(dx, dy);
+        }
+      };
+
+      const handlePointerLockChange = () => {
+        if (typeof document === 'undefined') return;
+        const lockedNow = document.pointerLockElement === mountRef.current;
+        if (lockedNow) {
+          wasPointerLockedRef.current = true;
+          if (!isFreeMouselookRef.current) {
+            isFreeMouselookRef.current = true;
+            setIsFreeMouselook(true);
+            managerRef.current?.setMouselookLocked(true);
+          }
+        } else if (wasPointerLockedRef.current) {
+          wasPointerLockedRef.current = false;
+          setFreeMouselookActive(false);
+        }
+      };
+
+      const handleWindowBlur = () => {
+        if (isFreeMouselookRef.current) {
+          setFreeMouselookActive(false);
         }
       };
 
@@ -1036,6 +1174,9 @@ export const CapyGameView: React.FC = () => {
       window.addEventListener('resize', handleResize);
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('keyup', handleKeyUp);
+      window.addEventListener('mousemove', handleWindowMouseMove);
+      window.addEventListener('blur', handleWindowBlur);
+      document.addEventListener('pointerlockchange', handlePointerLockChange);
 
       cleanupFn = () => {
         window.cancelAnimationFrame(animFrameId);
@@ -1053,6 +1194,9 @@ export const CapyGameView: React.FC = () => {
         window.removeEventListener('resize', handleResize);
         window.removeEventListener('keydown', handleKeyDown);
         window.removeEventListener('keyup', handleKeyUp);
+        window.removeEventListener('mousemove', handleWindowMouseMove);
+        window.removeEventListener('blur', handleWindowBlur);
+        document.removeEventListener('pointerlockchange', handlePointerLockChange);
         manager.dispose();
         managerRef.current = null;
       };
@@ -1082,9 +1226,15 @@ export const CapyGameView: React.FC = () => {
       // Ignore pointer capture errors on synthetic events
     }
 
+    const pointerType =
+      e.pointerType === 'touch' || e.pointerType === 'pen' ? e.pointerType : 'mouse';
     pointerGestureRef.current.pointerId = e.pointerId;
+    pointerGestureRef.current.pointerType = pointerType;
+    pointerGestureRef.current.button = e.button;
     pointerGestureRef.current.originX = e.clientX;
     pointerGestureRef.current.originY = e.clientY;
+    pointerGestureRef.current.lastX = e.clientX;
+    pointerGestureRef.current.lastY = e.clientY;
     pointerGestureRef.current.startTime = performance.now();
     pointerGestureRef.current.maxDist = 0;
 
@@ -1095,15 +1245,20 @@ export const CapyGameView: React.FC = () => {
         const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
         managerRef.current.updateBuildingPlacementGhostFromNdc(ndcX, ndcY);
       }
+      return;
     }
 
-    setTouchVisual({
-      active: true,
-      originX: e.clientX,
-      originY: e.clientY,
-      currentX: e.clientX,
-      currentY: e.clientY,
-    });
+    const useMouseDragMouselook =
+      pointerType === 'mouse' && gameSettingsRef.current.mouselookEnabled !== false;
+    if (!useMouseDragMouselook) {
+      setTouchVisual({
+        active: true,
+        originX: e.clientX,
+        originY: e.clientY,
+        currentX: e.clientX,
+        currentY: e.clientY,
+      });
+    }
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -1124,11 +1279,23 @@ export const CapyGameView: React.FC = () => {
     const g = pointerGestureRef.current;
     if (g.pointerId !== e.pointerId || !managerRef.current) return;
 
+    const stepDx = e.clientX - g.lastX;
+    const stepDy = e.clientY - g.lastY;
+    g.lastX = e.clientX;
+    g.lastY = e.clientY;
+
     const dx = e.clientX - g.originX;
     const dy = e.clientY - g.originY;
     const dist = Math.hypot(dx, dy);
     if (dist > g.maxDist) {
       g.maxDist = dist;
+    }
+
+    if (g.pointerType === 'mouse' && gameSettingsRef.current.mouselookEnabled !== false) {
+      if (!isFreeMouselookRef.current && (stepDx !== 0 || stepDy !== 0)) {
+        managerRef.current.applyMouseLookDelta(stepDx, stepDy);
+      }
+      return;
     }
 
     const maxJoystickRadius = 56;
@@ -1165,14 +1332,19 @@ export const CapyGameView: React.FC = () => {
 
     const elapsed = performance.now() - g.startTime;
     const wasQuickTap = g.maxDist < 14 && elapsed < 350;
+    const wasMouseDragMouselook =
+      g.pointerType === 'mouse' && gameSettingsRef.current.mouselookEnabled !== false;
+    const releasedButton = g.button;
 
     g.pointerId = null;
     if (managerRef.current) {
-      managerRef.current.moveInput.x = 0;
-      managerRef.current.moveInput.z = 0;
-      managerRef.current.pointerTargetX = null;
+      if (!wasMouseDragMouselook) {
+        managerRef.current.moveInput.x = 0;
+        managerRef.current.moveInput.z = 0;
+        managerRef.current.pointerTargetX = null;
+      }
 
-      if (wasQuickTap) {
+      if (wasQuickTap && (!wasMouseDragMouselook || releasedButton === 0)) {
         const rect = e.currentTarget.getBoundingClientRect();
         const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
         const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
@@ -1190,6 +1362,9 @@ export const CapyGameView: React.FC = () => {
     setGameSettings((prev: CapyGameSettings) => {
       const next: CapyGameSettings = { ...prev, ...patch };
       ProgressionService.saveSettings(next);
+      if (next.mouselookEnabled === false && isFreeMouselookRef.current) {
+        setFreeMouselookActive(false);
+      }
       if (managerRef.current) {
         managerRef.current.updateSettings(next);
         setGpuTelemetry(managerRef.current.getGpuEngineTelemetry());
@@ -1825,6 +2000,7 @@ export const CapyGameView: React.FC = () => {
         onPointerMove={handleCanvasPointerMove}
         onPointerUp={handleCanvasPointerUpOrCancel}
         onPointerCancel={handleCanvasPointerUpOrCancel}
+        onContextMenu={(e) => e.preventDefault()}
         style={{ touchAction: 'none' }}
         className="absolute inset-0 w-full h-full cursor-crosshair active:cursor-grabbing"
       />
@@ -1860,6 +2036,24 @@ export const CapyGameView: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Subtle HUD Notice when Free Mouselook (M) is Active */}
+      {isFreeMouselook && (
+        <div
+          data-testid="mouselook-active-pill"
+          className="fixed bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-950/90 border border-sky-400/50 text-sky-200 text-[11px] font-mono shadow-xl pointer-events-auto"
+        >
+          <Crosshair className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+          <span>Free Mouselook Active · Press M or Esc to unlock</span>
+          <button
+            type="button"
+            onClick={() => setFreeMouselookActive(false)}
+            className="px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-white/15 text-zinc-200 text-[10px] cursor-pointer"
+          >
+            Unlock
+          </button>
         </div>
       )}
 
@@ -4699,11 +4893,10 @@ export const CapyGameView: React.FC = () => {
 
             <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
               <p className="text-xs text-zinc-300 leading-relaxed">
-                The simulation initializes at a pitch-black 0D singularity. Triggering the Big Bang
-                rapidly expands a blinding white radiation fireball that condenses into 48,000
-                simulated star and baryon particles. Real-time softened Newtonian gravity, fluid
-                viscous damping, and angular momentum conservation coalesce the stars into 64
-                rotating spiral galaxies with relativistic supermassive black hole cores.
+                The simulation initializes at the Multiverse void overlooking pocket universes.
+                Navigate any cosmic scale or surface world with WASD, drag with Left/Right mouse
+                to Mouselook (or press M to toggle Free Mouselook), scroll the wheel to control
+                spaceship throttle or chase distance, and press Space or quick-tap to jump.
               </p>
 
               <div>
@@ -4810,6 +5003,101 @@ export const CapyGameView: React.FC = () => {
                 >
                   {gameSettings.cameraFollowBehind ? 'ON' : 'OFF'}
                 </button>
+              </div>
+
+              <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-zinc-100">
+                      Mouselook Camera (Drag or M)
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Drag left/right mouse anywhere to orbit, or press M for free mouselook
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {gameSettings.mouselookEnabled !== false && (
+                      <button
+                        type="button"
+                        data-testid="settings-lock-mouselook-btn"
+                        onClick={() => {
+                          setIsSettingsOpen(false);
+                          setFreeMouselookActive(true);
+                        }}
+                        className="px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-900 hover:bg-zinc-800 text-sky-300 border border-sky-400/35 cursor-pointer"
+                      >
+                        Lock (M)
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      data-testid="settings-toggle-mouselook"
+                      onClick={() =>
+                        updateGameSettings({
+                          mouselookEnabled: gameSettings.mouselookEnabled === false,
+                        })
+                      }
+                      className={`px-3 py-1 rounded text-xs font-mono cursor-pointer border ${
+                        gameSettings.mouselookEnabled !== false
+                          ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
+                          : 'bg-zinc-900 text-zinc-400 border-white/10'
+                      }`}
+                    >
+                      {gameSettings.mouselookEnabled !== false ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+
+                {gameSettings.mouselookEnabled !== false && (
+                  <div className="pt-2 border-t border-white/8 space-y-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-zinc-300">
+                          Mouselook Sensitivity
+                        </span>
+                        <span className="text-[11px] font-mono text-sky-400 tabular-nums">
+                          {(gameSettings.mouselookSensitivity ?? 1.0).toFixed(2)}x
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        data-testid="settings-mouselook-sensitivity"
+                        min={0.2}
+                        max={2.5}
+                        step={0.05}
+                        value={gameSettings.mouselookSensitivity ?? 1.0}
+                        onChange={(e) =>
+                          updateGameSettings({
+                            mouselookSensitivity: parseFloat(e.target.value),
+                          })
+                        }
+                        className="w-full accent-sky-400 cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[11px] font-medium text-zinc-300">
+                        Invert Mouse Y-Axis
+                      </span>
+                      <button
+                        type="button"
+                        data-testid="settings-toggle-invert-mouse-y"
+                        onClick={() =>
+                          updateGameSettings({
+                            invertMouseY: !gameSettings.invertMouseY,
+                          })
+                        }
+                        className={`px-2.5 py-0.5 rounded text-[11px] font-mono cursor-pointer border ${
+                          gameSettings.invertMouseY
+                            ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
+                            : 'bg-zinc-900 text-zinc-400 border-white/10'
+                        }`}
+                      >
+                        {gameSettings.invertMouseY ? 'INVERTED' : 'STANDARD'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div

@@ -265,6 +265,9 @@ import type {
 
 export interface CapyGameSettings {
   cameraFollowBehind: boolean;
+  mouselookEnabled: boolean;
+  mouselookSensitivity: number;
+  invertMouseY: boolean;
   cameraDistance: number;
   turnSensitivity: number;
   fov: number;
@@ -303,6 +306,9 @@ export interface CapyGameSettings {
 
 export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   cameraFollowBehind: true,
+  mouselookEnabled: true,
+  mouselookSensitivity: 1.0,
+  invertMouseY: false,
   cameraDistance: 1.0,
   turnSensitivity: 1.0,
   fov: 58,
