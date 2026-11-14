@@ -5,11 +5,22 @@ test-results/
 playwright-report/
 .playwright-cli/
 .artifacts/
+.wrangler/
 
-# IDE / Editor / System Configuration
+# Secrets & Environment Files
+.env*
+!.env.example
+.dev.vars*
+*.pem
+*.key
+
+# IDE / Editor / Agent Local Scratch
 .idea/
 .vscode/
+.agents/local/
+.agents/teamwork/
 *.iml
 .DS_Store
 Thumbs.db
 /inspect/
+.tmp_*
