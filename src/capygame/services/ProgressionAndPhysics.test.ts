@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { PbrTextureSynthesizer } from '../engine/gpu/PbrTextureSynthesizer';
+import { CapyModelGenerator } from '../engine/CapyModelGenerator';
 import {
   DEFAULT_CAPY_SETTINGS,
   INITIAL_PLAYER_STATS,
@@ -59,6 +60,8 @@ import {
   evaluateWholeScreenSightlineClearAlpha,
   extractWebGpuRenderDrawCalls,
   installFastMatrixCull,
+  isLowMemoryEnvironment,
+  measureSceneMemoryFootprint,
   selectBestGpuBackend,
   shouldEnableOccluderDepthWrite,
   shouldRenderDistrict,
@@ -993,4 +996,104 @@ test('Scene Matrix Cull & GPU Auto-Bench Regression: O(1) hidden subtree skip, c
     'webgpu'
   );
 });
+
+test('RAM & VRAM Footprint Guard: Capybara NPC pooling shares geometries/materials while Hero stays isolated, and FBO estimator zeros disabled targets', () => {
+  const g = globalThis as unknown as { document?: unknown };
+  const prevDoc = g.document;
+  g.document = {
+    createElement: () => ({
+      width: 0,
+      height: 0,
+      getContext: () => null,
+    }),
+  };
+
+  try {
+    const scene = new THREE.Scene();
+    CapyModelGenerator.setLeanTextureMode(true);
+
+    const npcs = Array.from({ length: 10 }, (_, idx) =>
+      CapyModelGenerator.createCapybara(
+        idx % 2 === 0 ? 'yuzu' : 'crown',
+        0.85,
+        'classic',
+        [],
+        1,
+        0xf97316,
+        true
+      )
+    );
+    npcs.forEach((n) => scene.add(n));
+
+    const hero = CapyModelGenerator.createCapybara('yuzu', 1.0, 'classic', [], 3, 0xf97316, false);
+    scene.add(hero);
+
+    // Measure scene with Shadow + PostFX disabled (PERF Direct Pass)
+    const directFootprint = measureSceneMemoryFootprint(scene, {
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      pixelRatio: 0.7,
+      shadowMapSize: 0,
+      shadowCasters: 0,
+      postProcessingActive: false,
+      ssaoEnabled: false,
+      bloomEnabled: false,
+      msaaSamples: 0,
+    });
+
+    // 10 NPCs + 1 LOD3 Hero must reuse cached geometries rather than ~52 * 11 = ~572 unique geos
+    assert.ok(
+      directFootprint.uniqueGeometries < 85,
+      `Expected < 85 unique geometries across 11 pooled Capybaras, got ${directFootprint.uniqueGeometries}`
+    );
+    assert.ok(directFootprint.estimatedGeoVramMB > 0);
+    assert.ok(directFootprint.estimatedTexVramMB > 0);
+    assert.equal(directFootprint.estimatedRenderTargetVramMB, 0);
+
+    // NPCs share headOrange & fur materials while Hero keeps isolated instances for live customization
+    const getFirstFurMat = (root: THREE.Object3D): THREE.Material | null => {
+      let found: THREE.Material | null = null;
+      root.traverse((obj) => {
+        if (!found && (obj as THREE.Mesh).isMesh) {
+          const mat = (obj as THREE.Mesh).material;
+          if (!Array.isArray(mat) && mat instanceof THREE.MeshStandardMaterial) {
+            found = mat;
+          }
+        }
+      });
+      return found;
+    };
+    assert.equal(npcs[0].userData.headOrangeMat, npcs[2].userData.headOrangeMat);
+    assert.notEqual(hero.userData.headOrangeMat, npcs[0].userData.headOrangeMat);
+    const npcFurMat = getFirstFurMat(npcs[0]);
+    const npc2FurMat = getFirstFurMat(npcs[1]);
+    const heroFurMat = getFirstFurMat(hero);
+    assert.ok(npcFurMat && npc2FurMat && heroFurMat);
+    assert.equal(npcFurMat, npc2FurMat);
+    assert.notEqual(heroFurMat, npcFurMat);
+    assert.equal(isLowMemoryEnvironment(false, 'performance'), true);
+
+    // Turning PostFX + 2048px shadow map on accurately reflects increased FBO VRAM
+    const highFootprint = measureSceneMemoryFootprint(scene, {
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      pixelRatio: 1.5,
+      shadowMapSize: 2048,
+      shadowCasters: 1,
+      postProcessingActive: true,
+      ssaoEnabled: true,
+      bloomEnabled: true,
+      msaaSamples: 4,
+    });
+    assert.ok(highFootprint.estimatedRenderTargetVramMB > 100);
+  } finally {
+    CapyModelGenerator.setLeanTextureMode(false);
+    if (prevDoc === undefined) {
+      delete g.document;
+    } else {
+      g.document = prevDoc;
+    }
+  }
+});
+
 

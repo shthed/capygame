@@ -371,6 +371,14 @@ export const CapyGameView: React.FC = () => {
     geometriesInVram: 0,
     shaderPrograms: 0,
     registeredPbrTextures: 0,
+    jsHeapUsedMB: null,
+    jsHeapTotalMB: null,
+    estimatedGeoVramMB: 0,
+    estimatedTexVramMB: 0,
+    estimatedRenderTargetVramMB: 0,
+    estimatedTotalVramMB: 0,
+    deviceMemoryGb: null,
+    lowMemoryModeActive: false,
   });
   const [isPerfLogOpen, setIsPerfLogOpen] = useState<boolean>(false);
   const [isDebugReportOpen, setIsDebugReportOpen] = useState<boolean>(false);
@@ -5288,6 +5296,29 @@ export const CapyGameView: React.FC = () => {
                     <span className={gpuTelemetry.webGpuActive ? 'text-emerald-300 font-semibold shrink-0' : 'text-sky-300 shrink-0'}>
                       {gpuTelemetry.webGpuActive ? 'WEBGPU WGSL' : 'WEBGL2'}
                     </span>
+                  </div>
+                  <div
+                    data-testid="settings-memory-footprint"
+                    className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[10px] font-mono text-zinc-300 bg-zinc-950/60 px-2 py-1 rounded border border-white/5"
+                  >
+                    <span>
+                      RAM:{' '}
+                      <span className="text-emerald-300">
+                        {gpuTelemetry.jsHeapUsedMB !== null ? `${gpuTelemetry.jsHeapUsedMB} MB` : 'N/A'}
+                      </span>
+                    </span>
+                    <span>
+                      VRAM:{' '}
+                      <span className="text-amber-300">~{gpuTelemetry.estimatedTotalVramMB} MB</span>{' '}
+                      <span className="text-zinc-500">
+                        (G:{gpuTelemetry.estimatedGeoVramMB} T:{gpuTelemetry.estimatedTexVramMB} F:{gpuTelemetry.estimatedRenderTargetVramMB})
+                      </span>
+                    </span>
+                    {gpuTelemetry.lowMemoryModeActive && (
+                      <span className="px-1 py-0.2 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-400/30">
+                        LEAN MEM
+                      </span>
+                    )}
                   </div>
                   {gpuTelemetry.backendBenchmarkSummary && (
                     <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-zinc-300 bg-zinc-950/70 px-2 py-1 rounded border border-white/5">

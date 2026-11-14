@@ -237,6 +237,14 @@ export interface GpuEngineTelemetry {
   shaderPrograms: number;
   registeredPbrTextures: number;
   backendBenchmarkSummary?: string;
+  jsHeapUsedMB: number | null;
+  jsHeapTotalMB: number | null;
+  estimatedGeoVramMB: number;
+  estimatedTexVramMB: number;
+  estimatedRenderTargetVramMB: number;
+  estimatedTotalVramMB: number;
+  deviceMemoryGb: number | null;
+  lowMemoryModeActive: boolean;
 }
 
 export type ProfilerPhaseId =

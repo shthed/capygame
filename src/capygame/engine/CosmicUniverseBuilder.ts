@@ -11,8 +11,8 @@ import {
 } from '../types';
 import { disposeObject3DTree } from './gpu/ThreeDisposal';
 
-const MAX_HARDWARE_PARTICLES = 48000;
-const MAX_SOFTWARE_PARTICLES = 9000;
+const MAX_HARDWARE_PARTICLES = 16000;
+const MAX_SOFTWARE_PARTICLES = 5000;
 const DEEP_FIELD_GALAXY_COUNT = 58;
 const TOTAL_HALO_COUNT = COSMIC_GALAXIES.length + DEEP_FIELD_GALAXY_COUNT;
 const SUPERNOVA_POOL_SIZE = 18;
@@ -308,10 +308,11 @@ export class CosmicUniverseBuilder {
   private readonly _tempV = new THREE.Vector3();
   private readonly _intersectPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-  constructor(isSoftwareGl: boolean = false) {
-    this.maxParticles = isSoftwareGl ? MAX_SOFTWARE_PARTICLES : MAX_HARDWARE_PARTICLES;
-    this.animatedParticleLimit = isSoftwareGl ? 9000 : 28000;
-    this.activeParticleCount = isSoftwareGl ? 7500 : 36000;
+  constructor(isSoftwareGl: boolean = false, isLowMemory: boolean = false) {
+    this.maxParticles =
+      isSoftwareGl || isLowMemory ? MAX_SOFTWARE_PARTICLES : MAX_HARDWARE_PARTICLES;
+    this.animatedParticleLimit = isSoftwareGl || isLowMemory ? 5000 : 14000;
+    this.activeParticleCount = isSoftwareGl || isLowMemory ? 4500 : 14000;
 
     this.particlePositions = new Float32Array(this.maxParticles * 3);
     this.particleVelocities = new Float32Array(this.maxParticles * 3);

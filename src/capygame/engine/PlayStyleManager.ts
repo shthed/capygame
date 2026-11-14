@@ -37,6 +37,7 @@ import {
   findNextEffectiveMitigationLevel,
   findPrevEffectiveMitigationLevel,
   installFastMatrixCull,
+  isLowMemoryEnvironment,
   shouldEnableOccluderDepthWrite,
   shouldRenderDistrict,
 } from './gpu/FramePerformanceGovernor';
@@ -803,6 +804,14 @@ export class PlayStyleManager {
       this.isWebGpu
     );
 
+    const isLowMem = isLowMemoryEnvironment(
+      this.isSoftwareGl,
+      this.settings.gpuQualityPreset
+    );
+    PbrTextureSynthesizer.setLeanTextureMode(isLowMem);
+    RealisticWorldEnvironment.setLeanTextureMode(isLowMem);
+    CapyModelGenerator.setLeanTextureMode(isLowMem);
+
     // Hardware-accelerated PBR texture cache, GPU Sky Dome, 360° Alpine Mountains & Weather
     this.worldEnv = new RealisticWorldEnvironment(
       this.renderer,
@@ -829,7 +838,8 @@ export class PlayStyleManager {
       this.stats.activeSkin,
       this.stats.activeMutations,
       this.currentCapyLodTier,
-      initVariety.colorHex
+      initVariety.colorHex,
+      false
     );
     this.heroTailAuraMat = new THREE.MeshBasicMaterial({
       color: 0x22d3ee,
@@ -883,7 +893,7 @@ export class PlayStyleManager {
 
     // 6. Build Chrono-Vessel Rig & 21-Band Seamless Multi-Scale Universe Simulator
     //    (CosmicUniverseBuilder stays suspended so only one unified cosmic renderer executes)
-    this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl);
+    this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl, isLowMem);
     this.cosmicBuilder.setSuspended(true);
     this.scene.add(this.cosmicBuilder.rootGroup);
     this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl, this.isWebGpu);
@@ -3300,7 +3310,12 @@ export class PlayStyleManager {
       }
       sLines.push(`Pipeline: Shadows ${gpu.shadowCasterMode.toUpperCase()} (${gpu.shadowMapSize}px) | Bloom: ${gpu.bloomEnabled ? 'ON' : 'OFF'} | SSAO: ${gpu.ssaoEnabled ? 'ON' : 'OFF'} | AA: ${gpu.antiAliasing} | Scale: ${gpu.resolutionScale}x (DPR ${gpu.effectivePixelRatio})`);
       sLines.push(`Opt Cuts: ${disabledStr}`);
-      sLines.push(`Draw: ${gpu.drawCalls} calls | ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()} tris | VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram} geos, ${rInfo?.memory?.textures ?? gpu.texturesInVram} texs`);
+      const heapStr =
+        gpu.jsHeapUsedMB !== null
+          ? `${gpu.jsHeapUsedMB}/${gpu.jsHeapTotalMB ?? '?'}MB`
+          : 'N/A';
+      sLines.push(`Draw: ${gpu.drawCalls} calls | ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()} tris | Geo/Tex: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram} geos, ${rInfo?.memory?.textures ?? gpu.texturesInVram} texs`);
+      sLines.push(`Memory: JS Heap ${heapStr} | Est VRAM ${gpu.estimatedTotalVramMB}MB (Geo ${gpu.estimatedGeoVramMB} + Tex ${gpu.estimatedTexVramMB} + FBO ${gpu.estimatedRenderTargetVramMB})${gpu.lowMemoryModeActive ? ' [LEAN MEM]' : ''}`);
       sLines.push('Incidents:');
       if (perf.entries.length === 0) {
         sLines.push(`- Zero frame drops recorded (steady ${perf.fpsTarget} FPS target).`);
@@ -3360,12 +3375,18 @@ export class PlayStyleManager {
     lines.push(`Anti-Aliasing: ${gpu.antiAliasing} (MSAA Samples: ${gpu.msaaSamples}) | Render Scale: ${gpu.resolutionScale}x (DPR: ${gpu.effectivePixelRatio})`);
     lines.push(`Anisotropy: ${gpu.activeAnisotropy}/${gpu.maxHardwareAnisotropy}`);
     lines.push('');
-    lines.push('--- THREE.JS VRAM & DRAW METRICS ---');
+    lines.push('--- THREE.JS RAM & VRAM METRICS ---');
     lines.push(`Draw Calls: ${gpu.drawCalls}`);
     lines.push(`Triangles: ${(rInfo?.render?.triangles ?? gpu.triangles).toLocaleString()}`);
     lines.push(`Lines: ${rInfo?.render?.lines ?? 0} | Points: ${rInfo?.render?.points ?? 0}`);
-    lines.push(`Geometries in VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram}`);
-    lines.push(`Textures in VRAM: ${rInfo?.memory?.textures ?? gpu.texturesInVram}`);
+    lines.push(`Geometries in VRAM: ${rInfo?.memory?.geometries ?? gpu.geometriesInVram} (~${gpu.estimatedGeoVramMB} MB)`);
+    lines.push(`Textures in VRAM: ${rInfo?.memory?.textures ?? gpu.texturesInVram} (~${gpu.estimatedTexVramMB} MB)`);
+    lines.push(`Offscreen FBO / Shadow Targets: ~${gpu.estimatedRenderTargetVramMB} MB`);
+    lines.push(`Estimated Total VRAM: ~${gpu.estimatedTotalVramMB} MB`);
+    lines.push(
+      `JS Heap RAM: ${gpu.jsHeapUsedMB !== null ? `${gpu.jsHeapUsedMB} MB used / ${gpu.jsHeapTotalMB ?? '?'} MB total` : 'Not exposed by browser'}`
+    );
+    lines.push(`Lean Memory Mode: ${gpu.lowMemoryModeActive ? 'ON (Reduced textures & pools)' : 'OFF'}`);
     lines.push(`Shader Programs: ${gpu.shaderPrograms}`);
     lines.push('');
     lines.push('--- INCIDENT LOG ENTRIES (GROUPED) ---');

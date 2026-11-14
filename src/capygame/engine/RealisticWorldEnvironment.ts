@@ -302,6 +302,11 @@ export class RealisticWorldEnvironment {
   private static sharedCalyxStarGeo: THREE.BufferGeometry | null = null;
   private static sharedUnitRibbedFruitGeo: THREE.BufferGeometry | null = null;
   private static sharedRippleDataTexture: THREE.DataTexture | null = null;
+  private static leanTextureMode: boolean = false;
+
+  public static setLeanTextureMode(lean: boolean): void {
+    this.leanTextureMode = lean;
+  }
 
   public static createSubdividedWaterDiscGeometry(
     radius: number,
@@ -884,7 +889,13 @@ export class RealisticWorldEnvironment {
       return cobbleSet;
     }
 
-    const size = kind === 'grass' || kind === 'mountain' || kind === 'sand' ? 512 : 256;
+    const size = this.leanTextureMode
+      ? kind === 'grass' || kind === 'mountain' || kind === 'sand'
+        ? 256
+        : 128
+      : kind === 'grass' || kind === 'mountain' || kind === 'sand'
+        ? 512
+        : 256;
     const albCanvas = document.createElement('canvas');
     albCanvas.width = size;
     albCanvas.height = size;
@@ -1147,7 +1158,7 @@ export class RealisticWorldEnvironment {
 
   public static getWaterRippleTexture(): THREE.CanvasTexture {
     if (this.waterNormalTex) return this.waterNormalTex;
-    const size = 256;
+    const size = this.leanTextureMode ? 128 : 256;
     const canvas = document.createElement('canvas');
     canvas.width = size;
     canvas.height = size;

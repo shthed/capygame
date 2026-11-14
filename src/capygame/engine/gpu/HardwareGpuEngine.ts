@@ -21,6 +21,9 @@ import {
   computeEffectivePixelRatio,
   computeTexelSnappedShadowOrigin,
   extractWebGpuRenderDrawCalls,
+  isLowMemoryEnvironment,
+  measureSceneMemoryFootprint,
+  type SceneMemoryFootprint,
 } from './FramePerformanceGovernor';
 import type { WebGpuPostAndComputePipeline, WebGpuProbeResult } from './WebGpuPipeline';
 
@@ -318,6 +321,10 @@ export class HardwareGpuEngine {
   private lastDayPhaseLabel: string = 'Daylight';
   private lastTimeOfDayHours: number = 9.5;
 
+  private isLowMemoryDevice: boolean = false;
+  private cachedMemFootprint: SceneMemoryFootprint | null = null;
+  private lastMemMeasureMs: number = -10000;
+
   // Cached event listeners for clean disposal
   private readonly onContextLostHandler: (e: Event) => void;
   private readonly onContextRestoredHandler: () => void;
@@ -416,10 +423,16 @@ export class HardwareGpuEngine {
     this.heroContactShadowMesh.userData.ignoreCameraFade = true;
     this.scene.add(this.heroContactShadowMesh);
 
-    // 4. Procedural Sky + Studio Environment Map (PMREM cubemap on WebGL2 HW & WebGPU!)
+    this.isLowMemoryDevice = isLowMemoryEnvironment(
+      this.isSoftwareGl,
+      initialConfig?.qualityPreset
+    );
+    PbrTextureSynthesizer.setLeanTextureMode(this.isLowMemoryDevice);
+
+    // 4. Procedural Sky + Studio Environment Map (PMREM cubemap on WebGL2 HW & WebGPU; lightweight 64x32 on SW/Low-RAM!)
     this.iblEnvironmentTexture = PbrTextureSynthesizer.createStudioAndSkyEnvironmentMap(
       this.renderer,
-      this.isSoftwareGl
+      this.isSoftwareGl || this.isLowMemoryDevice
     );
     if (!this.isSoftwareGl && !this.scene.environment && this.iblEnvironmentTexture) {
       this.scene.environment = this.iblEnvironmentTexture;
@@ -602,6 +615,26 @@ export class HardwareGpuEngine {
     }
   }
 
+  private disposeComposerTargets(): void {
+    this.renderPass?.dispose();
+    this.composer?.dispose();
+    this.renderTarget?.dispose();
+    this.sceneCaptureTarget?.dispose();
+    this.depthTexture?.dispose();
+    this.renderPass = null;
+    this.composer = null;
+    this.renderTarget = null;
+    this.sceneCaptureTarget = null;
+    this.depthTexture = null;
+    this.bloomPass = null;
+    this.masterFilterPass = null;
+    this.outputPass = null;
+    this.fxaaPass = null;
+    if (!this.isWebGpu) {
+      this.activeMsaaSamples = 0;
+    }
+  }
+
   private syncFxaaResolution(): void {
     if (!this.fxaaPass) return;
     const pr = this.renderer.getPixelRatio();
@@ -759,7 +792,17 @@ export class HardwareGpuEngine {
         (this.renderer as THREE.WebGLRenderer).shadowMap.autoUpdate = false;
       }
       this.sunLight.castShadow = false;
-      if (this.moonLight) this.moonLight.castShadow = false;
+      if (this.sunLight.shadow.map) {
+        this.sunLight.shadow.map.dispose();
+        this.sunLight.shadow.map = null;
+      }
+      if (this.moonLight) {
+        this.moonLight.castShadow = false;
+        if (this.moonLight.shadow.map) {
+          this.moonLight.shadow.map.dispose();
+          this.moonLight.shadow.map = null;
+        }
+      }
       this.activeShadowMapSize = 0;
     } else {
       const prevEnabled = this.renderer.shadowMap.enabled;
@@ -839,14 +882,17 @@ export class HardwareGpuEngine {
     }
 
     // 5. Rebuild WebGL2 Composer RenderTarget if MSAA / DepthTexture / PixelRatio requirements changed,
-    // or lazily initialize on software WebGL when a visual filter is activated.
-    if (this.shouldActivateComposer() && !this.composer) {
+    // or lazily initialize / dispose when switching to Direct Pass / Performance mode to free VRAM!
+    if (!this.shouldActivateComposer()) {
+      if (this.composer || this.renderTarget || this.sceneCaptureTarget) {
+        this.disposeComposerTargets();
+      }
+    } else if (!this.composer) {
       this.rebuildComposer();
     } else if (
-      this.composer &&
-      (prevSsao !== this.config.ssaoEnabled ||
-        prevAa !== this.config.antiAliasing ||
-        prChanged)
+      prevSsao !== this.config.ssaoEnabled ||
+      prevAa !== this.config.antiAliasing ||
+      prChanged
     ) {
       this.rebuildComposer();
     }
@@ -1115,6 +1161,25 @@ export class HardwareGpuEngine {
         ? Math.min(this.maxHardwareAnisotropy, this.config.anisotropyLevel)
         : 1;
 
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!this.cachedMemFootprint || nowMs - this.lastMemMeasureMs >= 1500) {
+      this.lastMemMeasureMs = nowMs;
+      this.cachedMemFootprint = measureSceneMemoryFootprint(this.scene, {
+        viewportWidth: this.viewportWidth,
+        viewportHeight: this.viewportHeight,
+        pixelRatio: this.renderer.getPixelRatio(),
+        shadowMapSize: this.activeShadowMapSize,
+        shadowCasters: this.moonLight?.castShadow ? 2 : 1,
+        postProcessingActive: this.isPostProcessingRunning(),
+        ssaoEnabled: this.webGpuPipeline
+          ? this.config.ssaoEnabled
+          : this.config.ssaoEnabled && Boolean(this.depthTexture),
+        bloomEnabled: this.config.bloomEnabled,
+        msaaSamples: this.activeMsaaSamples,
+      });
+    }
+    const memFoot = this.cachedMemFootprint;
+
     return {
       backendLabel: this.webGpuPipeline
         ? 'WebGPU WGSL + TSL PostFX + Compute'
@@ -1165,6 +1230,14 @@ export class HardwareGpuEngine {
           : this.lastShadowCasterMode,
       dayPhaseLabel: this.lastDayPhaseLabel,
       timeOfDayHours: +this.lastTimeOfDayHours.toFixed(2),
+      jsHeapUsedMB: memFoot.jsHeapUsedMB,
+      jsHeapTotalMB: memFoot.jsHeapTotalMB,
+      estimatedGeoVramMB: memFoot.estimatedGeoVramMB,
+      estimatedTexVramMB: memFoot.estimatedTexVramMB,
+      estimatedRenderTargetVramMB: memFoot.estimatedRenderTargetVramMB,
+      estimatedTotalVramMB: memFoot.estimatedTotalVramMB,
+      deviceMemoryGb: memFoot.deviceMemoryGb,
+      lowMemoryModeActive: this.isLowMemoryDevice || this.config.qualityPreset === 'performance',
     };
   }
 

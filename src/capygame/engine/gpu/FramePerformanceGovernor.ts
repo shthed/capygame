@@ -1291,4 +1291,194 @@ export function selectBestGpuBackend(
   };
 }
 
+// ============================================================================
+// RAM & VRAM MEMORY FOOTPRINT TELEMETRY + LOW-MEMORY DEVICE DETECTION
+// ============================================================================
+
+export function isLowMemoryEnvironment(
+  isSoftwareGl: boolean = false,
+  qualityPreset?: string
+): boolean {
+  if (qualityPreset === 'performance') return true;
+  if (isSoftwareGl) return true;
+  if (typeof navigator !== 'undefined') {
+    const devMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+    if (typeof devMem === 'number' && devMem > 0 && devMem <= 4) return true;
+    if (typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface SceneMemoryFootprint {
+  jsHeapUsedMB: number | null;
+  jsHeapTotalMB: number | null;
+  deviceMemoryGb: number | null;
+  estimatedGeoVramMB: number;
+  estimatedTexVramMB: number;
+  estimatedRenderTargetVramMB: number;
+  estimatedTotalVramMB: number;
+  uniqueGeometries: number;
+  uniqueTextures: number;
+}
+
+const _memSeenGeos = new Set<string>();
+const _memSeenTexs = new Set<string>();
+const _memTexKeys = [
+  'map',
+  'normalMap',
+  'roughnessMap',
+  'metalnessMap',
+  'aoMap',
+  'bumpMap',
+  'emissiveMap',
+  'alphaMap',
+] as const;
+
+/**
+ * Computes exact JS Heap RAM (where exposed by Chromium) plus GPU VRAM estimates for unique
+ * `BufferGeometry` buffers, uploaded `Texture` maps (+ mipmaps), and offscreen Shadow/PostFX targets.
+ * Reuses static Sets so periodic telemetry polling avoids heap churn.
+ */
+export function measureSceneMemoryFootprint(
+  scene: THREE.Scene,
+  opts: {
+    viewportWidth: number;
+    viewportHeight: number;
+    pixelRatio: number;
+    shadowMapSize: number;
+    shadowCasters?: number;
+    postProcessingActive: boolean;
+    ssaoEnabled: boolean;
+    bloomEnabled: boolean;
+    msaaSamples: number;
+  }
+): SceneMemoryFootprint {
+  _memSeenGeos.clear();
+  _memSeenTexs.clear();
+
+  let geoBytes = 0;
+  let texBytes = 0;
+
+  const accountTex = (tex: THREE.Texture | null | undefined) => {
+    if (!tex || _memSeenTexs.has(tex.uuid)) return;
+    _memSeenTexs.add(tex.uuid);
+    const img = tex.image as
+      | { width?: number; height?: number; data?: { byteLength?: number } }
+      | undefined;
+    const srcData = (tex as unknown as { source?: { data?: { width?: number; height?: number } } })
+      .source?.data;
+    const w = img?.width || srcData?.width || 0;
+    const h = img?.height || srcData?.height || 0;
+    const rawBytes = img?.data?.byteLength || (w > 0 && h > 0 ? w * h * 4 : 0);
+    const mipMult = tex.generateMipmaps ? 1.333 : 1.0;
+    texBytes += rawBytes * mipMult;
+  };
+
+  scene.traverse((obj) => {
+    const g = (obj as THREE.Mesh).geometry;
+    if (g && !_memSeenGeos.has(g.uuid)) {
+      _memSeenGeos.add(g.uuid);
+      const attrs = g.attributes;
+      if (attrs) {
+        for (const key in attrs) {
+          const attr = attrs[key];
+          if (attr?.array?.byteLength) {
+            geoBytes += attr.array.byteLength;
+          }
+        }
+      }
+      if (g.index?.array?.byteLength) {
+        geoBytes += g.index.array.byteLength;
+      }
+    }
+
+    const matProp = (obj as THREE.Mesh).material;
+    if (matProp) {
+      if (Array.isArray(matProp)) {
+        for (let i = 0; i < matProp.length; i++) {
+          const m = matProp[i] as unknown as Record<string, THREE.Texture | undefined>;
+          for (let k = 0; k < _memTexKeys.length; k++) accountTex(m[_memTexKeys[k]]);
+        }
+      } else {
+        const m = matProp as unknown as Record<string, THREE.Texture | undefined>;
+        for (let k = 0; k < _memTexKeys.length; k++) accountTex(m[_memTexKeys[k]]);
+      }
+    }
+  });
+  accountTex(scene.environment);
+
+  // Offscreen FBO / ShadowMap VRAM estimate (RGBA8/HalfFloat + depth)
+  let rtBytes = 0;
+  if (opts.shadowMapSize > 0) {
+    const casters = Math.max(1, opts.shadowCasters ?? 1);
+    rtBytes += opts.shadowMapSize * opts.shadowMapSize * 4 * casters;
+  }
+  if (opts.postProcessingActive) {
+    const rtW = Math.max(1, Math.floor(opts.viewportWidth * opts.pixelRatio));
+    const rtH = Math.max(1, Math.floor(opts.viewportHeight * opts.pixelRatio));
+    const bpp = 8; // HalfFloat RGBA16F typical for HDR post-FX pipeline
+    const msaaMult = Math.max(1, opts.msaaSamples || 1);
+    // Ping-pong composer buffers (primary target + resolve/pass buffer)
+    rtBytes += rtW * rtH * bpp * (msaaMult + 1);
+    // Depth + color buffer
+    rtBytes += rtW * rtH * 4;
+    if (opts.ssaoEnabled) {
+      rtBytes += rtW * rtH * 8;
+    }
+    if (opts.bloomEnabled) {
+      // Mip pyramid (~1.33x quarter-res)
+      rtBytes += (rtW * rtH * bpp * 0.25) * 1.333;
+    }
+  }
+
+  let jsHeapUsedMB: number | null = null;
+  let jsHeapTotalMB: number | null = null;
+  if (typeof performance !== 'undefined') {
+    const pMem = (
+      performance as unknown as {
+        memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number };
+      }
+    ).memory;
+    if (pMem && typeof pMem.usedJSHeapSize === 'number') {
+      jsHeapUsedMB = +(pMem.usedJSHeapSize / 1048576).toFixed(1);
+    }
+    if (pMem && typeof pMem.totalJSHeapSize === 'number') {
+      jsHeapTotalMB = +(pMem.totalJSHeapSize / 1048576).toFixed(1);
+    }
+  }
+
+  let deviceMemoryGb: number | null = null;
+  if (typeof navigator !== 'undefined') {
+    const dm = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+    if (typeof dm === 'number' && dm > 0) deviceMemoryGb = dm;
+  }
+
+  const uniqueGeometries = _memSeenGeos.size;
+  const uniqueTextures = _memSeenTexs.size;
+  _memSeenGeos.clear();
+  _memSeenTexs.clear();
+
+  const estimatedGeoVramMB = +(geoBytes / 1048576).toFixed(2);
+  const estimatedTexVramMB = +(texBytes / 1048576).toFixed(2);
+  const estimatedRenderTargetVramMB = +(rtBytes / 1048576).toFixed(2);
+
+  return {
+    jsHeapUsedMB,
+    jsHeapTotalMB,
+    deviceMemoryGb,
+    estimatedGeoVramMB,
+    estimatedTexVramMB,
+    estimatedRenderTargetVramMB,
+    estimatedTotalVramMB: +(
+      estimatedGeoVramMB +
+      estimatedTexVramMB +
+      estimatedRenderTargetVramMB
+    ).toFixed(2),
+    uniqueGeometries,
+    uniqueTextures,
+  };
+}
+
 

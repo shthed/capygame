@@ -138,6 +138,15 @@ export class PbrTextureSynthesizer {
   private static currentFilterMode: GpuTextureFilterMode = 'trilinear_aniso';
   private static currentAnisotropy: number = 8;
   private static lastAppliedFilterKey: string = '';
+  private static leanTextureMode: boolean = false;
+
+  public static setLeanTextureMode(lean: boolean): void {
+    this.leanTextureMode = lean;
+  }
+
+  public static isLeanTextureMode(): boolean {
+    return this.leanTextureMode;
+  }
 
   public static registerManagedTexture(tex: THREE.Texture): THREE.Texture {
     this.managedTextures.add(tex);
@@ -334,12 +343,13 @@ export class PbrTextureSynthesizer {
     if (existingAlbedo) this.registerManagedTexture(existingAlbedo);
     if (existingBump) this.registerManagedTexture(existingBump);
 
+    const mapSize = this.leanTextureMode ? 64 : 128;
     let maps: ReturnType<typeof this.bakePbrDataMapsFromHeightfield>;
 
     if (kind === 'cobble') {
       // Fitted promenade flagstone / cobble pavers with chiseled bevels, mortar AO, and warm stone variation
       maps = this.bakePbrDataMapsFromHeightfield(
-        128,
+        mapSize,
         3.2,
         0.64,
         0.26,
@@ -367,13 +377,13 @@ export class PbrTextureSynthesizer {
         }
       );
     } else if (kind === 'grass') {
-      maps = this.bakePbrDataMapsFromHeightfield(128, 2.2, 0.78, 0.22, (u, v) => {
+      maps = this.bakePbrDataMapsFromHeightfield(mapSize, 2.2, 0.78, 0.22, (u, v) => {
         const tufts = periodicWorley(u, v, 18, 101);
         const blades = periodicFbm(u * 1.4, v * 3.2, 24, 3, 211);
         return (1.0 - tufts.f1 * 0.45) * 0.55 + blades * 0.45;
       });
     } else if (kind === 'sand') {
-      maps = this.bakePbrDataMapsFromHeightfield(128, 1.85, 0.68, 0.2, (u, v) => {
+      maps = this.bakePbrDataMapsFromHeightfield(mapSize, 1.85, 0.68, 0.2, (u, v) => {
         const ripple =
           0.5 +
           0.5 *
@@ -384,32 +394,32 @@ export class PbrTextureSynthesizer {
         return ripple * 0.65 + grains * 0.35;
       });
     } else if (kind === 'mountain') {
-      maps = this.bakePbrDataMapsFromHeightfield(128, 3.6, 0.84, 0.22, (u, v) => {
+      maps = this.bakePbrDataMapsFromHeightfield(mapSize, 3.6, 0.84, 0.22, (u, v) => {
         const strata = 1.0 - Math.abs(periodicFbm(u + v * 0.35, v, 10, 4, 503) * 2 - 1);
         const crags = periodicWorley(u, v, 12, 541).edge;
         return strata * 0.68 + crags * 0.32;
       });
     } else if (kind === 'bark') {
-      maps = this.bakePbrDataMapsFromHeightfield(128, 3.4, 0.88, 0.18, (u, v) => {
+      maps = this.bakePbrDataMapsFromHeightfield(mapSize, 3.4, 0.88, 0.18, (u, v) => {
         const ridges = Math.abs(Math.sin(u * Math.PI * 18 + periodicFbm(u, v, 8, 3, 601) * 3.2));
         const fissures = periodicFbm(u * 2.0, v * 0.5, 16, 3, 619);
         return ridges * 0.62 + fissures * 0.38;
       });
     } else if (kind === 'foliage') {
-      maps = this.bakePbrDataMapsFromHeightfield(128, 1.9, 0.44, 0.2, (u, v) => {
+      maps = this.bakePbrDataMapsFromHeightfield(mapSize, 1.9, 0.44, 0.2, (u, v) => {
         const cells = periodicWorley(u, v, 14, 701);
         const veins = periodicFbm(u, v, 24, 3, 719);
         return (1.0 - cells.f1 * 0.6) * 0.65 + veins * 0.35;
       });
     } else if (kind === 'basalt') {
-      maps = this.bakePbrDataMapsFromHeightfield(128, 2.9, 0.46, 0.28, (u, v) => {
+      maps = this.bakePbrDataMapsFromHeightfield(mapSize, 2.9, 0.46, 0.28, (u, v) => {
         const cells = periodicWorley(u, v, 9, 809);
         const pores = periodicFbm(u, v, 32, 3, 823);
         return THREE.MathUtils.smoothstep(cells.edge, 0.02, 0.22) * 0.72 + pores * 0.28;
       });
     } else {
       // timber
-      maps = this.bakePbrDataMapsFromHeightfield(128, 2.1, 0.66, 0.22, (u, v) => {
+      maps = this.bakePbrDataMapsFromHeightfield(mapSize, 2.1, 0.66, 0.22, (u, v) => {
         const plankSeam = Math.min(1, Math.abs(((u * 6) % 1) - 0.5) * 14);
         const woodGrain =
           0.5 +
@@ -440,8 +450,9 @@ export class PbrTextureSynthesizer {
     primary: THREE.DataTexture;
     secondary: THREE.DataTexture;
   } {
+    const waterSize = this.leanTextureMode ? 64 : 128;
     if (!this.waterPrimaryNormal || !this.waterSecondaryNormal) {
-      const p = this.bakePbrDataMapsFromHeightfield(128, 2.45, 0.08, 0.04, (u, v) => {
+      const p = this.bakePbrDataMapsFromHeightfield(waterSize, 2.45, 0.08, 0.04, (u, v) => {
         const a = u * Math.PI * 2;
         const b = v * Math.PI * 2;
         const swell1 = Math.sin(a * 3 + b * 2) * 0.34;
@@ -451,7 +462,7 @@ export class PbrTextureSynthesizer {
       });
       p.normal.repeat.set(18, 18);
 
-      const s = this.bakePbrDataMapsFromHeightfield(128, 1.85, 0.08, 0.04, (u, v) => {
+      const s = this.bakePbrDataMapsFromHeightfield(waterSize, 1.85, 0.08, 0.04, (u, v) => {
         const a = u * Math.PI * 2;
         const b = v * Math.PI * 2;
         const cap1 = Math.sin(a * 5 - b * 3) * 0.32;
@@ -475,7 +486,7 @@ export class PbrTextureSynthesizer {
    */
   public static getCapyFurNormalMap(): THREE.DataTexture {
     if (!this.furNormalTex) {
-      const m = this.bakePbrDataMapsFromHeightfield(128, 2.15, 0.76, 0.16, (u, v) => {
+      const m = this.bakePbrDataMapsFromHeightfield(this.leanTextureMode ? 64 : 128, 2.15, 0.76, 0.16, (u, v) => {
         const strands = periodicFbm(u * 4.0, v * 1.0, 32, 3, 1607);
         const tufts = periodicWorley(u * 2.0, v * 0.75, 16, 1621).f1;
         return strands * 0.72 + (1.0 - tufts) * 0.28;
@@ -491,7 +502,7 @@ export class PbrTextureSynthesizer {
    */
   public static getCitrusPeelNormalMap(): THREE.DataTexture {
     if (!this.citrusNormalTex) {
-      const m = this.bakePbrDataMapsFromHeightfield(128, 2.35, 0.24, 0.14, (u, v) => {
+      const m = this.bakePbrDataMapsFromHeightfield(this.leanTextureMode ? 64 : 128, 2.35, 0.24, 0.14, (u, v) => {
         const oilPores = periodicWorley(u, v, 22, 1801);
         const dimple = THREE.MathUtils.smoothstep(oilPores.f1, 0.0, 0.42);
         const micro = periodicFbm(u, v, 24, 2, 1823) * 0.18;

@@ -206,31 +206,57 @@ export class CapyModelGenerator {
     metalness: 0.02,
   });
 
-  // Cached geometries so creating/growing Dachshund segments has near-zero CPU cost
+  // Cached geometries & materials so NPCs/critters/herd/segments reuse existing GPU buffers
   private static sharedTorsoGeo: THREE.BufferGeometry | null = null;
   private static sharedHeadGeo: THREE.BufferGeometry | null = null;
   private static sharedSnoutGeo: THREE.BufferGeometry | null = null;
   private static sharedFurTuftGeo: THREE.BufferGeometry | null = null;
   private static sharedDachshundBarrelGeo: THREE.BufferGeometry | null = null;
+  private static geoCache = new Map<string, THREE.BufferGeometry>();
+  private static matCache = new Map<string, THREE.Material>();
+  private static leanTextureMode: boolean = false;
+
+  public static setLeanTextureMode(lean: boolean): void {
+    this.leanTextureMode = lean;
+  }
+
+  private static getCachedGeo<T extends THREE.BufferGeometry>(key: string, factory: () => T): T {
+    const existing = this.geoCache.get(key);
+    if (existing) return existing as T;
+    const created = factory();
+    this.geoCache.set(key, created);
+    return created;
+  }
+
+  private static getCachedMat<T extends THREE.Material>(key: string, factory: () => T): T {
+    const existing = this.matCache.get(key);
+    if (existing) return existing as T;
+    const created = factory();
+    this.matCache.set(key, created);
+    return created;
+  }
 
   private static getFurBumpTexture(): THREE.CanvasTexture {
     if (this.sharedFurBumpMap) return this.sharedFurBumpMap;
+    const texSize = this.leanTextureMode ? 128 : 256;
+    const scale = texSize / 256;
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 256;
+    canvas.width = texSize;
+    canvas.height = texSize;
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.fillStyle = '#808080';
-      ctx.fillRect(0, 0, 256, 256);
-      for (let i = 0; i < 3200; i++) {
-        const x = (i * 73) % 256;
-        const y = (i * 137) % 256;
+      ctx.fillRect(0, 0, texSize, texSize);
+      const count = this.leanTextureMode ? 1400 : 3200;
+      for (let i = 0; i < count; i++) {
+        const x = ((i * 73) % 256) * scale;
+        const y = ((i * 137) % 256) * scale;
         const lum = 75 + ((i * 29) % 135);
         ctx.strokeStyle = `rgb(${lum},${lum},${lum})`;
-        ctx.lineWidth = 1 + (i % 2) * 0.6;
+        ctx.lineWidth = (1 + (i % 2) * 0.6) * scale;
         ctx.beginPath();
         ctx.moveTo(x, y);
-        ctx.lineTo(x + (((i % 5) - 2) * 1.4), y + 7 + (i % 6));
+        ctx.lineTo(x + (((i % 5) - 2) * 1.4) * scale, y + (7 + (i % 6)) * scale);
         ctx.stroke();
       }
     }
@@ -247,9 +273,11 @@ export class CapyModelGenerator {
     const cached = this.furAlbedoCache.get(baseHex);
     if (cached) return cached;
 
+    const texSize = this.leanTextureMode ? 128 : 256;
+    const scale = texSize / 256;
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 256;
+    canvas.width = texSize;
+    canvas.height = texSize;
     const ctx = canvas.getContext('2d');
     const baseCol = new THREE.Color(baseHex);
     const darkCol = baseCol.clone().multiplyScalar(0.68);
@@ -258,7 +286,7 @@ export class CapyModelGenerator {
 
     if (ctx) {
       ctx.fillStyle = `#${baseCol.getHexString()}`;
-      ctx.fillRect(0, 0, 256, 256);
+      ctx.fillRect(0, 0, texSize, texSize);
 
       const palette = [
         `#${darkCol.getHexString()}`,
@@ -267,17 +295,18 @@ export class CapyModelGenerator {
         `#${lightCol.getHexString()}`,
       ];
 
-      // Paint 2,800 coarse directional bristle hairs characteristic of capybara coats
-      for (let i = 0; i < 2800; i++) {
-        const x = (i * 97 + (i % 13) * 7) % 256;
-        const y = (i * 53 + (i % 17) * 11) % 256;
+      // Paint coarse directional bristle hairs characteristic of capybara coats
+      const hairCount = this.leanTextureMode ? 1200 : 2800;
+      for (let i = 0; i < hairCount; i++) {
+        const x = ((i * 97 + (i % 13) * 7) % 256) * scale;
+        const y = ((i * 53 + (i % 17) * 11) % 256) * scale;
         ctx.strokeStyle = palette[i % palette.length];
         ctx.globalAlpha = 0.42 + (i % 4) * 0.12;
-        ctx.lineWidth = 1.1 + (i % 3) * 0.45;
+        ctx.lineWidth = (1.1 + (i % 3) * 0.45) * scale;
         ctx.beginPath();
         ctx.moveTo(x, y);
-        const sway = ((i % 7) - 3) * 1.1;
-        ctx.quadraticCurveTo(x + sway * 0.5, y + 4, x + sway, y + 8 + (i % 5));
+        const sway = ((i % 7) - 3) * 1.1 * scale;
+        ctx.quadraticCurveTo(x + sway * 0.5, y + 4 * scale, x + sway, y + (8 + (i % 5)) * scale);
         ctx.stroke();
       }
       ctx.globalAlpha = 1.0;
@@ -322,28 +351,40 @@ export class CapyModelGenerator {
     return tex;
   }
 
-  private static createFurMaterial(skin: string): THREE.MeshStandardMaterial {
-    const furColor = this.skinColors[skin] ?? this.skinColors.classic;
-    return new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      map: this.getFurAlbedoTexture(furColor),
-      normalMap: PbrTextureSynthesizer.getCapyFurNormalMap(),
-      normalScale: new THREE.Vector2(0.58, 0.58),
-      roughness: skin === 'golden' ? 0.45 : 0.84,
-      metalness: skin === 'golden' ? 0.38 : 0.04,
-    });
+  private static createFurMaterial(
+    skin: string,
+    share: boolean = true
+  ): THREE.MeshStandardMaterial {
+    const makeMat = () => {
+      const furColor = this.skinColors[skin] ?? this.skinColors.classic;
+      return new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: this.getFurAlbedoTexture(furColor),
+        normalMap: PbrTextureSynthesizer.getCapyFurNormalMap(),
+        normalScale: new THREE.Vector2(0.58, 0.58),
+        roughness: skin === 'golden' ? 0.45 : 0.84,
+        metalness: skin === 'golden' ? 0.38 : 0.04,
+      });
+    };
+    return share ? this.getCachedMat(`fur:${skin}`, makeMat) : makeMat();
   }
 
-  private static createUnderbellyMaterial(skin: string): THREE.MeshStandardMaterial {
-    const base = new THREE.Color(this.skinColors[skin] ?? this.skinColors.classic);
-    base.lerp(new THREE.Color(0xfef3c7), 0.38);
-    return new THREE.MeshStandardMaterial({
-      color: base,
-      normalMap: PbrTextureSynthesizer.getCapyFurNormalMap(),
-      normalScale: new THREE.Vector2(0.36, 0.36),
-      roughness: 0.9,
-      metalness: 0.02,
-    });
+  private static createUnderbellyMaterial(
+    skin: string,
+    share: boolean = true
+  ): THREE.MeshStandardMaterial {
+    const makeMat = () => {
+      const base = new THREE.Color(this.skinColors[skin] ?? this.skinColors.classic);
+      base.lerp(new THREE.Color(0xfef3c7), 0.38);
+      return new THREE.MeshStandardMaterial({
+        color: base,
+        normalMap: PbrTextureSynthesizer.getCapyFurNormalMap(),
+        normalScale: new THREE.Vector2(0.36, 0.36),
+        roughness: 0.9,
+        metalness: 0.02,
+      });
+    };
+    return share ? this.getCachedMat(`belly:${skin}`, makeMat) : makeMat();
   }
 
   private static getTorsoGeometry(): THREE.BufferGeometry {
@@ -473,15 +514,21 @@ export class CapyModelGenerator {
     const limbRoot = new THREE.Group();
 
     // Tier 0: Upper limb thigh/humerus column hinged at hip/shoulder (limbRoot origin)
-    const upperGeo = new THREE.CylinderGeometry(0.155, 0.13, 0.30, 12);
-    upperGeo.translate(0, -0.14, 0);
+    const upperGeo = this.getCachedGeo('limb_upper', () => {
+      const g = new THREE.CylinderGeometry(0.155, 0.13, 0.30, 12);
+      g.translate(0, -0.14, 0);
+      return g;
+    });
     const upperMesh = new THREE.Mesh(upperGeo, this.legMaterial);
     upperMesh.castShadow = true;
     limbRoot.add(upperMesh);
 
     // Tier 1: Muscular shoulder/thigh haunch on upper limb
-    const haunchGeo = new THREE.SphereGeometry(isFront ? 0.21 : 0.25, 12, 10);
-    haunchGeo.scale(0.82, 1.18, isFront ? 1.05 : 1.25);
+    const haunchGeo = this.getCachedGeo(isFront ? 'limb_haunch_f' : 'limb_haunch_b', () => {
+      const g = new THREE.SphereGeometry(isFront ? 0.21 : 0.25, 12, 10);
+      g.scale(0.82, 1.18, isFront ? 1.05 : 1.25);
+      return g;
+    });
     const haunch = new THREE.Mesh(haunchGeo, furMat);
     haunch.name = 'capyBody';
     haunch.position.set(isLeft ? -0.03 : 0.03, -0.02, isFront ? -0.02 : -0.04);
@@ -493,8 +540,11 @@ export class CapyModelGenerator {
     lowerJoint.position.set(0, -0.26, 0);
     limbRoot.add(lowerJoint);
 
-    const lowerBaseGeo = new THREE.CylinderGeometry(0.125, 0.135, 0.28, 10);
-    lowerBaseGeo.translate(0, -0.14, 0);
+    const lowerBaseGeo = this.getCachedGeo('limb_lower', () => {
+      const g = new THREE.CylinderGeometry(0.125, 0.135, 0.28, 10);
+      g.translate(0, -0.14, 0);
+      return g;
+    });
     const lowerMesh = new THREE.Mesh(lowerBaseGeo, this.legMaterial);
     lowerMesh.castShadow = true;
     lowerJoint.add(lowerMesh);
@@ -504,7 +554,7 @@ export class CapyModelGenerator {
     pawGroup.position.set(0, -0.25, 0);
     lowerJoint.add(pawGroup);
 
-    const pawPadGeo = new THREE.BoxGeometry(0.25, 0.08, 0.32);
+    const pawPadGeo = this.getCachedGeo('limb_paw_pad', () => new THREE.BoxGeometry(0.25, 0.08, 0.32));
     const pawPad = new THREE.Mesh(pawPadGeo, this.webbingMaterial);
     pawPad.position.set(0, 0, 0.06);
     pawGroup.add(pawPad);
@@ -516,10 +566,16 @@ export class CapyModelGenerator {
     const toeCount = isFront ? 4 : 3;
     const spread = isFront ? 0.22 : 0.20;
 
-    const toeGeo = new THREE.CapsuleGeometry(0.032, 0.09, 4, 6);
-    toeGeo.rotateX(Math.PI / 2);
-    const clawGeo = new THREE.ConeGeometry(0.024, 0.075, 5);
-    clawGeo.rotateX(Math.PI * 0.56);
+    const toeGeo = this.getCachedGeo('limb_toe', () => {
+      const g = new THREE.CapsuleGeometry(0.032, 0.09, 4, 6);
+      g.rotateX(Math.PI / 2);
+      return g;
+    });
+    const clawGeo = this.getCachedGeo('limb_claw', () => {
+      const g = new THREE.ConeGeometry(0.024, 0.075, 5);
+      g.rotateX(Math.PI * 0.56);
+      return g;
+    });
 
     for (let t = 0; t < toeCount; t++) {
       const frac = t / (toeCount - 1) - 0.5;
@@ -538,15 +594,19 @@ export class CapyModelGenerator {
     }
 
     // Interdigital webbing fan between toes
-    const webGeo = new THREE.CylinderGeometry(
-      0.13,
-      0.14,
-      0.025,
-      8,
-      1,
-      false,
-      -Math.PI * 0.4,
-      Math.PI * 0.8
+    const webGeo = this.getCachedGeo(
+      'limb_web',
+      () =>
+        new THREE.CylinderGeometry(
+          0.13,
+          0.14,
+          0.025,
+          8,
+          1,
+          false,
+          -Math.PI * 0.4,
+          Math.PI * 0.8
+        )
     );
     const webMesh = new THREE.Mesh(webGeo, this.webbingMaterial);
     webMesh.position.set(0, -0.01, 0.01);
@@ -564,36 +624,47 @@ export class CapyModelGenerator {
   private static createSculptedHeadOrange(
     orangeColorHex: number,
     emissiveHex: number,
-    tier2Bucket: THREE.Object3D[]
+    tier2Bucket: THREE.Object3D[],
+    shareMaterial: boolean = true
   ): {
     group: THREE.Group;
     fruitMesh: THREE.Mesh;
     fruitMat: THREE.MeshStandardMaterial;
   } {
     const group = new THREE.Group();
-    const fruitMat = new THREE.MeshStandardMaterial({
-      color: orangeColorHex,
-      emissive: emissiveHex,
-      emissiveIntensity: 0.0,
-      normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
-      normalScale: new THREE.Vector2(0.52, 0.52),
-      bumpMap: this.getCitrusPeelBumpTexture(),
-      bumpScale: 0.025,
-      roughness: 0.24,
-      metalness: 0.04,
-    });
+    const makeFruitMat = () =>
+      new THREE.MeshStandardMaterial({
+        color: orangeColorHex,
+        emissive: emissiveHex,
+        emissiveIntensity: 0.0,
+        normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
+        normalScale: new THREE.Vector2(0.52, 0.52),
+        bumpMap: this.getCitrusPeelBumpTexture(),
+        bumpScale: 0.025,
+        roughness: 0.24,
+        metalness: 0.04,
+      });
+    const fruitMat = shareMaterial
+      ? this.getCachedMat(`orange:${orangeColorHex}:${emissiveHex}`, makeFruitMat)
+      : makeFruitMat();
 
-    const orangeGeo = new THREE.SphereGeometry(0.255, 22, 18);
-    orangeGeo.scale(1.04, 0.88, 1.04);
+    const orangeGeo = this.getCachedGeo('head_orange_main', () => {
+      const g = new THREE.SphereGeometry(0.255, 22, 18);
+      g.scale(1.04, 0.88, 1.04);
+      return g;
+    });
     const fruitMesh = new THREE.Mesh(orangeGeo, fruitMat);
     fruitMesh.position.set(0, 0.20, 0);
     fruitMesh.castShadow = true;
     group.add(fruitMesh);
 
     // Simple leaf visible at Tier 0/1
-    const baseLeafGeo = new THREE.ConeGeometry(0.065, 0.17, 6);
-    baseLeafGeo.scale(1.3, 1.0, 0.35);
-    baseLeafGeo.rotateZ(Math.PI / 3);
+    const baseLeafGeo = this.getCachedGeo('head_orange_base_leaf', () => {
+      const g = new THREE.ConeGeometry(0.065, 0.17, 6);
+      g.scale(1.3, 1.0, 0.35);
+      g.rotateZ(Math.PI / 3);
+      return g;
+    });
     const baseLeaf = new THREE.Mesh(baseLeafGeo, this.leafMaterial);
     baseLeaf.position.set(0.08, 0.42, 0);
     group.add(baseLeaf);
@@ -603,15 +674,18 @@ export class CapyModelGenerator {
     botanicalDetail.position.set(0, 0.41, 0);
 
     const stem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.018, 0.026, 0.09, 6),
+      this.getCachedGeo('head_orange_stem', () => new THREE.CylinderGeometry(0.018, 0.026, 0.09, 6)),
       this.stemMaterial
     );
     stem.position.set(0, 0.035, 0);
     stem.rotation.z = -0.15;
     botanicalDetail.add(stem);
 
-    const sepalGeo = new THREE.ConeGeometry(0.028, 0.085, 4);
-    sepalGeo.rotateX(Math.PI * 0.46);
+    const sepalGeo = this.getCachedGeo('head_orange_sepal', () => {
+      const g = new THREE.ConeGeometry(0.028, 0.085, 4);
+      g.rotateX(Math.PI * 0.46);
+      return g;
+    });
     for (let s = 0; s < 5; s++) {
       const sepal = new THREE.Mesh(sepalGeo, this.leafMaterial);
       sepal.rotation.y = (s / 5) * Math.PI * 2;
@@ -619,8 +693,11 @@ export class CapyModelGenerator {
       botanicalDetail.add(sepal);
     }
 
-    const secondLeafGeo = new THREE.SphereGeometry(0.075, 8, 6);
-    secondLeafGeo.scale(1.55, 0.22, 0.65);
+    const secondLeafGeo = this.getCachedGeo('head_orange_second_leaf', () => {
+      const g = new THREE.SphereGeometry(0.075, 8, 6);
+      g.scale(1.55, 0.22, 0.65);
+      return g;
+    });
     const secondLeaf = new THREE.Mesh(secondLeafGeo, this.leafMaterial);
     secondLeaf.position.set(-0.085, 0.025, 0.03);
     secondLeaf.rotation.set(0.2, 0.4, -0.35);
@@ -644,29 +721,29 @@ export class CapyModelGenerator {
     accentColor: string = '#fbbf24'
   ): THREE.CanvasTexture {
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 256;
+    canvas.width = 256;
+    canvas.height = 128;
     const ctx = canvas.getContext('2d')!;
 
     ctx.fillStyle = bgColor;
     ctx.beginPath();
-    ctx.roundRect(8, 8, 496, 240, 28);
+    ctx.roundRect(4, 4, 248, 120, 14);
     ctx.fill();
 
-    ctx.lineWidth = 10;
+    ctx.lineWidth = 5;
     ctx.strokeStyle = accentColor;
     ctx.stroke();
 
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = subtitle ? '900 72px system-ui, sans-serif' : '900 110px system-ui, sans-serif';
-    ctx.fillText(title, 256, subtitle ? 105 : 132);
+    ctx.font = subtitle ? '900 36px system-ui, sans-serif' : '900 55px system-ui, sans-serif';
+    ctx.fillText(title, 128, subtitle ? 52 : 66);
 
     if (subtitle) {
       ctx.fillStyle = accentColor;
-      ctx.font = '700 36px system-ui, sans-serif';
-      ctx.fillText(subtitle, 256, 185);
+      ctx.font = '700 18px system-ui, sans-serif';
+      ctx.fillText(subtitle, 128, 92);
     }
 
     const texture = new THREE.CanvasTexture(canvas);
@@ -681,12 +758,13 @@ export class CapyModelGenerator {
     skin: string = 'classic',
     mutations: MutationId[] = [],
     initialLodTier: CapyLodTier = 3,
-    overrideOrangeHex?: number
+    overrideOrangeHex?: number,
+    shareMaterials: boolean = true
   ): CapyMeshGroup {
     const group = new THREE.Group() as CapyMeshGroup;
 
-    const furMat = this.createFurMaterial(skin);
-    const bellyMat = this.createUnderbellyMaterial(skin);
+    const furMat = this.createFurMaterial(skin, shareMaterials);
+    const bellyMat = this.createUnderbellyMaterial(skin, shareMaterials);
 
     const lodTier1Group = new THREE.Group();
     const lodTier2Group = new THREE.Group();
@@ -706,15 +784,21 @@ export class CapyModelGenerator {
     group.add(bodyMesh);
 
     // Tier 1: Soft contoured cream/fawn underbelly & chest bib
-    const bellyGeo = new THREE.SphereGeometry(0.49, 18, 12);
-    bellyGeo.scale(0.84, 0.58, 1.42);
+    const bellyGeo = this.getCachedGeo('capy_belly', () => {
+      const g = new THREE.SphereGeometry(0.49, 18, 12);
+      g.scale(0.84, 0.58, 1.42);
+      return g;
+    });
     const bellyMesh = new THREE.Mesh(bellyGeo, bellyMat);
     bellyMesh.position.set(0, 0.49, 0.08);
     lodTier1Group.add(bellyMesh);
 
     // Tier 2: Muscular neck dewlap / collar folds connecting chest to skull
-    const neckDewlapGeo = new THREE.SphereGeometry(0.42, 16, 12);
-    neckDewlapGeo.scale(0.92, 0.88, 0.85);
+    const neckDewlapGeo = this.getCachedGeo('capy_dewlap', () => {
+      const g = new THREE.SphereGeometry(0.42, 16, 12);
+      g.scale(0.92, 0.88, 0.85);
+      return g;
+    });
     const neckDewlap = new THREE.Mesh(neckDewlapGeo, furMat);
     neckDewlap.name = 'capyBody';
     neckDewlap.position.set(0, 0.84, 0.64);
@@ -739,20 +823,26 @@ export class CapyModelGenerator {
 
     // Tier 1: Lower mandible jaw, moist rhinarium nose pad, recessed nostrils & philtrum cleft
     const headTier1 = new THREE.Group();
-    const jawGeo = new THREE.SphereGeometry(0.24, 12, 10);
-    jawGeo.scale(0.95, 0.52, 1.35);
+    const jawGeo = this.getCachedGeo('capy_jaw', () => {
+      const g = new THREE.SphereGeometry(0.24, 12, 10);
+      g.scale(0.95, 0.52, 1.35);
+      return g;
+    });
     const jawMesh = new THREE.Mesh(jawGeo, bellyMat);
     jawMesh.position.set(0, -0.17, 0.30);
     headTier1.add(jawMesh);
 
-    const rhinariumGeo = new THREE.SphereGeometry(0.20, 14, 10);
-    rhinariumGeo.scale(1.12, 0.76, 0.52);
+    const rhinariumGeo = this.getCachedGeo('capy_rhinarium', () => {
+      const g = new THREE.SphereGeometry(0.20, 14, 10);
+      g.scale(1.12, 0.76, 0.52);
+      return g;
+    });
     const rhinarium = new THREE.Mesh(rhinariumGeo, this.rhinariumMaterial);
     rhinarium.position.set(0, 0.14, 0.68);
     headTier1.add(rhinarium);
 
     const philtrum = new THREE.Mesh(
-      new THREE.BoxGeometry(0.026, 0.22, 0.05),
+      this.getCachedGeo('capy_philtrum', () => new THREE.BoxGeometry(0.026, 0.22, 0.05)),
       this.rhinariumMaterial
     );
     philtrum.position.set(0, 0.0, 0.72);
@@ -761,8 +851,11 @@ export class CapyModelGenerator {
     limbTier1Refs.push(headTier1);
 
     // Slanted capybara nostrils
-    const nostrilGeo = new THREE.SphereGeometry(0.048, 8, 8);
-    nostrilGeo.scale(1.25, 0.68, 0.65);
+    const nostrilGeo = this.getCachedGeo('capy_nostril', () => {
+      const g = new THREE.SphereGeometry(0.048, 8, 8);
+      g.scale(1.25, 0.68, 0.65);
+      return g;
+    });
     const nostrilL = new THREE.Mesh(nostrilGeo, this.rhinariumMaterial);
     nostrilL.position.set(-0.12, 0.17, 0.74);
     nostrilL.rotation.z = 0.38;
@@ -772,7 +865,7 @@ export class CapyModelGenerator {
     headGroup.add(nostrilL, nostrilR);
 
     // Expressive high-set capybara eyes (positioned near upper-back of skull like semi-aquatic mammals!)
-    const eyeGeo = new THREE.SphereGeometry(0.076, 14, 12);
+    const eyeGeo = this.getCachedGeo('capy_eye', () => new THREE.SphereGeometry(0.076, 14, 12));
     const eyeL = new THREE.Mesh(eyeGeo, this.eyeMaterial);
     eyeL.position.set(-0.33, 0.29, 0.16);
     const eyeR = eyeL.clone();
@@ -780,7 +873,7 @@ export class CapyModelGenerator {
     headGroup.add(eyeL, eyeR);
 
     // Tier 1: Glossy corneal catchlight reflections
-    const catchGeo = new THREE.SphereGeometry(0.024, 8, 8);
+    const catchGeo = this.getCachedGeo('capy_catch', () => new THREE.SphereGeometry(0.024, 8, 8));
     const catchL = new THREE.Mesh(catchGeo, this.eyeCatchlightMaterial);
     catchL.position.set(-0.375, 0.315, 0.205);
     const catchR = catchL.clone();
@@ -791,8 +884,11 @@ export class CapyModelGenerator {
     // Tier 2: Cheek jowls, supraorbital brow ridges, blinking eyelids & tiny incisor peek
     const headTier2 = new THREE.Group();
 
-    const jowlGeo = new THREE.SphereGeometry(0.19, 12, 10);
-    jowlGeo.scale(0.85, 0.78, 1.15);
+    const jowlGeo = this.getCachedGeo('capy_jowl', () => {
+      const g = new THREE.SphereGeometry(0.19, 12, 10);
+      g.scale(0.85, 0.78, 1.15);
+      return g;
+    });
     const jowlL = new THREE.Mesh(jowlGeo, furMat);
     jowlL.name = 'capyHead';
     jowlL.position.set(-0.26, -0.04, 0.24);
@@ -800,8 +896,11 @@ export class CapyModelGenerator {
     jowlR.position.x = 0.26;
     headTier2.add(jowlL, jowlR);
 
-    const browGeo = new THREE.CapsuleGeometry(0.036, 0.15, 4, 8);
-    browGeo.rotateX(Math.PI / 2);
+    const browGeo = this.getCachedGeo('capy_brow', () => {
+      const g = new THREE.CapsuleGeometry(0.036, 0.15, 4, 8);
+      g.rotateX(Math.PI / 2);
+      return g;
+    });
     const browL = new THREE.Mesh(browGeo, this.snoutMaterial);
     browL.position.set(-0.33, 0.365, 0.16);
     browL.rotation.z = 0.14;
@@ -810,7 +909,7 @@ export class CapyModelGenerator {
     browR.rotation.z = -0.14;
     headTier2.add(browL, browR);
 
-    const incisorGeo = new THREE.BoxGeometry(0.055, 0.055, 0.025);
+    const incisorGeo = this.getCachedGeo('capy_incisor', () => new THREE.BoxGeometry(0.055, 0.055, 0.025));
     const incisorL = new THREE.Mesh(incisorGeo, this.incisorMaterial);
     incisorL.position.set(-0.032, -0.115, 0.69);
     const incisorR = incisorL.clone();
@@ -821,7 +920,10 @@ export class CapyModelGenerator {
     limbTier2Refs.push(headTier2);
 
     // Blinking upper eyelids
-    const eyelidGeo = new THREE.SphereGeometry(0.082, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.52);
+    const eyelidGeo = this.getCachedGeo(
+      'capy_eyelid',
+      () => new THREE.SphereGeometry(0.082, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.52)
+    );
     const eyelidL = new THREE.Mesh(eyelidGeo, this.snoutMaterial);
     eyelidL.position.set(-0.33, 0.295, 0.16);
     eyelidL.rotation.z = 0.22;
@@ -833,20 +935,26 @@ export class CapyModelGenerator {
     limbTier2Refs.push(eyelidL, eyelidR);
 
     // Folded cupped Pinna Ears
+    const outerEarGeo = this.getCachedGeo('capy_outer_ear', () => {
+      const g = new THREE.SphereGeometry(0.115, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
+      g.scale(0.72, 1.18, 0.85);
+      return g;
+    });
+    const innerEarGeo = this.getCachedGeo('capy_inner_ear', () => {
+      const g = new THREE.SphereGeometry(0.082, 10, 8);
+      g.scale(0.6, 0.95, 0.35);
+      return g;
+    });
     const buildEar = (isLeft: boolean) => {
       const earRoot = new THREE.Group();
       const s = isLeft ? -1 : 1;
       earRoot.position.set(s * 0.29, 0.44, -0.18);
       earRoot.rotation.set(-0.22, s * -0.35, s * 0.42);
 
-      const outerEarGeo = new THREE.SphereGeometry(0.115, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
-      outerEarGeo.scale(0.72, 1.18, 0.85);
       const outerEar = new THREE.Mesh(outerEarGeo, this.snoutMaterial);
       outerEar.rotation.x = -Math.PI * 0.45;
       earRoot.add(outerEar);
 
-      const innerEarGeo = new THREE.SphereGeometry(0.082, 10, 8);
-      innerEarGeo.scale(0.6, 0.95, 0.35);
       const innerEar = new THREE.Mesh(innerEarGeo, this.innerEarMaterial);
       innerEar.position.set(0, 0.01, 0.035);
       earRoot.add(innerEar);
@@ -860,9 +968,12 @@ export class CapyModelGenerator {
 
     // Tier 3: 12 Tapered Muzzle Vibrissae Whiskers + 4 Supraorbital Brow Whiskers
     const whiskerGroup = new THREE.Group();
-    const whiskerGeo = new THREE.CylinderGeometry(0.003, 0.011, 0.36, 5);
-    whiskerGeo.translate(0, 0.18, 0);
-    whiskerGeo.rotateZ(Math.PI / 2);
+    const whiskerGeo = this.getCachedGeo('capy_whisker', () => {
+      const g = new THREE.CylinderGeometry(0.003, 0.011, 0.36, 5);
+      g.translate(0, 0.18, 0);
+      g.rotateZ(Math.PI / 2);
+      return g;
+    });
 
     for (let side = -1; side <= 1; side += 2) {
       for (let w = 0; w < 6; w++) {
@@ -896,7 +1007,8 @@ export class CapyModelGenerator {
     const headOrangeData = this.createSculptedHeadOrange(
       activeOrangeHex,
       matchedVariety.emissiveHex,
-      limbTier2Refs
+      limbTier2Refs,
+      shareMaterials
     );
     const headOrangeGroup = headOrangeData.group;
     headOrangeGroup.position.set(0, 0.42, 0.04);
@@ -904,8 +1016,11 @@ export class CapyModelGenerator {
     // Pre-build up to 6 extra stacked Head Fruits that appear as you eat fruits
     // and wash off one-by-one when swimming under the Home Pool tap water!
     const headStackMeshes: THREE.Mesh[] = [];
-    const stackSphereGeo = new THREE.SphereGeometry(0.185, 14, 12);
-    stackSphereGeo.scale(1.04, 0.88, 1.04);
+    const stackSphereGeo = this.getCachedGeo('capy_head_stack_orange', () => {
+      const g = new THREE.SphereGeometry(0.185, 14, 12);
+      g.scale(1.04, 0.88, 1.04);
+      return g;
+    });
     for (let s = 0; s < 6; s++) {
       const stackFruit = new THREE.Mesh(stackSphereGeo, headOrangeData.fruitMat);
       stackFruit.position.set(0, 0.48 + s * 0.27, 0);
@@ -942,8 +1057,11 @@ export class CapyModelGenerator {
     const legBR = this.buildDetailedLimb(false, false, furMat, limbTier1Refs, limbTier2Refs);
     legBR.position.set(0.37, 0.53, -0.48);
 
-    const tailGeo = new THREE.SphereGeometry(0.115, 10, 10);
-    tailGeo.scale(0.9, 0.85, 1.15);
+    const tailGeo = this.getCachedGeo('capy_tail', () => {
+      const g = new THREE.SphereGeometry(0.115, 10, 10);
+      g.scale(0.9, 0.85, 1.15);
+      return g;
+    });
     const tail = new THREE.Mesh(tailGeo, this.snoutMaterial);
     tail.position.set(0, 0.68, -0.86);
 
@@ -1113,8 +1231,11 @@ export class CapyModelGenerator {
     group.add(lodTier1Group, lodTier2Group, lodTier3Group);
 
     // Tier 1: Seamless cream underbelly band along the elongated Dachshund torso
-    const bellyGeo = new THREE.SphereGeometry(0.45, 14, 10);
-    bellyGeo.scale(0.82, 0.54, 1.08);
+    const bellyGeo = this.getCachedGeo('dac_belly', () => {
+      const g = new THREE.SphereGeometry(0.45, 14, 10);
+      g.scale(0.82, 0.54, 1.08);
+      return g;
+    });
     const belly = new THREE.Mesh(bellyGeo, bellyMat);
     belly.position.set(0, 0.49, 0);
     lodTier1Group.add(belly);
@@ -1131,12 +1252,18 @@ export class CapyModelGenerator {
         roughness: 0.25,
         metalness: 0.06,
       });
-      const miniOrange = new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 12), riderOrangeMat);
+      const miniOrange = new THREE.Mesh(
+        this.getCachedGeo('dac_mini_orange', () => new THREE.SphereGeometry(0.17, 14, 12)),
+        riderOrangeMat
+      );
       miniOrange.scale.set(1.04, 0.88, 1.04);
       miniOrange.position.set(0, 1.33, 0);
       miniOrange.castShadow = true;
 
-      const miniLeaf = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.11, 5), this.leafMaterial);
+      const miniLeaf = new THREE.Mesh(
+        this.getCachedGeo('dac_mini_leaf', () => new THREE.ConeGeometry(0.045, 0.11, 5)),
+        this.leafMaterial
+      );
       miniLeaf.rotation.z = Math.PI / 3;
       miniLeaf.position.set(0.05, 0.15, 0);
       miniOrange.add(miniLeaf);
@@ -1235,8 +1362,11 @@ export class CapyModelGenerator {
     const t2Refs: THREE.Object3D[] = [];
 
     // Rounded furry capybara rump cap
-    const rumpGeo = new THREE.SphereGeometry(0.54, 20, 16);
-    rumpGeo.scale(0.95, 1.02, 1.18);
+    const rumpGeo = this.getCachedGeo('dac_rump', () => {
+      const g = new THREE.SphereGeometry(0.54, 20, 16);
+      g.scale(0.95, 1.02, 1.18);
+      return g;
+    });
     const rumpMesh = new THREE.Mesh(rumpGeo, furMat);
     rumpMesh.name = 'capyBody';
     rumpMesh.position.set(0, 0.72, 0.04);
@@ -1253,8 +1383,11 @@ export class CapyModelGenerator {
 
     const tailGroup = new THREE.Group();
     tailGroup.position.set(0, 0.68, -0.54);
-    const tailGeo = new THREE.SphereGeometry(0.125, 12, 10);
-    tailGeo.scale(0.92, 0.88, 1.2);
+    const tailGeo = this.getCachedGeo('dac_tail', () => {
+      const g = new THREE.SphereGeometry(0.125, 12, 10);
+      g.scale(0.92, 0.88, 1.2);
+      return g;
+    });
     const tailMesh = new THREE.Mesh(tailGeo, this.snoutMaterial);
     tailGroup.add(tailMesh);
     group.add(tailGroup);
@@ -1352,9 +1485,13 @@ export class CapyModelGenerator {
       metalness: 0.04,
     });
 
-    const sphereGeo = new THREE.SphereGeometry(radius, 20, 16);
-    sphereGeo.scale(1.03, 0.94, 1.03);
+    const sphereGeo = this.getCachedGeo('unit_orange_sphere', () => {
+      const g = new THREE.SphereGeometry(1.0, 20, 16);
+      g.scale(1.03, 0.94, 1.03);
+      return g;
+    });
     const fruitMesh = new THREE.Mesh(sphereGeo, fruitMat);
+    fruitMesh.scale.setScalar(radius);
     fruitMesh.castShadow = true;
     fruitMesh.receiveShadow = true;
     rollGroup.add(fruitMesh);
@@ -1364,15 +1501,20 @@ export class CapyModelGenerator {
     const stemScale = radius / 0.28;
 
     const stem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.02 * stemScale, 0.028 * stemScale, 0.09 * stemScale, 6),
+      this.getCachedGeo('unit_orange_stem', () => new THREE.CylinderGeometry(0.02, 0.028, 0.09, 6)),
       this.stemMaterial
     );
+    stem.scale.setScalar(stemScale);
     stem.position.y = 0.035 * stemScale;
     leafGroup.add(stem);
 
-    const leafGeo = new THREE.SphereGeometry(0.095 * stemScale, 8, 6);
-    leafGeo.scale(1.5, 0.24, 0.68);
+    const leafGeo = this.getCachedGeo('unit_orange_leaf', () => {
+      const g = new THREE.SphereGeometry(0.095, 8, 6);
+      g.scale(1.5, 0.24, 0.68);
+      return g;
+    });
     const leaf = new THREE.Mesh(leafGeo, this.leafMaterial);
+    leaf.scale.setScalar(stemScale);
     leaf.position.set(0.09 * stemScale, 0.028 * stemScale, 0);
     leaf.rotation.z = 0.28;
     leafGroup.add(leaf);
@@ -1389,9 +1531,10 @@ export class CapyModelGenerator {
       polygonOffsetUnits: -1,
     });
     const haloRing = new THREE.Mesh(
-      new THREE.RingGeometry(radius * 0.92, radius * 1.22, 24),
+      this.getCachedGeo('unit_orange_halo', () => new THREE.RingGeometry(0.92, 1.22, 24)),
       haloMat
     );
+    haloRing.scale.setScalar(radius);
     haloRing.rotation.x = Math.PI / 2;
     haloRing.position.y = -radius + 0.02;
     haloRing.userData.ignoreCameraFade = true;
@@ -1484,24 +1627,38 @@ export class CapyModelGenerator {
       // Head Orange stands solo in full glory
       return;
     } else if (hatType === 'crown') {
-      const crownMat = new THREE.MeshStandardMaterial({
-        color: 0xffd700,
-        metalness: 0.92,
-        roughness: 0.13,
-        envMapIntensity: 1.35,
-      });
+      const crownMat = this.getCachedMat(
+        'hat_crown',
+        () =>
+          new THREE.MeshStandardMaterial({
+            color: 0xffd700,
+            metalness: 0.92,
+            roughness: 0.13,
+            envMapIntensity: 1.35,
+          })
+      );
       // Golden crown ring encircling the base of the Head Orange
-      const crownGeo = new THREE.CylinderGeometry(0.31, 0.28, 0.14, 8, 1, true);
+      const crownGeo = this.getCachedGeo(
+        'hat_crown',
+        () => new THREE.CylinderGeometry(0.31, 0.28, 0.14, 8, 1, true)
+      );
       const crownMesh = new THREE.Mesh(crownGeo, crownMat);
       crownMesh.position.set(0, 0.10, 0);
       hatGroup.add(crownMesh);
     } else if (hatType === 'flower') {
-      const flowerMat = new THREE.MeshStandardMaterial({
-        color: 0xff69b4,
-        roughness: 0.4,
+      const flowerMat = this.getCachedMat(
+        'hat_flower',
+        () =>
+          new THREE.MeshStandardMaterial({
+            color: 0xff69b4,
+            roughness: 0.4,
+          })
+      );
+      const petalGeo = this.getCachedGeo('hat_flower_petal', () => {
+        const g = new THREE.SphereGeometry(0.11, 8, 8);
+        g.scale(1.2, 0.35, 0.6);
+        return g;
       });
-      const petalGeo = new THREE.SphereGeometry(0.11, 8, 8);
-      petalGeo.scale(1.2, 0.35, 0.6);
       for (let i = 0; i < 5; i++) {
         const petal = new THREE.Mesh(petalGeo, flowerMat);
         petal.position.set(-0.22, 0.10, 0.08);
@@ -1511,32 +1668,42 @@ export class CapyModelGenerator {
       }
     } else if (hatType === 'party') {
       const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(0.14, 0.34, 12),
-        new THREE.MeshStandardMaterial({ color: 0xa855f7, roughness: 0.3 })
+        this.getCachedGeo('hat_party_cone', () => new THREE.ConeGeometry(0.14, 0.34, 12)),
+        this.getCachedMat('hat_party_cone', () => new THREE.MeshStandardMaterial({ color: 0xa855f7, roughness: 0.3 }))
       );
       cone.position.set(-0.22, 0.32, -0.06);
       cone.rotation.z = 0.35;
       const pom = new THREE.Mesh(
-        new THREE.SphereGeometry(0.055, 8, 8),
-        new THREE.MeshStandardMaterial({ color: 0xfacc15 })
+        this.getCachedGeo('hat_party_pom', () => new THREE.SphereGeometry(0.055, 8, 8)),
+        this.getCachedMat('hat_party_pom', () => new THREE.MeshStandardMaterial({ color: 0xfacc15 }))
       );
       pom.position.set(-0.33, 0.48, -0.06);
       hatGroup.add(cone, pom);
     } else if (hatType === 'wizard') {
-      const wizMat = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.4 });
-      const brim = new THREE.Mesh(new THREE.RingGeometry(0.26, 0.44, 18), wizMat);
+      const wizMat = this.getCachedMat(
+        'hat_wizard',
+        () => new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.4 })
+      );
+      const brim = new THREE.Mesh(
+        this.getCachedGeo('hat_wizard_brim', () => new THREE.RingGeometry(0.26, 0.44, 18)),
+        wizMat
+      );
       brim.rotation.x = Math.PI / 2;
       brim.position.set(0, 0.03, 0);
       hatGroup.add(brim);
     } else if (hatType === 'halo') {
       const halo = new THREE.Mesh(
-        new THREE.TorusGeometry(0.30, 0.038, 12, 24),
-        new THREE.MeshStandardMaterial({
-          color: 0xfef08a,
-          emissive: 0xfacc15,
-          emissiveIntensity: 0.6,
-          roughness: 0.1,
-        })
+        this.getCachedGeo('hat_halo', () => new THREE.TorusGeometry(0.30, 0.038, 12, 24)),
+        this.getCachedMat(
+          'hat_halo',
+          () =>
+            new THREE.MeshStandardMaterial({
+              color: 0xfef08a,
+              emissive: 0xfacc15,
+              emissiveIntensity: 0.6,
+              roughness: 0.1,
+            })
+        )
       );
       halo.rotation.x = Math.PI / 2;
       halo.position.set(0, 0.56, 0);
@@ -1550,9 +1717,15 @@ export class CapyModelGenerator {
     }
 
     if (mutations.includes('tusks')) {
-      const tuskMat = new THREE.MeshStandardMaterial({ color: 0xfefce8, roughness: 0.25 });
-      const tuskGeo = new THREE.ConeGeometry(0.06, 0.38, 8);
-      tuskGeo.rotateX(Math.PI / 3);
+      const tuskMat = this.getCachedMat(
+        'mut_tusk',
+        () => new THREE.MeshStandardMaterial({ color: 0xfefce8, roughness: 0.25 })
+      );
+      const tuskGeo = this.getCachedGeo('mut_tusk', () => {
+        const g = new THREE.ConeGeometry(0.06, 0.38, 8);
+        g.rotateX(Math.PI / 3);
+        return g;
+      });
       const tuskL = new THREE.Mesh(tuskGeo, tuskMat);
       tuskL.position.set(-0.28, 1.0, 1.44);
       const tuskR = tuskL.clone();
@@ -1561,47 +1734,66 @@ export class CapyModelGenerator {
     }
 
     if (mutations.includes('horn')) {
-      const hornMat = new THREE.MeshStandardMaterial({
-        color: 0x38bdf8,
-        emissive: 0x0284c7,
-        emissiveIntensity: 0.5,
-        metalness: 0.7,
-        roughness: 0.15,
-      });
-      const horn = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.52, 10), hornMat);
+      const hornMat = this.getCachedMat(
+        'mut_horn',
+        () =>
+          new THREE.MeshStandardMaterial({
+            color: 0x38bdf8,
+            emissive: 0x0284c7,
+            emissiveIntensity: 0.5,
+            metalness: 0.7,
+            roughness: 0.15,
+          })
+      );
+      const horn = new THREE.Mesh(
+        this.getCachedGeo('mut_horn', () => new THREE.ConeGeometry(0.09, 0.52, 10)),
+        hornMat
+      );
       horn.rotation.x = Math.PI / 4.2;
       horn.position.set(0, 1.48, 1.24);
       mutationGroup.add(horn);
     }
 
     if (mutations.includes('shell')) {
-      const shellMat = new THREE.MeshStandardMaterial({
-        color: 0x15803d,
-        roughness: 0.5,
-        metalness: 0.2,
-      });
+      const shellMat = this.getCachedMat(
+        'mut_shell',
+        () =>
+          new THREE.MeshStandardMaterial({
+            color: 0x15803d,
+            roughness: 0.5,
+            metalness: 0.2,
+          })
+      );
       const shell = new THREE.Mesh(
-        new THREE.SphereGeometry(0.64, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        this.getCachedGeo(
+          'mut_shell',
+          () => new THREE.SphereGeometry(0.64, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55)
+        ),
         shellMat
       );
       shell.scale.set(0.96, 0.75, 1.25);
       shell.position.set(0, 0.84, 0.02);
       mutationGroup.add(shell);
 
+      const spikeGeo = this.getCachedGeo('mut_shell_spike', () => new THREE.ConeGeometry(0.085, 0.24, 6));
       for (let i = -1; i <= 1; i++) {
-        const spike = new THREE.Mesh(new THREE.ConeGeometry(0.085, 0.24, 6), this.yuzuMaterial);
+        const spike = new THREE.Mesh(spikeGeo, this.yuzuMaterial);
         spike.position.set(0, 1.38, i * 0.42);
         mutationGroup.add(spike);
       }
     }
 
     if (mutations.includes('wings')) {
-      const wingMat = new THREE.MeshStandardMaterial({
-        color: 0xf8fafc,
-        roughness: 0.3,
-        metalness: 0.1,
-      });
-      const wingGeo = new THREE.BoxGeometry(0.95, 0.08, 0.55);
+      const wingMat = this.getCachedMat(
+        'mut_wing',
+        () =>
+          new THREE.MeshStandardMaterial({
+            color: 0xf8fafc,
+            roughness: 0.3,
+            metalness: 0.1,
+          })
+      );
+      const wingGeo = this.getCachedGeo('mut_wing', () => new THREE.BoxGeometry(0.95, 0.08, 0.55));
       const wingL = new THREE.Mesh(wingGeo, wingMat);
       wingL.position.set(-0.85, 1.05, 0.12);
       wingL.rotation.z = 0.25;
@@ -1613,8 +1805,11 @@ export class CapyModelGenerator {
     }
 
     if (mutations.includes('flippers')) {
-      const flipMat = new THREE.MeshStandardMaterial({ color: 0x06b6d4, roughness: 0.35 });
-      const flipGeo = new THREE.BoxGeometry(0.32, 0.06, 0.42);
+      const flipMat = this.getCachedMat(
+        'mut_flipper',
+        () => new THREE.MeshStandardMaterial({ color: 0x06b6d4, roughness: 0.35 })
+      );
+      const flipGeo = this.getCachedGeo('mut_flipper', () => new THREE.BoxGeometry(0.32, 0.06, 0.42));
       const positions = [
         [-0.36, 0.04, 0.58],
         [0.36, 0.04, 0.58],
@@ -1627,26 +1822,38 @@ export class CapyModelGenerator {
     }
 
     if (mutations.includes('glow_tail')) {
-      const glowMat = new THREE.MeshStandardMaterial({
-        color: 0xc084fc,
-        emissive: 0xa855f7,
-        emissiveIntensity: 0.75,
-        roughness: 0.18,
+      const glowMat = this.getCachedMat('mut_glow_plume', () => {
+        const m = new THREE.MeshStandardMaterial({
+          color: 0xc084fc,
+          emissive: 0xa855f7,
+          emissiveIntensity: 0.75,
+          roughness: 0.18,
+        });
+        m.userData.isBioluminescentTail = true;
+        return m;
       });
-      glowMat.userData.isBioluminescentTail = true;
-      const tailPlume = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.68, 12), glowMat);
+      const tailPlume = new THREE.Mesh(
+        this.getCachedGeo('mut_glow_plume', () => new THREE.ConeGeometry(0.22, 0.68, 12)),
+        glowMat
+      );
       tailPlume.userData.isBioluminescentTail = true;
       tailPlume.rotation.x = -Math.PI / 3;
       tailPlume.position.set(0, 0.88, -1.02);
 
-      const tipMat = new THREE.MeshStandardMaterial({
-        color: 0x38bdf8,
-        emissive: 0x22d3ee,
-        emissiveIntensity: 0.95,
-        roughness: 0.12,
+      const tipMat = this.getCachedMat('mut_glow_tip', () => {
+        const m = new THREE.MeshStandardMaterial({
+          color: 0x38bdf8,
+          emissive: 0x22d3ee,
+          emissiveIntensity: 0.95,
+          roughness: 0.12,
+        });
+        m.userData.isBioluminescentTail = true;
+        return m;
       });
-      tipMat.userData.isBioluminescentTail = true;
-      const tipOrb = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10), tipMat);
+      const tipOrb = new THREE.Mesh(
+        this.getCachedGeo('mut_glow_orb', () => new THREE.SphereGeometry(0.11, 10, 10)),
+        tipMat
+      );
       tipOrb.userData.isBioluminescentTail = true;
       tipOrb.position.set(0, 1.06, -1.32);
 
