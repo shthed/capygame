@@ -1,6 +1,6 @@
-# Agent Instructions & Operational Playbook — CapyGame 3D
+# Agent Instructions & Operational Playbook — CapyGame
 
-**CapyGame 3D** is a standalone hardware-accelerated 3D multi-scale universe simulator, sandbox world builder, and multiphysics mini-game archipelago built at the repository root (`src/`, `public/`, `scripts/`).
+**CapyGame** is a standalone hardware-accelerated 3D multi-scale universe simulator, sandbox world builder, and multiphysics mini-game archipelago built at the repository root (`src/`, `public/`, `scripts/`).
 
 ---
 

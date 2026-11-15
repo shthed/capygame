@@ -1,6 +1,6 @@
-# Technical Architecture & Engine Reference: CapyGame 3D
+# Technical Architecture & Engine Reference: CapyGame
 
-This document details the architecture, multi-scale astrophysical simulation, contiguous multiphysics engine, hardware-accelerated GPU rendering pipeline, and persistent settings of **CapyGame 3D** (`src/`).
+This document details the architecture, multi-scale astrophysical simulation, contiguous multiphysics engine, hardware-accelerated GPU rendering pipeline, and persistent settings of **CapyGame** (`src/`).
 
 ---
 
@@ -105,7 +105,7 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 
 ---
 
-## 7. CapyGame 3D Settings Reference (`localStorage` key: `capy_game_settings_v1`)
+## 7. CapyGame Settings Reference (`localStorage` key: `capy_game_settings_v1`)
 
 | Setting Property | TypeScript Type | Default | UI Location & Behavior |
 | :--- | :--- | :--- | :--- |
