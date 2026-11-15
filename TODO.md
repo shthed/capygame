@@ -1,6 +1,6 @@
-# CapyGame 3D -- Active Roadmap & TODO
+# CapyGame -- Active Roadmap & TODO
 
-This document tracks pending architectural and gameplay enhancements for **CapyGame 3D**.
+This document tracks pending architectural and gameplay enhancements for **CapyGame**.
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.

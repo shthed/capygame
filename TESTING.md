@@ -1,6 +1,6 @@
-# Testing Architecture & Verification Guide: CapyGame 3D
+# Testing Architecture & Verification Guide: CapyGame
 
-This document outlines the automated verification suites, headless WebGL execution flags, end-to-end Playwright stage assertions, and GitHub Pages CI pipeline for **CapyGame 3D**.
+This document outlines the automated verification suites, headless WebGL execution flags, end-to-end Playwright stage assertions, and GitHub Pages CI pipeline for **CapyGame**.
 
 ---
 
@@ -15,7 +15,7 @@ Run all commands from the repository root:
 | **Dev Server** | `npm run dev` | Launches Vite on `http://localhost:3000`. |
 | **Preview Server** | `npm run preview` | Serves compiled `dist/` on `http://localhost:3000` for production verification. |
 | **Unit Logic Suite** | `npm run test:unit` | Runs deterministic `node:test` assertions (`ProgressionAndPhysics.test.ts`, plus `forestMicroSpecimens.test.ts`) for economy multipliers/Prestige, `ProceduralGameConfig` validation/`mulberry32`, `24x24` fluid `DataTexture` ripple packing, `computeCosmicAgeGyr`, early CapySol & CapyWorld focus targeting, randomized 11-specimen forest micro-glade selection, yaw-rotated OBB math, and 60 FPS sightline/shadow invariants. |
-| **CapyGame 3D E2E Suite** | `npm run test:game` | Executes `scripts/test-capygame.mjs` against `http://localhost:3000`, verifying all cosmic, surface, multiphysics, economy, and AAA GPU rendering invariants. |
+| **CapyGame E2E Suite** | `npm run test:game` | Executes `scripts/test-capygame.mjs` against `http://localhost:3000`, verifying all cosmic, surface, multiphysics, economy, and AAA GPU rendering invariants. |
 | **PWA & Offline Suite** | `npm run test:pwa` | Executes `scripts/test-pwa-offline.mjs` to validate `manifest.webmanifest`, scope-isolated Service Worker (`sw.js`) precaching, and 100% offline 3D reload. |
 | **District Gallery Capture** | `npm run gallery:capture` | Executes `scripts/capture-capygame-gallery.mjs` to capture full-frame screenshots across all 5 districts into `docs/gallery/`. |
 | **27-Band Zoom Capture** | `npm run gallery:capture:zoom` | Executes `scripts/capture-all-zoom-levels.mjs` across all 27 logarithmic universe scale bands (`10^+30 m` to `10^-35 m`) into `docs/gallery/zoom_levels/`. |

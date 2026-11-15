@@ -1,9 +1,9 @@
-# CapyGame 3D: Multi-Scale Universe Simulator & Contiguous Capybara World
+# CapyGame: Multi-Scale Universe Simulator & Contiguous Capybara World
 
 [![Web App](https://img.shields.io/badge/Web_App-Play_Online-blue?style=for-the-badge&logo=googlechrome&logoColor=white)](https://shthed.github.io/capygame/)
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC_BY--NC--SA_4.0-orange?style=for-the-badge)](./LICENSE.md)
 
-**CapyGame 3D** is a hardware-accelerated 3D multi-scale universe simulator, sandbox island builder, and multiphysics mini-game archipelago built with React 19, TypeScript, Three.js, Vite 6, Tailwind CSS 4, and `@dimforge/rapier3d-compat` WebAssembly physics.
+**CapyGame** is a hardware-accelerated 3D multi-scale universe simulator, sandbox island builder, and multiphysics mini-game archipelago built with React 19, TypeScript, Three.js, Vite 6, Tailwind CSS 4, and `@dimforge/rapier3d-compat` WebAssembly physics.
 
 - **65-Orders-of-Magnitude `1:1` Chrono-Vessel Continuum**: Pilot a time-traveling Future Capybara Chrono-Vessel continuously across 27 astrophysical bands from the `10^+30 m` Multiverse through Big Bang cosmic inflation, spacetime manifold, observable particle horizon, cosmic web filaments, superclusters, clusters, selectable galaxy morphologies (grand-design spiral, barred spiral, elliptical, irregular) aiming early onto **CapySol System** (`Orion-Cygnus Spur`) and **CapyWorld Planet**, emission nebulae & dust pillars, Keplerian stellar systems, planetary touchdown onto the Sanctuary Chrono-Pad (`10^+0.8 m`), a randomized 11-specimen **Storybook Forest Micro-Glade** (`10^-2 m`: `Fur`, `Butterfly`, `Flower`, `Leaf`, `Wood`, `Mushroom`, `Amoeba`, `Bacterial`, `Virus`, `Clay`, `Rock`), and down to `10^-35 m` Planck Quantum Foam, with `Chase Pod 3P` / `Telescope 1P` optics, Chrono-Throttle auto-cruise, unlockable **Object Finder Markers**, and a **Logarithmic/Exponential Reality Rescaler**.
 - **First-Time Chrono-Genesis Setup & Fine-Structure Constant ($\alpha$)**: On initial launch (and anytime via **Genesis Setup**), players customize their Capybara pilot archetype/fur/headgear, `ChronoVesselRig` Cherenkov/brass/canopy finish & scale, and the universe's Fine-Structure Constant ($\alpha^{-1} \in [60, 220]$, default CODATA `137.036`), dynamically scaling atomic Bohr orbitals, Dirac electron spinor velocity, QED photon wave-packets, and solar photosphere fusion tint in real time.
@@ -16,7 +16,7 @@
 ## Visual Showcase
 
 <p align="center">
-  <img src="./docs/gallery/capygame_sanctuary.png" alt="CapyGame 3D Sanctuary" width="92%" />
+  <img src="./docs/gallery/capygame_sanctuary.png" alt="CapyGame Sanctuary" width="92%" />
   <br>
   <em>Capy Sanctuary Hub: Central 3D island with procedural exponential fruit trees, sunken Home Pool, Dachshund Capy-Snake trail, single 40px top control bar, and behind-the-capybara chase camera.</em>
 </p>
@@ -54,7 +54,7 @@ graph TD
     View["CapyGameView.tsx (40px Unified Top Bar, Scale Atlas, Optics & Settings)"]
   end
 
-  subgraph EngineCore["CapyGame 3D Engine (src/capygame/engine/)"]
+  subgraph EngineCore["CapyGame Engine (src/capygame/engine/)"]
     PSM["PlayStyleManager.ts (Contiguous 5-District World & Articulated Spine)"]
     SUS["SeamlessUniverseSimulator.ts & UniverseShaders.ts (10^+28m to 10^-35m)"]
     CMG["CapyModelGenerator.ts (4-Tier 60 FPS LOD Anatomy & Structures)"]
