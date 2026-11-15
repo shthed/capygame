@@ -2982,11 +2982,14 @@ export class SeamlessUniverseSimulator {
     const crowns = new THREE.InstancedMesh(isletCrownGeo, this.ecosystemMeadowMat, count);
 
     for (let i = 0; i < count; i++) {
-      // Cluster along outer perimeter outside Sanctuary central meadow (skip causeway diagonals)
-      const ang = (i / count) * Math.PI * 2 + 0.14;
+      // Cluster strictly on dry Sanctuary meadow perimeter (18m..32.5m) clear of causeways & open water
+      let ang = (i / count) * Math.PI * 2 + 0.14;
       const diag = Math.abs(Math.sin(ang * 2));
-      const r = diag > 0.78 ? 44 + (i % 4) * 3.5 : 32 + (i % 5) * 4.2;
-      const s = 0.75 + seededRand(i * 5 + 2) * 0.65;
+      if (diag > 0.76) {
+        ang += 0.28; // shift off diagonal causeway approaches onto grassy meadow quadrants
+      }
+      const r = 18.5 + (i % 5) * 3.1; // 18.5m .. 30.9m: safely inside Sanctuary grass (34.5m rim)
+      const s = 0.72 + seededRand(i * 5 + 2) * 0.55;
       const wx = Math.cos(ang) * r;
       const wz = Math.sin(ang) * r;
 

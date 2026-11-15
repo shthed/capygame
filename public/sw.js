@@ -10,6 +10,7 @@ const PRECACHE_RELATIVE_URLS = [
   './',
   './index.html',
   './manifest.webmanifest',
+  './privacy.html',
   './assets/capybara.webp',
   './assets/icon-192.png',
   './assets/icon-512.png',

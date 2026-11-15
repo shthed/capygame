@@ -3,6 +3,8 @@
   "name": "CapyGame 3D",
   "short_name": "CapyGame",
   "description": "3D hardware-accelerated Capybara universe simulator, contiguous world builder, and multiphysics mini-game archipelago.",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -10,6 +12,10 @@
   "orientation": "any",
   "background_color": "#000000",
   "theme_color": "#000000",
+  "prefer_related_applications": false,
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
   "categories": ["games", "entertainment"],
   "icons": [
     {

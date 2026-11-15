@@ -53,23 +53,154 @@ function makeBridge(
 
 /**
  * 4 Wide Stone-and-Turf Grand Promenade Causeways directly joining Sanctuary (0, 0)
- * to all 4 surrounding minigame arenas so players can walk seamlessly between every game:
- * - NW Causeway: Sanctuary (-21, -21) -> Spore Lagoon Beach (-48, -48)
- * - NE Causeway: Sanctuary (+21, -21) -> Yuzu Breakout South Plaza (+75, -60)
- * - SW Causeway: Sanctuary (-21, +21) -> Number Stampede North Plaza (-75, +82)
- * - SE Causeway: Sanctuary (+21, +21) -> Yuzu Mountain Base Plaza (+75, +80)
+ * to all 4 surrounding minigame islands across wide open ocean channels:
+ * - NW Causeway: Sanctuary (-20.5, -20.5) -> Spore Lagoon Beach (-79.0, -79.0)
+ * - NE Causeway: Sanctuary (+20.5, -20.5) -> Yuzu Breakout South Plaza (+110.0, -94.5)
+ * - SW Causeway: Sanctuary (-20.5, +20.5) -> Number Stampede North Plaza (-110.0, +141.5)
+ * - SE Causeway: Sanctuary (+20.5, +20.5) -> Yuzu Mountain Base Plaza (+110.0, +142.0)
  */
 export const CONTIGUOUS_BRIDGES: readonly PromenadeBridgeSpec[] = [
-  makeBridge('spore', -20.5, -20.5, -49.5, -49.5),
-  makeBridge('breakout', 20.5, -20.5, 75.0, -59.5),
-  makeBridge('runner', -20.5, 20.5, -75.0, 81.5),
-  makeBridge('fallguys', 20.5, 20.5, 75.0, 80.5),
+  makeBridge('spore', -20.5, -20.5, ZONE_LOCATIONS.spore.x + 31.0, ZONE_LOCATIONS.spore.z + 31.0),
+  makeBridge(
+    'breakout',
+    20.5,
+    -20.5,
+    ZONE_LOCATIONS.breakout.x,
+    ZONE_LOCATIONS.breakout.z + 15.5
+  ),
+  makeBridge('runner', -20.5, 20.5, ZONE_LOCATIONS.runner.x, ZONE_LOCATIONS.runner.z + 6.5),
+  makeBridge(
+    'fallguys',
+    20.5,
+    20.5,
+    ZONE_LOCATIONS.fallguys.x,
+    ZONE_LOCATIONS.fallguys.z + 7.0
+  ),
 ];
+
+export const OPEN_OCEAN_SEABED_Y = -1.65;
+export const OPEN_OCEAN_SURFACE_Y = -0.95;
+
+export interface DistrictBoundingBox2D {
+  mode: PlayStyle;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  shape: 'circle' | 'box';
+  cx: number;
+  cz: number;
+  radius?: number;
+}
+
+/**
+ * Returns authoritative 2D visual/physical world footprints for all 5 islands
+ * so unit tests and layout validators can guarantee zero overlaps.
+ */
+export function getArchipelagoDistrictFootprints(): DistrictBoundingBox2D[] {
+  return [
+    {
+      mode: 'sanctuary',
+      shape: 'circle',
+      cx: ZONE_LOCATIONS.sanctuary.x,
+      cz: ZONE_LOCATIONS.sanctuary.z,
+      radius: 38.5,
+      minX: ZONE_LOCATIONS.sanctuary.x - 38.5,
+      maxX: ZONE_LOCATIONS.sanctuary.x + 38.5,
+      minZ: ZONE_LOCATIONS.sanctuary.z - 38.5,
+      maxZ: ZONE_LOCATIONS.sanctuary.z + 38.5,
+    },
+    {
+      mode: 'spore',
+      shape: 'circle',
+      cx: ZONE_LOCATIONS.spore.x,
+      cz: ZONE_LOCATIONS.spore.z,
+      radius: 42.0,
+      minX: ZONE_LOCATIONS.spore.x - 42.0,
+      maxX: ZONE_LOCATIONS.spore.x + 42.0,
+      minZ: ZONE_LOCATIONS.spore.z - 42.0,
+      maxZ: ZONE_LOCATIONS.spore.z + 42.0,
+    },
+    {
+      mode: 'breakout',
+      shape: 'box',
+      cx: ZONE_LOCATIONS.breakout.x,
+      cz: ZONE_LOCATIONS.breakout.z + 4.0,
+      minX: ZONE_LOCATIONS.breakout.x - 9.2,
+      maxX: ZONE_LOCATIONS.breakout.x + 9.2,
+      minZ: ZONE_LOCATIONS.breakout.z - 12.0,
+      maxZ: ZONE_LOCATIONS.breakout.z + 20.0,
+    },
+    {
+      mode: 'runner',
+      shape: 'box',
+      cx: ZONE_LOCATIONS.runner.x,
+      cz: ZONE_LOCATIONS.runner.z - 42.25,
+      minX: ZONE_LOCATIONS.runner.x - 8.4,
+      maxX: ZONE_LOCATIONS.runner.x + 8.4,
+      minZ: ZONE_LOCATIONS.runner.z - 98.0,
+      maxZ: ZONE_LOCATIONS.runner.z + 13.5,
+    },
+    {
+      mode: 'fallguys',
+      shape: 'box',
+      cx: ZONE_LOCATIONS.fallguys.x,
+      cz: ZONE_LOCATIONS.fallguys.z - 27.25,
+      minX: ZONE_LOCATIONS.fallguys.x - 8.4,
+      maxX: ZONE_LOCATIONS.fallguys.x + 8.4,
+      minZ: ZONE_LOCATIONS.fallguys.z - 67.0,
+      maxZ: ZONE_LOCATIONS.fallguys.z + 12.5,
+    },
+  ];
+}
+
+export function computePairwiseFootprintClearance(
+  a: DistrictBoundingBox2D,
+  b: DistrictBoundingBox2D
+): number {
+  if (a.shape === 'circle' && b.shape === 'circle') {
+    return Math.hypot(a.cx - b.cx, a.cz - b.cz) - ((a.radius ?? 0) + (b.radius ?? 0));
+  }
+  if (a.shape === 'circle' || b.shape === 'circle') {
+    const circ = a.shape === 'circle' ? a : b;
+    const box = a.shape === 'circle' ? b : a;
+    const nearX = Math.max(box.minX, Math.min(box.maxX, circ.cx));
+    const nearZ = Math.max(box.minZ, Math.min(box.maxZ, circ.cz));
+    return Math.hypot(circ.cx - nearX, circ.cz - nearZ) - (circ.radius ?? 0);
+  }
+  const dx = Math.max(0, Math.max(a.minX - b.maxX, b.minX - a.maxX));
+  const dz = Math.max(0, Math.max(a.minZ - b.maxZ, b.minZ - a.maxZ));
+  if (dx === 0 && dz === 0) {
+    const ox = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+    const oz = Math.min(a.maxZ, b.maxZ) - Math.max(a.minZ, b.minZ);
+    return -Math.min(ox, oz);
+  }
+  return Math.hypot(dx, dz);
+}
+
+export function evaluateDistrictClearances(): {
+  minClearanceMeters: number;
+  overlappingPairs: Array<[PlayStyle, PlayStyle, number]>;
+} {
+  const footprints = getArchipelagoDistrictFootprints();
+  let minClearanceMeters = Infinity;
+  const overlappingPairs: Array<[PlayStyle, PlayStyle, number]> = [];
+  for (let i = 0; i < footprints.length; i++) {
+    for (let j = i + 1; j < footprints.length; j++) {
+      const gap = computePairwiseFootprintClearance(footprints[i], footprints[j]);
+      if (gap < minClearanceMeters) minClearanceMeters = gap;
+      if (gap <= 0) {
+        overlappingPairs.push([footprints[i].mode, footprints[j].mode, gap]);
+      }
+    }
+  }
+  return { minClearanceMeters, overlappingPairs };
+}
 
 // Reusable scratch struct for fluid queries (zero GC allocation)
 const _fluidScratch: FluidSampleResult = {
   inFluid: false,
-  surfaceY: -1.25,
+  surfaceY: OPEN_OCEAN_SURFACE_Y,
   depth: 0,
   waveHeight: 0,
   flowVx: 0,
@@ -78,7 +209,7 @@ const _fluidScratch: FluidSampleResult = {
   dragFactor: 0,
 };
 
-// Reusable scratch struct for domain clamping (zero GC allocation)
+// Reusable scratch struct for domain queries (zero GC allocation)
 export const _walkableClampScratch = {
   wx: 0,
   wz: 0,
@@ -88,47 +219,33 @@ export const _walkableClampScratch = {
 };
 
 /**
- * Signed distance (negative = safely inside walkable contiguous world, positive = outside over deep ocean)
- * across the union of:
- * 1. Sanctuary Central Island (radius 33.4m around 0,0)
- * 2. Spore Lagoon Atoll & Sandy Rim (radius 41.5m around -75,-75)
- * 3. Yuzu Breakout Stadium & South Forecourt Plaza (around +75,-75)
- * 4. Number Stampede Track & Return Boardwalk Loop (around -75,+75, localZ in [-102, +14])
- * 5. Yuzu Mountain Ascent Course, Side Walkways & Summit Return Ramp (around +75,+75, localZ in [-66, +12])
- * 6. All 4 Grand Promenade Causeways (width 9.6m)
+ * Signed distance (negative = over built landmass/causeways, positive = open ocean)
+ * across the union of all 5 islands and 4 Grand Promenade Causeways.
+ * Used strictly as a terrain/biome query — player exploration is completely unrestricted!
  */
 export function evaluateContiguousWalkableSdf(wx: number, wz: number): number {
-  // 1. Sanctuary Central Island (0, 0)
-  const dSanctuary = Math.hypot(wx, wz) - 33.4;
+  const dSanctuary = Math.hypot(wx, wz) - 34.5;
   let minSdf = dSanctuary;
 
-  // 2. Spore Lagoon Atoll (-75, -75)
   const dSpore =
     Math.hypot(wx - ZONE_LOCATIONS.spore.x, wz - ZONE_LOCATIONS.spore.z) - 41.5;
   if (dSpore < minSdf) minSdf = dSpore;
 
-  // 3. Yuzu Breakout Stadium & Open South Forecourt (+75, -75)
-  // Arena spans localX in [-8.2, +8.2], localZ in [-11.0, +19.5] (includes open south apron at +11..+19.5)
   const bx = Math.abs(wx - ZONE_LOCATIONS.breakout.x) - 9.2;
   const bz = Math.abs(wz - (ZONE_LOCATIONS.breakout.z + 4.2)) - 15.2;
   const dBreakout = Math.max(bx, bz);
   if (dBreakout < minSdf) minSdf = dBreakout;
 
-  // 4. Number Stampede Stadium Track & Side/Return Boardwalk (-75, +75)
-  // Spans localX in [-8.2, +8.2] (track [-4.4, +4.4] + east/west return boardwalks) and localZ in [-98, +12]
-  const rx = Math.abs(wx - ZONE_LOCATIONS.runner.x) - 8.2;
-  const rz = Math.abs(wz - (ZONE_LOCATIONS.runner.z - 43.0)) - 55.0;
+  const rx = Math.abs(wx - ZONE_LOCATIONS.runner.x) - 8.4;
+  const rz = Math.abs(wz - (ZONE_LOCATIONS.runner.z - 42.25)) - 55.75;
   const dRunner = Math.max(rx, rz);
   if (dRunner < minSdf) minSdf = dRunner;
 
-  // 5. Yuzu Mountain Course & Scenic Return Walkway (+75, +75)
-  // Spans localX in [-8.4, +8.4], localZ in [-66.0, +10.5]
   const fgx = Math.abs(wx - ZONE_LOCATIONS.fallguys.x) - 8.4;
-  const fgz = Math.abs(wz - (ZONE_LOCATIONS.fallguys.z - 27.75)) - 38.25;
+  const fgz = Math.abs(wz - (ZONE_LOCATIONS.fallguys.z - 27.25)) - 39.75;
   const dFallGuys = Math.max(fgx, fgz);
   if (dFallGuys < minSdf) minSdf = dFallGuys;
 
-  // 6. 4 Grand Promenade Causeways
   for (let i = 0; i < CONTIGUOUS_BRIDGES.length; i++) {
     const b = CONTIGUOUS_BRIDGES[i];
     const relX = wx - b.startX;
@@ -145,94 +262,66 @@ export function evaluateContiguousWalkableSdf(wx: number, wz: number): number {
 }
 
 /**
- * Projects any world coordinate (wx, wz) with body radius smoothly inside the contiguous
- * walkable multi-district landmass + causeways with finite-difference surface normal.
+ * Legacy helper retained for API compatibility.
+ * Open-world movement is unrestricted so callers pass through freely without artificial walls.
  */
 export function clampToContiguousWalkableWorld(
   wx: number,
   wz: number,
-  bodyRadius: number
+  _bodyRadius: number
 ): typeof _walkableClampScratch {
-  const sdf = evaluateContiguousWalkableSdf(wx, wz) + bodyRadius;
-  if (sdf <= 0) {
-    _walkableClampScratch.wx = wx;
-    _walkableClampScratch.wz = wz;
-    _walkableClampScratch.clamped = false;
-    _walkableClampScratch.nx = 0;
-    _walkableClampScratch.nz = 0;
-    return _walkableClampScratch;
-  }
-
-  const eps = 0.08;
-  const gx =
-    evaluateContiguousWalkableSdf(wx + eps, wz) -
-    evaluateContiguousWalkableSdf(wx - eps, wz);
-  const gz =
-    evaluateContiguousWalkableSdf(wx, wz + eps) -
-    evaluateContiguousWalkableSdf(wx, wz - eps);
-  const gLen = Math.hypot(gx, gz);
-  if (gLen > 1e-5) {
-    const nx = gx / gLen;
-    const nz = gz / gLen;
-    _walkableClampScratch.wx = wx - nx * sdf;
-    _walkableClampScratch.wz = wz - nz * sdf;
-    _walkableClampScratch.clamped = true;
-    _walkableClampScratch.nx = -nx;
-    _walkableClampScratch.nz = -nz;
-  } else {
-    _walkableClampScratch.wx = wx;
-    _walkableClampScratch.wz = wz;
-    _walkableClampScratch.clamped = false;
-    _walkableClampScratch.nx = 0;
-    _walkableClampScratch.nz = 0;
-  }
+  _walkableClampScratch.wx = wx;
+  _walkableClampScratch.wz = wz;
+  _walkableClampScratch.clamped = false;
+  _walkableClampScratch.nx = 0;
+  _walkableClampScratch.nz = 0;
   return _walkableClampScratch;
 }
 
 /**
  * Classifies which minigame district the player is currently standing in based on world coordinates,
- * with hysteresis margin so walking on a promenade bridge stays smooth until entering the arena threshold.
+ * returning `'sanctuary'` for Sanctuary hub as well as open-ocean free exploration anywhere around the world.
  */
 export function classifyDistrictAtWorldPos(
   wx: number,
   wz: number,
   currentDistrict: PlayStyle
 ): PlayStyle {
-  // Spore Lagoon (-75, -75)
+  // Spore Lagoon
   const dSpore = Math.hypot(wx - ZONE_LOCATIONS.spore.x, wz - ZONE_LOCATIONS.spore.z);
-  if (dSpore < (currentDistrict === 'spore' ? 40.5 : 37.5)) {
+  if (dSpore < (currentDistrict === 'spore' ? 41.0 : 38.0)) {
     return 'spore';
   }
 
-  // Yuzu Breakout (+75, -75)
+  // Yuzu Breakout
   const bLocalX = wx - ZONE_LOCATIONS.breakout.x;
   const bLocalZ = wz - ZONE_LOCATIONS.breakout.z;
   const inBreakout =
     Math.abs(bLocalX) <= (currentDistrict === 'breakout' ? 9.2 : 8.4) &&
-    bLocalZ >= -11.5 &&
-    bLocalZ <= (currentDistrict === 'breakout' ? 15.4 : 13.6);
+    bLocalZ >= (currentDistrict === 'breakout' ? -12.0 : -11.0) &&
+    bLocalZ <= (currentDistrict === 'breakout' ? 15.8 : 14.0);
   if (inBreakout) {
     return 'breakout';
   }
 
-  // Number Stampede (-75, +75)
+  // Number Stampede
   const rLocalX = wx - ZONE_LOCATIONS.runner.x;
   const rLocalZ = wz - ZONE_LOCATIONS.runner.z;
   const inRunner =
-    Math.abs(rLocalX) <= (currentDistrict === 'runner' ? 8.2 : 5.2) &&
-    rLocalZ <= (currentDistrict === 'runner' ? 6.5 : 3.5) &&
+    Math.abs(rLocalX) <= (currentDistrict === 'runner' ? 8.4 : 5.4) &&
+    rLocalZ <= (currentDistrict === 'runner' ? 9.0 : 5.0) &&
     rLocalZ >= -98.0;
   if (inRunner) {
     return 'runner';
   }
 
-  // Yuzu Mountain (+75, +75)
+  // Yuzu Mountain
   const fLocalX = wx - ZONE_LOCATIONS.fallguys.x;
   const fLocalZ = wz - ZONE_LOCATIONS.fallguys.z;
   const inFallGuys =
-    Math.abs(fLocalX) <= (currentDistrict === 'fallguys' ? 8.2 : 6.4) &&
-    fLocalZ <= (currentDistrict === 'fallguys' ? 6.8 : 4.5) &&
-    fLocalZ >= -66.0;
+    Math.abs(fLocalX) <= (currentDistrict === 'fallguys' ? 8.4 : 6.4) &&
+    fLocalZ <= (currentDistrict === 'fallguys' ? 9.0 : 5.5) &&
+    fLocalZ >= -66.5;
   if (inFallGuys) {
     return 'fallguys';
   }
@@ -241,7 +330,8 @@ export function classifyDistrictAtWorldPos(
 }
 
 /**
- * Evaluates continuous ground elevation across all 5 districts, bridges, see-saws, and basins.
+ * Evaluates continuous ground elevation across all 5 islands, sandy shore ramps,
+ * Grand Promenade Causeways, elevated platforms, see-saws, basins, and open ocean seabed.
  */
 export function sampleContiguousGroundY(
   wx: number,
@@ -257,55 +347,81 @@ export function sampleContiguousGroundY(
     }
   }
 
-  // 2. Spore Lagoon Basin (-75, -75) -> gentle sandy beach slope into shallow lagoon
+  // 2. Check Grand Promenade Causeways (smooth deck arch & slightly extended aprons at ends)
+  for (let i = 0; i < CONTIGUOUS_BRIDGES.length; i++) {
+    const b = CONTIGUOUS_BRIDGES[i];
+    const relX = wx - b.startX;
+    const relZ = wz - b.startZ;
+    const along = relX * b.dirX + relZ * b.dirZ;
+    if (along >= -1.2 && along <= b.length + 1.2) {
+      const lateral = Math.abs(relX * b.perpX + relZ * b.perpZ);
+      if (lateral <= b.halfWidth) {
+        const u = Math.max(0, Math.min(1, along / b.length));
+        return Math.sin(u * Math.PI) * 0.14;
+      }
+    }
+  }
+
+  // 3. Sanctuary Island grass (r <= 34.5) and sloping sandy beach skirt (34.5..41.5 -> seabed -1.65)
+  const dSanctuary = Math.hypot(wx, wz);
+  if (dSanctuary <= 34.5) {
+    return 0.0;
+  }
+  if (dSanctuary <= 41.5) {
+    const beachT = (dSanctuary - 34.5) / 7.0;
+    return OPEN_OCEAN_SEABED_Y * beachT;
+  }
+
+  // 4. Spore Lagoon Basin -> gentle sandy beach rim & outer slope into open ocean
   const dSpore = Math.hypot(wx - ZONE_LOCATIONS.spore.x, wz - ZONE_LOCATIONS.spore.z);
-  if (dSpore < 39.5) {
+  if (dSpore <= 45.0) {
+    if (dSpore > 39.5) {
+      const rimT = (dSpore - 39.5) / 5.5;
+      return OPEN_OCEAN_SEABED_Y * rimT;
+    }
     if (dSpore > 33.5) {
-      // Smooth beach ramp from y = 0.0 at r=39.5 down to y = -0.18 at r=33.5
       const t = (39.5 - dSpore) / 6.0;
       return -0.18 * t;
     }
     return -0.18;
   }
 
-  // 3. Yuzu Mountain Elevated Platforms & Torque-Balanced See-Saw (+75, +75)
+  // 5. Yuzu Breakout Stadium & South Forecourt Apron
+  const bx = wx - ZONE_LOCATIONS.breakout.x;
+  const bz = wz - ZONE_LOCATIONS.breakout.z;
+  if (Math.abs(bx) <= 9.2 && bz >= -12.0 && bz <= 20.0) {
+    return 0.0;
+  }
+
+  // 6. Number Stampede Track, Forecourt, Boardwalks & Turnaround
+  const rx = wx - ZONE_LOCATIONS.runner.x;
+  const rz = wz - ZONE_LOCATIONS.runner.z;
+  if (Math.abs(rx) <= 8.4 && rz >= -98.0 && rz <= 13.5) {
+    return 0.0;
+  }
+
+  // 7. Yuzu Mountain Elevated Platforms & Torque-Balanced See-Saw
   const fx = wx - ZONE_LOCATIONS.fallguys.x;
   const fz = wz - ZONE_LOCATIONS.fallguys.z;
-  if (Math.abs(fx) <= 8.4 && fz <= 8.5 && fz >= -66.0) {
-    // Gentle entry ramp from z = +8.5 (y = 0) up to z = +4.5 (y = 0.5)
+  if (Math.abs(fx) <= 8.4 && fz <= 12.5 && fz >= -67.0) {
     if (fz > 4.5) {
-      const rampT = 1.0 - (fz - 4.5) / 4.0;
-      return Math.max(0, rampT * 0.5);
+      const rampT = Math.max(0, Math.min(1, 1.0 - (fz - 4.5) / 8.0));
+      return rampT * 0.5;
     }
-    // Dynamic tilting see-saw plank centered at local (0, 0.5, -33), width 10m, depth 12m
     if (Math.abs(fx) <= 5.1 && Math.abs(fz - -33.0) <= 6.2) {
       return 0.5 + Math.sin(seeSawTilt0) * fx;
     }
     return 0.5;
   }
 
-  // 4. Grand Promenade Causeways gentle arch crown (+0.12m mid-span)
-  for (let i = 0; i < CONTIGUOUS_BRIDGES.length; i++) {
-    const b = CONTIGUOUS_BRIDGES[i];
-    const relX = wx - b.startX;
-    const relZ = wz - b.startZ;
-    const along = relX * b.dirX + relZ * b.dirZ;
-    if (along >= 0 && along <= b.length) {
-      const lateral = Math.abs(relX * b.perpX + relZ * b.perpZ);
-      if (lateral <= b.halfWidth) {
-        const u = along / b.length;
-        return Math.sin(u * Math.PI) * 0.14;
-      }
-    }
-  }
-
-  return 0.0;
+  // 8. Open Ocean Seabed everywhere else in the world!
+  return OPEN_OCEAN_SEABED_Y;
 }
 
 /**
  * 2D Shallow-Water Wave & Archimedes Buoyancy Solver (Zero-Allocation Float32Array Grid).
  * Simulates coupled surface height ripples, velocity fields, Archimedes displaced-volume lift,
- * and quadratic hydrodynamic drag across the Home Pool and Spore Lagoon.
+ * and quadratic hydrodynamic drag across the Home Pool, Spore Lagoon, and endless Open Ocean.
  */
 export class ShallowWaterFluidSolver {
   public readonly gridSize = 24;
@@ -332,7 +448,7 @@ export class ShallowWaterFluidSolver {
     const alpha = Math.min(0.24, waveSpeedSq * dtClamped * dtClamped);
     const damping = Math.max(0.92, Math.min(0.992, 1.0 - 0.018 * Math.max(0.2, viscosityScale)));
 
-    // Inject wake impulse when Hero swims in Spore Lagoon (-75, -75) or Home Pool (-8.8, 3.0)
+    // Inject wake impulse when Hero swims in Home Pool (-8.8, 3.0) or Spore Lagoon
     const dPool = Math.hypot(heroWx - -8.8, heroWz - 3.0);
     if (dPool < 4.2 && heroSpeed > 0.25) {
       const gx = Math.floor(((heroWx - -8.8) / 8.4 + 0.5) * n);
@@ -373,7 +489,7 @@ export class ShallowWaterFluidSolver {
       }
     }
 
-    // Swap ping-pong height arrays in-place via TypedArray.set
+    // Swap ping-pong height arrays in-place
     for (let i = 0; i < this.cellCount; i++) {
       const tmp = this.heightCur[i];
       this.heightCur[i] = this.heightPrev[i];
@@ -408,7 +524,7 @@ export class ShallowWaterFluidSolver {
     homePool: { x: number; z: number; radius: number; waterY: number } | null
   ): FluidSampleResult {
     _fluidScratch.inFluid = false;
-    _fluidScratch.surfaceY = -1.25;
+    _fluidScratch.surfaceY = OPEN_OCEAN_SURFACE_Y;
     _fluidScratch.depth = 0;
     _fluidScratch.waveHeight = 0;
     _fluidScratch.flowVx = 0;
@@ -439,7 +555,7 @@ export class ShallowWaterFluidSolver {
       }
     }
 
-    // 2. Spore Lagoon Shallow Bioluminescent Water (-75, -75)
+    // 2. Spore Lagoon Shallow Bioluminescent Water
     const dLagoon = Math.hypot(wx - ZONE_LOCATIONS.spore.x, wz - ZONE_LOCATIONS.spore.z);
     if (dLagoon < 35.5) {
       const n = this.gridSize;
@@ -463,6 +579,28 @@ export class ShallowWaterFluidSolver {
       _fluidScratch.flowVz = this.velZ[idx];
       _fluidScratch.buoyancyAccelY = submergence * 28.5;
       _fluidScratch.dragFactor = 2.6 * submergence;
+      return _fluidScratch;
+    }
+
+    // 3. Endless Open Ocean surrounding all 5 islands and causeways
+    const groundAtPos = sampleContiguousGroundY(wx, wz, homePool, 0);
+    if (groundAtPos < OPEN_OCEAN_SURFACE_Y + 0.12) {
+      const oceanWave =
+        Math.sin(this.simTime * 1.9 + wx * 0.16 + wz * 0.11) * 0.045 +
+        Math.cos(this.simTime * 1.3 + wx * 0.09 - wz * 0.14) * 0.03;
+      const surfY = OPEN_OCEAN_SURFACE_Y + oceanWave;
+      const submergence = Math.max(
+        0,
+        Math.min(1, (surfY - (wy - bodyRadius)) / (2 * bodyRadius))
+      );
+      _fluidScratch.inFluid = submergence > 0.02;
+      _fluidScratch.surfaceY = surfY;
+      _fluidScratch.depth = Math.max(0, surfY - groundAtPos);
+      _fluidScratch.waveHeight = oceanWave;
+      _fluidScratch.flowVx = Math.cos(this.simTime * 0.5 + wz * 0.05) * 0.35;
+      _fluidScratch.flowVz = Math.sin(this.simTime * 0.4 + wx * 0.05) * 0.35;
+      _fluidScratch.buoyancyAccelY = submergence * 31.5;
+      _fluidScratch.dragFactor = 2.8 * submergence;
       return _fluidScratch;
     }
 

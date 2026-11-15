@@ -138,7 +138,7 @@ const PLAY_STYLE_LIST: Array<{
     id: 'spore',
     title: 'Spore Lagoon',
     subtitle: 'Evolution Atoll & Plankton Hunt',
-    compass: 'NW (-75, -75)',
+    compass: 'NW (-110, -110)',
     accentColor: '#34d399',
     description:
       'Navigate the North-West Lagoon, harvest plankton and DNA helixes, and splice 3D traits.',
@@ -148,7 +148,7 @@ const PLAY_STYLE_LIST: Array<{
     id: 'breakout',
     title: 'Yuzu Breakout',
     subtitle: '3D Deflector & Crystal Waves',
-    compass: 'NE (+75, -75)',
+    compass: 'NE (+110, -110)',
     accentColor: '#fbbf24',
     description:
       'Control the deflector in the North-East sector to ricochet spheres into crystal arrays.',
@@ -158,7 +158,7 @@ const PLAY_STYLE_LIST: Array<{
     id: 'runner',
     title: 'Number Stampede',
     subtitle: 'Math Gate Herd Multiplier Highway',
-    compass: 'SW (-75, +75)',
+    compass: 'SW (-110, +135)',
     accentColor: '#60a5fa',
     description:
       'Guide a 3D formation down the South-West causeway through arithmetic multiplier gates.',
@@ -168,7 +168,7 @@ const PLAY_STYLE_LIST: Array<{
     id: 'fallguys',
     title: 'Yuzu Mountain',
     subtitle: 'Kinetic Obstacles & Ascent Course',
-    compass: 'SE (+75, +75)',
+    compass: 'SE (+110, +135)',
     accentColor: '#a78bfa',
     description:
       'Ascend the South-East gauntlet past rotating kinetic pendulums and tilting platforms.',

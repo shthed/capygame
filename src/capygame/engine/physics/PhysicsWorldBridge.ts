@@ -15,7 +15,6 @@ import {
   ShallowWaterFluidSolver,
   XpbdSoftBodySolver,
   classifyDistrictAtWorldPos,
-  clampToContiguousWalkableWorld,
   sampleContiguousGroundY,
 } from './ContiguousWorldTopology';
 import {
@@ -348,17 +347,7 @@ export class PhysicsWorldBridge {
         }
       }
 
-      // Contiguous Single-World Shoreline & Promenade Causeway Guardrail Clamp
-      const domainClamp = clampToContiguousWalkableWorld(wx, wz, input.radius);
-      if (domainClamp.clamped) {
-        wx = domainClamp.wx;
-        wz = domainClamp.wz;
-        const vDot = vx * domainClamp.nx + vz * domainClamp.nz;
-        if (vDot < 0) {
-          vx -= vDot * domainClamp.nx;
-          vz -= vDot * domainClamp.nz;
-        }
-      }
+      // Open world: no artificial perimeter barrier clamping — players freely explore beaches, bridges & open sea!
     }
 
     // 3. Rotating Sweeper Hammer Rigid-Body Angular Momentum Collision (Yuzu Mountain)

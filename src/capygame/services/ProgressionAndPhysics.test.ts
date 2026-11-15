@@ -24,7 +24,16 @@ import {
   mulberry32,
   parseAndValidateProceduralConfig,
 } from '../config/ProceduralGameConfig';
-import { ShallowWaterFluidSolver } from '../engine/physics/ContiguousWorldTopology';
+import {
+  CONTIGUOUS_BRIDGES,
+  OPEN_OCEAN_SEABED_Y,
+  OPEN_OCEAN_SURFACE_Y,
+  ShallowWaterFluidSolver,
+  clampToContiguousWalkableWorld,
+  evaluateDistrictClearances,
+  getArchipelagoDistrictFootprints,
+  sampleContiguousGroundY,
+} from '../engine/physics/ContiguousWorldTopology';
 import {
   YuzuGhostRecorder,
   createGhostPoseScratch,
@@ -1243,6 +1252,62 @@ test('Basic vs Advanced Mode: defaults to kid-friendly Basic Mode (advancedMode=
     assert.equal(imported.settings.advancedMode, true);
   }
 });
+
+test('Open-World Non-Overlapping Archipelago: zero island intersections and unrestricted ocean exploration anywhere', () => {
+  // 1. All 5 island footprints must have zero intersections and generous open-water channel clearance
+  const clearance = evaluateDistrictClearances();
+  assert.equal(
+    clearance.overlappingPairs.length,
+    0,
+    `Expected zero overlapping island pairs, found: ${JSON.stringify(clearance.overlappingPairs)}`
+  );
+  assert.ok(
+    clearance.minClearanceMeters >= 50,
+    `Expected >=50m open-water channel between all islands, got ${clearance.minClearanceMeters.toFixed(2)}m`
+  );
+
+  // 2. Verify each causeway bridge reaches near its target district without intersecting any unrelated district
+  const footprints = getArchipelagoDistrictFootprints();
+  for (const bridge of CONTIGUOUS_BRIDGES) {
+    for (let u = 0.2; u <= 0.8; u += 0.1) {
+      const px = bridge.startX + (bridge.endX - bridge.startX) * u;
+      const pz = bridge.startZ + (bridge.endZ - bridge.startZ) * u;
+      for (const fp of footprints) {
+        if (fp.mode === 'sanctuary' || fp.mode === bridge.targetMode) continue;
+        if (fp.shape === 'circle') {
+          const d = Math.hypot(px - fp.cx, pz - fp.cz);
+          assert.ok(
+            d > (fp.radius ?? 0) + 15,
+            `Bridge ${bridge.targetMode} passes too close to ${fp.mode} (${d.toFixed(1)}m)`
+          );
+        } else {
+          const outsideBox =
+            px < fp.minX - 15 || px > fp.maxX + 15 || pz < fp.minZ - 15 || pz > fp.maxZ + 15;
+          assert.ok(
+            outsideBox,
+            `Bridge ${bridge.targetMode} encroaches on unrelated island ${fp.mode}`
+          );
+        }
+      }
+    }
+  }
+
+  // 3. Unrestricted open-world coordinates: walking past Sanctuary shore (e.g. 60m, 400m) never hits an invisible wall
+  const farCheck = clampToContiguousWalkableWorld(420, -315, 0.68);
+  assert.equal(farCheck.clamped, false);
+  assert.equal(farCheck.wx, 420);
+  assert.equal(farCheck.wz, -315);
+
+  // 4. Open ocean seabed + Archimedes buoyancy work smoothly everywhere outside the islands
+  const openGroundY = sampleContiguousGroundY(65, 0, null, 0);
+  assert.equal(openGroundY, OPEN_OCEAN_SEABED_Y);
+
+  const fluid = new ShallowWaterFluidSolver();
+  const sample = fluid.sampleFluid(65, OPEN_OCEAN_SURFACE_Y - 0.1, 0, 0.68, null);
+  assert.equal(sample.inFluid, true);
+  assert.ok(sample.buoyancyAccelY > 15, 'Open ocean supplies upward Archimedes buoyancy');
+});
+
 
 
 

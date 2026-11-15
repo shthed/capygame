@@ -1573,36 +1573,44 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       };
     };
 
-    // 1. Walk NW from Sanctuary (0, 4) -> bridge head (-20.5, -20.5) -> Spore Lagoon (-62, -62)
+    // 0. Open-world freedom check: walk straight East off Sanctuary beach into open ocean (x=55, z=0) with zero invisible walls!
+    mgr.heroLocalPos.set(32.0, 0, 0);
+    mgr.resetDachshundTrail();
+    mgr.tick(0.03);
+    const walkToOpenSea = walkOverlandToward(55.0, 0.0, 120);
+    const oceanSwimmingActive = mgr.isSwimmingInPool;
+
+    // 1. Walk NW from Sanctuary (-20.5, -20.5) -> Spore Lagoon entrance (-88, -88)
+    mgr.switchMode('sanctuary', true);
     mgr.heroLocalPos.set(-18.0, 0, -18.0);
     mgr.resetDachshundTrail();
     mgr.tick(0.03);
-    const walkToSpore = walkOverlandToward(-62.0, -62.0, 220);
+    const walkToSpore = walkOverlandToward(-88.0, -88.0, 320);
     const modeInSpore = mgr.currentMode;
     const swimmingInLagoon = mgr.isSwimmingInPool;
 
-    // Walk right back SE from Spore Lagoon (-62, -62) -> NW Causeway (-25, -25) -> Sanctuary!
-    const walkBackFromSpore = walkOverlandToward(-24.0, -24.0, 220);
+    // Walk right back SE from Spore Lagoon (-88, -88) -> NW Causeway (-24, -24) -> Sanctuary!
+    const walkBackFromSpore = walkOverlandToward(-24.0, -24.0, 320);
     const modeBackInSanctuary = mgr.currentMode;
 
-    // 2. Walk NE from Sanctuary (+20.5, -20.5) -> Yuzu Breakout baseline (+73, -65.2) & steer paddle, then walk south out!
+    // 2. Walk NE from Sanctuary (+20.5, -20.5) -> Yuzu Breakout baseline (+108, -100) & steer paddle, then walk south out!
     mgr.heroLocalPos.set(20.5, 0, -20.5);
     mgr.resetDachshundTrail();
     mgr.tick(0.03);
-    const walkToBreakout = walkOverlandToward(73.0, -65.2, 240);
+    const walkToBreakout = walkOverlandToward(108.0, -100.0, 360);
     const modeInBreakout = mgr.currentMode;
     const paddleCoupledX = +mgr.breakoutPaddle.position.x.toFixed(2);
-    const walkOutBreakout = walkOverlandToward(52.0, -44.0, 180);
+    const walkOutBreakout = walkOverlandToward(84.0, -76.0, 200);
     const modeAfterBreakoutExit = mgr.currentMode;
 
-    // 3. Walk SE from Sanctuary (+20.5, +20.5) -> Yuzu Mountain (+75, +77) & test See-Saw torque + Hammer angular impulse!
+    // 3. Walk SE from Sanctuary (+20.5, +20.5) -> Yuzu Mountain (+110, +137) & test See-Saw torque + Hammer angular impulse!
     mgr.heroLocalPos.set(20.5, 0, 20.5);
     mgr.resetDachshundTrail();
     mgr.tick(0.03);
-    const walkToFallGuys = walkOverlandToward(75.0, 77.0, 240);
+    const walkToFallGuys = walkOverlandToward(110.0, 137.0, 360);
     const modeInFallGuys = mgr.currentMode;
 
-    // Stand on right edge of Yuzu Mountain See-Saw (local x=+4.2, z=-33 -> world 79.2, 42.0) to test dynamic torque!
+    // Stand on right edge of Yuzu Mountain See-Saw (local x=+4.2, z=-33) to test dynamic torque!
     mgr.heroLocalPos.set(4.2, 0.55, -33.0);
     for (let i = 0; i < 12; i++) mgr.tick(0.04);
     const seeSawTiltUnderLoad = mgr.physicsBridge.getSeeSawTiltAngle();
@@ -1622,6 +1630,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       ccdEnabled: finalPhys.ccdEnabled,
       fluidGridCells: finalPhys.fluidGridCells,
       softBodyNodes: finalPhys.softBodyNodes,
+      walkToOpenSeaReached: walkToOpenSea.reached,
+      oceanSwimmingActive,
       walkToSporeReached: walkToSpore.reached,
       modeInSpore,
       swimmingInLagoon,
@@ -1645,6 +1655,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     !contiguousAndPhysicsCheck.wasmInitialized ||
     !contiguousAndPhysicsCheck.ccdEnabled ||
     contiguousAndPhysicsCheck.fluidGridCells !== 576 ||
+    !contiguousAndPhysicsCheck.walkToOpenSeaReached ||
+    !contiguousAndPhysicsCheck.oceanSwimmingActive ||
     !contiguousAndPhysicsCheck.walkToSporeReached ||
     contiguousAndPhysicsCheck.modeInSpore !== 'spore' ||
     !contiguousAndPhysicsCheck.walkBackFromSporeReached ||

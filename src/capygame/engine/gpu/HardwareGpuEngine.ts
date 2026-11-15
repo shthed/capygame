@@ -15,6 +15,7 @@ import {
   type GpuPipelineConfig,
   type GpuQualityPreset,
 } from './GpuEngineTypes';
+import { ZONE_LOCATIONS } from '../../types';
 import { PbrTextureSynthesizer } from './PbrTextureSynthesizer';
 import {
   computeBloomRenderScale,
@@ -376,9 +377,21 @@ export class HardwareGpuEngine {
     { indexCount: 1024, instanceCount: 1, firstIndex: 3584, baseVertex: 0, firstInstance: 3 },
     { indexCount: 1024, instanceCount: 1, firstIndex: 4608, baseVertex: 0, firstInstance: 4 },
   ];
-  private readonly districtCentersX = [0, -75, 75, -75, 75];
-  private readonly districtCentersZ = [0, -75, -75, 75, 75];
-  private readonly districtRadii = [38, 42, 34, 48, 44];
+  private readonly districtCentersX = [
+    ZONE_LOCATIONS.sanctuary.x,
+    ZONE_LOCATIONS.spore.x,
+    ZONE_LOCATIONS.breakout.x,
+    ZONE_LOCATIONS.runner.x,
+    ZONE_LOCATIONS.fallguys.x,
+  ];
+  private readonly districtCentersZ = [
+    ZONE_LOCATIONS.sanctuary.z,
+    ZONE_LOCATIONS.spore.z,
+    ZONE_LOCATIONS.breakout.z,
+    ZONE_LOCATIONS.runner.z - 43,
+    ZONE_LOCATIONS.fallguys.z - 28,
+  ];
+  private readonly districtRadii = [40, 44, 28, 64, 48];
   private readonly districtVisibilityFlags = new Uint8Array(5);
   private readonly indirectDrawWords = new Uint32Array(25);
   private readonly gpuWakeParams = new Float32Array(4);

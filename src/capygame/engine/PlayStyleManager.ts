@@ -95,8 +95,8 @@ import {
 import { PhysicsWorldBridge } from './physics/PhysicsWorldBridge';
 import {
   CONTIGUOUS_BRIDGES,
+  OPEN_OCEAN_SURFACE_Y,
   classifyDistrictAtWorldPos,
-  clampToContiguousWalkableWorld,
   sampleContiguousGroundY,
 } from './physics/ContiguousWorldTopology';
 import {
@@ -438,6 +438,7 @@ export class PlayStyleManager {
   private heroVelocity = new THREE.Vector3();
   private isGrounded: boolean = true;
   private isSwimmingInPool: boolean = false;
+  private lastOceanFluidActive: boolean = false;
   private baseHeroSpeed: number = 9.0;
 
   // Realistic Foot-Contact Walking Traction & Suspension State
@@ -523,8 +524,20 @@ export class PlayStyleManager {
     angularSpeed: number;
     halfLen: number;
   }> = [
-    { wx: 75, wz: 63, angleY: 0, angularSpeed: 2.4, halfLen: 4.75 },
-    { wx: 75, wz: 55, angleY: 0, angularSpeed: -2.4, halfLen: 4.75 },
+    {
+      wx: ZONE_LOCATIONS.fallguys.x,
+      wz: ZONE_LOCATIONS.fallguys.z - 12,
+      angleY: 0,
+      angularSpeed: 2.4,
+      halfLen: 4.75,
+    },
+    {
+      wx: ZONE_LOCATIONS.fallguys.x,
+      wz: ZONE_LOCATIONS.fallguys.z - 20,
+      angleY: 0,
+      angularSpeed: -2.4,
+      halfLen: 4.75,
+    },
   ];
 
   // Interactive Raycast Building Placement Ghost (Sanctuary Island)
@@ -1446,6 +1459,11 @@ export class PlayStyleManager {
       this.worldEnv.mountainMesh.visible = isSurfaceVisible && farInfo.showMountains;
     }
 
+    if (this.oceanMesh && isSurfaceVisible) {
+      this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
+      this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
+    }
+
     if (this.seamlessUniverse) {
       const showForestGrove =
         !isPerfMode &&
@@ -1465,11 +1483,51 @@ export class PlayStyleManager {
       const camX = this.camera.position.x;
       const camZ = this.camera.position.z;
 
-      const visSanctuary = shouldRenderDistrict(0, 0, 38, camX, camZ, drawDist, this.currentMode === 'sanctuary');
-      const visSpore = shouldRenderDistrict(-75, -75, 34, camX, camZ, drawDist, this.currentMode === 'spore');
-      const visBreakout = shouldRenderDistrict(75, -75, 28, camX, camZ, drawDist, this.currentMode === 'breakout');
-      const visRunner = shouldRenderDistrict(-75, 75, 36, camX, camZ, drawDist, this.currentMode === 'runner');
-      const visFallGuys = shouldRenderDistrict(75, 75, 38, camX, camZ, drawDist, this.currentMode === 'fallguys');
+      const visSanctuary = shouldRenderDistrict(
+        ZONE_LOCATIONS.sanctuary.x,
+        ZONE_LOCATIONS.sanctuary.z,
+        40,
+        camX,
+        camZ,
+        drawDist,
+        this.currentMode === 'sanctuary'
+      );
+      const visSpore = shouldRenderDistrict(
+        ZONE_LOCATIONS.spore.x,
+        ZONE_LOCATIONS.spore.z,
+        44,
+        camX,
+        camZ,
+        drawDist,
+        this.currentMode === 'spore'
+      );
+      const visBreakout = shouldRenderDistrict(
+        ZONE_LOCATIONS.breakout.x,
+        ZONE_LOCATIONS.breakout.z + 4,
+        28,
+        camX,
+        camZ,
+        drawDist,
+        this.currentMode === 'breakout'
+      );
+      const visRunner = shouldRenderDistrict(
+        ZONE_LOCATIONS.runner.x,
+        ZONE_LOCATIONS.runner.z - 43,
+        64,
+        camX,
+        camZ,
+        drawDist,
+        this.currentMode === 'runner'
+      );
+      const visFallGuys = shouldRenderDistrict(
+        ZONE_LOCATIONS.fallguys.x,
+        ZONE_LOCATIONS.fallguys.z - 28,
+        48,
+        camX,
+        camZ,
+        drawDist,
+        this.currentMode === 'fallguys'
+      );
 
       this.sanctuaryGroup.visible = visSanctuary;
       this.sanctuaryGroup.matrixWorldAutoUpdate = visSanctuary;
@@ -1494,9 +1552,9 @@ export class PlayStyleManager {
     this.worldBaseGroup.add(this.worldEnv.cloudGroup);
     this.worldBaseGroup.add(this.worldEnv.weatherMesh);
 
-    // Photorealistic Clearcoat Specular Ocean spanning the archipelago with dual-octave Gerstner normal maps
+    // Endless Open-World Clearcoat Specular Ocean spanning past every island & horizon
     const oceanGeo = PbrTextureSynthesizer.prepareGeometryForPbr(
-      new THREE.CylinderGeometry(355, 355, 0.6, 64)
+      new THREE.CylinderGeometry(1200, 1200, 0.6, 64)
     );
     const oceanMat = RealisticWorldEnvironment.createOceanWaterMaterial(
       this.isSoftwareGl,
@@ -1510,7 +1568,7 @@ export class PlayStyleManager {
     this.worldBaseGroup.add(ocean);
 
     // 4 Wide Walkable Grand Promenade Causeways (9.6m wide) directly connecting Sanctuary (0,0)
-    // to Spore Lagoon (-75,-75), Yuzu Breakout (+75,-75), Number Stampede (-75,+75) & Yuzu Mountain (+75,+75)
+    // to Spore Lagoon, Yuzu Breakout, Number Stampede & Yuzu Mountain across open ocean channels
     const cobbleTex = RealisticWorldEnvironment.getTextureSet('cobble', 8);
     const timberTex = RealisticWorldEnvironment.getTextureSet('timber', 6);
     const sandTex = RealisticWorldEnvironment.getTextureSet('sand', 8);
@@ -1755,7 +1813,7 @@ export class PlayStyleManager {
       this.setSceneBackgroundHex(0x0ea5e9);
       this.resetSporeGame();
       this.callbacks.onModeNotification?.(
-        'Moved to Spore Lagoon (-75, -75) • Eat Yuzu Plankton & DNA Helixes to grow!'
+        'Moved to Spore Lagoon (-110, -110) • Eat Yuzu Plankton & DNA Helixes to grow!'
       );
     } else if (mode === 'breakout') {
       this.heroLocalPos.set(0, 0.5, 10.6);
@@ -1763,7 +1821,7 @@ export class PlayStyleManager {
       this.setSceneBackgroundHex(0x1e293b);
       this.resetBreakoutGame(true);
       this.callbacks.onModeNotification?.(
-        'Moved to Yuzu Breakout (+75, -75) • Steer the paddle to smash crystal waves!'
+        'Moved to Yuzu Breakout (+110, -110) • Steer the paddle to smash crystal waves!'
       );
     } else if (mode === 'runner') {
       this.heroLocalPos.set(0, 0, 0);
@@ -1771,7 +1829,7 @@ export class PlayStyleManager {
       this.setSceneBackgroundHex(0x38bdf8);
       this.resetRunnerGame();
       this.callbacks.onModeNotification?.(
-        'Moved to Number Stampede (-75, +75) • Steer through + and × gates to multiply your herd!'
+        'Moved to Number Stampede (-110, +135) • Steer through + and × gates to multiply your herd!'
       );
     } else if (mode === 'fallguys') {
       this.heroLocalPos.set(0, 0.6, 0);
@@ -1779,7 +1837,7 @@ export class PlayStyleManager {
       this.setSceneBackgroundHex(0x60a5fa);
       this.resetFallGuysGame(false);
       this.callbacks.onModeNotification?.(
-        'Moved to Yuzu Mountain (+75, +75) • Race rival Capys past hammers & see-saws to the Crown!'
+        'Moved to Yuzu Mountain (+110, +135) • Race rival Capys past hammers & see-saws to the Crown!'
       );
     }
 
@@ -3058,6 +3116,11 @@ export class PlayStyleManager {
     this.sanctuaryGroup.add(this.fruitsGroup);
 
     // 4 Interactive 3D World Portals along the outer northern perimeter (zero overlap with Tier 3/4 canopies)
+    const bridgeRotY = (targetMode: PlayStyle, fallback: number): number => {
+      const b = CONTIGUOUS_BRIDGES.find((item) => item.targetMode === targetMode);
+      return b ? Math.atan2(b.dirX, b.dirZ) : fallback;
+    };
+
     const portalSpecs: Array<{
       mode: PlayStyle;
       title: string;
@@ -3076,7 +3139,7 @@ export class PlayStyleManager {
         accent: '#22d3ee',
         x: -20.5,
         z: -20.5,
-        rotY: Math.atan2(-1, -1),
+        rotY: bridgeRotY('spore', Math.atan2(-1, -1)),
       },
       {
         mode: 'breakout',
@@ -3086,7 +3149,7 @@ export class PlayStyleManager {
         accent: '#60a5fa',
         x: 20.5,
         z: -20.5,
-        rotY: Math.atan2(54.5, -39.0),
+        rotY: bridgeRotY('breakout', Math.atan2(89.5, -74.0)),
       },
       {
         mode: 'runner',
@@ -3096,7 +3159,7 @@ export class PlayStyleManager {
         accent: '#fbbf24',
         x: -20.5,
         z: 20.5,
-        rotY: Math.atan2(-54.5, 61.0),
+        rotY: bridgeRotY('runner', Math.atan2(-89.5, 121.0)),
       },
       {
         mode: 'fallguys',
@@ -3106,7 +3169,7 @@ export class PlayStyleManager {
         accent: '#f472b6',
         x: 20.5,
         z: 20.5,
-        rotY: Math.atan2(54.5, 60.0),
+        rotY: bridgeRotY('fallguys', Math.atan2(89.5, 121.5)),
       },
     ];
 
@@ -7128,14 +7191,7 @@ export class PlayStyleManager {
       }
     }
 
-    // 5. Contiguous Single-World Shoreline & 9.6m Grand Promenade Causeway Clamp
-    const zone = ZONE_LOCATIONS[this.currentMode];
-    const clamped = clampToContiguousWalkableWorld(zone.x + x, zone.z + z, radius);
-    if (clamped.clamped) {
-      x = clamped.wx - zone.x;
-      z = clamped.wz - zone.z;
-    }
-
+    // Open-world exploration: no artificial perimeter wall clamping on Dachshund segments
     this.spineX[nodeIdx] = x;
     this.spineZ[nodeIdx] = z;
   }
@@ -7190,6 +7246,7 @@ export class PlayStyleManager {
       if (this.suspendedFootTestHeight !== null) {
         this.spineY[n] = this.suspendedFootTestHeight;
       } else {
+        const surfY = this.getSupportSurfaceY(this.spineX[n], this.spineZ[n]);
         const groundY =
           this.homePool &&
           Math.hypot(
@@ -7198,7 +7255,9 @@ export class PlayStyleManager {
           ) <
             this.homePool.basinRadius - 0.32
             ? this.homePool.waterMesh.position.y - 0.34
-            : 0;
+            : surfY < OPEN_OCEAN_SURFACE_Y + 0.12
+              ? Math.max(surfY, OPEN_OCEAN_SURFACE_Y - 0.34)
+              : surfY;
         const targetY =
           n === 1 ? (this.heroLocalPos.y * 0.45 + groundY * 0.55) : groundY;
         this.spineY[n] += (targetY - this.spineY[n]) * Math.min(1, dt * 16);
@@ -7753,14 +7812,17 @@ export class PlayStyleManager {
     const pool = this.homePool;
     if (!pool) return;
 
-    // 1. Check if Hero Capybara is swimming in the Home Pool & under the running Tap Water stream
+    // 1. Check if Hero Capybara is swimming inside the Home Pool under the running Tap Water stream
     const dPool = Math.hypot(
       this.heroLocalPos.x - pool.centerX,
       this.heroLocalPos.z - pool.centerZ
     );
-    this.isSwimmingInPool = dPool < pool.basinRadius - 0.32;
+    const inHomePool = dPool < pool.basinRadius - 0.32;
+    if (inHomePool) {
+      this.isSwimmingInPool = true;
+    }
 
-    if (this.isSwimmingInPool) {
+    if (inHomePool) {
       const headX = this.heroLocalPos.x + Math.sin(this.heroYaw) * 0.52;
       const headZ = this.heroLocalPos.z + Math.cos(this.heroYaw) * 0.52;
       const dTap = Math.min(
@@ -7898,19 +7960,19 @@ export class PlayStyleManager {
       this.syncDachshundVisibility();
       if (nextDistrict === 'spore') {
         this.callbacks.onModeNotification?.(
-          'Walked into Spore Lagoon (-75, -75) • Swim, chomp Yuzu Plankton & splice DNA!'
+          'Walked into Spore Lagoon (-110, -110) • Swim, chomp Yuzu Plankton & splice DNA!'
         );
       } else if (nextDistrict === 'breakout') {
         this.callbacks.onModeNotification?.(
-          'Walked into Yuzu Breakout (+75, -75) • Move along the baseline to steer the paddle, or walk south to leave!'
+          'Walked into Yuzu Breakout (+110, -110) • Move along the baseline to steer the paddle, or explore freely!'
         );
       } else if (nextDistrict === 'runner') {
         this.callbacks.onModeNotification?.(
-          'Walked into Number Stampede (-75, +75) • Sprint the blue math lanes or step onto the boardwalk to return!'
+          'Walked into Number Stampede (-110, +135) • Sprint the blue math lanes or explore freely!'
         );
       } else if (nextDistrict === 'fallguys') {
         this.callbacks.onModeNotification?.(
-          'Walked into Yuzu Mountain (+75, +75) • Dodge kinetic hammers, tilt the see-saw & claim the Crown!'
+          'Walked into Yuzu Mountain (+110, +135) • Dodge kinetic hammers, tilt the see-saw & claim the Crown!'
         );
       }
     }
@@ -8118,12 +8180,12 @@ export class PlayStyleManager {
       ? Math.hypot(this.heroLocalPos.x - pool.centerX, this.heroLocalPos.z - pool.centerZ)
       : 999;
     const inPoolBasin = pool ? dPoolCenter < pool.basinRadius - 0.32 : false;
-    this.isSwimmingInPool = inPoolBasin;
+    this.isSwimmingInPool = inPoolBasin || this.lastOceanFluidActive;
 
     // 1. Evaluate 3D foot sole ground contact BEFORE applying walking propulsion!
     this.evaluateFootContactsAndTraction();
 
-    const swimSpeedMult = inPoolBasin ? 0.82 : 1.0;
+    const swimSpeedMult = this.isSwimmingInPool ? 0.86 : 1.0;
     const speed = this.baseHeroSpeed * this.getEffectiveSpeedMultiplier() * swimSpeedMult;
     const lengthZoomFactor = 1 + Math.min(0.78, (this.snakeSegmentCount - 1) * 0.035);
     const camHeight = 6.8 * lengthZoomFactor;
@@ -8142,6 +8204,7 @@ export class PlayStyleManager {
       this.heroLocalPos.y = this.suspendedFootTestHeight;
       this.heroVelocity.set(0, 0, 0);
       this.isGrounded = false;
+      this.lastOceanFluidActive = false;
     } else {
       const gravityScale =
         (this.activeBiome?.gravityMultiplier ?? 1.0) *
@@ -8156,7 +8219,7 @@ export class PlayStyleManager {
 
       let jumpImpulseY = 0;
       if (this.isJumping) {
-        if (this.groundedFeetCount > 0 || inPoolBasin) {
+        if (this.groundedFeetCount > 0 || this.isSwimmingInPool) {
           jumpImpulseY =
             (10.5 + (this.stats.upgrades.bounciness - 1) * 1.2) * heroJumpScale;
           if (hasWalkIntent) {
@@ -8191,6 +8254,8 @@ export class PlayStyleManager {
         this.breakoutPaddle?.position.x ?? 0,
         this.hammerWorldScratch
       );
+      this.lastOceanFluidActive = physStep.inFluid;
+      this.isSwimmingInPool = inPoolBasin || physStep.inFluid;
 
       if (inPoolBasin && pool) {
         const targetPoolY =
@@ -8340,8 +8405,8 @@ export class PlayStyleManager {
 
     const movedDist = Math.hypot(this.heroLocalPos.x - prevX, this.heroLocalPos.z - prevZ);
     const shouldAnimateSpineFeet =
-      movedDist > 0.0025 || hasWalkIntent || !this.isGrounded || inPoolBasin;
-    if (inPoolBasin) {
+      movedDist > 0.0025 || hasWalkIntent || !this.isGrounded || this.isSwimmingInPool;
+    if (this.isSwimmingInPool) {
       this.animateCapyLegs(this.heroCapy, dt, 10, walkDir);
     }
     this.recordSnakeBreadcrumb();
@@ -8521,8 +8586,12 @@ export class PlayStyleManager {
       const vzMove = this.moveInput.z * moveSpeed;
       this.heroLocalPos.x += vxMove * dt;
       this.heroLocalPos.z += vzMove * dt;
-      // Prevent walking north into the crystal brick field past the paddle rail (z = 9.8), while leaving south (+Z) wide open!
-      if (this.heroLocalPos.z < 9.8) {
+      // Keep court brick field cleanly guarded at paddle baseline while leaving outside aprons open
+      if (
+        Math.abs(this.heroLocalPos.x) < 8.4 &&
+        this.heroLocalPos.z >= 7.6 &&
+        this.heroLocalPos.z < 9.8
+      ) {
         this.heroLocalPos.z = 9.8;
       }
       if (Math.hypot(vxMove, vzMove) > 0.2) {
@@ -8561,10 +8630,13 @@ export class PlayStyleManager {
     );
     this.isJumping = false;
     this.isGrounded = phys.grounded;
+    this.isSwimmingInPool = phys.inFluid;
+    const finalBz = phys.wz - zone.z;
+    const finalBx = phys.wx - zone.x;
     this.heroLocalPos.set(
-      phys.wx - zone.x,
+      finalBx,
       phys.wy,
-      Math.max(9.8, phys.wz - zone.z)
+      Math.abs(finalBx) < 8.4 && finalBz >= 7.6 && finalBz < 9.8 ? 9.8 : finalBz
     );
     this.heroVelocity.y = phys.vy;
 
@@ -8873,6 +8945,7 @@ export class PlayStyleManager {
     );
     this.isJumping = false;
     this.isGrounded = phys.grounded;
+    this.isSwimmingInPool = phys.inFluid;
     this.heroLocalPos.set(phys.wx - zone.x, phys.wy, phys.wz - zone.z);
     this.heroVelocity.y = phys.vy;
 
@@ -9034,6 +9107,7 @@ export class PlayStyleManager {
       this.heroVelocity.z *= 0.6;
     }
     this.isGrounded = phys.grounded;
+    this.isSwimmingInPool = phys.inFluid;
 
     if (phys.trampolineBoostY > 0) {
       AudioService.playTrampolineLaunch();

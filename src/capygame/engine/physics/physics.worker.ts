@@ -48,11 +48,31 @@ function buildStaticColliders(
   }
   staticHandles = [];
 
-  // Contiguous world floor slabs: Sanctuary, 4 Grand Promenade Causeways, and 4 Minigame Districts
-  const groundSlab = RAPIER.ColliderDesc.cuboid(140, 0.5, 140)
-    .setTranslation(0, -0.5, 0)
+  // Open-ocean seabed + island floor slabs covering the entire open world
+  const seabedSlab = RAPIER.ColliderDesc.cuboid(1200, 0.5, 1200)
+    .setTranslation(0, -2.15, 0)
     .setFriction(0.65);
-  staticHandles.push(w.createCollider(groundSlab).handle);
+  staticHandles.push(w.createCollider(seabedSlab).handle);
+
+  const sanctuarySlab = RAPIER.ColliderDesc.cylinder(0.5, 34.5)
+    .setTranslation(ZONE_LOCATIONS.sanctuary.x, -0.5, ZONE_LOCATIONS.sanctuary.z)
+    .setFriction(0.65);
+  staticHandles.push(w.createCollider(sanctuarySlab).handle);
+
+  const breakoutSlab = RAPIER.ColliderDesc.cuboid(9.2, 0.5, 16.0)
+    .setTranslation(ZONE_LOCATIONS.breakout.x, -0.5, ZONE_LOCATIONS.breakout.z + 4.0)
+    .setFriction(0.65);
+  staticHandles.push(w.createCollider(breakoutSlab).handle);
+
+  const runnerSlab = RAPIER.ColliderDesc.cuboid(8.4, 0.5, 55.75)
+    .setTranslation(ZONE_LOCATIONS.runner.x, -0.5, ZONE_LOCATIONS.runner.z - 42.25)
+    .setFriction(0.65);
+  staticHandles.push(w.createCollider(runnerSlab).handle);
+
+  const fallGuysSlab = RAPIER.ColliderDesc.cuboid(8.4, 0.5, 39.75)
+    .setTranslation(ZONE_LOCATIONS.fallguys.x, -0.25, ZONE_LOCATIONS.fallguys.z - 27.25)
+    .setFriction(0.65);
+  staticHandles.push(w.createCollider(fallGuysSlab).handle);
 
   for (let i = 0; i < CONTIGUOUS_BRIDGES.length; i++) {
     const b = CONTIGUOUS_BRIDGES[i];

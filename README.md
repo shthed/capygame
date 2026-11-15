@@ -86,10 +86,10 @@ graph TD
 | District Key | World Coordinates | Core Mechanics | Progression & Unlocks |
 | :--- | :--- | :--- | :--- |
 | `sanctuary` | **Capy Sanctuary (`0, 0`)** | Place and upgrade Onsen Hot Springs, Yuzu Orchards, Sacred Pagodas, and Bouncy Pads; bump matching trees to grow your Dachshund Capy-Snake trail. | Sandbox island customization, CapyCoins, and Spore DNA milestones. |
-| `spore` | **Spore Lagoon (`-75, -75`)** | Walk down the NW Promenade beach into bioluminescent waters, harvest plankton, and splice 3D body mutations. | Spore DNA points and Lagoon mass high scores. |
-| `breakout` | **Yuzu Breakout (`+75, -75`)** | Enter the NE Stadium forecourt to deflect Golden Yuzu spheres into crystal fortresses across endless waves. | Wave clear DNA bonuses, combo multipliers, and Breakout high scores. |
-| `runner` | **Number Stampede (`-75, +75`)** | Guide your 3D Capybara herd down the SW Causeway through additive and multiplicative math gates with side return boardwalks. | Herd size records, DNA bonuses, and Stampede high scores. |
-| `fallguys` | **Yuzu Mountain (`+75, +75`)** | Climb the SE Gauntlet past rotating hammers, dynamic see-saws, and XPBD launch pads to claim the Golden Crown. | Crown completion DNA bonuses and Yuzu Mountain high scores. |
+| `spore` | **Spore Lagoon (`-110, -110`)** | Walk down the NW Promenade beach into bioluminescent waters or swim across open sea channels to harvest plankton and splice 3D body mutations. | Spore DNA points and Lagoon mass high scores. |
+| `breakout` | **Yuzu Breakout (`+110, -110`)** | Enter the NE Stadium forecourt to deflect Golden Yuzu spheres into crystal fortresses across endless waves. | Wave clear DNA bonuses, combo multipliers, and Breakout high scores. |
+| `runner` | **Number Stampede (`-110, +135`)** | Guide your 3D Capybara herd down the SW Causeway through additive and multiplicative math gates with side return boardwalks. | Herd size records, DNA bonuses, and Stampede high scores. |
+| `fallguys` | **Yuzu Mountain (`+110, +135`)** | Climb the SE Gauntlet past rotating hammers, dynamic see-saws, and XPBD launch pads to claim the Golden Crown. | Crown completion DNA bonuses and Yuzu Mountain high scores. |
 
 ---
 

@@ -1266,8 +1266,8 @@ export class RealisticWorldEnvironment {
   // ============================================================================
   private buildAlpineMountainRange(radialSegs: number): THREE.Mesh {
     const ringSegs = 28;
-    const innerR = 175;
-    const outerR = 345;
+    const innerR = 390;
+    const outerR = 620;
 
     const vertCount = (radialSegs + 1) * (ringSegs + 1);
     const positions = new Float32Array(vertCount * 3);
@@ -1294,9 +1294,11 @@ export class RealisticWorldEnvironment {
         const wx = Math.cos(theta) * rad;
         const wz = Math.sin(theta) * rad;
 
+        // Open ocean channels along cardinal directions so distant mountains never trap open-sea travel
+        const channelStrait = Math.pow(Math.min(1.0, Math.abs(Math.sin(theta * 2.0)) * 1.45), 1.35);
         const ridge = ridgedMountainHeight(wx, wz);
         const macroPeak = 0.72 + 0.35 * Math.sin(theta * 5.0 + 0.8) + 0.2 * Math.cos(theta * 9.0);
-        const height = -1.08 + ridge * macroPeak * radialEnvelope * 42.0;
+        const height = -1.25 + ridge * macroPeak * radialEnvelope * channelStrait * 52.0;
 
         positions[ptr] = wx;
         positions[ptr + 1] = height;
