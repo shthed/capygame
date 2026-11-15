@@ -1,0 +1,176 @@
+name: Publish Clean Mirror to capyboop/capygame
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      reset_clean_root:
+        description: 'Reset capyboop/capygame main to a fresh single root commit authored by capyboop'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: publish-capyboop-capygame
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Export & Push Clean capyboop/capygame Release
+    if: github.repository == 'shthed/capygame'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CAPYBOOP_SYNC_TOKEN configuration
+        id: check_secret
+        env:
+          HAS_TOKEN: ${{ secrets.CAPYBOOP_SYNC_TOKEN != '' }}
+        run: |
+          if [ "${HAS_TOKEN}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### capyboop/capygame Auto-Publish Skipped (Token Not Configured)"
+              echo ""
+              echo "Add fine-grained Personal Access Token secret \`CAPYBOOP_SYNC_TOKEN\` (scoped to \`capyboop/capygame\` with **Contents: Read & write** and **Workflows: Read & write**) under \`shthed/capygame\` **Settings -> Secrets and variables -> Actions -> Secrets** to publish every \`main\` merge automatically."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout source repository
+        if: steps.check_secret.outputs.enabled == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        if: steps.check_secret.outputs.enabled == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Export clean-room capyboop workspace and verify zero leaks
+        if: steps.check_secret.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          node scripts/rebrand-persona.mjs --stage-dir /tmp/capyboop-stage
+          COMMIT_MSG="$(git log -1 --format=%s | node scripts/rebrand-persona.mjs --sanitize-message)"
+          VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('/tmp/capyboop-stage/package.json', 'utf8')).version")"
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid SemVer in staged package.json: ${VERSION}" >&2
+            exit 1
+          fi
+          DELIM="EOF_COMMIT_MSG_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          {
+            printf 'commit_msg<<%s\n%s\n%s\n' "${DELIM}" "${COMMIT_MSG}" "${DELIM}"
+            printf 'version=%s\n' "${VERSION}"
+          } >> "$GITHUB_ENV"
+
+      - name: Commit as capyboop, push main, and sync release tag on capyboop/capygame
+        if: steps.check_secret.outputs.enabled == 'true'
+        env:
+          CAPYBOOP_SYNC_TOKEN: ${{ secrets.CAPYBOOP_SYNC_TOKEN }}
+          RESET_CLEAN_ROOT: ${{ inputs.reset_clean_root == true }}
+          GIT_AUTHOR_NAME: capyboop
+          GIT_AUTHOR_EMAIL: 354866242+capyboop@users.noreply.github.com
+          GIT_COMMITTER_NAME: capyboop
+          GIT_COMMITTER_EMAIL: 354866242+capyboop@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          ASKPASS_SCRIPT="$(mktemp)"
+          REMOTE_LOG_FILE="$(mktemp)"
+          trap 'rm -f "${ASKPASS_SCRIPT}" "${REMOTE_LOG_FILE}"' EXIT
+          cat <<'EOF' > "${ASKPASS_SCRIPT}"
+          #!/usr/bin/env sh
+          case "$1" in
+            *Username*) printf '%s\n' "x-access-token" ;;
+            *) printf '%s\n' "${CAPYBOOP_SYNC_TOKEN}" ;;
+          esac
+          EOF
+          chmod 700 "${ASKPASS_SCRIPT}"
+          export GIT_ASKPASS="${ASKPASS_SCRIPT}"
+          export GIT_TERMINAL_PROMPT=0
+
+          cd /tmp/capyboop-stage
+          git init -b main
+          git config user.name "${GIT_AUTHOR_NAME}"
+          git config user.email "${GIT_AUTHOR_EMAIL}"
+          git config credential.helper ""
+          git remote add target "https://github.com/capyboop/capygame.git"
+          git add -A
+
+          REMOTE_MAIN_STATUS=0
+          git ls-remote --exit-code --heads target main >/dev/null || REMOTE_MAIN_STATUS=$?
+          if [ "${REMOTE_MAIN_STATUS}" -ne 0 ] && [ "${REMOTE_MAIN_STATUS}" -ne 2 ]; then
+            echo "Failed to query target main branch (exit ${REMOTE_MAIN_STATUS})." >&2
+            exit "${REMOTE_MAIN_STATUS}"
+          fi
+
+          NEEDS_CLEAN_RESET="false"
+          if [ "${RESET_CLEAN_ROOT}" = "true" ]; then
+            NEEDS_CLEAN_RESET="true"
+          fi
+
+          PUSHED_COMMIT_SHA=""
+          if [ "${REMOTE_MAIN_STATUS}" -eq 0 ]; then
+            git fetch target main
+            if [ "${NEEDS_CLEAN_RESET}" != "true" ]; then
+              git log FETCH_HEAD --format="%an %ae %cn %ce %B%x00" > "${REMOTE_LOG_FILE}"
+              GREP_STATUS=0
+              grep -iaqzE "shthed|hairy[[:space:]_-]*dog[[:space:]_-]*trumpet|381055\+|CAPYBOOP_SYNC_TOKEN|capyboop@gmail\.com|rebrand-persona|publish-capyboop|persona:capyboop|capy-dev-only" "${REMOTE_LOG_FILE}" || GREP_STATUS=$?
+              if [ "${GREP_STATUS}" -eq 0 ]; then
+                NEEDS_CLEAN_RESET="true"
+              elif [ "${GREP_STATUS}" -ne 1 ]; then
+                echo "Failed to inspect fetched target commit history (grep exit ${GREP_STATUS})." >&2
+                exit "${GREP_STATUS}"
+              fi
+            fi
+
+            if [ "${NEEDS_CLEAN_RESET}" = "true" ]; then
+              echo "Initializing fresh clean-room root history authored solely by capyboop..."
+              git commit -m "Release CapyGame v${version}"
+              PUSHED_COMMIT_SHA="$(git rev-parse HEAD)"
+              git push --force target "${PUSHED_COMMIT_SHA}:refs/heads/main"
+            else
+              TREE_SHA="$(git write-tree)"
+              REMOTE_TREE_SHA="$(git rev-parse FETCH_HEAD^{tree})"
+              if [ "${TREE_SHA}" = "${REMOTE_TREE_SHA}" ]; then
+                echo "capyboop/capygame main already matches clean tree (${TREE_SHA})."
+                PUSHED_COMMIT_SHA="$(git rev-parse FETCH_HEAD)"
+              else
+                PARENT_SHA="$(git rev-parse FETCH_HEAD)"
+                NEW_COMMIT="$(git commit-tree "${TREE_SHA}" -p "${PARENT_SHA}" -m "${commit_msg}")"
+                PUSHED_COMMIT_SHA="${NEW_COMMIT}"
+                git push target "${PUSHED_COMMIT_SHA}:refs/heads/main"
+              fi
+            fi
+          else
+            echo "Target repository has no main branch yet; pushing initial clean root commit..."
+            git commit -m "Release CapyGame v${version}"
+            PUSHED_COMMIT_SHA="$(git rev-parse HEAD)"
+            git push target "${PUSHED_COMMIT_SHA}:refs/heads/main"
+          fi
+
+          TAG_NAME="v${version}"
+          if [ "${NEEDS_CLEAN_RESET}" = "true" ]; then
+            echo "Force-syncing release tag ${TAG_NAME} (${PUSHED_COMMIT_SHA}) to capyboop/capygame..."
+            git tag -f "${TAG_NAME}" "${PUSHED_COMMIT_SHA}"
+            git push --force target "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+          else
+            REMOTE_TAG_STATUS=0
+            git ls-remote --exit-code --tags target "refs/tags/${TAG_NAME}" >/dev/null || REMOTE_TAG_STATUS=$?
+            if [ "${REMOTE_TAG_STATUS}" -eq 0 ]; then
+              echo "Tag ${TAG_NAME} already exists on capyboop/capygame; skipping tag push."
+            elif [ "${REMOTE_TAG_STATUS}" -eq 2 ]; then
+              echo "Pushing release tag ${TAG_NAME} (${PUSHED_COMMIT_SHA}) to capyboop/capygame..."
+              git tag -f "${TAG_NAME}" "${PUSHED_COMMIT_SHA}"
+              git push target "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+            else
+              echo "Failed to query target tag ${TAG_NAME} (exit ${REMOTE_TAG_STATUS})." >&2
+              exit "${REMOTE_TAG_STATUS}"
+            fi
+          fi

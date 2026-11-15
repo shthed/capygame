@@ -199,9 +199,10 @@ const main = async () => {
     }
 
     const mergedAt = mergedBranches.get(name);
+    const protectedBranches = new Set([defaultBranch, 'main', 'beta', 'gh-pages']);
 
-    if (name === defaultBranch) {
-      diagnostics.push({ name, detail: 'skipped default branch' });
+    if (protectedBranches.has(name)) {
+      diagnostics.push({ name, detail: 'skipped protected branch name' });
     } else if (branch.protected) {
       diagnostics.push({ name, detail: 'skipped protected branch' });
     } else if (includePrefixes.length === 0) {

@@ -8,17 +8,18 @@ on:
       - '**.md'
       - 'docs/**'
       - 'notes/**'
+      - '.agents/**'
       - '.gitignore'
       - 'LICENSE'
   pull_request:
     branches:
       - main
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'notes/**'
-      - '.gitignore'
-      - 'LICENSE'
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
   workflow_dispatch:
     inputs:
       target_branch:
@@ -61,8 +62,9 @@ jobs:
           BASE_PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         with:
           script: |
+            const isPullRequest = context.eventName === 'pull_request';
             const inputs = context.payload?.inputs || {};
-            const branchInput = inputs.target_branch || '';
+            const branchInput = (inputs.target_branch || '').trim().replace(/^refs\/heads\//, '');
             const allowWithoutPrInput = inputs.allow_without_pr;
             const prFromPayload = context.payload?.pull_request?.number;
             const branchFromPayload = context.payload?.pull_request?.head?.ref;
@@ -94,6 +96,31 @@ jobs:
               }
             }
 
+            let isDocsOnlyPr = false;
+            if (isPullRequest && prNumber) {
+              try {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  per_page: 100,
+                });
+                isDocsOnlyPr =
+                  files.length > 0 &&
+                  files.every(
+                    (f) =>
+                      f.filename.endsWith('.md') ||
+                      f.filename.startsWith('docs/') ||
+                      f.filename.startsWith('notes/') ||
+                      f.filename.startsWith('.agents/') ||
+                      f.filename === '.gitignore' ||
+                      f.filename === 'LICENSE'
+                  );
+              } catch (error) {
+                core.warning(`Failed to inspect PR changed files for #${prNumber}: ${error.message}`);
+              }
+            }
+
             const targetDir = branch === 'main'
               ? '.'
               : prNumber
@@ -104,7 +131,7 @@ jobs:
               ? `${basePreview}/`
               : `${basePreview}/${targetDir}/`;
 
-            const shouldSkip = branch !== 'main' && !prNumber && !allowWithoutPr;
+            const shouldSkip = isDocsOnlyPr || (branch !== 'main' && !prNumber && !allowWithoutPr);
 
             const checkoutRef = context.payload?.pull_request?.head?.sha || branchInput || context.sha;
 
@@ -116,7 +143,9 @@ jobs:
               `Preview URL (Web): ${previewUrl}`,
             ];
 
-            if (shouldSkip) {
+            if (isDocsOnlyPr) {
+              summaryLines.push('Docs-only PR detected: skipping build and GitHub Pages deploy.');
+            } else if (shouldSkip) {
               summaryLines.push('Deployment skipped: branch has no open PR (override with allow_without_pr).');
             }
 
@@ -142,7 +171,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build, lint & unit-test CapyGame 3D
+      - name: Build, lint & unit-test CapyGame
         if: steps.target.outputs.skip != 'true'
         run: |
           npm ci --prefer-offline --no-audit --no-fund
@@ -167,7 +196,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: [build]
-    if: needs.build.outputs.skip != 'true'
+    if: github.event.repository.has_pages == true && needs.build.outputs.skip != 'true' && github.event_name != 'pull_request' && needs.build.outputs.branch == 'main' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -240,7 +269,7 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git add -A
-            if ! git diff --cached --quiet || git cat-file -p HEAD | grep -q '^parent '; then
+            if ! git diff --cached --quiet || git rev-parse --verify -q HEAD^ >/dev/null; then
               git checkout --orphan gh-pages-squashed
               git add -A
               git commit -m "Deploy ${TARGET_DIR}"
