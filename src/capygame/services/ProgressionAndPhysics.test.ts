@@ -51,6 +51,7 @@ import {
   enforceWeatherParticleCameraClearance,
   evaluateRealisticLimbPose,
   solveBidirectionalSpinePass,
+  solveSpineVerticalCoupling,
 } from '../engine/physics/QuadrupedGaitSolver';
 import {
   MOON_ORBIT_RADIUS_AT_8_85,
@@ -1415,6 +1416,48 @@ test('QuadrupedGaitSolver: linear Dachshund growth, displacement-locked gait, 2-
   const pushed = enforceWeatherParticleCameraClearance(1.0, 2.0, 1.0, 1.0, 2.0, 1.2, 3.2);
   const clearDist = Math.hypot(pushed.x - 1.0, pushed.y - 2.0, pushed.z - 1.2);
   assert.ok(clearDist >= 3.19, `Particle pushed safely outside camera sphere (${clearDist.toFixed(2)}m)`);
+
+  // 6. Connected 3D jump spine vertical coupling (forward jump & reverse caboose-led jump stay attached!)
+  const jNodes = 5;
+  const jx = new Float32Array(jNodes);
+  const jy = new Float32Array(jNodes);
+  const jz = new Float32Array(jNodes);
+  const jSupport = new Float32Array(jNodes);
+  for (let n = 0; n < jNodes; n++) {
+    jx[n] = 0;
+    jy[n] = 0;
+    jz[n] = -n * 1.15;
+    jSupport[n] = 0;
+  }
+  // Hero (node 0) leaps up to y = 1.25m while advancing forward
+  for (let f = 0; f < 16; f++) {
+    jy[0] = Math.sin(((f + 1) / 16) * Math.PI * 0.5) * 1.25;
+    jz[0] += 0.14;
+    solveSpineVerticalCoupling(jx, jy, jz, jSupport, jNodes, false, 0.025);
+  }
+  assert.ok(jy[1] > 0.65, `Segment 1 must rise with Hero during jump instead of staying glued to y=0 (${jy[1].toFixed(2)}m)`);
+  for (let n = 1; n < jNodes; n++) {
+    const restLen =
+      n - 1 === 0
+        ? SANE_HERO_LINK_DIST
+        : n - 1 === jNodes - 2
+          ? SANE_CABOOSE_LINK_DIST
+          : SANE_SEGMENT_SPACING;
+    const dy = Math.abs(jy[n] - jy[n - 1]);
+    assert.ok(
+      dy <= restLen * 0.44 + 0.02,
+      `Adjacent vertical delta between joint ${n - 1} and ${n} stays connected (${dy.toFixed(3)}m)`
+    );
+    assert.ok(jy[n] >= 0, 'Spine never penetrates floor support plane');
+  }
+
+  // Reverse caboose-led jump keeps caboose (jNodes-1) lifting front segments smoothly
+  jy.fill(0);
+  jy[jNodes - 1] = 1.1;
+  for (let f = 0; f < 14; f++) {
+    solveSpineVerticalCoupling(jx, jy, jz, jSupport, jNodes, true, 0.025);
+  }
+  assert.ok(jy[jNodes - 2] > 0.55, `Reverse jump lifts trailing middle segment (${jy[jNodes - 2].toFixed(2)}m)`);
 });
 
 

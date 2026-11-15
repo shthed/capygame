@@ -350,3 +350,77 @@ export function enforceWeatherParticleCameraClearance(
   }
   return res;
 }
+
+/**
+ * Solves 3D vertical spine coupling outward from the active leader (`0` when forward,
+ * `totalNodes - 1` when reversing) so jumping, bouncing, or climbing hills keeps every
+ * torso segment and caboose physically attached in a continuous 3D curve rather than leaving
+ * trailing segments stranded on the ground. Zero per-frame heap allocations.
+ */
+export function solveSpineVerticalCoupling(
+  spineX: Float32Array,
+  spineY: Float32Array,
+  spineZ: Float32Array,
+  supportY: Float32Array,
+  totalNodes: number,
+  isWalkingBackward: boolean,
+  dt: number,
+  segmentSpacing: number = SANE_SEGMENT_SPACING,
+  heroLinkDist: number = SANE_HERO_LINK_DIST,
+  cabooseLinkDist: number = SANE_CABOOSE_LINK_DIST,
+  maxJointSlopeRatio: number = 0.44
+): void {
+  if (totalNodes < 2) return;
+
+  const getLinkLength = (frontIdx: number): number => {
+    if (frontIdx === 0) return heroLinkDist;
+    if (frontIdx === totalNodes - 2) return cabooseLinkDist;
+    return segmentSpacing;
+  };
+
+  const springRate = Math.min(1, Math.max(0.05, dt * 18));
+  const count = totalNodes - 1;
+
+  for (let step = 0; step < count; step++) {
+    const n = isWalkingBackward ? totalNodes - 2 - step : 1 + step;
+    const prev = isWalkingBackward ? n + 1 : n - 1;
+    const frontIdx = isWalkingBackward ? n : prev;
+    const restLen = getLinkLength(frontIdx);
+
+    const floorY = supportY[n];
+    const prevHeightAboveFloor = Math.max(0, spineY[prev] - supportY[prev]);
+    // When leader is airborne, trailing segments spring smoothly along the same airborne arc
+    const airFollow = Math.min(1.0, prevHeightAboveFloor / 0.48);
+    const desiredAirY = spineY[prev] - 0.04;
+    const desiredGroundY = floorY * 0.65 + spineY[prev] * 0.35;
+    const targetY = Math.max(
+      floorY,
+      desiredGroundY * (1 - airFollow) + desiredAirY * airFollow
+    );
+
+    let nextY = spineY[n] + (targetY - spineY[n]) * springRate;
+
+    // Hard 3D vertical link constraint: adjacent spine nodes cannot separate vertically beyond joint bend limit
+    const maxDy = restLen * maxJointSlopeRatio;
+    const minAllowedY = Math.max(floorY, spineY[prev] - maxDy);
+    const maxAllowedY = spineY[prev] + maxDy;
+    if (nextY < minAllowedY) nextY = minAllowedY;
+    else if (nextY > maxAllowedY) nextY = maxAllowedY;
+
+    spineY[n] = nextY;
+
+    // Also pull horizontal XZ lightly when sloped vertically so 3D distance never stretches past restLen * 1.04
+    const dx = spineX[prev] - spineX[n];
+    const dy = spineY[prev] - spineY[n];
+    const dz = spineZ[prev] - spineZ[n];
+    const dist3d = Math.hypot(dx, dy, dz);
+    const max3d = restLen * 1.04;
+    if (dist3d > max3d && dist3d > 0.0001) {
+      const pull = (dist3d - max3d) / dist3d;
+      spineX[n] += dx * pull * 0.85;
+      spineZ[n] += dz * pull * 0.85;
+      spineY[n] = Math.max(floorY, spineY[n] + dy * pull * 0.35);
+    }
+  }
+}
+

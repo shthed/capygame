@@ -111,6 +111,8 @@ import {
   Moon,
   Shuffle,
   BookOpen,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 
 type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
@@ -327,6 +329,7 @@ export const CapyGameView: React.FC = () => {
   const [allFeaturesUnlocked, setAllFeaturesUnlocked] = useState<boolean>(false);
 
   const [isMuted, setIsMuted] = useState<boolean>(() => AudioService.getMuted());
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isJsonEditorOpen, setIsJsonEditorOpen] = useState<boolean>(false);
@@ -731,6 +734,20 @@ export const CapyGameView: React.FC = () => {
         updateAvailable: PwaService.isUpdateAvailable,
       });
     });
+  }, []);
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const doc = document as Document & { webkitFullscreenElement?: Element | null };
+      setIsFullscreen(Boolean(doc.fullscreenElement || doc.webkitFullscreenElement));
+    };
+    syncFullscreen();
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    document.addEventListener('webkitfullscreenchange', syncFullscreen);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreen);
+      document.removeEventListener('webkitfullscreenchange', syncFullscreen);
+    };
   }, []);
 
   useEffect(() => {
@@ -1606,6 +1623,40 @@ export const CapyGameView: React.FC = () => {
     }
   };
 
+  const handleToggleFullscreen = () => {
+    AudioService.playCoin();
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => Promise<void> | void;
+    };
+    const rootEl = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    const activeEl = doc.fullscreenElement || doc.webkitFullscreenElement;
+    if (activeEl) {
+      const exitFn = doc.exitFullscreen || doc.webkitExitFullscreen;
+      if (exitFn) {
+        Promise.resolve(exitFn.call(doc))
+          .then(() => setIsFullscreen(false))
+          .catch(() => setIsFullscreen(false));
+      } else {
+        setIsFullscreen(false);
+      }
+      return;
+    }
+    const reqFn = rootEl.requestFullscreen || rootEl.webkitRequestFullscreen;
+    if (reqFn) {
+      Promise.resolve(reqFn.call(rootEl))
+        .then(() => setIsFullscreen(true))
+        .catch(() => {
+          // Graceful toggle when iframe sandbox disallows native fullscreen API
+          setIsFullscreen((prev) => !prev);
+        });
+    } else {
+      setIsFullscreen((prev) => !prev);
+    }
+  };
+
   const handleToggleChaseCamera = () => {
     const nextFollow = !gameSettings.cameraFollowBehind;
     AudioService.playCoin();
@@ -2336,33 +2387,27 @@ export const CapyGameView: React.FC = () => {
         data-testid="unified-top-bar"
         data-ui-mode={isAdvancedMode ? 'advanced' : 'basic'}
         aria-label="Universe Simulator Controls and Status"
-        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1.5 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
+        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-0.5 sm:gap-2 pointer-events-auto whitespace-nowrap"
       >
         {/* LEFT CLUSTER: Zoom Controls */}
         <div
           data-testid="universe-scale-hud"
           data-scale-band={universeScale.bandId}
           data-seamless-active={universeScale.active ? 'true' : 'false'}
-          className="flex items-center gap-1 shrink-0"
+          className="flex items-center gap-0.5 sm:gap-1 shrink-0"
         >
-          <button
-            type="button"
-            data-testid="scale-zoom-out-btn"
-            onClick={() =>
-              isAdvancedMode
-                ? managerRef.current?.stepScaleBand(1)
-                : managerRef.current?.stepFlightThrottle(-1)
-            }
-            title={
-              isAdvancedMode
-                ? 'Zoom Out 1 Scale Band (Toward Big Bang 10^+30m)'
-                : 'Slower / Fly Back Smoothly'
-            }
-            aria-label={isAdvancedMode ? 'Zoom Out Scale' : 'Fly Slower or Back'}
-            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-6 sm:h-7' : 'w-6 h-7 sm:w-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0`}
-          >
-            <Minus className="w-3.5 h-3.5" />
-          </button>
+          {isAdvancedMode && (
+            <button
+              type="button"
+              data-testid="scale-zoom-out-btn"
+              onClick={() => managerRef.current?.stepScaleBand(1)}
+              title="Zoom Out 1 Scale Band (Toward Big Bang 10^+30m)"
+              aria-label="Zoom Out Scale"
+              className="hidden sm:flex w-6 h-7 items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
+            >
+              <Minus className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           <button
             type="button"
@@ -2440,24 +2485,18 @@ export const CapyGameView: React.FC = () => {
             />
           )}
 
-          <button
-            type="button"
-            data-testid="scale-zoom-in-btn"
-            onClick={() =>
-              isAdvancedMode
-                ? managerRef.current?.stepScaleBand(-1)
-                : managerRef.current?.stepFlightThrottle(1)
-            }
-            title={
-              isAdvancedMode
-                ? 'Zoom In 1 Scale Band (Toward Electron & Photon 10^-35m)'
-                : 'Faster / Fly Forward Smoothly'
-            }
-            aria-label={isAdvancedMode ? 'Zoom In Scale' : 'Fly Faster or Forward'}
-            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-6 sm:h-7' : 'w-6 h-7 sm:w-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0`}
-          >
-            <Plus className="w-3.5 h-3.5" />
-          </button>
+          {isAdvancedMode && (
+            <button
+              type="button"
+              data-testid="scale-zoom-in-btn"
+              onClick={() => managerRef.current?.stepScaleBand(-1)}
+              title="Zoom In 1 Scale Band (Toward Electron & Photon 10^-35m)"
+              aria-label="Zoom In Scale"
+              className="hidden sm:flex w-6 h-7 items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           {isAdvancedMode && (
             <button
@@ -2660,7 +2699,7 @@ export const CapyGameView: React.FC = () => {
         </div>
 
         {/* RIGHT CLUSTER */}
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {isAdvancedMode && universeScale.active && (
             <div
               data-testid="top-bar-epoch-badge"
@@ -2689,13 +2728,13 @@ export const CapyGameView: React.FC = () => {
               onClick={handleOpenJsonEditor}
               title="Live Procedural JSON Engine Configurator"
               aria-label="Open Procedural JSON Config Editor"
-              className={`h-6 sm:h-7 px-1 sm:px-2 rounded border flex items-center gap-1 text-[11px] font-mono transition-colors cursor-pointer ${
+              className={`h-6 sm:h-7 w-5 sm:w-auto px-0 sm:px-2 rounded border flex items-center justify-center gap-1 text-[11px] font-mono transition-colors cursor-pointer shrink-0 ${
                 isJsonEditorOpen
                   ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
                   : 'bg-zinc-900 hover:bg-zinc-800 border-cyan-400/25 text-cyan-300'
               }`}
             >
-              <Code2 className="w-3.5 h-3.5 shrink-0" />
+              <Code2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
               <span className="hidden sm:inline">JSON</span>
             </button>
           )}
@@ -2717,7 +2756,7 @@ export const CapyGameView: React.FC = () => {
             }}
             aria-expanded={isMenuOpen}
             aria-label={isMenuOpen ? 'Close World Menu' : 'Open World Menu'}
-            className={`${isAdvancedMode ? 'h-6 sm:h-7 px-1.5 sm:px-2' : 'h-7 px-2'} rounded border flex items-center gap-1 text-xs font-medium transition-colors cursor-pointer ${
+            className={`${isAdvancedMode ? 'h-6 sm:h-7 w-6 sm:w-auto px-0 sm:px-2' : 'h-7 px-2'} rounded border flex items-center justify-center gap-1 text-xs font-medium transition-colors cursor-pointer shrink-0 ${
               isMenuOpen
                 ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
                 : 'bg-zinc-900 hover:bg-zinc-800 border-white/12 text-zinc-100'
@@ -2756,9 +2795,9 @@ export const CapyGameView: React.FC = () => {
             }}
             title="Settings"
             aria-label="Open Settings"
-            className={`${isAdvancedMode ? 'w-6 h-6 sm:w-7 sm:h-7' : 'w-7 h-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0`}
+            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-7 sm:h-7' : 'w-7 h-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0`}
           >
-            <SettingsIcon className="w-3.5 h-3.5" />
+            <SettingsIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
           </button>
 
           {isAdvancedMode && (
@@ -2771,9 +2810,9 @@ export const CapyGameView: React.FC = () => {
               }}
               title="Universe Architecture Overview"
               aria-label="Open Overview"
-              className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0"
+              className="w-5 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0"
             >
-              <Info className="w-3.5 h-3.5" />
+              <Info className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
             </button>
           )}
 
@@ -2808,7 +2847,10 @@ export const CapyGameView: React.FC = () => {
               }`}
             >
               <Activity className="hidden sm:block w-3 h-3 shrink-0" />
-              <span>{perfLog.liveFps} FPS</span>
+              <span>
+                {perfLog.liveFps}
+                <span className="hidden sm:inline"> FPS</span>
+              </span>
               {perfLog.alertCount > 0 && (
                 <span
                   data-testid="fps-alert-count-badge"
@@ -2819,6 +2861,22 @@ export const CapyGameView: React.FC = () => {
               )}
             </button>
           )}
+
+          <button
+            type="button"
+            data-testid="toggle-fullscreen-btn"
+            onClick={handleToggleFullscreen}
+            aria-pressed={isFullscreen}
+            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+            aria-label={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-7 sm:h-7' : 'w-7 h-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 transition-colors cursor-pointer shrink-0`}
+          >
+            {isFullscreen ? (
+              <Minimize2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-sky-300" />
+            ) : (
+              <Maximize2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            )}
+          </button>
         </div>
       </nav>
 
@@ -7686,8 +7744,8 @@ export const CapyGameView: React.FC = () => {
       })()}
 
       {/* =====================================================================
-          RIGHT-HAND VERTICAL FLIGHT SPEED SLIDER (Forward + / Hover 0 / Back -)
-          Solid zinc surface (zero backdrop-blur) pinned cleanly on right margin.
+          SMALL BOTTOM-RIGHT FLIGHT SPEED SLIDER (Forward + / Hover 0 / Back -)
+          Compact & out of center sightlines; single non-duplicated speed control.
          ===================================================================== */}
       {universeScale.active &&
         !isFirstRunSetupOpen &&
@@ -7703,25 +7761,32 @@ export const CapyGameView: React.FC = () => {
           return (
             <aside
               data-testid="right-flight-speed-panel"
-              aria-label="Ship Forward and Back Speed Control"
-              className="fixed right-2 sm:right-3 top-1/2 -translate-y-1/2 z-20 pointer-events-auto flex flex-col items-center gap-1.5 px-1.5 py-2 rounded-2xl bg-zinc-950/92 border border-white/15 shadow-2xl text-zinc-100 select-none"
+              aria-label="Ship Forward and Back Speed Slider"
+              className={`fixed right-2 z-30 pointer-events-auto flex flex-col items-center gap-1 px-1 py-1.5 rounded-xl bg-zinc-950/90 border border-white/15 shadow-xl text-zinc-100 select-none ${
+                isAdvancedMode ? 'bottom-24 sm:bottom-20' : 'bottom-2'
+              }`}
             >
               <button
                 type="button"
-                data-testid="right-speed-fwd-btn"
-                onClick={() => managerRef.current?.stepFlightThrottle(1)}
-                title="Fly Faster / Forward"
-                aria-label="Increase Forward Flight Speed"
-                className="w-9 h-9 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-cyan-300 flex flex-col items-center justify-center text-[9px] font-semibold cursor-pointer"
+                data-testid="right-speed-stop-btn"
+                onClick={() => managerRef.current?.setForwardFlightSpeed(0)}
+                title="Tap to Stop / Hover"
+                aria-label="Hover and Stop Ship"
+                className={`w-10 px-1 py-0.5 rounded-md border text-[9px] font-mono tabular-nums text-center leading-tight cursor-pointer transition-colors ${
+                  speedReadout.mode === 'forward'
+                    ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+                    : speedReadout.mode === 'reverse'
+                      ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
+                      : 'bg-zinc-900 border-white/10 text-zinc-300'
+                }`}
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span className="leading-none">Fwd</span>
+                {speedReadout.shortLabel}
               </button>
 
-              <div className="relative w-9 h-32 sm:h-40 flex items-center justify-center">
+              <div className="relative w-8 h-20 flex items-center justify-center">
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute inset-y-2 left-1/2 -translate-x-1/2 w-2 rounded-full bg-gradient-to-b from-cyan-400/35 via-zinc-700 to-amber-400/35 border border-white/10"
+                  className="pointer-events-none absolute inset-y-1.5 left-1/2 -translate-x-1/2 w-1.5 rounded-full bg-gradient-to-b from-cyan-400/40 via-zinc-700 to-amber-400/40 border border-white/10"
                 />
                 <div
                   aria-hidden="true"
@@ -7740,44 +7805,15 @@ export const CapyGameView: React.FC = () => {
                   }}
                   aria-label="Ship Flight Speed Slider (Up Forward, Center Hover, Down Back)"
                   title={`Flight Speed: ${speedReadout.kidLabel}`}
-                  className="relative z-10 w-32 sm:w-36 h-4 -rotate-90 appearance-none bg-transparent cursor-pointer accent-cyan-300"
+                  className="relative z-10 w-20 h-4 -rotate-90 appearance-none bg-transparent cursor-pointer accent-cyan-300"
                 />
               </div>
-
-              <button
-                type="button"
-                data-testid="right-speed-stop-btn"
-                onClick={() => managerRef.current?.setForwardFlightSpeed(0)}
-                title="Click to Stop / Hover"
-                aria-label="Hover and Stop Ship"
-                className={`w-12 min-h-8 px-1 py-1 rounded-lg border text-[9px] font-mono tabular-nums text-center cursor-pointer transition-colors ${
-                  speedReadout.mode === 'forward'
-                    ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
-                    : speedReadout.mode === 'reverse'
-                      ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
-                      : 'bg-zinc-900 border-white/10 text-zinc-300'
-                }`}
-              >
-                {speedReadout.shortLabel}
-              </button>
-
-              <button
-                type="button"
-                data-testid="right-speed-back-btn"
-                onClick={() => managerRef.current?.stepFlightThrottle(-1)}
-                title="Fly Slower / Backward"
-                aria-label="Increase Backward Flight Speed"
-                className="w-9 h-9 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-amber-300 flex flex-col items-center justify-center text-[9px] font-semibold cursor-pointer"
-              >
-                <Minus className="w-3.5 h-3.5" />
-                <span className="leading-none">Back</span>
-              </button>
             </aside>
           );
         })()}
 
       {/* =====================================================================
-          FUTURE CAPYBARA CHRONO-VESSEL FLIGHT STRIP (Collapsible Bottom Controls)
+          FUTURE CAPYBARA CHRONO-VESSEL FLIGHT STRIP (Clean Landing CTA Only in Basic Mode)
           Crisp solid zinc surface (zero backdrop-blur) during cosmic voyage.
          ===================================================================== */}
       {universeScale.active && !isFirstRunSetupOpen && !webglError && !isJsonEditorOpen && !isSettingsOpen && (
@@ -7791,23 +7827,13 @@ export const CapyGameView: React.FC = () => {
             <div className="flex flex-nowrap items-center justify-center gap-1.5 whitespace-nowrap">
               <button
                 type="button"
-                data-testid="basic-throttle-slower-btn"
-                onClick={() => managerRef.current?.stepFlightThrottle(-1)}
-                title="Fly Slower or Backward Smoothly"
-                className="min-h-11 px-2.5 sm:px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-white/12 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
-              >
-                <Minus className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-                <span>Slower</span>
-              </button>
-              <button
-                type="button"
                 data-testid="chrono-land-pad-btn"
                 onClick={() => managerRef.current?.engageAutoLanding()}
-                className="min-h-11 px-3 sm:px-3.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                className="min-h-11 px-4 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
               >
                 Play on Island!
               </button>
-              {universeScale.bandId === 'leaf_fur_micro' ? (
+              {universeScale.bandId === 'leaf_fur_micro' && (
                 <button
                   type="button"
                   data-testid="shuffle-forest-specimen-btn"
@@ -7821,31 +7847,7 @@ export const CapyGameView: React.FC = () => {
                   <Shuffle className="w-3.5 h-3.5 shrink-0" />
                   <span>{universeScale.forestSpecimenLabel || 'Glade'}</span>
                 </button>
-              ) : (
-                universeScale.autoZoomDir !== 0 && (
-                  <button
-                    type="button"
-                    data-testid="basic-throttle-hover-btn"
-                    onClick={() => managerRef.current?.setForwardFlightSpeed(0)}
-                    title="Stop & Hover"
-                    aria-label="Stop and Hover"
-                    className="min-h-11 px-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 border border-cyan-400/45 text-xs font-mono tabular-nums cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
-                  >
-                    <Pause className="w-3 h-3 shrink-0" />
-                    <span>Hover</span>
-                  </button>
-                )
               )}
-              <button
-                type="button"
-                data-testid="basic-throttle-faster-btn"
-                onClick={() => managerRef.current?.stepFlightThrottle(1)}
-                title="Fly Faster Forward Smoothly"
-                className="min-h-11 px-2.5 sm:px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-white/12 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
-              >
-                <span>Faster</span>
-                <Plus className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
-              </button>
             </div>
           ) : (
             <>

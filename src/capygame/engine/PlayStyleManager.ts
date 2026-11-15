@@ -109,6 +109,7 @@ import {
   computeTerrainPitchAngle,
   evaluateRealisticLimbPose,
   solveBidirectionalSpinePass,
+  solveSpineVerticalCoupling,
 } from './physics/QuadrupedGaitSolver';
 import {
   GhostPoseScratch,
@@ -176,6 +177,7 @@ const _seamlessSkyColor = new THREE.Color();
 const _seamlessFocalPos = new THREE.Vector3();
 const _sanctuaryGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const _ghostWorldHit = new THREE.Vector3();
+const _spineSupportY = new Float32Array(52);
 const _cachedPoolSpec = { x: -8.8, z: 3.0, radius: 4.8 };
 const EMPTY_PROJECTED_MARKERS: ProjectedObjectMarker[] = [];
 
@@ -5414,13 +5416,26 @@ export class PlayStyleManager {
       seg.rotation.order = 'YXZ';
       seg.rotation.y = syaw;
 
-      // Align body segment pitch smoothly to terrain ramps / bridges when grounded
+      // Align body segment pitch smoothly to both terrain slope and 3D spinal jump arc!
       if (this.suspendedFootTestHeight === null) {
         const fwdX = Math.sin(syaw) * 0.48;
         const fwdZ = Math.cos(syaw) * 0.48;
         const fY = this.getSupportSurfaceY(sx + fwdX, sz + fwdZ);
         const rY = this.getSupportSurfaceY(sx - fwdX, sz - fwdZ);
-        seg.rotation.x = computeTerrainPitchAngle(fY, rY, 0.96, 0.38);
+        const terrainPitch = computeTerrainPitchAngle(fY, rY, 0.96, 0.38);
+        const prevIdx = nodeIdx - 1;
+        const nextIdx = Math.min(totalNodes - 1, nodeIdx + 1);
+        const spineHoriz = Math.max(
+          0.35,
+          Math.hypot(this.spineX[prevIdx] - this.spineX[nextIdx], this.spineZ[prevIdx] - this.spineZ[nextIdx])
+        );
+        const spineArcPitch = computeTerrainPitchAngle(
+          this.spineY[prevIdx],
+          this.spineY[nextIdx],
+          spineHoriz,
+          0.42
+        );
+        seg.rotation.x = Math.abs(spineArcPitch) > Math.abs(terrainPitch) ? spineArcPitch : terrainPitch;
       } else {
         seg.rotation.x = 0;
       }
@@ -5474,7 +5489,20 @@ export class PlayStyleManager {
         const fwdZ = Math.cos(cyaw) * 0.42;
         const fY = this.getSupportSurfaceY(cx + fwdX, cz + fwdZ);
         const rY = this.getSupportSurfaceY(cx - fwdX, cz - fwdZ);
-        this.dachshundCaboose.rotation.x = computeTerrainPitchAngle(fY, rY, 0.84, 0.38);
+        const terrainPitch = computeTerrainPitchAngle(fY, rY, 0.84, 0.38);
+        const prevIdx = Math.max(0, cabNode - 1);
+        const cabHoriz = Math.max(
+          0.35,
+          Math.hypot(this.spineX[prevIdx] - cx, this.spineZ[prevIdx] - cz)
+        );
+        const spineArcPitch = computeTerrainPitchAngle(
+          this.spineY[prevIdx],
+          cyPos,
+          cabHoriz,
+          0.42
+        );
+        this.dachshundCaboose.rotation.x =
+          Math.abs(spineArcPitch) > Math.abs(terrainPitch) ? spineArcPitch : terrainPitch;
       } else {
         this.dachshundCaboose.rotation.x = 0;
       }
@@ -5911,8 +5939,9 @@ export class PlayStyleManager {
           const zx = ZONE_LOCATIONS.sanctuary.x;
           const zz = ZONE_LOCATIONS.sanctuary.z;
 
-          // 1. Procedural Exponential Fruit Trees: ONLY clear when trunk/core crown strictly blocks [camera -> player]
-          //    Never trigger on peripheral or behind-camera trees so edge canopies & trunks stay solid.
+          // 1. Procedural Exponential Fruit Trees: fade cleanly whenever trunk OR overhanging canopy
+          //    enters the viewport corridor strictly between camera and player (even if trunk is beside lens).
+          //    Still keeps trees strictly AHEAD of/beyond the player (`horizProj >= horizLen - 0.15`) 100% opaque.
           for (let i = 0; i < this.sanctuaryTrees.length; i++) {
             const tr = this.sanctuaryTrees[i];
             const wx = zx + tr.x;
@@ -5920,41 +5949,44 @@ export class PlayStyleManager {
             const cr = tr.crownRadius;
             const th = tr.trunkHeight;
             const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
+            const envelopeR = cr * 1.32 + 1.6;
+            const canopyInFrontOfPlayer =
+              horizLen > 0.5 && horizProj > -envelopeR && horizProj < horizLen - 0.15;
             const rootedInFrontOfPlayer =
-              horizLen > 0.5 && horizProj > 0.35 && horizProj < horizLen - 0.35;
+              horizLen > 0.5 && horizProj > 0.15 && horizProj < horizLen - 0.15;
+
             const camCrownDx = wx - camX;
-            const camCrownDy = th * 0.92 - camY;
+            const camCrownDy = th * 0.88 - camY;
             const camCrownDz = wz - camZ;
-            const cameraCoreRadius = Math.min(cr * 0.34, 1.25);
+            const cameraCoreRadius = Math.max(1.85, cr * 1.15);
             const cameraInsideCanopy =
-              horizLen > 1.8 &&
-              horizProj > 0.25 &&
-              horizProj < horizLen - 1.2 &&
+              horizLen > 1.2 &&
+              horizProj > -cr * 1.05 &&
+              horizProj < horizLen - 0.3 &&
+              camY < th + cr * 1.18 &&
               camCrownDx * camCrownDx +
                 camCrownDy * camCrownDy +
                 camCrownDz * camCrownDz <=
                 cameraCoreRadius * cameraCoreRadius;
 
-            const trunkCheckRadius = Math.max(0.50, tr.trunkRadius * 1.35);
-            const crownCoreRadius = Math.min(cr * 0.42, 1.55);
+            const trunkCheckRadius = Math.max(0.55, tr.trunkRadius * 1.4);
+            const crownCoreRadius = Math.max(1.65, cr * 0.82);
             const blocks =
               cameraInsideCanopy ||
-              (rootedInFrontOfPlayer &&
+              (canopyInFrontOfPlayer &&
                 (blocksPlayerCorridor(wx, th * 0.34, wz, trunkCheckRadius) ||
-                  blocksPlayerCorridor(wx, th * 0.68, wz, Math.max(0.45, tr.trunkRadius * 1.28)) ||
-                  blocksPlayerCorridor(wx, th * 0.94, wz, crownCoreRadius)));
+                  blocksPlayerCorridor(wx, th * 0.68, wz, Math.max(0.5, tr.trunkRadius * 1.32)) ||
+                  blocksPlayerCorridor(wx, th * 0.92, wz, crownCoreRadius)));
 
             if (blocks) {
               this.markObjectHierarchyOccluded(tr.rootGroup);
-            } else if (rootedInFrontOfPlayer) {
-              const rCore = Math.min(cr * 0.42, 1.55);
-              if (
-                distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
-                rCore * rCore
-              ) {
-                tr.rootGroup.userData.__isSanctuaryTree = true;
-                _occluderCandidates.push(tr.rootGroup);
-              }
+            } else if (
+              (rootedInFrontOfPlayer || canopyInFrontOfPlayer) &&
+              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
+                envelopeR * envelopeR
+            ) {
+              tr.rootGroup.userData.__isSanctuaryTree = true;
+              _occluderCandidates.push(tr.rootGroup);
             }
           }
 
@@ -6113,32 +6145,55 @@ export class PlayStyleManager {
         }
 
         if (_occluderCandidates.length > 0) {
-          // Cast ONLY direct camera-to-player rays (0..6): head center, orange stack, left/right cheeks, upper crown, chin & torso.
-          // Rays stop 0.30m strictly BEFORE the player so geometry ahead of or offscreen from the player is NEVER hit.
+          // Cast direct camera-to-player rays (0..6) + foreground viewport sweep rays strictly closer
+          // than the player depth plane so ANY tree/object entering the viewport between camera and
+          // player fades cleanly while trees beyond/ahead of the player never fade.
           const TOTAL_PLAYER_RAYS = 7;
-          for (let r = 0; r < TOTAL_PLAYER_RAYS; r++) {
-            if (r === 6) {
-              _rayTargetPos.copy(_heroTorsoWorldPos);
-            } else {
-              _rayTargetPos.copy(_headWorldPos);
-              if (r === 1) {
-                _rayTargetPos.y += 0.36;
-              } else if (r === 2) {
-                _rayTargetPos.addScaledVector(_camRight, 0.28);
-              } else if (r === 3) {
-                _rayTargetPos.addScaledVector(_camRight, -0.28);
-              } else if (r === 4) {
-                _rayTargetPos.y += 0.68;
-              } else if (r === 5) {
-                _rayTargetPos.y -= 0.22;
-              }
-            }
+          const FOREGROUND_SWEEP_RAYS = 9;
+          const playerPlaneDepth = Math.max(0.6, Math.min(headDepth, torsoDepth));
 
-            _rayDir.subVectors(_rayTargetPos, this.camera.position);
-            const dist = _rayDir.length();
-            if (dist <= 0.45) continue;
-            _rayDir.multiplyScalar(1 / dist);
-            const maxRayDist = Math.max(0.12, dist - 0.3);
+          for (let r = 0; r < TOTAL_PLAYER_RAYS + FOREGROUND_SWEEP_RAYS; r++) {
+            let maxRayDist = 0;
+            if (r < TOTAL_PLAYER_RAYS) {
+              if (r === 6) {
+                _rayTargetPos.copy(_heroTorsoWorldPos);
+              } else {
+                _rayTargetPos.copy(_headWorldPos);
+                if (r === 1) {
+                  _rayTargetPos.y += 0.36;
+                } else if (r === 2) {
+                  _rayTargetPos.addScaledVector(_camRight, 0.28);
+                } else if (r === 3) {
+                  _rayTargetPos.addScaledVector(_camRight, -0.28);
+                } else if (r === 4) {
+                  _rayTargetPos.y += 0.68;
+                } else if (r === 5) {
+                  _rayTargetPos.y -= 0.22;
+                }
+              }
+              _rayDir.subVectors(_rayTargetPos, this.camera.position);
+              const dist = _rayDir.length();
+              if (dist <= 0.45) continue;
+              _rayDir.multiplyScalar(1 / dist);
+              maxRayDist = Math.max(0.12, dist - 0.3);
+            } else {
+              const fgIdx = r - TOTAL_PLAYER_RAYS;
+              const col = fgIdx % 3; // -1, 0, +1
+              const row = Math.floor(fgIdx / 3); // 0, 1, 2
+              const ndcX = (col - 1) * 0.54;
+              const ndcY = -0.56 + row * 0.34; // [-0.56, -0.22, +0.12] covers foreground bottom & center
+              _occProjectedNdc.set(ndcX, ndcY, 0.5).unproject(this.camera);
+              _rayDir.subVectors(_occProjectedNdc, this.camera.position);
+              const dLen = _rayDir.length();
+              if (dLen <= 0.001) continue;
+              _rayDir.multiplyScalar(1 / dLen);
+              const forwardDot =
+                _rayDir.x * _camForward.x +
+                _rayDir.y * _camForward.y +
+                _rayDir.z * _camForward.z;
+              if (forwardDot <= 0.25) continue;
+              maxRayDist = Math.max(0.15, (playerPlaneDepth - 0.45) / forwardDot);
+            }
 
             _occluderRaycaster.set(this.camera.position, _rayDir);
             _occluderRaycaster.near = 0.05;
@@ -6153,10 +6208,7 @@ export class PlayStyleManager {
               if (hitObj.userData?.ignoreCameraFade) continue;
               if (this.isDescendantOf(hitObj, this.heroCapy)) continue;
               const resolvedRoot = this.resolveOccluderRoot(hitObj);
-              if (resolvedRoot.userData?.__isDachshundSegment && r > 1) {
-                continue;
-              }
-              if (resolvedRoot.userData?.__isSanctuaryTree && r !== 0 && r !== 6) {
+              if (resolvedRoot.userData?.__isDachshundSegment && r > 1 && r < TOTAL_PLAYER_RAYS) {
                 continue;
               }
               this.markObjectHierarchyOccluded(resolvedRoot);
@@ -6841,7 +6893,8 @@ export class PlayStyleManager {
 
     if (this.cosmicStage === 'planet_descent') {
       this.cosmicDescentElapsed += dt;
-      const t = Math.min(1.0, this.cosmicDescentElapsed / 1.15);
+      const descentDuration = this.isSoftwareGl ? 0.5 : 1.15;
+      const t = Math.min(1.0, this.cosmicDescentElapsed / descentDuration);
       const ease = t * t * (3.0 - 2.0 * t);
 
       this.cosmicBuilder.getLandingBeaconWorldPosition(this.selectedLandingIndex, _tempVec3);
@@ -7359,16 +7412,14 @@ export class PlayStyleManager {
       this.spineYaw[0] = this.heroYaw;
     }
 
-    // Smooth vertical support tracking along trailing spine nodes (leader node vertical physics already solved by Rapier!)
+    // Compute clean ground/water support heights & couple 3D spine vertically so jumps stay attached!
     for (let n = 0; n < totalNodes; n++) {
-      if ((this.isWalkingBackward && n === cabNode) || (!this.isWalkingBackward && n === 0)) {
-        continue;
-      }
       if (this.suspendedFootTestHeight !== null) {
+        _spineSupportY[n] = this.suspendedFootTestHeight;
         this.spineY[n] = this.suspendedFootTestHeight;
       } else {
         const surfY = this.getSupportSurfaceY(this.spineX[n], this.spineZ[n]);
-        const groundY =
+        _spineSupportY[n] =
           this.homePool &&
           Math.hypot(
             this.spineX[n] - this.homePool.centerX,
@@ -7379,13 +7430,26 @@ export class PlayStyleManager {
             : surfY < OPEN_OCEAN_SURFACE_Y + 0.12
               ? Math.max(surfY, OPEN_OCEAN_SURFACE_Y - 0.34)
               : surfY;
-        const neighborIdx = this.isWalkingBackward ? Math.min(cabNode, n + 1) : Math.max(0, n - 1);
-        const targetY = groundY * 0.68 + this.spineY[neighborIdx] * 0.32;
-        this.spineY[n] += (targetY - this.spineY[n]) * Math.min(1, dt * 16);
       }
     }
 
-    // 4-Iteration Bidirectional Solid-Rod & Multi-Body Non-Clipping Solver
+    if (this.suspendedFootTestHeight === null) {
+      solveSpineVerticalCoupling(
+        this.spineX,
+        this.spineY,
+        this.spineZ,
+        _spineSupportY,
+        totalNodes,
+        this.isWalkingBackward,
+        dt,
+        DACHSHUND_SEGMENT_SPACING,
+        SANE_HERO_LINK_DIST,
+        SANE_CABOOSE_LINK_DIST,
+        0.44
+      );
+    }
+
+    // 4-Iteration Bidirectional 3D Solid-Rod & Multi-Body Non-Clipping Solver
     for (let iter = 0; iter < 4; iter++) {
       // Pass A: Bidirectional Inextensible Solid-Rod Distance + Anti-Jackknife Bend-Angle Clamping
       solveBidirectionalSpinePass(
@@ -7547,6 +7611,22 @@ export class PlayStyleManager {
           }
         }
       }
+    }
+
+    if (this.suspendedFootTestHeight === null) {
+      solveSpineVerticalCoupling(
+        this.spineX,
+        this.spineY,
+        this.spineZ,
+        _spineSupportY,
+        totalNodes,
+        this.isWalkingBackward,
+        dt,
+        DACHSHUND_SEGMENT_SPACING,
+        SANE_HERO_LINK_DIST,
+        SANE_CABOOSE_LINK_DIST,
+        0.44
+      );
     }
 
     // Write back constrained Hero position & aligned forward orientation from spine node 0!
@@ -8287,6 +8367,24 @@ export class PlayStyleManager {
     const prevLeaderX = this.isWalkingBackward ? this.spineX[cabNode] : this.heroLocalPos.x;
     const prevLeaderZ = this.isWalkingBackward ? this.spineZ[cabNode] : this.heroLocalPos.z;
 
+    const airborneInSanctuary =
+      !this.isGrounded && !this.isSwimmingInPool && this.suspendedFootTestHeight === null;
+    if (airborneInSanctuary) {
+      // Subtle aerodynamic drag + gentle mid-air directional control while preserving forward leap arc
+      const airDamp = Math.exp(-0.85 * dt);
+      this.heroVelocity.x *= airDamp;
+      this.heroVelocity.z *= airDamp;
+      if (hasWalkIntent && !this.isWalkingBackward) {
+        const steerYaw = this.settings.cameraFollowBehind
+          ? this.heroYaw - this.moveInput.x * 1.4 * turnSens * dt
+          : Math.atan2(this.moveInput.x, this.moveInput.z);
+        this.heroYaw = steerYaw;
+        this.heroCapy.rotation.y = steerYaw;
+        this.heroVelocity.x += Math.sin(steerYaw) * speed * 1.6 * dt;
+        this.heroVelocity.z += Math.cos(steerYaw) * speed * 1.6 * dt;
+      }
+    }
+
     if (this.isWalkingBackward) {
       // BACKWARD WALKING: Back hindquarters (Caboose) IS the leader! Steer & propel cabNode directly.
       if (Math.abs(this.moveInput.x) > 0.02 && tractionMult > 0) {
@@ -8344,24 +8442,24 @@ export class PlayStyleManager {
       const hasWings = this.stats.activeMutations.includes('wings');
       const heroJumpScale =
         (this.activeHeroSpec?.jumpMultiplier ?? 1.0) *
-        (hasWings ? 1.18 : 1.0) *
+        (hasWings ? 1.15 : 1.0) *
         (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
       const wasAirborne = !this.isGrounded;
       const prevVy = this.heroVelocity.y;
 
       let jumpImpulseY = 0;
       if (this.isJumping) {
-        if (this.groundedFeetCount > 0 || this.isSwimmingInPool) {
+        if (this.groundedFeetCount > 0 || this.isSwimmingInPool || this.isGrounded) {
+          // Crisp realistic hop (~1.15m peak under g=24) with true forward leap propulsion along heading!
           jumpImpulseY =
-            (10.5 + (this.stats.upgrades.bounciness - 1) * 1.2) * heroJumpScale;
-          if (hasWalkIntent) {
-            const launchYaw = this.isWalkingBackward ? this.spineYaw[cabNode] : this.heroYaw;
-            const launchSpeed = speed * (this.isWalkingBackward ? -0.65 : 0.85);
-            this.heroVelocity.x = Math.sin(launchYaw) * launchSpeed;
-            this.heroVelocity.z = Math.cos(launchYaw) * launchSpeed;
-          }
+            (7.4 + Math.min(1.6, (this.stats.upgrades.bounciness - 1) * 0.45)) * heroJumpScale;
+          const launchYaw = this.isWalkingBackward ? this.spineYaw[cabNode] : this.heroYaw;
+          const leapDir = this.isWalkingBackward ? -1 : 1;
+          const leapSpeed = hasWalkIntent ? Math.max(speed * 1.18, 7.2) : Math.max(speed * 0.85, 5.5);
+          this.heroVelocity.x = Math.sin(launchYaw) * leapSpeed * leapDir;
+          this.heroVelocity.z = Math.cos(launchYaw) * leapSpeed * leapDir;
           this.isGrounded = false;
-          this.heroSoftSquashVel -= 1.6;
+          this.heroSoftSquashVel -= 1.5;
           AudioService.playJump();
         }
         this.isJumping = false;
@@ -8424,7 +8522,13 @@ export class PlayStyleManager {
           }
         }
         if (physStep.trampolineBoostY > 0) {
-          this.heroVelocity.y = Math.max(16.5, physStep.trampolineBoostY);
+          // Gentle joyful Sanctuary mushroom hop (~1.6–2.3m high) with forward leap arc (zero sky-rocket disconnect)
+          const clampedHopVy = Math.min(10.4, Math.max(8.0, physStep.trampolineBoostY * 0.56));
+          this.heroVelocity.y = clampedHopVy;
+          const launchYaw = this.isWalkingBackward ? this.spineYaw[cabNode] : this.heroYaw;
+          const leapDir = this.isWalkingBackward ? -1 : 1;
+          this.heroVelocity.x = Math.sin(launchYaw) * Math.max(speed * 0.92, 5.8) * leapDir;
+          this.heroVelocity.z = Math.cos(launchYaw) * Math.max(speed * 0.92, 5.8) * leapDir;
           this.isGrounded = false;
           this.heroSoftSquashVel -= 1.8;
           AudioService.playJump();
@@ -8573,8 +8677,17 @@ export class PlayStyleManager {
       const fwdZ = Math.cos(this.heroYaw) * 0.45;
       const fY = this.getSupportSurfaceY(this.heroLocalPos.x + fwdX, this.heroLocalPos.z + fwdZ);
       const rY = this.getSupportSurfaceY(this.heroLocalPos.x - fwdX, this.heroLocalPos.z - fwdZ);
+      const terrainPitch = computeTerrainPitchAngle(fY, rY, 0.9, 0.38);
+      const neckHoriz = Math.max(
+        0.35,
+        Math.hypot(this.spineX[0] - this.spineX[1], this.spineZ[0] - this.spineZ[1])
+      );
+      const jumpPitch =
+        !this.isGrounded && Math.abs(this.heroVelocity.y) > 0.3
+          ? THREE.MathUtils.clamp(-this.heroVelocity.y * 0.038, -0.34, 0.34)
+          : computeTerrainPitchAngle(this.spineY[0], this.spineY[1], neckHoriz, 0.36);
       this.heroCapy.rotation.order = 'YXZ';
-      this.heroCapy.rotation.x = computeTerrainPitchAngle(fY, rY, 0.9, 0.38);
+      this.heroCapy.rotation.x = Math.abs(jumpPitch) > Math.abs(terrainPitch) ? jumpPitch : terrainPitch;
     } else {
       this.heroCapy.rotation.x = 0;
     }

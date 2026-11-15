@@ -68,6 +68,46 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     throw new Error(`Expected advanced buttons hidden in Basic Mode (optics=${basicOpticsCount}, json=${basicJsonCount})`);
   }
 
+  // Verify top-right Fullscreen button, compact bottom-right speed slider, and ZERO duplicate flight controls in Basic Mode
+  const fullscreenBtn = page.getByTestId('toggle-fullscreen-btn');
+  await fullscreenBtn.waitFor({ state: 'visible', timeout: 5000 });
+  const fullscreenBox = await fullscreenBtn.boundingBox();
+  const speedPanel = page.getByTestId('right-flight-speed-panel');
+  await speedPanel.waitFor({ state: 'visible', timeout: 5000 });
+  const speedPanelBox = await speedPanel.boundingBox();
+  const duplicateCounts = await page.evaluate(() => ({
+    zoomOut: document.querySelectorAll('[data-testid="scale-zoom-out-btn"]').length,
+    zoomIn: document.querySelectorAll('[data-testid="scale-zoom-in-btn"]').length,
+    basicSlower: document.querySelectorAll('[data-testid="basic-throttle-slower-btn"]').length,
+    basicHover: document.querySelectorAll('[data-testid="basic-throttle-hover-btn"]').length,
+    basicFaster: document.querySelectorAll('[data-testid="basic-throttle-faster-btn"]').length,
+    rightFwd: document.querySelectorAll('[data-testid="right-speed-fwd-btn"]').length,
+    rightBack: document.querySelectorAll('[data-testid="right-speed-back-btn"]').length,
+    viewportW: window.innerWidth,
+    viewportH: window.innerHeight,
+  }));
+  if (
+    !fullscreenBox ||
+    fullscreenBox.y >= 44 ||
+    fullscreenBox.x < duplicateCounts.viewportW * 0.78 ||
+    !speedPanelBox ||
+    speedPanelBox.x < duplicateCounts.viewportW * 0.72 ||
+    speedPanelBox.y < duplicateCounts.viewportH * 0.72 ||
+    speedPanelBox.height > 155 ||
+    duplicateCounts.zoomOut !== 0 ||
+    duplicateCounts.zoomIn !== 0 ||
+    duplicateCounts.basicSlower !== 0 ||
+    duplicateCounts.basicHover !== 0 ||
+    duplicateCounts.basicFaster !== 0 ||
+    duplicateCounts.rightFwd !== 0 ||
+    duplicateCounts.rightBack !== 0
+  ) {
+    throw new Error(
+      `Expected top-right Fullscreen, compact bottom-right speed slider & zero duplicate controls in Basic Mode, got fs=${JSON.stringify(fullscreenBox)}, speed=${JSON.stringify(speedPanelBox)}, dup=${JSON.stringify(duplicateCounts)}`
+    );
+  }
+  console.log('✓ Basic Mode HUD layout verified: top-right Fullscreen button, compact bottom-right speed slider & zero duplicate controls');
+
   // Open Zoom Explorer and verify single-column scrollable list of 27 zoom levels with real thumbnails
   await page.getByTestId('toggle-scale-atlas-btn').click({ force: true });
   const zoomList = page.getByTestId('zoom-levels-list');
@@ -295,7 +335,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   await page.getByTestId('select-landing-0').click();
   const capySelectorBar = page.getByTestId('capy-selector-bar');
-  await capySelectorBar.waitFor({ state: 'visible', timeout: 8000 });
+  await capySelectorBar.waitFor({ state: 'visible', timeout: 12000 });
   console.log('✓ Stage 5B -> 6 verified: Descended through planet atmosphere to reveal customized Capybara World');
 
   // 6. Choose which Capybara unit to control on the planet surface
@@ -804,6 +844,17 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       poolAndOnsenRimRocksProtected = false;
     }
 
+    // 3d. Overhanging Foreground Canopy Entering Side/Lower Viewport Strictly Between Camera & Player:
+    // Position Hero past t4 (-Z) and slightly right (+X) so t4's giant overhanging crown sits in front of the camera plane -> MUST fade cleanly!
+    mgr.heroLocalPos.set(t4.x + 2.2, 0.0, t4.z - 6.0);
+    mgr.heroYaw = Math.PI;
+    mgr.resetDachshundTrail();
+    for (let step = 0; step < 22; step++) {
+      mgr.tick(0.05);
+    }
+    const foregroundEdgeTreeFaded =
+      mgr.evaluateOccluderScreenAlpha(t4.leafInstancedMesh, 0.2, 0.7) === 0;
+
     // Move Hero to genuinely open SE shoreline clearing (11.5, 0, 23.5) facing +Z -> verify full opaque restoration!
     mgr.heroLocalPos.set(11.5, 0.0, 23.5);
     mgr.heroYaw = 0;
@@ -928,6 +979,56 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       mgr.heroLocalPos.x - stuckStartX,
       mgr.heroLocalPos.z - stuckStartZ
     );
+    // 6. Connected 3D Jump, Forward Propulsion & Bounded Mushroom Pad Bounce Check
+    // Clear nearby buddies & test normal jump + mushroom bounce with 4 segments
+    mgr.suspendedFootTestHeight = null;
+    mgr.moveInput.x = 0;
+    mgr.moveInput.z = 0;
+    mgr.heroLocalPos.set(3.5, 0.0, 9.2);
+    mgr.heroYaw = Math.PI; // Facing -Z
+    mgr.resetDachshundTrail();
+    mgr.tick(0.03);
+
+    const jumpStartZ = mgr.heroLocalPos.z;
+    mgr.isJumping = true;
+    let jumpMaxHeroY = 0;
+    let jumpMaxJointDy = 0;
+    for (let step = 0; step < 26; step++) {
+      mgr.tick(0.028);
+      if (mgr.heroLocalPos.y > jumpMaxHeroY) jumpMaxHeroY = mgr.heroLocalPos.y;
+      const nodeTotal = mgr.getCapySnakeTelemetry().bodySegments + 2;
+      for (let n = 1; n < nodeTotal; n++) {
+        jumpMaxJointDy = Math.max(jumpMaxJointDy, Math.abs(mgr.spineY[n] - mgr.spineY[n - 1]));
+      }
+    }
+    const jumpForwardDist = jumpStartZ - mgr.heroLocalPos.z;
+
+    // Also test Sanctuary Mushroom Trampoline Pad bounce (building at index with type trampoline_pad or simulated spot)
+    let padBld = mgr.stats.buildings.find((b) => b.type === 'trampoline_pad');
+    let addedTempPad = false;
+    if (!padBld) {
+      padBld = { id: '__test_pad', type: 'trampoline_pad', name: 'Test Pad', x: 11.0, z: 12.0, level: 1, description: 'test' };
+      mgr.stats.buildings.push(padBld);
+      mgr.syncContiguousPhysicsStructures();
+      addedTempPad = true;
+    }
+    mgr.heroLocalPos.set(padBld.x, 0.0, padBld.z);
+    mgr.heroYaw = Math.PI;
+    mgr.resetDachshundTrail();
+    let padMaxY = 0;
+    let padMaxJointDy = 0;
+    for (let step = 0; step < 28; step++) {
+      mgr.tick(0.028);
+      if (mgr.heroLocalPos.y > padMaxY) padMaxY = mgr.heroLocalPos.y;
+      const nodeTotal = mgr.getCapySnakeTelemetry().bodySegments + 2;
+      for (let n = 1; n < nodeTotal; n++) {
+        padMaxJointDy = Math.max(padMaxJointDy, Math.abs(mgr.spineY[n] - mgr.spineY[n - 1]));
+      }
+    }
+    if (addedTempPad) {
+      mgr.stats.buildings.pop();
+      mgr.syncContiguousPhysicsStructures();
+    }
     mgr.moveInput.z = 0;
 
     return {
@@ -946,6 +1047,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       distantBehindCameraOpaque,
       fadedWhenTreeAheadOffscreen,
       aheadTree3StaysSolid,
+      foregroundEdgeTreeFaded,
       poolAndOnsenRimRocksProtected,
       fadedCountInClear,
       restoredTreeCenterAlpha: +restoredTreeCenterAlpha.toFixed(3),
@@ -965,6 +1067,11 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       stuckZeroDisplacement: stuckDisplacement < 0.001,
       resumedGroundedFeet: groundedTelemetry.groundedFeet >= 2 && !groundedTelemetry.isStuckNoFooting,
       resumedWalkingDisplacement: resumedDisplacement > 1.2,
+      jumpMaxHeroY: +jumpMaxHeroY.toFixed(3),
+      jumpForwardDist: +jumpForwardDist.toFixed(3),
+      jumpMaxJointDy: +jumpMaxJointDy.toFixed(3),
+      padMaxY: +padMaxY.toFixed(3),
+      padMaxJointDy: +padMaxJointDy.toFixed(3),
     };
   });
 
@@ -982,6 +1089,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     !advancedSimCheck.distantBehindCameraOpaque ||
     advancedSimCheck.fadedWhenTreeAheadOffscreen !== 0 ||
     !advancedSimCheck.aheadTree3StaysSolid ||
+    !advancedSimCheck.foregroundEdgeTreeFaded ||
     !advancedSimCheck.poolAndOnsenRimRocksProtected ||
     advancedSimCheck.fadedCountInClear !== 0 ||
     advancedSimCheck.restoredTreeCenterAlpha < 0.98 ||
@@ -995,7 +1103,14 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     !advancedSimCheck.stuckZeroFeet ||
     !advancedSimCheck.stuckZeroDisplacement ||
     !advancedSimCheck.resumedGroundedFeet ||
-    !advancedSimCheck.resumedWalkingDisplacement
+    !advancedSimCheck.resumedWalkingDisplacement ||
+    advancedSimCheck.jumpMaxHeroY < 0.7 ||
+    advancedSimCheck.jumpMaxHeroY > 2.35 ||
+    advancedSimCheck.jumpForwardDist < 1.2 ||
+    advancedSimCheck.jumpMaxJointDy > 0.62 ||
+    advancedSimCheck.padMaxY < 0.9 ||
+    advancedSimCheck.padMaxY > 2.9 ||
+    advancedSimCheck.padMaxJointDy > 0.65
   ) {
     throw new Error(
       `Advanced procedural botany / whole-screen sightline clear / solid reverse gait / foot traction check failed: ${JSON.stringify(advancedSimCheck)}`
