@@ -8,7 +8,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     'Launching Playwright E2E test for Capy Universe 3D (N-Body Galaxy Formation, Star Nucleosynthesis, High-Detail Dynamic 60 FPS Capybara LOD & Dachshund Capy-Snake)...'
   );
   const defaultExec = chromium.executablePath();
-  const fallbackExec = '/ms-playwright/chrome-headless-shell-linux64/chrome-headless-shell';
+  const fallbackExec =
+    '/ms-playwright/chromium_headless_shell-1247/chrome-headless-shell-linux64/chrome-headless-shell';
   const executablePath = fs.existsSync(defaultExec)
     ? undefined
     : fs.existsSync(fallbackExec)
@@ -147,8 +148,19 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     throw new Error(`Expected top-anchored info dropdown directly below top bar (y<=60px), got y=${hudBox?.y}`);
   }
   const initialStage = await cosmicHud.getAttribute('data-cosmic-stage');
-  if (initialStage !== 'singularity') {
-    throw new Error(`Expected initial cosmic stage 'singularity', got '${initialStage}'`);
+  const startedSeamless = await page.evaluate(() => Boolean(window.__capyManager?.getUniverseScaleTelemetry().active));
+  if (initialStage !== 'playing' || !startedSeamless) {
+    throw new Error(
+      `Expected Unified Chrono-Vessel Continuum startup (stage='playing', seamless=true), got stage='${initialStage}', seamless=${startedSeamless}`
+    );
+  }
+  await page.evaluate(() => {
+    window.__capyManager?.setCosmicStage('singularity');
+  });
+  await page.waitForTimeout(80);
+  const singularityStage = await cosmicHud.getAttribute('data-cosmic-stage');
+  if (singularityStage !== 'singularity') {
+    throw new Error(`Expected 'singularity' stage after setCosmicStage('singularity'), got '${singularityStage}'`);
   }
 
   // Verify random persistent star seed selection at T=0
@@ -210,18 +222,27 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.getByTestId('select-galaxy-1').waitFor({ state: 'visible', timeout: 6000 });
   console.log('✓ Stage 2 verified: 64 Spiral Galaxies formed with persistent tracked star & heavy-element enrichment');
 
-  // 4. Test Free 3D Cosmic Flight with Touch-Drag before selecting a Galaxy
+  // 4. Test Free 3D Cosmic Flight with Genuine Mobile Touch-Drag before selecting a Galaxy
+  const cdpSession = await context.newCDPSession(page);
+  const dispatchTouchStep = async (type, x, y) => {
+    await cdpSession.send('Input.dispatchTouchEvent', {
+      type,
+      touchPoints: type === 'touchEnd' ? [] : [{ x: Math.round(x), y: Math.round(y), id: 1 }],
+    });
+  };
   const cBox = await canvasContainer.boundingBox();
   if (!cBox) throw new Error('Missing 3D canvas bounding box');
   const startX = cBox.x + cBox.width * 0.45;
   const startY = cBox.y + cBox.height * 0.78;
 
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX + 45, startY - 35, { steps: 5 });
+  await dispatchTouchStep('touchStart', startX, startY);
+  for (let step = 1; step <= 5; step++) {
+    await dispatchTouchStep('touchMove', startX + (45 * step) / 5, startY - (35 * step) / 5);
+    await page.waitForTimeout(20);
+  }
   const joystick = page.getByTestId('touch-joystick-indicator');
   await joystick.waitFor({ state: 'visible', timeout: 3000 });
-  await page.mouse.up();
+  await dispatchTouchStep('touchEnd', startX + 45, startY - 35);
   await joystick.waitFor({ state: 'hidden', timeout: 3000 });
   console.log('✓ Free 3D cosmic flight via touch-drag verified');
 
@@ -1016,13 +1037,15 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   );
 
   // 7. Verify Mobile Touch-and-Drag Steering & Tap-to-Jump on Planet Surface
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX + 45, startY - 45, { steps: 5 });
+  await dispatchTouchStep('touchStart', startX, startY);
+  for (let step = 1; step <= 5; step++) {
+    await dispatchTouchStep('touchMove', startX + (45 * step) / 5, startY - (45 * step) / 5);
+    await page.waitForTimeout(20);
+  }
   await joystick.waitFor({ state: 'visible', timeout: 3000 });
-  await page.mouse.up();
+  await dispatchTouchStep('touchEnd', startX + 45, startY - 45);
   await joystick.waitFor({ state: 'hidden', timeout: 3000 });
-  await page.mouse.click(startX, startY);
+  await page.touchscreen.tap(startX, startY);
   console.log('✓ Mobile touch-and-drag steering and tap-to-jump verified on planet surface');
 
   // 8. Open the Top-Right Menu Button to reveal Progressive Unlocks & Game Dock
@@ -1363,15 +1386,15 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   if (
     !multiScaleSweep ||
-    multiScaleSweep.totalCheckpoints !== 21 ||
+    multiScaleSweep.totalCheckpoints !== 27 ||
     !multiScaleSweep.allMatched ||
     !multiScaleSweep.forestSurfaceVerified ||
     multiScaleSweep.woodlandHerdCount < 5 ||
-    multiScaleSweep.maxLogReached !== 28 ||
+    multiScaleSweep.maxLogReached !== 30 ||
     multiScaleSweep.minLogReached !== -35
   ) {
     throw new Error(
-      `Seamless 63-Orders-of-Magnitude Universe Simulator check failed: ${JSON.stringify(multiScaleSweep)}`
+      `Seamless 65-Orders-of-Magnitude Universe Simulator check failed: ${JSON.stringify(multiScaleSweep)}`
     );
   }
 
@@ -1409,7 +1432,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     throw new Error(`Expected 'playing' stage after landing in Capybara Forest, got '${stageAfterLand}'`);
   }
   console.log(
-    `✓ Seamless 63-Orders-of-Magnitude Universe Simulator & Auto Surface Handover verified across all 21 bands (10^+28m Big Bang -> Capybara Forest [${multiScaleSweep.woodlandHerdCount} grove nodes] -> 10^-35m Planck Scale)`
+    `✓ Seamless 65-Orders-of-Magnitude Universe Simulator & Auto Surface Handover verified across all 27 bands (10^+30m Multiverse -> Capybara Forest [${multiScaleSweep.woodlandHerdCount} grove nodes] -> 10^-35m Planck Scale)`
   );
 
   // 14C. Verify 1:1 Default Physical Scale, Zero 10^+13.7m Pillar Collision, Unlockable Object Finder Markers & Reality Rescaler!
@@ -1423,8 +1446,10 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     mgr.setSeamlessLogScale(13.7, true);
     mgr.tick(0.09);
     const telAt13_7 = mgr.getUniverseScaleTelemetry();
-    // Index 6 = stellar_nurseries (+16.63); at 13.7 under 1:1 (deltaLog = +2.93 > 1.16), it MUST be invisible!
-    const nurseryGroup = mgr.seamlessUniverse.rootGroup.children[6];
+    // Nebulas (+17.2): at 13.7 under 1:1 (deltaLog = +3.5 > 1.16), it MUST be invisible!
+    const nurseryGroup = mgr.seamlessUniverse.rootGroup.children.find(
+      (g) => g.name === 'ScaleLayer_nebulas'
+    );
     // Award DNA so player can unlock both instruments via real HUD buttons
     mgr.stats.dna = Math.max(mgr.stats.dna, 80);
     mgr.callbacks.onProgressEarned?.(80, 'sanctuary', 10);

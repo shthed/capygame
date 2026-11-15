@@ -96,15 +96,17 @@ async function runPwaOfflineTest() {
     console.log(`   Cache Storage populated (${cacheDetails.cacheName}: ${cacheDetails.count} entries).`);
 
     console.log('4. Disconnecting network and reloading completely offline...');
+    await page.waitForTimeout(400);
     await context.setOffline(true);
     await page.reload({ waitUntil: 'load' });
     await page.getByTestId('unified-top-bar').waitFor({ state: 'visible', timeout: 15000 });
     await page.getByTestId('capygame-canvas-container').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(400);
     console.log('   CapyGame 3D HUD and WebGL canvas loaded offline via Service Worker.');
 
     await context.setOffline(false);
     if (consoleErrors.length > 0) {
-      console.warn('Console errors recorded:', consoleErrors);
+      throw new Error(`Console errors recorded during PWA test: ${JSON.stringify(consoleErrors)}`);
     }
     console.log('[PWA Test] PASSED.');
   } finally {

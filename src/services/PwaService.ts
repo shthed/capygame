@@ -90,7 +90,13 @@ class PwaServiceClass {
       if ('caches' in window) {
         this.cacheWarmPromise = (async () => {
           try {
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+              return;
+            }
             await navigator.serviceWorker.ready;
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+              return;
+            }
             const scopePath = new URL('./', window.location.href).pathname;
             const cacheName = `capygame-cache-v2:${scopePath}`;
             const cache = await caches.open(cacheName);
@@ -122,7 +128,10 @@ class PwaServiceClass {
 
             await Promise.allSettled(
               Array.from(urlSet).map(async (u) => {
-                const existing = await cache.match(u);
+                if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+                  return;
+                }
+                const existing = await cache.match(u, { ignoreVary: true });
                 if (existing) return;
                 const resp = await fetch(u, { cache: 'force-cache' });
                 if (resp && resp.status === 200) {
