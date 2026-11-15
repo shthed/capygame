@@ -131,7 +131,7 @@ const PLAY_STYLE_LIST: Array<{
     compass: 'Center (0, 0)',
     accentColor: '#38bdf8',
     description:
-      'Collect oranges matching the color perched on your head to grow your Capybara body like a Dachshund snake, place structures, or enter the 4 outer portals.',
+      'Collect oranges matching the 1 orange on your head to grow longer Capybara-Dachshund back segments (with each collected fruit sitting on your back), place structures, or explore all 4 outer islands.',
     requiredDna: 0,
   },
   {

@@ -100,6 +100,17 @@ import {
   sampleContiguousGroundY,
 } from './physics/ContiguousWorldTopology';
 import {
+  RealisticLimbPose,
+  SANE_CABOOSE_LINK_DIST,
+  SANE_HERO_LINK_DIST,
+  SANE_SEGMENT_SPACING,
+  advanceDisplacementCoupledGaitPhase,
+  computeLinearDachshundState,
+  computeTerrainPitchAngle,
+  evaluateRealisticLimbPose,
+  solveBidirectionalSpinePass,
+} from './physics/QuadrupedGaitSolver';
+import {
   GhostPoseScratch,
   QuantizedGhostRun,
   YuzuGhostRecorder,
@@ -170,7 +181,7 @@ const EMPTY_PROJECTED_MARKERS: ProjectedObjectMarker[] = [];
 
 const SNAKE_PATH_CAPACITY = 800;
 const MAX_DACHSHUND_SEGMENTS = 48;
-const DACHSHUND_SEGMENT_SPACING = 0.66;
+const DACHSHUND_SEGMENT_SPACING = SANE_SEGMENT_SPACING;
 const MAX_SPINE_NODES = MAX_DACHSHUND_SEGMENTS + 2;
 const MAX_SPINE_BEND_RAD = 0.52; // ~30 deg max articulation bend so backing up never jackknifes
 const MAX_SOLID_SQUASH = 0.06; // Solid body: <= 6% slight compression on impact
@@ -573,9 +584,18 @@ export class PlayStyleManager {
   private bestSnakeSegments: number = 1;
   private orangesCollectedCount: number = 0;
   private fruitsCarried: number = 1; // Always >= 1 (base signature Head Orange)
-  private eatenFruitMass: number = 0; // Drives logarithmic body length & mouth capacity
-  private logarithmicLengthMeters: number = 1.65;
+  private eatenFruitMass: number = 0; // Accumulated fruit mass for mouth sizing
+  private logarithmicLengthMeters: number = 3.43;
   private activeHeadOrangeIndex: number = 0;
+  private lastSanctuaryLeaderDisp: number = 0;
+  private _limbPoseScratch: RealisticLimbPose = {
+    hipPitch: 0,
+    kneePitch: 0,
+    anklePitch: 0,
+    hipDropFactor: 1,
+    suspensionBounce: 0,
+    pelvicRoll: 0,
+  };
   private snakePathX = new Float32Array(SNAKE_PATH_CAPACITY);
   private snakePathY = new Float32Array(SNAKE_PATH_CAPACITY);
   private snakePathZ = new Float32Array(SNAKE_PATH_CAPACITY);
@@ -1406,7 +1426,10 @@ export class PlayStyleManager {
         exposureScale,
         this.proceduralConfig.world.dayCycleSpeed ?? 1.0,
         this.proceduralConfig.graphics.fogDensity ?? 1.0,
-        isPerfMode
+        isPerfMode,
+        this.camera.position.x,
+        this.camera.position.y,
+        this.camera.position.z
       );
       this.updateBioluminescentNightGlow();
       if (manualTimeChanged && this.gpuEngine) {
@@ -1466,10 +1489,11 @@ export class PlayStyleManager {
 
     if (this.seamlessUniverse) {
       const showForestGrove =
-        !isPerfMode &&
-        !this.isSoftwareGl &&
-        ((this.seamlessZoomActive && this.currentLogScaleMeters >= -0.85 && this.currentLogScaleMeters <= 3.1) ||
-          (!this.seamlessZoomActive && this.cosmicStage === 'playing' && this.currentMode === 'sanctuary'));
+        isSurfaceVisible &&
+        ((this.seamlessZoomActive &&
+          this.currentLogScaleMeters >= -0.85 &&
+          this.currentLogScaleMeters <= 3.1) ||
+          (!this.seamlessZoomActive && this.cosmicStage === 'playing'));
       this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
       this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
     }
@@ -1785,9 +1809,8 @@ export class PlayStyleManager {
     this.fallGuysGroup.visible = true;
     this.fallGuysGroup.matrixWorldAutoUpdate = true;
     if (this.seamlessUniverse) {
-      const showGrove = !this.isSoftwareGl;
-      this.seamlessUniverse.forestGroveGroup.visible = showGrove;
-      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showGrove;
+      this.seamlessUniverse.forestGroveGroup.visible = true;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = true;
     }
 
     this.heroVelocity.set(0, 0, 0);
@@ -2217,8 +2240,7 @@ export class PlayStyleManager {
     }
     if (this.seamlessUniverse) {
       this.seamlessUniverse.hide();
-      const showForestGrove =
-        stage === 'playing' && this.currentMode === 'sanctuary' && !this.isSoftwareGl;
+      const showForestGrove = stage === 'playing';
       this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
       this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
     }
@@ -4614,19 +4636,16 @@ export class PlayStyleManager {
       this.eatenFruitMass = 0;
     }
 
-    // Strict logarithmic scaling: L(m) = L0 + k * ln(1 + eatenFruitMass)
-    this.logarithmicLengthMeters = +(
-      1.65 +
-      2.15 * Math.log(1 + Math.max(0, this.eatenFruitMass))
-    ).toFixed(2);
-
-    const targetSegments = Math.max(
-      1,
-      Math.min(
-        MAX_DACHSHUND_SEGMENTS,
-        1 + Math.round(2.85 * Math.log(1 + Math.max(0, this.eatenFruitMass)))
-      )
+    // Strictly linear body growth: 1 base orange on head ONLY, +1 back segment & +1 back-mounted orange per collected fruit
+    const lin = computeLinearDachshundState(
+      this.fruitsCarried,
+      DACHSHUND_SEGMENT_SPACING,
+      MAX_DACHSHUND_SEGMENTS,
+      SANE_HERO_LINK_DIST,
+      SANE_CABOOSE_LINK_DIST
     );
+    this.logarithmicLengthMeters = lin.lengthMeters;
+    const targetSegments = lin.bodySegments;
 
     if (targetSegments > this.snakeSegmentCount) {
       this.growDachshundBody(targetSegments - this.snakeSegmentCount, true);
@@ -4637,7 +4656,19 @@ export class PlayStyleManager {
       }
     }
 
-    CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, this.fruitsCarried);
+    // Strict 1-orange-on-head invariant: extra collected fruits sit along the Capybara's back segments!
+    CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, 1);
+    const variety =
+      HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex] ?? HEAD_ORANGE_VARIETIES[0];
+    for (let i = 0; i < this.dachshundSegments.length; i++) {
+      const showBackFruit = i < this.snakeSegmentCount && i < lin.collectedBackFruits;
+      CapyModelGenerator.setDachshundSegmentFruitState(
+        this.dachshundSegments[i],
+        showBackFruit,
+        variety.colorHex,
+        variety.emissiveHex
+      );
+    }
 
     if (!silent) {
       this.emitTelemetry();
@@ -4795,16 +4826,20 @@ export class PlayStyleManager {
       variety.colorHex,
       customFurHex
     );
-    CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, this.fruitsCarried);
+    CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, 1);
 
     const heroBodyMat = (this.heroCapy.getObjectByName('capyBody') as THREE.Mesh | undefined)
       ?.material as THREE.MeshStandardMaterial | undefined;
 
+    const backFruitCount = Math.max(0, this.fruitsCarried - 1);
     for (let i = 0; i < this.dachshundSegments.length; i++) {
       const seg = this.dachshundSegments[i];
-      if (seg.userData.riderOrangeMat) {
-        seg.userData.riderOrangeMat.color.setHex(variety.colorHex);
-      }
+      CapyModelGenerator.setDachshundSegmentFruitState(
+        seg,
+        i < this.snakeSegmentCount && i < backFruitCount,
+        variety.colorHex,
+        variety.emissiveHex
+      );
       seg.userData.bodyMat.roughness = this.stats.activeSkin === 'golden' ? 0.45 : 0.84;
       seg.userData.bodyMat.metalness = this.stats.activeSkin === 'golden' ? 0.38 : 0.04;
       if (heroBodyMat?.map) {
@@ -4821,7 +4856,7 @@ export class PlayStyleManager {
       this.dachshundCaboose.userData.bodyMat.needsUpdate = true;
     }
 
-    // Re-tint the 5 Exponential Matching Trees to match the hero's Head Orange variety,
+    // Re-tint the 5 Matching Trees to match the hero's Head Orange variety,
     // and keep the 3 contrasting trees on distinct varieties
     let altCounter = 1;
     for (let t = 0; t < this.sanctuaryTrees.length; t++) {
@@ -4873,7 +4908,7 @@ export class PlayStyleManager {
         const prevX = prevNode === 0 ? this.heroLocalPos.x : this.spineX[prevNode];
         const prevY = prevNode === 0 ? this.heroLocalPos.y : this.spineY[prevNode];
         const prevZ = prevNode === 0 ? this.heroLocalPos.z : this.spineZ[prevNode];
-        const linkDist = prevNode === 0 ? 0.56 : DACHSHUND_SEGMENT_SPACING;
+        const linkDist = prevNode === 0 ? SANE_HERO_LINK_DIST : DACHSHUND_SEGMENT_SPACING;
         const nodeIdx = segIdx + 1;
         this.spineX[nodeIdx] = prevX - Math.sin(prevYaw) * linkDist;
         this.spineY[nodeIdx] = prevY;
@@ -4881,9 +4916,9 @@ export class PlayStyleManager {
         this.spineYaw[nodeIdx] = prevYaw;
 
         const cabNode = this.snakeSegmentCount + 1;
-        this.spineX[cabNode] = this.spineX[nodeIdx] - Math.sin(prevYaw) * 0.54;
+        this.spineX[cabNode] = this.spineX[nodeIdx] - Math.sin(prevYaw) * SANE_CABOOSE_LINK_DIST;
         this.spineY[cabNode] = prevY;
-        this.spineZ[cabNode] = this.spineZ[nodeIdx] - Math.cos(prevYaw) * 0.54;
+        this.spineZ[cabNode] = this.spineZ[nodeIdx] - Math.cos(prevYaw) * SANE_CABOOSE_LINK_DIST;
         this.spineYaw[cabNode] = prevYaw;
       }
     }
@@ -5137,7 +5172,11 @@ export class PlayStyleManager {
     const totalNodes = this.snakeSegmentCount + 2;
     for (let n = 1; n < totalNodes; n++) {
       const linkLen =
-        n === 1 ? 0.56 : n === totalNodes - 1 ? 0.54 : DACHSHUND_SEGMENT_SPACING;
+        n === 1
+          ? SANE_HERO_LINK_DIST
+          : n === totalNodes - 1
+            ? SANE_CABOOSE_LINK_DIST
+            : DACHSHUND_SEGMENT_SPACING;
       accumDist += linkLen;
       this.spineX[n] = this.heroLocalPos.x + backX * accumDist;
       this.spineY[n] = this.heroLocalPos.y;
@@ -5168,37 +5207,29 @@ export class PlayStyleManager {
   }
 
   /**
-   * Biomechanical 2-joint quadruped limb animation:
-   * - Stance phase (sin(phase) <= 0): foot stays planted flat while hip sweeps opposite walkDir to propel body.
-   * - Swing phase (sin(phase) > 0): knee/carpus flexes (`lowerJoint`) to lift paw clear off ground while hip protracts!
-   * - Reverses kinematics cleanly when `walkDir === -1` (walking backwards).
+   * Biomechanical 2-joint quadruped limb animation powered by evaluateRealisticLimbPose:
+   * - Asymmetric 58% stance / 42% swing duty cycle with plantar grip and genuine knee clearance.
+   * - Reverses kinematics cleanly when `walkDir === -1` (walking backwards led by caboose).
    */
   private animateArticulatedLimb(
     limbRoot: THREE.Group,
     phase: number,
     walkDir: 1 | -1 = 1,
-    hipAmp: number = 0.36
+    hipAmp: number = 0.38,
+    strideScale: number = 1.0
   ) {
-    const s = Math.sin(phase);
-    const c = Math.cos(phase);
+    const pose = evaluateRealisticLimbPose(
+      phase,
+      walkDir,
+      hipAmp,
+      strideScale,
+      this._limbPoseScratch
+    );
     const lowerJoint = limbRoot.userData?.lowerJoint as THREE.Group | undefined;
     const pawGroup = limbRoot.userData?.pawGroup as THREE.Group | undefined;
-
-    if (s > 0) {
-      // Swing phase: lift paw clear of ground and protract limb in walkDir
-      const hipAngle = walkDir * c * hipAmp;
-      const kneeFlex = -walkDir * s * 0.64;
-      limbRoot.rotation.x = hipAngle;
-      if (lowerJoint) lowerJoint.rotation.x = kneeFlex;
-      if (pawGroup) pawGroup.rotation.x = -(hipAngle + kneeFlex) * 0.55;
-    } else {
-      // Stance phase: plant sole flat on ground and sweep rearward against ground for traction
-      const hipAngle = walkDir * c * hipAmp * 0.88;
-      const kneeBrace = -0.03 * s;
-      limbRoot.rotation.x = hipAngle;
-      if (lowerJoint) lowerJoint.rotation.x = kneeBrace;
-      if (pawGroup) pawGroup.rotation.x = -(hipAngle + kneeBrace);
-    }
+    limbRoot.rotation.x = pose.hipPitch;
+    if (lowerJoint) lowerJoint.rotation.x = pose.kneePitch;
+    if (pawGroup) pawGroup.rotation.x = pose.anklePitch;
   }
 
   private resetArticulatedLimb(limbRoot: THREE.Group) {
@@ -5352,13 +5383,20 @@ export class PlayStyleManager {
   private updateDachshundTransforms(
     dt: number,
     isMoving: boolean = false,
-    walkDir: 1 | -1 = 1
+    walkDir: 1 | -1 = 1,
+    leaderDisp: number = 0
   ) {
     if (!this.spineInitialized) {
       this.resetDachshundTrail();
     }
 
-    // Apply spine positions, yaws, slight solid squash (<= 6%), and articulated 2-joint leg gaits
+    const totalNodes = this.snakeSegmentCount + 2;
+    const isAirborneSearch = !this.isGrounded && !this.isSwimmingInPool;
+    const strideScale = isMoving
+      ? Math.min(1.22, Math.max(0.45, leaderDisp > 0.002 ? leaderDisp / Math.max(0.004, dt * 7.2) : 0.85))
+      : 0;
+
+    // Apply spine positions, yaws, terrain slope pitch, slight solid squash (<= 6%), and realistic 2-joint gaits
     for (let i = 0; i < this.dachshundSegments.length; i++) {
       const seg = this.dachshundSegments[i];
       if (i >= this.snakeSegmentCount) {
@@ -5367,8 +5405,25 @@ export class PlayStyleManager {
       }
       seg.visible = true;
       const nodeIdx = i + 1;
-      seg.position.set(this.spineX[nodeIdx], this.spineY[nodeIdx], this.spineZ[nodeIdx]);
-      seg.rotation.y = this.spineYaw[nodeIdx];
+      const sx = this.spineX[nodeIdx];
+      const syPos = this.spineY[nodeIdx];
+      const sz = this.spineZ[nodeIdx];
+      const syaw = this.spineYaw[nodeIdx];
+
+      seg.position.set(sx, syPos, sz);
+      seg.rotation.order = 'YXZ';
+      seg.rotation.y = syaw;
+
+      // Align body segment pitch smoothly to terrain ramps / bridges when grounded
+      if (this.suspendedFootTestHeight === null) {
+        const fwdX = Math.sin(syaw) * 0.48;
+        const fwdZ = Math.cos(syaw) * 0.48;
+        const fY = this.getSupportSurfaceY(sx + fwdX, sz + fwdZ);
+        const rY = this.getSupportSurfaceY(sx - fwdX, sz - fwdZ);
+        seg.rotation.x = computeTerrainPitchAngle(fY, rY, 0.96, 0.38);
+      } else {
+        seg.rotation.x = 0;
+      }
 
       // Stiff solid-body elastic response (clamped strictly to +-6% slight squash!)
       this.segSoftSquashVel[i] +=
@@ -5383,30 +5438,46 @@ export class PlayStyleManager {
       seg.scale.set(sxz, sy, sxz);
 
       if (isMoving) {
-        seg.userData.walkCycle += dt * 14;
-        const segPhase = this.heroCapy.userData.walkCycle - (i + 1) * 0.85;
-        this.animateArticulatedLimb(seg.userData.midLegL, segPhase, walkDir, 0.35);
+        seg.userData.walkCycle = this.heroCapy.userData.walkCycle - (i + 1) * 0.92;
+        const segPhase = seg.userData.walkCycle;
+        this.animateArticulatedLimb(seg.userData.midLegL, segPhase, walkDir, 0.37, strideScale);
+        const leftRoll = this._limbPoseScratch.pelvicRoll;
         this.animateArticulatedLimb(
           seg.userData.midLegR,
           segPhase + Math.PI,
           walkDir,
-          0.35
+          0.37,
+          strideScale
         );
+        seg.rotation.z = leftRoll * 0.85;
       } else {
+        seg.rotation.z = 0;
         this.resetArticulatedLimb(seg.userData.midLegL);
         this.resetArticulatedLimb(seg.userData.midLegR);
       }
     }
 
-    // Position Hindquarters Caboose at spine node N + 1 with coordinated forward/reverse rear gait
+    // Position Hindquarters Caboose at spine node N + 1 with realistic reverse/forward rear gait & whip tail wag
     if (this.dachshundCaboose) {
-      const cabNode = this.snakeSegmentCount + 1;
-      this.dachshundCaboose.position.set(
-        this.spineX[cabNode],
-        this.spineY[cabNode],
-        this.spineZ[cabNode]
-      );
-      this.dachshundCaboose.rotation.y = this.spineYaw[cabNode];
+      const cabNode = totalNodes - 1;
+      const cx = this.spineX[cabNode];
+      const cyPos = this.spineY[cabNode];
+      const cz = this.spineZ[cabNode];
+      const cyaw = this.spineYaw[cabNode];
+
+      this.dachshundCaboose.position.set(cx, cyPos, cz);
+      this.dachshundCaboose.rotation.order = 'YXZ';
+      this.dachshundCaboose.rotation.y = cyaw;
+
+      if (this.suspendedFootTestHeight === null) {
+        const fwdX = Math.sin(cyaw) * 0.42;
+        const fwdZ = Math.cos(cyaw) * 0.42;
+        const fY = this.getSupportSurfaceY(cx + fwdX, cz + fwdZ);
+        const rY = this.getSupportSurfaceY(cx - fwdX, cz - fwdZ);
+        this.dachshundCaboose.rotation.x = computeTerrainPitchAngle(fY, rY, 0.84, 0.38);
+      } else {
+        this.dachshundCaboose.rotation.x = 0;
+      }
 
       const lastIdx = Math.max(0, this.snakeSegmentCount - 1);
       const cSy = 1 - (this.segSoftSquash[lastIdx] || 0) * 0.85;
@@ -5414,23 +5485,29 @@ export class PlayStyleManager {
       this.dachshundCaboose.scale.set(cSxz, cSy, cSxz);
 
       if (isMoving) {
-        this.dachshundCaboose.userData.walkCycle += dt * 14;
-        const rearPhase = this.heroCapy.userData.walkCycle - (this.snakeSegmentCount + 1) * 0.85;
+        const rearPhase = this.heroCapy.userData.walkCycle - (this.snakeSegmentCount + 1) * 0.92;
+        this.dachshundCaboose.userData.walkCycle = rearPhase;
         this.animateArticulatedLimb(
           this.dachshundCaboose.userData.legBL,
           rearPhase + Math.PI,
           walkDir,
-          0.38
+          0.40,
+          isAirborneSearch ? 0.9 : strideScale
         );
         this.animateArticulatedLimb(
           this.dachshundCaboose.userData.legBR,
           rearPhase,
           walkDir,
-          0.38
+          0.40,
+          isAirborneSearch ? 0.9 : strideScale
         );
+        this.dachshundCaboose.rotation.z = this._limbPoseScratch.pelvicRoll;
         this.dachshundCaboose.userData.tailGroup.rotation.y =
-          Math.sin(this.heroCapy.userData.walkCycle * 1.5) * 0.24;
+          Math.sin(this.heroCapy.userData.walkCycle * 1.45) * 0.32;
       } else {
+        this.dachshundCaboose.rotation.z = 0;
+        this.dachshundCaboose.userData.tailGroup.rotation.y =
+          Math.sin(performance.now() * 0.0035) * 0.12;
         this.resetArticulatedLimb(this.dachshundCaboose.userData.legBL);
         this.resetArticulatedLimb(this.dachshundCaboose.userData.legBR);
       }
@@ -5848,7 +5925,7 @@ export class PlayStyleManager {
             const camCrownDx = wx - camX;
             const camCrownDy = th * 0.92 - camY;
             const camCrownDz = wz - camZ;
-            const cameraCoreRadius = Math.min(cr * 0.56, 2.25);
+            const cameraCoreRadius = Math.min(cr * 0.34, 1.25);
             const cameraInsideCanopy =
               horizLen > 1.8 &&
               horizProj > 0.25 &&
@@ -5858,19 +5935,19 @@ export class PlayStyleManager {
                 camCrownDz * camCrownDz <=
                 cameraCoreRadius * cameraCoreRadius;
 
-            const trunkCheckRadius = Math.max(0.55, tr.trunkRadius * 1.55);
-            const crownCoreRadius = Math.min(cr * 0.62, 2.35);
+            const trunkCheckRadius = Math.max(0.50, tr.trunkRadius * 1.35);
+            const crownCoreRadius = Math.min(cr * 0.42, 1.55);
             const blocks =
               cameraInsideCanopy ||
               (rootedInFrontOfPlayer &&
                 (blocksPlayerCorridor(wx, th * 0.34, wz, trunkCheckRadius) ||
-                  blocksPlayerCorridor(wx, th * 0.68, wz, Math.max(0.5, tr.trunkRadius * 1.45)) ||
+                  blocksPlayerCorridor(wx, th * 0.68, wz, Math.max(0.45, tr.trunkRadius * 1.28)) ||
                   blocksPlayerCorridor(wx, th * 0.94, wz, crownCoreRadius)));
 
             if (blocks) {
               this.markObjectHierarchyOccluded(tr.rootGroup);
             } else if (rootedInFrontOfPlayer) {
-              const rCore = Math.min(cr * 0.55, 2.1);
+              const rCore = Math.min(cr * 0.42, 1.55);
               if (
                 distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
                 rCore * rCore
@@ -6079,7 +6156,7 @@ export class PlayStyleManager {
               if (resolvedRoot.userData?.__isDachshundSegment && r > 1) {
                 continue;
               }
-              if (resolvedRoot.userData?.__isSanctuaryTree && r !== 0 && r !== 5 && r !== 6) {
+              if (resolvedRoot.userData?.__isSanctuaryTree && r !== 0 && r !== 6) {
                 continue;
               }
               this.markObjectHierarchyOccluded(resolvedRoot);
@@ -6207,7 +6284,10 @@ export class PlayStyleManager {
         exposureScale,
         this.proceduralConfig.world.dayCycleSpeed ?? 1.0,
         this.proceduralConfig.graphics.fogDensity ?? 1.0,
-        isPerfMode
+        isPerfMode,
+        this.camera.position.x,
+        this.camera.position.y,
+        this.camera.position.z
       );
       if (!isPerfMode) {
         this.worldEnv.tickTrees(this.sanctuaryTrees, dt);
@@ -6877,21 +6957,49 @@ export class PlayStyleManager {
     capy: CapyMeshGroup,
     dt: number,
     speedFactor: number = 12,
-    walkDir: 1 | -1 = 1
+    walkDir: 1 | -1 = 1,
+    planarDisp?: number,
+    hasWalkIntent: boolean = true,
+    isAirborne: boolean = false,
+    isSwimming: boolean = false
   ) {
-    capy.userData.walkCycle += dt * speedFactor;
+    if (typeof planarDisp === 'number') {
+      capy.userData.walkCycle = advanceDisplacementCoupledGaitPhase(
+        capy.userData.walkCycle,
+        planarDisp,
+        dt,
+        {
+          hasWalkIntent,
+          isAirborne,
+          isSwimming,
+          strideRadius: 0.23,
+          fallbackRateRadPerSec: speedFactor * 0.78,
+        }
+      );
+    } else {
+      capy.userData.walkCycle += dt * speedFactor;
+    }
     const phase = capy.userData.walkCycle;
+    const strideScale =
+      typeof planarDisp === 'number'
+        ? Math.min(1.25, Math.max(0.45, planarDisp > 0.002 ? planarDisp / Math.max(0.004, dt * 7.2) : 0.85))
+        : 1.0;
+
     // Diagonal quadruped trot/walk gait with 2-joint knee/carpus flexion & flat stance planting
-    this.animateArticulatedLimb(capy.userData.legFL, phase, walkDir, 0.38);
-    this.animateArticulatedLimb(capy.userData.legBR, phase, walkDir, 0.38);
-    this.animateArticulatedLimb(capy.userData.legFR, phase + Math.PI, walkDir, 0.38);
-    this.animateArticulatedLimb(capy.userData.legBL, phase + Math.PI, walkDir, 0.38);
+    this.animateArticulatedLimb(capy.userData.legFL, phase, walkDir, 0.39, strideScale);
+    const frontRoll = this._limbPoseScratch.pelvicRoll;
+    this.animateArticulatedLimb(capy.userData.legBR, phase, walkDir, 0.39, strideScale);
+    this.animateArticulatedLimb(capy.userData.legFR, phase + Math.PI, walkDir, 0.39, strideScale);
+    this.animateArticulatedLimb(capy.userData.legBL, phase + Math.PI, walkDir, 0.39, strideScale);
+
+    capy.rotation.order = 'YXZ';
+    capy.rotation.z = frontRoll * 0.75;
 
     // Subtle ear bob & natural eyelid blink at LOD Tier 2+
     if (capy.userData.lodTier >= 2) {
       const earFlutter = Math.sin(capy.userData.walkCycle * 0.5) * 0.08;
-      capy.userData.earL.rotation.z = -0.42 + earFlutter;
-      capy.userData.earR.rotation.z = 0.42 - earFlutter;
+      capy.userData.earL.rotation.z = -0.32 + earFlutter;
+      capy.userData.earR.rotation.z = 0.32 - earFlutter;
 
       capy.userData.blinkTimer -= dt;
       if (capy.userData.blinkTimer <= 0) {
@@ -6908,6 +7016,7 @@ export class PlayStyleManager {
   }
 
   private resetCapyLegs(capy: CapyMeshGroup, dt: number = 0.016) {
+    capy.rotation.z = 0;
     this.resetArticulatedLimb(capy.userData.legFL);
     this.resetArticulatedLimb(capy.userData.legFR);
     this.resetArticulatedLimb(capy.userData.legBL);
@@ -6930,7 +7039,7 @@ export class PlayStyleManager {
 
   /**
    * Shared movement & camera helper supporting:
-   * - Behind-the-Capybara Chase Camera (with forward & active coordinated backward walking!)
+   * - Behind-the-Capybara Chase Camera (with forward & true back-led backward walking!)
    * - Fixed World-Angle Camera
    * - Foot-Contact Walking Traction: if `enforceFootTraction` is true and 0 feet touch the ground
    *   (and not swimming in water), walking propulsion is 0 (player gets stuck while feet paddle in air!).
@@ -6940,8 +7049,15 @@ export class PlayStyleManager {
     speed: number,
     _baseCamHeight: number,
     _baseCamDist: number,
-    enforceFootTraction: boolean = false
-  ): { forwardInput: number; walkDir: 1 | -1; hasWalkIntent: boolean } {
+    enforceFootTraction: boolean = false,
+    deferBidirectionalSpine: boolean = false
+  ): {
+    forwardInput: number;
+    walkDir: 1 | -1;
+    hasWalkIntent: boolean;
+    tractionMult: number;
+    effectiveSpeed: number;
+  } {
     const turnSens = this.settings.turnSensitivity || 1.0;
     const tractionMult =
       enforceFootTraction && this.isStuckNoFooting ? 0.0 : 1.0;
@@ -6952,9 +7068,22 @@ export class PlayStyleManager {
       this.isWalkingBackward = isReversing;
       const walkDir: 1 | -1 = isReversing ? -1 : 1;
 
-      // Turning requires ground foot traction (or swimming water resistance)
+      const forwardInput =
+        forwardRaw +
+        (Math.abs(forwardRaw) < 0.05 && Math.abs(this.moveInput.x) > 0.1 ? 0.25 : 0);
+
+      const hasWalkIntent =
+        Math.abs(forwardInput) > 0.04 || Math.abs(this.moveInput.x) > 0.05;
+
+      const dirPace = isReversing ? 0.78 : 1.0;
+      const effectiveSpeed = speed * dirPace * tractionMult;
+
+      if (deferBidirectionalSpine) {
+        // Sanctuary bidirectional locomotion moves either Hero (forward) or Caboose (backward) as leader
+        return { forwardInput, walkDir, hasWalkIntent, tractionMult, effectiveSpeed };
+      }
+
       if (Math.abs(this.moveInput.x) > 0.02 && tractionMult > 0) {
-        // Reverse steering direction slightly slower & natural when walking backward
         const yawRate = isReversing ? 2.1 : 2.6;
         this.heroYaw -= this.moveInput.x * yawRate * turnSens * dt;
       } else if (
@@ -6963,20 +7092,9 @@ export class PlayStyleManager {
         this.settings.mouselookEnabled !== false &&
         (this.mouselookLocked || performance.now() - this.mouselookLastActiveTimeMs < 2400)
       ) {
-        // Steer Capybara heading toward active mouselook aim direction when walking with W/S
         this.heroYaw = dampShortestAngle(this.heroYaw, this.surfaceCamYaw, 9.0 * turnSens, dt);
       }
 
-      const forwardInput =
-        forwardRaw +
-        (Math.abs(forwardRaw) < 0.05 && Math.abs(this.moveInput.x) > 0.1 ? 0.25 : 0);
-
-      const hasWalkIntent =
-        Math.abs(forwardInput) > 0.04 || Math.abs(this.moveInput.x) > 0.05;
-
-      // Reverse walking moves at a realistic 0.78x backward quadruped pace; 0.0x if stuck with 0 feet on ground!
-      const dirPace = isReversing ? 0.78 : 1.0;
-      const effectiveSpeed = speed * dirPace * tractionMult;
       const moveVx = Math.sin(this.heroYaw) * forwardInput * effectiveSpeed;
       const moveVz = Math.cos(this.heroYaw) * forwardInput * effectiveSpeed;
 
@@ -6985,18 +7103,26 @@ export class PlayStyleManager {
       this.heroCapy.rotation.y = this.heroYaw;
 
       if (hasWalkIntent) {
-        // Even if stuck with 0 feet touching ground, legs kick/cycle realistically searching for footing!
         this.animateCapyLegs(this.heroCapy, dt, isReversing ? 12 : 14, walkDir);
       } else {
         this.resetCapyLegs(this.heroCapy, dt);
       }
 
-      return { forwardInput, walkDir, hasWalkIntent };
+      return { forwardInput, walkDir, hasWalkIntent, tractionMult, effectiveSpeed };
     } else {
       this.isWalkingBackward = false;
       const hasWalkIntent =
         Math.abs(this.moveInput.x) > 0.04 || Math.abs(this.moveInput.z) > 0.04;
       const effectiveSpeed = speed * tractionMult;
+      if (deferBidirectionalSpine) {
+        return {
+          forwardInput: hasWalkIntent ? 1 : 0,
+          walkDir: 1,
+          hasWalkIntent,
+          tractionMult,
+          effectiveSpeed,
+        };
+      }
       const moveVx = this.moveInput.x * effectiveSpeed;
       const moveVz = this.moveInput.z * effectiveSpeed;
       this.heroLocalPos.x += (moveVx + this.heroVelocity.x) * dt;
@@ -7012,7 +7138,13 @@ export class PlayStyleManager {
         this.resetCapyLegs(this.heroCapy, dt);
       }
 
-      return { forwardInput: hasWalkIntent ? 1 : 0, walkDir: 1, hasWalkIntent };
+      return {
+        forwardInput: hasWalkIntent ? 1 : 0,
+        walkDir: 1,
+        hasWalkIntent,
+        tractionMult,
+        effectiveSpeed,
+      };
     }
   }
 
@@ -7198,51 +7330,40 @@ export class PlayStyleManager {
 
   /**
    * Bidirectional Articulated Solid-Rod Spine & Collision Solver:
-   * - When walking backwards (`isWalkingBackward`), EVERY Dachshund body segment and the Caboose
-   *   actively step backward along their own reverse heading in coordination with the Hero.
-   * - Runs 4 PBD iterations enforcing:
-   *   1. Solid inextensible rod spacing (<= 4% slight elastic give) from head<->tail.
-   *   2. Joint bend-angle limit (`MAX_SPINE_BEND_RAD` ~ 30 deg) so backing up NEVER folds or jackknifes.
-   *   3. Non-adjacent spine segment-vs-segment solid separation (`|i - j| >= 2`) so the body never self-clips.
-   *   4. Multi-body solid collisions against trees, boulders, structures, portals, and wandering Capybaras,
-   *      transmitting tail obstacle resistance back up to the Hero when reversing into an obstacle!
+   * - Forward mode: Hero (node 0) leads and solves 0 -> cabNode.
+   * - Backward mode (`isWalkingBackward`): **Caboose (node `totalNodes - 1`) IS the leader!**
+   *   Links solve in reverse (`cabNode -> 0`) so middle segments & head trail naturally behind
+   *   the reversing hindquarters leader without folding or jackknifing!
    */
   private solveArticulatedSpineAndSolidCollisions(
     dt: number,
-    forwardInput: number,
-    speed: number
+    _forwardInput: number,
+    _speed: number
   ) {
     if (!this.spineInitialized) {
       this.resetDachshundTrail();
     }
 
     const totalNodes = this.snakeSegmentCount + 2;
+    const cabNode = totalNodes - 1;
     const heroR = 0.68;
     const segR = 0.48;
     const cabooseR = 0.54;
     const buddyR = 0.58;
 
-    // Anchor node 0 at Hero's proposed step position
-    this.spineX[0] = this.heroLocalPos.x;
-    this.spineY[0] = this.heroLocalPos.y;
-    this.spineZ[0] = this.heroLocalPos.z;
-    this.spineYaw[0] = this.heroYaw;
-
-    const tractionActive = !this.isStuckNoFooting;
-
-    // Active Coordinated Backward Walking: ALL body segments & Caboose actively step backwards!
-    if (this.isWalkingBackward && tractionActive && Math.abs(forwardInput) > 0.02) {
-      const revStep = forwardInput * speed * 0.78 * dt; // negative -> steps backward along -heading
-      const steerYaw = -this.moveInput.x * 1.45 * dt;
-      for (let n = 1; n < totalNodes; n++) {
-        this.spineYaw[n] += steerYaw * (1 - (n / totalNodes) * 0.35);
-        this.spineX[n] += Math.sin(this.spineYaw[n]) * revStep;
-        this.spineZ[n] += Math.cos(this.spineYaw[n]) * revStep;
-      }
+    if (!this.isWalkingBackward) {
+      // Forward mode: Node 0 (Hero) leads
+      this.spineX[0] = this.heroLocalPos.x;
+      this.spineY[0] = this.heroLocalPos.y;
+      this.spineZ[0] = this.heroLocalPos.z;
+      this.spineYaw[0] = this.heroYaw;
     }
 
-    // Smooth vertical support tracking along spine (suspended height when testing 0-foot traction!)
-    for (let n = 1; n < totalNodes; n++) {
+    // Smooth vertical support tracking along trailing spine nodes (leader node vertical physics already solved by Rapier!)
+    for (let n = 0; n < totalNodes; n++) {
+      if ((this.isWalkingBackward && n === cabNode) || (!this.isWalkingBackward && n === 0)) {
+        continue;
+      }
       if (this.suspendedFootTestHeight !== null) {
         this.spineY[n] = this.suspendedFootTestHeight;
       } else {
@@ -7258,66 +7379,27 @@ export class PlayStyleManager {
             : surfY < OPEN_OCEAN_SURFACE_Y + 0.12
               ? Math.max(surfY, OPEN_OCEAN_SURFACE_Y - 0.34)
               : surfY;
-        const targetY =
-          n === 1 ? (this.heroLocalPos.y * 0.45 + groundY * 0.55) : groundY;
+        const neighborIdx = this.isWalkingBackward ? Math.min(cabNode, n + 1) : Math.max(0, n - 1);
+        const targetY = groundY * 0.68 + this.spineY[neighborIdx] * 0.32;
         this.spineY[n] += (targetY - this.spineY[n]) * Math.min(1, dt * 16);
       }
     }
 
     // 4-Iteration Bidirectional Solid-Rod & Multi-Body Non-Clipping Solver
-    const headShare = this.isWalkingBackward ? 0.52 : 0.0;
-    const tailShare = 1.0 - headShare;
-
     for (let iter = 0; iter < 4; iter++) {
-      // Pass A: Forward & Reverse Rod Distance + Anti-Jackknife Bend-Angle Clamping
-      for (let n = 1; n < totalNodes; n++) {
-        const restLen =
-          n === 1 ? 0.56 : n === totalNodes - 1 ? 0.54 : DACHSHUND_SEGMENT_SPACING;
-        let dx = this.spineX[n - 1] - this.spineX[n];
-        let dz = this.spineZ[n - 1] - this.spineZ[n];
-        let dist = Math.hypot(dx, dz);
-        if (dist < 0.0001) {
-          dx = Math.sin(this.spineYaw[n - 1]);
-          dz = Math.cos(this.spineYaw[n - 1]);
-          dist = 1;
-        }
-
-        // Enforce inextensible solid link length (allowing at most 3% slight compression)
-        const targetLen = THREE.MathUtils.clamp(dist, restLen * 0.97, restLen);
-        if (Math.abs(dist - targetLen) > 0.0005 || dist > restLen) {
-          const err = dist - restLen;
-          const nx = dx / dist;
-          const nz = dz / dist;
-          this.spineX[n - 1] -= nx * err * headShare;
-          this.spineZ[n - 1] -= nz * err * headShare;
-          this.spineX[n] += nx * err * tailShare;
-          this.spineZ[n] += nz * err * tailShare;
-        }
-
-        // Enforce maximum joint articulation bend angle so backing up NEVER folds segments onto each other!
-        dx = this.spineX[n - 1] - this.spineX[n];
-        dz = this.spineZ[n - 1] - this.spineZ[n];
-        const linkYaw = Math.atan2(dx, dz);
-        const refYaw = n === 1 ? this.heroYaw : this.spineYaw[n - 1];
-        const bendDiff = normalizeAngleSigned(linkYaw - refYaw);
-
-        if (Math.abs(bendDiff) > MAX_SPINE_BEND_RAD) {
-          const clampedYaw =
-            refYaw + Math.sign(bendDiff) * MAX_SPINE_BEND_RAD;
-          const desiredBackX = this.spineX[n - 1] - Math.sin(clampedYaw) * restLen;
-          const desiredBackZ = this.spineZ[n - 1] - Math.cos(clampedYaw) * restLen;
-          const corrX = desiredBackX - this.spineX[n];
-          const corrZ = desiredBackZ - this.spineZ[n];
-          const childWeight = this.isWalkingBackward ? 0.65 : 0.88;
-          this.spineX[n] += corrX * childWeight;
-          this.spineZ[n] += corrZ * childWeight;
-          this.spineX[n - 1] -= corrX * (1 - childWeight);
-          this.spineZ[n - 1] -= corrZ * (1 - childWeight);
-          this.spineYaw[n] = clampedYaw;
-        } else {
-          this.spineYaw[n] = linkYaw;
-        }
-      }
+      // Pass A: Bidirectional Inextensible Solid-Rod Distance + Anti-Jackknife Bend-Angle Clamping
+      solveBidirectionalSpinePass(
+        this.spineX,
+        this.spineZ,
+        this.spineYaw,
+        totalNodes,
+        this.isWalkingBackward,
+        DACHSHUND_SEGMENT_SPACING,
+        SANE_HERO_LINK_DIST,
+        SANE_CABOOSE_LINK_DIST,
+        MAX_SPINE_BEND_RAD,
+        true
+      );
 
       // Pass B: Pairwise Solid Non-Clipping Between Non-Adjacent Spine Segments (|i - j| >= 2)
       for (let i = 0; i < totalNodes; i++) {
@@ -7344,36 +7426,32 @@ export class PlayStyleManager {
       }
 
       // Pass C: All Spine Nodes vs Static Obstacles (Trees, Pool Boulders, Buildings, Portals)
-      for (let n = totalNodes - 1; n >= 0; n--) {
-        const rN = n === 0 ? heroR : n === totalNodes - 1 ? cabooseR : segR;
-        this.resolveSpineNodeStaticObstacles(n, rN, iter === 0 && n === 0);
-      }
-
-      // Pass C2: Tail-to-Head Solid-Rod Pushback when reversing into an obstacle!
-      // If the Caboose or any rear segment hits a tree/boulder while backing up, transmit solid resistance all the way to the Head!
       if (this.isWalkingBackward) {
-        for (let n = totalNodes - 1; n >= 1; n--) {
-          const minRodLen =
-            (n === 1 ? 0.56 : n === totalNodes - 1 ? 0.54 : DACHSHUND_SEGMENT_SPACING) *
-            0.97;
-          let dx = this.spineX[n - 1] - this.spineX[n];
-          let dz = this.spineZ[n - 1] - this.spineZ[n];
-          let dist = Math.hypot(dx, dz);
-          if (dist < minRodLen) {
-            if (dist < 0.0001) {
-              dx = Math.sin(this.spineYaw[n - 1]);
-              dz = Math.cos(this.spineYaw[n - 1]);
-              dist = 1;
-            }
-            const nx = dx / dist;
-            const nz = dz / dist;
-            this.spineX[n - 1] = this.spineX[n] + nx * minRodLen;
-            this.spineZ[n - 1] = this.spineZ[n] + nz * minRodLen;
-            const rParent = n - 1 === 0 ? heroR : segR;
-            this.resolveSpineNodeStaticObstacles(n - 1, rParent, false);
-          }
+        // Resolve from trailing head forward toward leading caboose so leading node takes final contact authority
+        for (let n = 0; n < totalNodes; n++) {
+          const rN = n === 0 ? heroR : n === cabNode ? cabooseR : segR;
+          this.resolveSpineNodeStaticObstacles(n, rN, iter === 0 && n === 0);
+        }
+      } else {
+        for (let n = cabNode; n >= 0; n--) {
+          const rN = n === 0 ? heroR : n === cabNode ? cabooseR : segR;
+          this.resolveSpineNodeStaticObstacles(n, rN, iter === 0 && n === 0);
         }
       }
+
+      // Pass C2: Obstacle reaction propagation from active leader tail/head back through rigid rod
+      solveBidirectionalSpinePass(
+        this.spineX,
+        this.spineZ,
+        this.spineYaw,
+        totalNodes,
+        this.isWalkingBackward,
+        DACHSHUND_SEGMENT_SPACING,
+        SANE_HERO_LINK_DIST,
+        SANE_CABOOSE_LINK_DIST,
+        MAX_SPINE_BEND_RAD,
+        false
+      );
 
       // Pass D: Wandering Capybara Buddies vs Static Obstacles, Each Other & Entire Solid Spine
       for (let i = 0; i < this.sanctuaryCapys.length; i++) {
@@ -7471,9 +7549,14 @@ export class PlayStyleManager {
       }
     }
 
-    // Write back constrained Hero position from spine node 0!
+    // Write back constrained Hero position & aligned forward orientation from spine node 0!
     this.heroLocalPos.x = this.spineX[0];
+    this.heroLocalPos.y = this.spineY[0];
     this.heroLocalPos.z = this.spineZ[0];
+    if (this.isWalkingBackward) {
+      this.heroYaw = dampShortestAngle(this.heroYaw, this.spineYaw[0], 18, dt);
+      this.heroCapy.rotation.y = this.heroYaw;
+    }
 
     // Stiff Solid-Body Slight Elastic Squash (strictly <= 6% deformation!)
     this.heroSoftSquashVel +=
@@ -7769,8 +7852,9 @@ export class PlayStyleManager {
             this.bestSnakeSegments * 10 + this.orangesCollectedCount
           );
           const variety = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex];
+          const onBack = Math.max(0, this.fruitsCarried - 1);
           this.callbacks.onModeNotification?.(
-            `Chomped ${Math.round(f.radius * 100)}cm ${variety.name}! Logarithmic body: ${this.logarithmicLengthMeters.toFixed(1)}m (${this.snakeSegmentCount} segs · Mouth max ${Math.round(this.getMouthMaxFruitRadius() * 100)}cm)`
+            `Chomped ${Math.round(f.radius * 100)}cm ${variety.name}! Sausage body: ${this.logarithmicLengthMeters.toFixed(1)}m (${this.snakeSegmentCount} segs · ${onBack} on back)`
           );
           this.emitTelemetry();
         } else {
@@ -7833,7 +7917,7 @@ export class PlayStyleManager {
         )
       );
 
-      // Putting head under the running tap water washes fruits off your head into the pool until 1 is left!
+      // Putting head under the running tap water washes extra fruits off your back into the pool until 1 Head Orange is left!
       if (dTap < 1.12 && this.fruitsCarried > 1) {
         this.tapWashAccum += dt;
         while (this.tapWashAccum >= 0.16 && this.fruitsCarried > 1) {
@@ -7850,7 +7934,7 @@ export class PlayStyleManager {
           }
           this.syncLogarithmicBodyLength(true);
 
-          // Drop the washed fruit off the Capybara's head directly into the pond water!
+          // Drop the washed fruit into the pond water!
           const angle = Math.random() * Math.PI * 2;
           this.spawnPhysicsFruit(
             pool.tapStreamWorldX + Math.cos(angle) * 0.25,
@@ -7869,11 +7953,11 @@ export class PlayStyleManager {
 
           if (this.fruitsCarried === 1) {
             this.callbacks.onModeNotification?.(
-              'Tap water washed all extra fruits into your Home Pool — 1 signature Head Orange left!'
+              'Tap water washed all back fruits into your Home Pool — 1 signature Head Orange left!'
             );
           } else {
             this.callbacks.onModeNotification?.(
-              `Tap water washing fruits off your head into the pool... (${this.fruitsCarried} left)`
+              `Tap water washing fruits off your back into the pool... (${this.fruitsCarried - 1} left on back)`
             );
           }
           this.emitTelemetry();
@@ -8172,8 +8256,12 @@ export class PlayStyleManager {
   private tickSanctuary(dt: number) {
     this.syncDachshundVisibility();
 
-    const prevX = this.heroLocalPos.x;
-    const prevZ = this.heroLocalPos.z;
+    if (!this.spineInitialized) {
+      this.resetDachshundTrail();
+    }
+
+    const totalNodes = this.snakeSegmentCount + 2;
+    const cabNode = totalNodes - 1;
 
     const pool = this.homePool;
     const dPoolCenter = pool
@@ -8191,17 +8279,61 @@ export class PlayStyleManager {
     const camHeight = 6.8 * lengthZoomFactor;
     const camDist = 11.5 * lengthZoomFactor;
 
-    const { forwardInput, walkDir, hasWalkIntent } = this.applyPlayerMovementAndCamera(
-      dt,
-      speed,
-      camHeight,
-      camDist,
-      true
-    );
+    const { forwardInput, walkDir, hasWalkIntent, tractionMult, effectiveSpeed } =
+      this.applyPlayerMovementAndCamera(dt, speed, camHeight, camDist, true, true);
 
-    // 2. Step Rapier3D Wasm + Shallow-Water Fluid Buoyancy + XPBD Soft-Body Pads
+    const turnSens = this.settings.turnSensitivity || 1.0;
+    const leaderIdx = this.isWalkingBackward ? cabNode : 0;
+    const prevLeaderX = this.isWalkingBackward ? this.spineX[cabNode] : this.heroLocalPos.x;
+    const prevLeaderZ = this.isWalkingBackward ? this.spineZ[cabNode] : this.heroLocalPos.z;
+
+    if (this.isWalkingBackward) {
+      // BACKWARD WALKING: Back hindquarters (Caboose) IS the leader! Steer & propel cabNode directly.
+      if (Math.abs(this.moveInput.x) > 0.02 && tractionMult > 0) {
+        this.spineYaw[cabNode] += this.moveInput.x * 2.1 * turnSens * dt;
+      }
+      const cabYaw = this.spineYaw[cabNode];
+      const cabVx = Math.sin(cabYaw) * forwardInput * effectiveSpeed;
+      const cabVz = Math.cos(cabYaw) * forwardInput * effectiveSpeed;
+      this.spineX[cabNode] += (cabVx + this.heroVelocity.x) * dt;
+      this.spineZ[cabNode] += (cabVz + this.heroVelocity.z) * dt;
+    } else {
+      // FORWARD WALKING: Front Hero Capybara (node 0) IS the leader.
+      if (this.settings.cameraFollowBehind) {
+        if (Math.abs(this.moveInput.x) > 0.02 && tractionMult > 0) {
+          this.heroYaw -= this.moveInput.x * 2.6 * turnSens * dt;
+        } else if (
+          Math.abs(-this.moveInput.z) > 0.04 &&
+          tractionMult > 0 &&
+          this.settings.mouselookEnabled !== false &&
+          (this.mouselookLocked || performance.now() - this.mouselookLastActiveTimeMs < 2400)
+        ) {
+          this.heroYaw = dampShortestAngle(this.heroYaw, this.surfaceCamYaw, 9.0 * turnSens, dt);
+        }
+        const moveVx = Math.sin(this.heroYaw) * forwardInput * effectiveSpeed;
+        const moveVz = Math.cos(this.heroYaw) * forwardInput * effectiveSpeed;
+        this.heroLocalPos.x += (moveVx + this.heroVelocity.x) * dt;
+        this.heroLocalPos.z += (moveVz + this.heroVelocity.z) * dt;
+      } else {
+        const moveVx = this.moveInput.x * effectiveSpeed;
+        const moveVz = this.moveInput.z * effectiveSpeed;
+        this.heroLocalPos.x += (moveVx + this.heroVelocity.x) * dt;
+        this.heroLocalPos.z += (moveVz + this.heroVelocity.z) * dt;
+        if (hasWalkIntent && tractionMult > 0) {
+          this.heroYaw = Math.atan2(this.moveInput.x, this.moveInput.z);
+        }
+      }
+      this.heroCapy.rotation.y = this.heroYaw;
+    }
+
+    const activeLeaderX = this.isWalkingBackward ? this.spineX[cabNode] : this.heroLocalPos.x;
+    const activeLeaderY = this.isWalkingBackward ? this.spineY[cabNode] : this.heroLocalPos.y;
+    const activeLeaderZ = this.isWalkingBackward ? this.spineZ[cabNode] : this.heroLocalPos.z;
+
+    // 2. Step Rapier3D Wasm + Shallow-Water Fluid Buoyancy + XPBD Soft-Body Pads at ACTIVE leader!
     if (this.suspendedFootTestHeight !== null) {
       this.heroLocalPos.y = this.suspendedFootTestHeight;
+      this.spineY[cabNode] = this.suspendedFootTestHeight;
       this.heroVelocity.set(0, 0, 0);
       this.isGrounded = false;
       this.lastOceanFluidActive = false;
@@ -8223,9 +8355,10 @@ export class PlayStyleManager {
           jumpImpulseY =
             (10.5 + (this.stats.upgrades.bounciness - 1) * 1.2) * heroJumpScale;
           if (hasWalkIntent) {
+            const launchYaw = this.isWalkingBackward ? this.spineYaw[cabNode] : this.heroYaw;
             const launchSpeed = speed * (this.isWalkingBackward ? -0.65 : 0.85);
-            this.heroVelocity.x = Math.sin(this.heroYaw) * launchSpeed;
-            this.heroVelocity.z = Math.cos(this.heroYaw) * launchSpeed;
+            this.heroVelocity.x = Math.sin(launchYaw) * launchSpeed;
+            this.heroVelocity.z = Math.cos(launchYaw) * launchSpeed;
           }
           this.isGrounded = false;
           this.heroSoftSquashVel -= 1.6;
@@ -8234,18 +8367,17 @@ export class PlayStyleManager {
         this.isJumping = false;
       }
 
-      // Coupled Shallow-Water Wave & Archimedes Buoyancy + XPBD Pad Step
       const physStep = this.physicsBridge.stepContiguousCharacterAndWorld(
         {
-          wx: this.heroLocalPos.x,
-          wy: this.heroLocalPos.y,
-          wz: this.heroLocalPos.z,
+          wx: activeLeaderX,
+          wy: activeLeaderY,
+          wz: activeLeaderZ,
           vx: 0,
           vy: this.heroVelocity.y,
           vz: 0,
-          desiredMoveVx: (this.heroLocalPos.x - prevX) / Math.max(0.001, dt),
-          desiredMoveVz: (this.heroLocalPos.z - prevZ) / Math.max(0.001, dt),
-          radius: 0.68,
+          desiredMoveVx: (activeLeaderX - prevLeaderX) / Math.max(0.001, dt),
+          desiredMoveVz: (activeLeaderZ - prevLeaderZ) / Math.max(0.001, dt),
+          radius: leaderIdx === cabNode ? 0.54 : 0.68,
           halfHeight: 0.25,
           jumpImpulseY,
           gravityScale,
@@ -8255,24 +8387,33 @@ export class PlayStyleManager {
         this.hammerWorldScratch
       );
       this.lastOceanFluidActive = physStep.inFluid;
-      this.isSwimmingInPool = inPoolBasin || physStep.inFluid;
+      const leaderPoolDist = pool
+        ? Math.hypot(activeLeaderX - pool.centerX, activeLeaderZ - pool.centerZ)
+        : 999;
+      const leaderInPool = pool ? leaderPoolDist < pool.basinRadius - 0.32 : false;
+      this.isSwimmingInPool = inPoolBasin || leaderInPool || physStep.inFluid;
 
-      if (inPoolBasin && pool) {
+      if (leaderInPool && pool) {
         const targetPoolY =
           pool.waterMesh.position.y -
           0.34 +
           Math.sin(performance.now() * 0.0045) * 0.035;
         this.heroVelocity.y -= 24 * gravityScale * dt;
-        this.heroLocalPos.y += this.heroVelocity.y * dt;
-        if (this.heroLocalPos.y <= targetPoolY) {
-          this.heroLocalPos.y = targetPoolY;
+        const nextY = activeLeaderY + this.heroVelocity.y * dt;
+        if (nextY <= targetPoolY) {
+          this.spineY[leaderIdx] = targetPoolY;
+          if (!this.isWalkingBackward) this.heroLocalPos.y = targetPoolY;
           this.heroVelocity.y = 0;
           this.heroVelocity.x = 0;
           this.heroVelocity.z = 0;
           this.isGrounded = true;
+        } else {
+          this.spineY[leaderIdx] = nextY;
+          if (!this.isWalkingBackward) this.heroLocalPos.y = nextY;
         }
       } else {
-        this.heroLocalPos.y = physStep.wy;
+        this.spineY[leaderIdx] = physStep.wy;
+        if (!this.isWalkingBackward) this.heroLocalPos.y = physStep.wy;
         this.heroVelocity.y = physStep.vy;
         if (physStep.grounded) {
           this.isGrounded = true;
@@ -8400,17 +8541,51 @@ export class PlayStyleManager {
       }
     }
 
-    // 3. Solve Bidirectional Solid-Rod Spine, Coordinated Backward Walking & Multi-Body Non-Clipping!
+    // 3. Solve Bidirectional Solid-Rod Spine, True Back-Led Backward Walking & Multi-Body Non-Clipping!
     this.solveArticulatedSpineAndSolidCollisions(dt, forwardInput, speed);
 
-    const movedDist = Math.hypot(this.heroLocalPos.x - prevX, this.heroLocalPos.z - prevZ);
+    const movedLeaderDist = this.isWalkingBackward
+      ? Math.hypot(this.spineX[cabNode] - prevLeaderX, this.spineZ[cabNode] - prevLeaderZ)
+      : Math.hypot(this.heroLocalPos.x - prevLeaderX, this.heroLocalPos.z - prevLeaderZ);
+    this.lastSanctuaryLeaderDisp = movedLeaderDist;
+
+    const isAirborneSearch = !this.isGrounded && !this.isSwimmingInPool;
     const shouldAnimateSpineFeet =
-      movedDist > 0.0025 || hasWalkIntent || !this.isGrounded || this.isSwimmingInPool;
-    if (this.isSwimmingInPool) {
-      this.animateCapyLegs(this.heroCapy, dt, 10, walkDir);
+      movedLeaderDist > 0.0018 || (hasWalkIntent && (isAirborneSearch || this.isSwimmingInPool));
+
+    if (shouldAnimateSpineFeet || (hasWalkIntent && !this.isStuckNoFooting && movedLeaderDist > 0.0008)) {
+      this.animateCapyLegs(
+        this.heroCapy,
+        dt,
+        this.isWalkingBackward ? 12 : 14,
+        walkDir,
+        movedLeaderDist,
+        hasWalkIntent,
+        isAirborneSearch,
+        this.isSwimmingInPool
+      );
+    } else {
+      this.resetCapyLegs(this.heroCapy, dt);
     }
+
+    if (this.suspendedFootTestHeight === null) {
+      const fwdX = Math.sin(this.heroYaw) * 0.45;
+      const fwdZ = Math.cos(this.heroYaw) * 0.45;
+      const fY = this.getSupportSurfaceY(this.heroLocalPos.x + fwdX, this.heroLocalPos.z + fwdZ);
+      const rY = this.getSupportSurfaceY(this.heroLocalPos.x - fwdX, this.heroLocalPos.z - fwdZ);
+      this.heroCapy.rotation.order = 'YXZ';
+      this.heroCapy.rotation.x = computeTerrainPitchAngle(fY, rY, 0.9, 0.38);
+    } else {
+      this.heroCapy.rotation.x = 0;
+    }
+
     this.recordSnakeBreadcrumb();
-    this.updateDachshundTransforms(dt, shouldAnimateSpineFeet, walkDir);
+    this.updateDachshundTransforms(
+      dt,
+      shouldAnimateSpineFeet || (hasWalkIntent && !this.isStuckNoFooting && movedLeaderDist > 0.0008),
+      walkDir,
+      movedLeaderDist
+    );
 
     // Refresh foot contact telemetry after final segment & limb poses are applied
     this.evaluateFootContactsAndTraction();

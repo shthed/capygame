@@ -1754,6 +1754,7 @@ export class CosmicUniverseBuilder {
       rockInstanced.setMatrixAt(r, dummy.matrix);
     }
     rockInstanced.instanceMatrix.needsUpdate = true;
+    rockInstanced.computeBoundingSphere();
     this.asteroidBeltGroup.add(rockInstanced);
 
     // Fine glittering dust & planetesimal glints

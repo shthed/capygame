@@ -14,9 +14,11 @@ import {
   createTslWaterPhysicalNodeMaterial,
   upgradeMaterialWithTslSightlineFade,
 } from './gpu/WebGpuPipeline';
+import { enforceWeatherParticleCameraClearance } from './physics/QuadrupedGaitSolver';
 
 // Zero-allocation scratch helpers for GPU particle & shader updates
 const _matDummy = new THREE.Object3D();
+const _weatherClearScratch = { x: 0, y: 0, z: 0 };
 const _sunDir = new THREE.Vector3(0.4, 0.8, 0.35);
 const _skyZenith = new THREE.Color();
 const _skyHorizon = new THREE.Color();
@@ -2367,7 +2369,7 @@ export class RealisticWorldEnvironment {
     });
     this.registerWettableMaterial(leafMat, 0.56);
 
-    const leavesPerNode = 11;
+    const leavesPerNode = 15;
     const totalLeaves = foliageNodes.length * leavesPerNode;
     const leafInstancedMesh = new THREE.InstancedMesh(
       RealisticWorldEnvironment.getProceduralLeafGeometry(),
@@ -2388,7 +2390,7 @@ export class RealisticWorldEnvironment {
       const node = foliageNodes[n];
       for (let l = 0; l < leavesPerNode; l++) {
         const spiralAng = l * goldenAngle + n * 0.7;
-        const radial = node.radius * (0.18 + 0.82 * Math.sqrt((l + 0.5) / leavesPerNode));
+        const radial = node.radius * (0.14 + 0.86 * Math.sqrt((l + 0.5) / leavesPerNode));
         const lift = ((l % 3) - 1) * 0.14 * scale;
         leafDummy.position.set(
           node.pos.x + Math.cos(spiralAng) * radial,
@@ -2401,7 +2403,7 @@ export class RealisticWorldEnvironment {
           spiralAng + Math.PI * 0.5,
           (rnd() - 0.5) * 0.35
         );
-        const leafSize = (0.38 + rnd() * 0.24) * scale;
+        const leafSize = (0.46 + rnd() * 0.28) * scale;
         leafDummy.scale.set(leafSize, leafSize, leafSize);
         leafDummy.updateMatrix();
         leafInstancedMesh.setMatrixAt(leafCursor, leafDummy.matrix);
@@ -2670,7 +2672,10 @@ export class RealisticWorldEnvironment {
     exposureScale: number = 1.0,
     dayCycleSpeed: number = 1.0,
     _fogDensityScale: number = 1.0,
-    perfMode: boolean = false
+    perfMode: boolean = false,
+    camWorldX?: number,
+    camWorldY?: number,
+    camWorldZ?: number
   ) {
     this.elapsedSeconds += dt;
 
@@ -2893,6 +2898,10 @@ export class RealisticWorldEnvironment {
     const fallMult = isSnow ? 0.24 : this.activeWeather === 'storm' ? 1.35 : 1.0;
     const windSlant = this.activeWeather === 'storm' ? 0.26 : isRain ? 0.1 : 0.0;
 
+    const camX = camWorldX ?? focusWorldX;
+    const camY = camWorldY ?? 6.8;
+    const camZ = camWorldZ ?? focusWorldZ - 10;
+
     for (let i = 0; i < activeCount; i++) {
       this.pY[i] -= this.pSpeed[i] * fallMult * dt;
       this.pX[i] += windSlant * 14 * dt + (isSnow ? Math.sin(this.elapsedSeconds * 2 + i) * dt : 0);
@@ -2901,10 +2910,22 @@ export class RealisticWorldEnvironment {
         this.pX[i] = focusWorldX + (((i * 73) % 64) - 32);
         this.pZ[i] = focusWorldZ + (((i * 137) % 64) - 32);
       }
-      _matDummy.position.set(this.pX[i], this.pY[i], this.pZ[i]);
+      // Keep precipitation particles outside camera lens exclusion radius so no flat snow disc or
+      // rain streak ever clips across camera.near as a diagonal viewport bar!
+      enforceWeatherParticleCameraClearance(
+        this.pX[i],
+        this.pY[i],
+        this.pZ[i],
+        camX,
+        camY,
+        camZ,
+        3.2,
+        _weatherClearScratch
+      );
+      _matDummy.position.set(_weatherClearScratch.x, _weatherClearScratch.y, _weatherClearScratch.z);
       _matDummy.rotation.set(0, 0, -windSlant);
       if (isSnow) {
-        _matDummy.scale.set(3.2, 0.14, 3.2);
+        _matDummy.scale.set(1.55, 0.16, 1.55);
       } else {
         _matDummy.scale.set(1.0, this.activeWeather === 'storm' ? 1.35 : 1.0, 1.0);
       }

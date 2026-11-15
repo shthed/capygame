@@ -3840,7 +3840,7 @@ export class SeamlessUniverseSimulator {
     const pineCandidates = 18;
     for (let i = 0; i < pineCandidates; i++) {
       const ang = (i / pineCandidates) * Math.PI * 2 + 0.19;
-      if (Math.abs(Math.sin(ang * 2)) > 0.94) continue;
+      if (Math.abs(Math.sin(ang * 2)) > 0.84) continue;
       const r = 27.5 + (i % 3) * 1.9;
       placements.push({
         x: Math.cos(ang) * r,
@@ -3879,6 +3879,10 @@ export class SeamlessUniverseSimulator {
         coneInst.setMatrixAt(i * 3 + tier, _dummyObj.matrix);
       }
     }
+    trunkInst.instanceMatrix.needsUpdate = true;
+    coneInst.instanceMatrix.needsUpdate = true;
+    trunkInst.computeBoundingSphere();
+    coneInst.computeBoundingSphere();
     this.forestGroveGroup.add(trunkInst, coneInst);
 
     const allHerdSpecs: Array<{
@@ -3897,10 +3901,9 @@ export class SeamlessUniverseSimulator {
       { x: -6.2, z: -5.4, scale: 0.64, hat: 'flower', skin: 'sakura', radius: 0.9, speed: 0.74 },
     ];
 
-    const herdSpecs = this.isSoftwareGl ? allHerdSpecs.slice(0, 3) : allHerdSpecs;
-    const lodTier: CapyLodTier = this.isSoftwareGl ? 0 : 2;
-    for (let i = 0; i < herdSpecs.length; i++) {
-      const hs = herdSpecs[i];
+    const lodTier: CapyLodTier = 2;
+    for (let i = 0; i < allHerdSpecs.length; i++) {
+      const hs = allHerdSpecs[i];
       const capy = CapyModelGenerator.createCapybara(
         hs.hat,
         hs.scale,

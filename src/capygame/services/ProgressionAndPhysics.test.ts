@@ -41,6 +41,18 @@ import {
   sampleGhostRunAtTime,
 } from '../engine/physics/YuzuGhostRecorder';
 import {
+  SANE_CABOOSE_LINK_DIST,
+  SANE_HERO_LINK_DIST,
+  SANE_MAX_SPINE_BEND_RAD,
+  SANE_SEGMENT_SPACING,
+  advanceDisplacementCoupledGaitPhase,
+  computeLinearDachshundState,
+  computeTerrainPitchAngle,
+  enforceWeatherParticleCameraClearance,
+  evaluateRealisticLimbPose,
+  solveBidirectionalSpinePass,
+} from '../engine/physics/QuadrupedGaitSolver';
+import {
   MOON_ORBIT_RADIUS_AT_8_85,
   MOON_RADIUS_AT_8_85,
   PLANET_BASE_RADIUS,
@@ -1307,6 +1319,104 @@ test('Open-World Non-Overlapping Archipelago: zero island intersections and unre
   assert.equal(sample.inFluid, true);
   assert.ok(sample.buoyancyAccelY > 15, 'Open ocean supplies upward Archimedes buoyancy');
 });
+
+test('QuadrupedGaitSolver: linear Dachshund growth, displacement-locked gait, 2-joint kinematics, reverse caboose leader & snow camera clearance', () => {
+  // 1. Strictly linear growth: 1 head orange always; each collected fruit adds 1 back fruit + 1 segment
+  const s1 = computeLinearDachshundState(1);
+  assert.equal(s1.collectedBackFruits, 0);
+  assert.equal(s1.bodySegments, 1);
+
+  const s2 = computeLinearDachshundState(2);
+  assert.equal(s2.collectedBackFruits, 1);
+  assert.equal(s2.bodySegments, 2);
+
+  const s5 = computeLinearDachshundState(5);
+  assert.equal(s5.collectedBackFruits, 4);
+  assert.equal(s5.bodySegments, 5);
+  assert.ok(Math.abs((s5.lengthMeters - s2.lengthMeters) - 3 * SANE_SEGMENT_SPACING) < 0.02);
+
+  const sCap = computeLinearDachshundState(120);
+  assert.equal(sCap.bodySegments, 48);
+
+  // 2. Displacement-coupled gait phase: zero phase advance when pinned against an obstacle on ground
+  const blockedPhase = advanceDisplacementCoupledGaitPhase(2.5, 0.0002, 0.04, {
+    hasWalkIntent: true,
+    isAirborne: false,
+    isSwimming: false,
+  });
+  assert.equal(blockedPhase, 2.5);
+
+  const movingPhase = advanceDisplacementCoupledGaitPhase(2.5, 0.24, 0.04, {
+    hasWalkIntent: true,
+    isAirborne: false,
+    isSwimming: false,
+    strideRadius: 0.24,
+  });
+  assert.ok(movingPhase > 3.4 && movingPhase < 3.6);
+
+  const swimmingPhase = advanceDisplacementCoupledGaitPhase(2.5, 0, 0.05, {
+    hasWalkIntent: true,
+    isAirborne: true,
+    isSwimming: false,
+  });
+  assert.ok(swimmingPhase > 2.9);
+
+  // 3. Asymmetric 58% stance / 42% swing limb pose: knee bends strongly in mid-swing, flattens in stance, flips for walkDir=-1
+  const midSwingFwd = evaluateRealisticLimbPose(Math.PI * 2 * 0.21, 1);
+  const midStanceFwd = evaluateRealisticLimbPose(Math.PI * 2 * 0.71, 1);
+  assert.ok(Math.abs(midSwingFwd.kneePitch) > 0.65, 'Swing phase clears paw with strong knee flexion');
+  assert.ok(Math.abs(midStanceFwd.kneePitch) < 0.2, 'Stance phase supports weight near extension');
+  const midSwingRev = evaluateRealisticLimbPose(Math.PI * 2 * 0.21, -1);
+  assert.equal(Math.sign(midSwingRev.hipPitch || 0), -Math.sign(midSwingFwd.hipPitch || 0));
+
+  // 4. Reverse back-led spine solver: Caboose (node N-1) leads movement + yaw while Hero (node 0) trails without folding
+  const totalNodes = 5; // 1 hero + 3 segments + 1 caboose
+  const sx = new Float32Array(totalNodes);
+  const sz = new Float32Array(totalNodes);
+  const syaw = new Float32Array(totalNodes);
+  let accum = 0;
+  for (let n = 0; n < totalNodes; n++) {
+    if (n === 1) accum += SANE_HERO_LINK_DIST;
+    else if (n === totalNodes - 1) accum += SANE_CABOOSE_LINK_DIST;
+    else if (n > 1) accum += SANE_SEGMENT_SPACING;
+    sx[n] = 0;
+    sz[n] = -accum;
+    syaw[n] = 0;
+  }
+  const cabIdx = totalNodes - 1;
+  // Steer & move caboose backward (-Z) and slightly (-X)
+  syaw[cabIdx] = 0.28;
+  sx[cabIdx] -= 0.45;
+  sz[cabIdx] -= 0.95;
+  for (let i = 0; i < 4; i++) {
+    solveBidirectionalSpinePass(
+      sx,
+      sz,
+      syaw,
+      totalNodes,
+      true,
+      SANE_SEGMENT_SPACING,
+      SANE_HERO_LINK_DIST,
+      SANE_CABOOSE_LINK_DIST,
+      SANE_MAX_SPINE_BEND_RAD,
+      true
+    );
+  }
+  // Trailing hero node 0 must follow backward (-Z) and turn behind caboose without telescoping
+  assert.ok(sz[0] < -0.5, `Expected hero z to follow reversing caboose, got ${sz[0]}`);
+  const link0Dist = Math.hypot(sx[0] - sx[1], sz[0] - sz[1]);
+  assert.ok(Math.abs(link0Dist - SANE_HERO_LINK_DIST) < 0.08);
+  const endToEndDist = Math.hypot(sx[0] - sx[cabIdx], sz[0] - sz[cabIdx]);
+  assert.ok(endToEndDist > 2.5, `Anti-jackknife keeps spine elongated (${endToEndDist.toFixed(2)}m)`);
+
+  // 5. Terrain pitch alignment & snow/rain near-plane camera exclusion
+  const uphillPitch = computeTerrainPitchAngle(0.4, 0.0, 0.85);
+  assert.ok(uphillPitch < -0.2);
+  const pushed = enforceWeatherParticleCameraClearance(1.0, 2.0, 1.0, 1.0, 2.0, 1.2, 3.2);
+  const clearDist = Math.hypot(pushed.x - 1.0, pushed.y - 2.0, pushed.z - 1.2);
+  assert.ok(clearDist >= 3.19, `Particle pushed safely outside camera sphere (${clearDist.toFixed(2)}m)`);
+});
+
 
 
 

@@ -415,6 +415,17 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     for (let i = 0; i < 10; i++) mgr.tick(0.05);
     const slotGrowthAfter = t0.slots[0].growth;
 
+    // Verify strictly 1 orange on head + collected fruits mounted on back segments matching linear growth
+    const headStackMeshes = mgr.heroCapy?.userData?.headStackMeshes || [];
+    const anyExtraHeadOrangesVisible = headStackMeshes.some((m) => m.visible);
+    const activeBackFruitsVisible = mgr.dachshundSegments
+      .slice(0, mgr.getCapySnakeTelemetry().bodySegments)
+      .filter((seg) => seg.userData?.riderOrangeGroup?.visible === true).length;
+    const segGeo = mgr.dachshundSegments[0]?.getObjectByName('capyBody')?.geometry;
+    if (segGeo && !segGeo.boundingBox) segGeo.computeBoundingBox();
+    const segGeoBox = segGeo?.boundingBox;
+    const barrelLenZ = segGeoBox ? +(segGeoBox.max.z - segGeoBox.min.z).toFixed(3) : 0;
+
     // Also verify bumping a NON-matching tree (index 5) drops 0 fruits!
     const nonMatchTree = mgr.sanctuaryTrees[5];
     const droppedFromNonMatch = mgr.bumpTreeAndSpawnFruits(nonMatchTree, 1, 0);
@@ -425,23 +436,29 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       slotGrowthBefore: +slotGrowthBefore.toFixed(3),
       slotGrowthAfter: +slotGrowthAfter.toFixed(3),
       droppedFromNonMatch,
+      anyExtraHeadOrangesVisible,
+      activeBackFruitsVisible,
+      barrelLenZ,
     };
   });
   const grownLenLabel = await page.getByTestId('snake-length-label').innerText();
   if (
     !grownCheck ||
-    grownCheck.telemetry.bodySegments < 3 ||
+    grownCheck.telemetry.bodySegments !== Math.min(48, grownCheck.telemetry.fruitsCarried) ||
     grownCheck.telemetry.orangesCollected < 1 ||
     grownCheck.telemetry.fruitsCarried < 2 ||
+    grownCheck.anyExtraHeadOrangesVisible ||
+    grownCheck.activeBackFruitsVisible !== grownCheck.telemetry.fruitsCarried - 1 ||
+    grownCheck.barrelLenZ < 1.5 ||
     !grownCheck.slotRegrowing ||
     grownCheck.droppedFromNonMatch !== 0
   ) {
     throw new Error(
-      `Expected bumping matching tree to drop fruits, regrow buds & grow body logarithmically (and non-matching tree to drop 0), got: ${JSON.stringify(grownCheck)} (HUD: ${grownLenLabel})`
+      `Expected bumping matching tree to drop fruits, regrow buds, show 1 head orange + linear back fruit counters & elongated segments (and non-matching tree to drop 0), got: ${JSON.stringify(grownCheck)} (HUD: ${grownLenLabel})`
     );
   }
   console.log(
-    `✓ Matching-Tree Bump, Live Regrowth (${grownCheck.slotGrowthBefore} -> ${grownCheck.slotGrowthAfter}) & Logarithmic Growth verified: ${grownCheck.telemetry.lengthMeters}m (${grownCheck.telemetry.bodySegments} segs, carried=${grownCheck.telemetry.fruitsCarried})`
+    `✓ Matching-Tree Bump, Live Regrowth (${grownCheck.slotGrowthBefore} -> ${grownCheck.slotGrowthAfter}), Linear Growth (${grownCheck.telemetry.bodySegments} segs, backFruits=${grownCheck.activeBackFruitsVisible}, barrelZ=${grownCheck.barrelLenZ}m) & 1-Head-Orange verified!`
   );
 
   // 6C. Verify Mouth-Size Limit (cannot eat giant Tier 4 tree fruit), Zero Clipping & Capybara-Bump Fruit Knock-Off Shrink!
@@ -464,6 +481,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     const carriedBeforeGiant = mgr.getCapySnakeTelemetry().fruitsCarried;
     mgr.heroLocalPos.set(giantFruit.x, 0, giantFruit.z + giantFruit.radius + 0.35);
     mgr.heroYaw = Math.PI;
+    mgr.resetDachshundTrail();
     for (let step = 0; step < 6; step++) mgr.tick(0.03);
 
     const carriedAfterGiant = mgr.getCapySnakeTelemetry().fruitsCarried;
@@ -831,9 +849,11 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     const beforeBackSegZ = mgr.dachshundSegments[segCount - 1].position.z;
     const beforeBackCabZ = mgr.dachshundCaboose.position.z;
 
-    // Hold backward walking input (moveInput.z = +1 -> forwardRaw = -1)
-    mgr.moveInput.x = 0.15;
+    // Hold backward walking input with turning (moveInput.z = +1 -> forwardRaw = -1, moveInput.x = +0.45)
+    // Caboose MUST lead backward & steer first while middle segments + head trail behind!
+    mgr.moveInput.x = 0.45;
     mgr.moveInput.z = 1.0;
+    const initialCabYaw = mgr.spineYaw[segCount + 1];
     let maxObservedSquash = 0;
     let reverseFlagObserved = false;
     let kneeFlexObserved = 0;
@@ -847,20 +867,28 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     const afterBackHeroZ = mgr.heroLocalPos.z;
     const afterBackSegZ = mgr.dachshundSegments[segCount - 1].position.z;
     const afterBackCabZ = mgr.dachshundCaboose.position.z;
+    const cabYawDelta = Math.abs(mgr.spineYaw[segCount + 1] - initialCabYaw);
 
     // Also test backing directly into Tree 0 at (0, 0.9) to verify solid non-clipping & anti-jackknife!
     for (let b = 0; b < mgr.sanctuaryCapys.length; b++) {
       mgr.sanctuaryCapys[b].capy.position.set(-15.5 - b * 2.5, 0, 16.2);
     }
-    mgr.heroLocalPos.set(0.0, 0.0, 5.2);
-    mgr.heroYaw = 0; // Facing +Z so Caboose starts at z ~ 2.1m cleanly outside Tree 0 (0, 0.9) before backing into it!
+    mgr.heroLocalPos.set(0.0, 0.0, 7.6);
+    mgr.heroYaw = 0; // Facing +Z so 4-seg Caboose (~4.92m back) starts at z ~ 2.68m cleanly outside Tree 0 (0, 0.9)!
     mgr.resetDachshundTrail();
     mgr.moveInput.x = 0;
     mgr.moveInput.z = 1.0;
-    for (let step = 0; step < 22; step++) {
+    for (let step = 0; step < 26; step++) {
       mgr.tick(0.04);
       maxObservedSquash = Math.max(maxObservedSquash, Math.abs(mgr.heroSoftSquash));
     }
+    const walkPhaseBeforePin = mgr.heroCapy.userData.walkCycle || 0;
+    for (let step = 0; step < 10; step++) {
+      mgr.moveInput.z = 1.0; // Keep pressing backward into solid tree trunk
+      mgr.tick(0.04);
+    }
+    const walkPhaseAfterPin = mgr.heroCapy.userData.walkCycle || 0;
+    const walkCycleDeltaWhenPinned = Math.abs(walkPhaseAfterPin - walkPhaseBeforePin);
     mgr.moveInput.x = 0;
     mgr.moveInput.z = 0;
     const cabDistToTree = Math.hypot(
@@ -922,6 +950,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       fadedCountInClear,
       restoredTreeCenterAlpha: +restoredTreeCenterAlpha.toFixed(3),
       reverseFlagObserved,
+      cabLedReverseSteer: cabYawDelta > 0.25,
       allSegmentsWalkedBackward:
         afterBackHeroZ < beforeBackHeroZ - 0.5 &&
         afterBackSegZ < beforeBackSegZ - 0.5 &&
@@ -929,7 +958,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       kneeFlexObserved: +kneeFlexObserved.toFixed(3),
       maxObservedSquash: +maxObservedSquash.toFixed(4),
       solidSlightSquashOnly: maxObservedSquash <= 0.061,
-      reverseObstacleNoClip: cabDistToTree >= t0.trunkRadius + 0.5 - 0.04 && heroCabDist > 1.2,
+      reverseObstacleNoClip: cabDistToTree >= t0.trunkRadius + 0.5 - 0.04 && heroCabDist > 2.0,
+      noMoonwalkWhenBlocked: walkCycleDeltaWhenPinned < 0.15,
+      walkCycleDeltaWhenPinned: +walkCycleDeltaWhenPinned.toFixed(4),
       stuckZeroFeet: stuckEndTelemetry.groundedFeet === 0 && stuckEndTelemetry.isStuckNoFooting === true,
       stuckZeroDisplacement: stuckDisplacement < 0.001,
       resumedGroundedFeet: groundedTelemetry.groundedFeet >= 2 && !groundedTelemetry.isStuckNoFooting,
@@ -955,10 +986,12 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     advancedSimCheck.fadedCountInClear !== 0 ||
     advancedSimCheck.restoredTreeCenterAlpha < 0.98 ||
     !advancedSimCheck.reverseFlagObserved ||
+    !advancedSimCheck.cabLedReverseSteer ||
     !advancedSimCheck.allSegmentsWalkedBackward ||
     advancedSimCheck.kneeFlexObserved < 0.1 ||
     !advancedSimCheck.solidSlightSquashOnly ||
     !advancedSimCheck.reverseObstacleNoClip ||
+    !advancedSimCheck.noMoonwalkWhenBlocked ||
     !advancedSimCheck.stuckZeroFeet ||
     !advancedSimCheck.stuckZeroDisplacement ||
     !advancedSimCheck.resumedGroundedFeet ||
