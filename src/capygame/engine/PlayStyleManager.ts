@@ -128,6 +128,10 @@ import {
   parseHexColorString,
 } from '../config/ProceduralGameConfig';
 import { computeCosmicAgeGyr } from './SeamlessUniverseSimulator';
+import {
+  clampForwardFlightSpeed,
+  stepFlightSpeedGear,
+} from './UniverseScaleMath';
 
 // Pre-allocated math helpers for zero per-frame garbage collection
 const _tempVec3 = new THREE.Vector3();
@@ -271,6 +275,7 @@ export interface GameEventCallbacks {
   onOrbitTelemetryChange?: (telemetry: OrbitTelemetry) => void;
   onZoomThumbnailUpdated?: (bandId: UniverseScaleBandId, dataUrl: string) => void;
   onZoomThumbnailsReset?: () => void;
+  onForestSpecimenDiscovered?: (specimenId: ForestMicroSpecimenId, label: string) => void;
 }
 
 export class PlayStyleManager {
@@ -398,6 +403,8 @@ export class PlayStyleManager {
   private mouselookPitchZ: number = 0;
   public cosmicZoomMultiplier: number = 1.0;
   private cosmicDescentElapsed: number = 0;
+  private lastDiscoveredSpecimenId: ForestMicroSpecimenId | null = null;
+  private readonly gpuWakeParamsScratch = new Float32Array(4);
 
   // Photorealistic Hardware-Accelerated 3D GPU Engine, AAA VFX, World, Mountains, Home Pool & Exponential Trees
   public gpuEngine!: HardwareGpuEngine;
@@ -992,11 +999,32 @@ export class PlayStyleManager {
   }
 
   private scheduleIdlePipelineWarmup(): void {
-    if (typeof window === 'undefined' || this.isWebGpu || this.isSoftwareGl || this.disposed) {
+    if (typeof window === 'undefined' || this.isSoftwareGl || this.disposed) {
+      this.gpuEngine?.markIdleWarmupComplete(true);
       return;
     }
-    const glRenderer = this.renderer as THREE.WebGLRenderer;
-    if (typeof glRenderer.compileAsync !== 'function') {
+
+    const webGpuCompileFn = this.isWebGpu
+      ? (this.renderer as unknown as {
+          compileAsync?: (obj: THREE.Object3D, cam: THREE.Camera, scene: THREE.Scene) => Promise<void>;
+        }).compileAsync
+      : undefined;
+    const glRenderer = this.isWebGpu ? null : (this.renderer as THREE.WebGLRenderer);
+    const compileTargetAsync = (obj: THREE.Object3D): Promise<void> => {
+      if (this.isWebGpu) {
+        if (typeof webGpuCompileFn === 'function') {
+          return webGpuCompileFn.call(this.renderer, obj, this.camera, this.scene).then(() => undefined);
+        }
+        return Promise.resolve();
+      }
+      if (glRenderer && typeof glRenderer.compileAsync === 'function') {
+        return glRenderer.compileAsync(obj, this.camera, this.scene).then(() => undefined);
+      }
+      return Promise.resolve();
+    };
+
+    if (!this.isWebGpu && (!glRenderer || typeof glRenderer.compileAsync !== 'function')) {
+      this.gpuEngine?.markIdleWarmupComplete(true);
       return;
     }
 
@@ -1032,8 +1060,17 @@ export class PlayStyleManager {
     enqueueUniqueFrom(this.sanctuaryGroup);
     enqueueUniqueFrom(this.worldBaseGroup);
     enqueueUniqueFrom(this.vfxEngine.rootGroup);
+    enqueueUniqueFrom(this.worldEnv?.weatherMesh);
+    enqueueUniqueFrom(this.worldEnv?.cloudGroup);
+    enqueueUniqueFrom(this.chronoPad?.group);
+    enqueueUniqueFrom(this.sporeWaterMesh);
     for (let i = 0; i < this.seamlessUniverse.rootGroup.children.length; i++) {
       enqueueUniqueFrom(this.seamlessUniverse.rootGroup.children[i]);
+    }
+
+    if (queue.length === 0) {
+      this.gpuEngine?.markIdleWarmupComplete(true);
+      return;
     }
 
     let index = 0;
@@ -1050,8 +1087,18 @@ export class PlayStyleManager {
       cancelIdleCallback?: (id: number) => void;
     };
 
+    const finishWarmup = () => {
+      if (!cancelled && !this.disposed) {
+        this.gpuEngine?.markIdleWarmupComplete(true);
+      }
+    };
+
     const scheduleNext = () => {
-      if (cancelled || this.disposed || index >= queue.length) {
+      if (cancelled || this.disposed) {
+        return;
+      }
+      if (index >= queue.length) {
+        finishWarmup();
         return;
       }
       if (typeof win.requestIdleCallback === 'function') {
@@ -1062,12 +1109,14 @@ export class PlayStyleManager {
             if (deadline.timeRemaining() > 4 || deadline.didTimeout) {
               const target = queue[index++];
               if (target) {
-                void glRenderer
-                  .compileAsync(target, this.camera, this.scene)
+                void compileTargetAsync(target)
                   .catch(() => undefined)
                   .finally(() => {
-                    if (!cancelled && !this.disposed && index < queue.length) {
+                    if (cancelled || this.disposed) return;
+                    if (index < queue.length) {
                       timerId = window.setTimeout(scheduleNext, stepDelayMs);
+                    } else {
+                      finishWarmup();
                     }
                   });
                 return;
@@ -1083,14 +1132,18 @@ export class PlayStyleManager {
           if (cancelled || this.disposed) return;
           const target = queue[index++];
           if (target) {
-            void glRenderer
-              .compileAsync(target, this.camera, this.scene)
+            void compileTargetAsync(target)
               .catch(() => undefined)
               .finally(() => {
-                if (!cancelled && !this.disposed && index < queue.length) {
+                if (cancelled || this.disposed) return;
+                if (index < queue.length) {
                   scheduleNext();
+                } else {
+                  finishWarmup();
                 }
               });
+          } else {
+            finishWarmup();
           }
         }, stepDelayMs);
       }
@@ -2487,6 +2540,22 @@ export class PlayStyleManager {
       this.launchIntoCosmos(this.currentLogScaleMeters);
     }
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+  }
+
+  public stepFlightThrottle(direction: -1 | 1): number {
+    const nextCruiseVel = stepFlightSpeedGear(this.targetCruiseVelocityLogPerSec, direction);
+    this.setCruiseVelocity(nextCruiseVel);
+    if (Math.abs(nextCruiseVel) < 0.05) {
+      AudioService.playSplash();
+    } else {
+      AudioService.playCosmicWarp(direction > 0 ? 1.08 : 0.92);
+    }
+    return nextCruiseVel;
+  }
+
+  public setForwardFlightSpeed(forwardSpeed: number): void {
+    const clampedForward = clampForwardFlightSpeed(forwardSpeed);
+    this.setCruiseVelocity(clampedForward === 0 ? 0 : -clampedForward);
   }
 
   public engageAutoLanding(): void {
@@ -6015,6 +6084,20 @@ export class PlayStyleManager {
       rippleTex.offset.y = (rippleTex.offset.y + dt * 0.021 * waveMult) % 1;
 
       if (!isPerfMode || (this.bgDistrictFrameCounter & 1) === 0) {
+        if (this.physicsBridge?.fluidSolver) {
+          this.physicsBridge.fluidSolver.writeGpuWakeParams(
+            this.heroCapy.position.x,
+            this.heroCapy.position.z,
+            Math.hypot(this.heroVelocity.x, this.heroVelocity.z),
+            this.gpuWakeParamsScratch
+          );
+          this.gpuEngine?.setGpuWakeParams(
+            this.gpuWakeParamsScratch[0],
+            this.gpuWakeParamsScratch[1],
+            this.gpuWakeParamsScratch[2],
+            this.gpuWakeParamsScratch[3]
+          );
+        }
         const fluidBytes = this.physicsBridge?.fluidSolver.packRippleTextureBytes();
         const rippleDataTex =
           this.sporeRippleTexture ??
@@ -6350,7 +6433,11 @@ export class PlayStyleManager {
     if (this.settings.lock60FpsGovernor !== false) {
       if (res.shouldReduceLoad) {
         this.adaptiveRecoveryAccumSec = 0;
-        if (this.settings.autoCapyLod !== false && this.currentCapyLodTier > 0) {
+        if (
+          !this.isSoftwareGl &&
+          this.settings.autoCapyLod !== false &&
+          this.currentCapyLodTier > 0
+        ) {
           this.applyGlobalCapyLodTier((this.currentCapyLodTier - 1) as CapyLodTier);
         }
         if (!this.isSoftwareGl && nowMs - this.adaptiveLastStepMs >= 1400) {
@@ -9261,8 +9348,10 @@ export class PlayStyleManager {
       inForestWindow
         ? 0.14
         : THREE.MathUtils.lerp(-0.68, 0.14, THREE.MathUtils.smoothstep(logVal, 5.8, 4.7));
+    const idleLookMs = performance.now() - this.mouselookLastActiveTimeMs;
+    const isBasicComfortMode = !this.settings.advancedMode;
     const idleSpaceDrift =
-      !this.mouselookLocked && performance.now() - this.mouselookLastActiveTimeMs > 3200
+      !isBasicComfortMode && !this.mouselookLocked && idleLookMs > 3200
         ? 0.04
         : 0;
     this.cosmicOrbitYaw += (idleSpaceDrift - this.moveInput.x * 1.45) * dt;
@@ -9271,6 +9360,35 @@ export class PlayStyleManager {
       horizonMinPitch,
       1.18
     );
+
+    // Basic Mode Guided Autopilot & Camera Comfort Guardrails:
+    // Smooth horizon pitch stabilization and gentle landmark framing between CapySol, CapyWorld & Sanctuary.
+    if (isBasicComfortMode && !this.mouselookLocked && idleLookMs > 1100) {
+      if (Math.abs(this.moveInput.z) < 0.05) {
+        const comfortPitchTarget = inForestWindow
+          ? 0.34
+          : logVal >= 6.0 && logVal <= 14.5
+            ? 0.32
+            : 0.28;
+        this.cosmicOrbitPitch = THREE.MathUtils.damp(
+          this.cosmicOrbitPitch,
+          Math.max(horizonMinPitch, comfortPitchTarget),
+          2.2,
+          dt
+        );
+      }
+      if (Math.abs(this.moveInput.x) < 0.05 && logVal >= 0.4 && logVal <= 14.8) {
+        const signedYaw = normalizeAngleSigned(this.cosmicOrbitYaw);
+        const guideYaw = logVal <= 3.2 ? 0.15 : 0.06;
+        const dampedYaw = THREE.MathUtils.damp(signedYaw, guideYaw, 1.4, dt);
+        this.cosmicOrbitYaw = dampedYaw;
+      }
+    }
+
+    // Auto-discover active Forest Glade specimen when visiting Leaf & Fur scale
+    if (logVal >= -2.6 && logVal <= -0.95) {
+      this.notifyForestSpecimenDiscovered();
+    }
 
     // Compute projective-invariant camera radius & smooth multi-sector focal anchor
     const canonicalRadius = 38.0;
@@ -9512,8 +9630,19 @@ export class PlayStyleManager {
     return this.seamlessUniverse.getGalaxyMorphology();
   }
 
+  private notifyForestSpecimenDiscovered(): void {
+    const spec = this.seamlessUniverse.getActiveForestSpecimenSpec();
+    if (this.lastDiscoveredSpecimenId === spec.id) {
+      return;
+    }
+    this.lastDiscoveredSpecimenId = spec.id;
+    this.callbacks.onForestSpecimenDiscovered?.(spec.id, spec.label);
+  }
+
   public rerollForestSpecimen(specificId?: ForestMicroSpecimenId): void {
-    this.seamlessUniverse.rerollForestSpecimen(specificId);
+    const spec = this.seamlessUniverse.rerollForestSpecimen(specificId);
+    this.lastDiscoveredSpecimenId = spec.id;
+    this.callbacks.onForestSpecimenDiscovered?.(spec.id, spec.label);
     this.invalidateZoomThumbnails('leaf_fur_micro');
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
   }
@@ -9884,9 +10013,18 @@ export class PlayStyleManager {
     if (this.isVesselFlying()) {
       return this.adjustVesselThrottle(delta);
     }
-    // On the ground in sanctuary, mouse wheel gently adjusts chase camera follow distance
+    // On the ground in sanctuary, mouse wheel gently adjusts chase camera follow distance;
+    // zooming past maximum pull-back (2.0) or a deliberate strong zoom-out gesture lifts back into the Chrono-Vessel
     const curDist = this.settings.cameraDistance ?? 1.0;
-    const nextDist = THREE.MathUtils.clamp(curDist - delta * 0.35, 0.5, 2.0);
+    const rawDist = curDist - delta * 0.35;
+    if (
+      delta < 0 &&
+      (rawDist >= 2.0 || (delta <= -0.3 && this.cosmicStage === 'playing'))
+    ) {
+      this.launchIntoCosmos(CAPYBARA_FOREST_LOG_METERS + Math.abs(delta) * 0.6);
+      return this.adjustVesselThrottle(delta);
+    }
+    const nextDist = THREE.MathUtils.clamp(rawDist, 0.5, 2.0);
     this.settings.cameraDistance = Math.round(nextDist * 100) / 100;
     this.updateSettings(this.settings);
     return this.settings.cameraDistance;

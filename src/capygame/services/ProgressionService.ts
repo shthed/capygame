@@ -22,6 +22,11 @@ import {
   parseAndValidateGhostRun,
   saveYuzuGhostRunDirect,
 } from '../engine/physics/YuzuGhostRecorder';
+import type { ForestMicroSpecimenId } from '../engine/forestMicroSpecimens';
+import {
+  mergeDiscoveredSpecimen,
+  sanitizeDiscoveredSpecimens,
+} from '../engine/UniverseScaleMath';
 
 const SAVE_KEY = 'capy_game_save_v3';
 const LEGACY_SAVE_KEY_V2 = 'capy_game_save_v2';
@@ -205,6 +210,7 @@ export class ProgressionService {
       unlockedCosmetics,
       unlockedObjectMarkers: Boolean(parsed.unlockedObjectMarkers),
       unlockedRealityRescaler: Boolean(parsed.unlockedRealityRescaler),
+      discoveredForestSpecimens: sanitizeDiscoveredSpecimens(parsed.discoveredForestSpecimens),
     };
   }
 
@@ -785,5 +791,21 @@ export class ProgressionService {
     };
     this.saveStats(updated);
     return updated;
+  }
+
+  public static discoverForestSpecimen(
+    stats: PlayerStats,
+    specimenId: ForestMicroSpecimenId
+  ): { stats: PlayerStats; isNew: boolean } {
+    const merged = mergeDiscoveredSpecimen(stats.discoveredForestSpecimens, specimenId);
+    if (!merged.isNew) {
+      return { stats, isNew: false };
+    }
+    const updated: PlayerStats = {
+      ...stats,
+      discoveredForestSpecimens: merged.list,
+    };
+    this.scheduleSaveStats(updated, 150);
+    return { stats: updated, isNew: true };
   }
 }

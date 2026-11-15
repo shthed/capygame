@@ -25,10 +25,36 @@ import {
   measureSceneMemoryFootprint,
   type SceneMemoryFootprint,
 } from './FramePerformanceGovernor';
+import {
+  CLUSTER_GRID_X,
+  CLUSTER_GRID_Y,
+  CLUSTER_GRID_Z,
+  computeVolumetricSunShaftProjection,
+  extractFrustumPlanesInto,
+  evaluateBoundingSphereVisibility,
+  packIndirectDrawBuffer,
+  type FrustumPlane6,
+  type IndirectDrawBatchSpec,
+  type VolumetricShaftProjection,
+} from './GpuCullingAndClusterMath';
 import type { WebGpuPostAndComputePipeline, WebGpuProbeResult } from './WebGpuPipeline';
 
-// Zero-allocation scratch vectors for shadow cascade snapping & rim light positioning
+// Zero-allocation scratch vectors for shadow cascade snapping, frustum culling, and sun shafts
 const _sunOffsetDir = new THREE.Vector3(0.44, 0.82, 0.37).normalize();
+const _pvMatrix = new THREE.Matrix4();
+const _camForwardVec = new THREE.Vector3();
+const _frustumPlanes: FrustumPlane6[] = Array.from({ length: 6 }, () => ({
+  nx: 0,
+  ny: 0,
+  nz: 1,
+  d: 0,
+}));
+const _shaftScratch: VolumetricShaftProjection = {
+  uvX: 0.5,
+  uvY: 0.72,
+  strength: 0,
+  facingSun: 0,
+};
 
 /**
  * Fused single-pass GPU screen-space post-processing shader combining:
@@ -57,6 +83,8 @@ const CapyGpuMasterFilterShader = {
     uChromatic: { value: 0.0006 },
     uScanlines: { value: 0.0 },
     uTime: { value: 0.0 },
+    uSunScreenUv: { value: new THREE.Vector2(0.5, 0.72) },
+    uSunRayStrength: { value: 0.0 },
   },
   vertexShader: `
     varying vec2 vUv;
@@ -83,6 +111,8 @@ const CapyGpuMasterFilterShader = {
     uniform float uChromatic;
     uniform float uScanlines;
     uniform float uTime;
+    uniform vec2 uSunScreenUv;
+    uniform float uSunRayStrength;
 
     varying vec2 vUv;
 
@@ -175,6 +205,17 @@ const CapyGpuMasterFilterShader = {
         float row = vUv.y / max(0.0005, uTexelSize.y);
         float scan = 1.0 - uScanlines * (0.5 + 0.5 * sin(row * 3.14159265));
         col *= scan;
+      }
+
+      // 5b. Subtle Screen-Space Sun/Moon Crepuscular Rays (when sky depth >= 0.92 and strength > 0)
+      if (uSunRayStrength > 0.004) {
+        vec2 rayDelta = vUv - uSunScreenUv;
+        float sunDist = length(rayDelta);
+        float skySample = (uHasDepth > 0.5)
+          ? smoothstep(0.92, 0.998, texture2D(tDepth, clamp(vUv - rayDelta * 0.32, 0.001, 0.999)).x)
+          : 0.4;
+        float shaft = clamp(1.0 - sunDist * 1.25, 0.0, 1.0);
+        col += vec3(1.0, 0.93, 0.74) * (shaft * shaft * skySample * uSunRayStrength * 0.65);
       }
 
       // 6. Smooth Optical Vignette
@@ -324,6 +365,23 @@ export class HardwareGpuEngine {
   private isLowMemoryDevice: boolean = false;
   private cachedMemFootprint: SceneMemoryFootprint | null = null;
   private lastMemMeasureMs: number = -10000;
+  private idleWarmupDone: boolean = false;
+  private culledBatchesCount: number = 0;
+  private visibleBatchesCount: number = 5;
+  private clusteredLightCount: number = 6;
+  private readonly districtBatchSpecs: readonly IndirectDrawBatchSpec[] = [
+    { indexCount: 1536, instanceCount: 1, firstIndex: 0, baseVertex: 0, firstInstance: 0 },
+    { indexCount: 1024, instanceCount: 1, firstIndex: 1536, baseVertex: 0, firstInstance: 1 },
+    { indexCount: 1024, instanceCount: 1, firstIndex: 2560, baseVertex: 0, firstInstance: 2 },
+    { indexCount: 1024, instanceCount: 1, firstIndex: 3584, baseVertex: 0, firstInstance: 3 },
+    { indexCount: 1024, instanceCount: 1, firstIndex: 4608, baseVertex: 0, firstInstance: 4 },
+  ];
+  private readonly districtCentersX = [0, -75, 75, -75, 75];
+  private readonly districtCentersZ = [0, -75, -75, 75, 75];
+  private readonly districtRadii = [38, 42, 34, 48, 44];
+  private readonly districtVisibilityFlags = new Uint8Array(5);
+  private readonly indirectDrawWords = new Uint32Array(25);
+  private readonly gpuWakeParams = new Float32Array(4);
 
   // Cached event listeners for clean disposal
   private readonly onContextLostHandler: (e: Event) => void;
@@ -1060,11 +1118,82 @@ export class HardwareGpuEngine {
       this.bloomPass.strength = this.config.bloomStrength * cosmicOrNightBoost;
     }
 
+    // 4. Screen-space Volumetric Crepuscular Rays + District Indirect Culling Parity
+    this.camera.getWorldDirection(_camForwardVec);
+    _pvMatrix.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    extractFrustumPlanesInto(_pvMatrix.elements, _frustumPlanes);
+    const drawDist = this.config.drawDistance ?? 650;
+    let visBatches = 0;
+    for (let i = 0; i < 5; i++) {
+      const isVis = evaluateBoundingSphereVisibility(
+        this.districtCentersX[i],
+        2.0,
+        this.districtCentersZ[i],
+        this.districtRadii[i],
+        this.camera.position.x,
+        this.camera.position.y,
+        this.camera.position.z,
+        drawDist,
+        _frustumPlanes
+      );
+      this.districtVisibilityFlags[i] = isVis ? 1 : 0;
+      if (isVis) visBatches++;
+    }
+    packIndirectDrawBuffer(this.districtBatchSpecs, this.districtVisibilityFlags, this.indirectDrawWords);
+    this.visibleBatchesCount = visBatches;
+    this.culledBatchesCount = 5 - visBatches;
+    this.clusteredLightCount = isSurfaceVisible ? Math.round(6 + nightFactor * 14) : 2;
+
+    const shaftDir =
+      activeShadowCaster === 'moon' && moonDirection && moonDirection.lengthSq() > 0.001
+        ? moonDirection
+        : sunDirection || _sunOffsetDir;
+    computeVolumetricSunShaftProjection(
+      shaftDir.x,
+      shaftDir.y,
+      shaftDir.z,
+      _pvMatrix.elements,
+      _camForwardVec.x,
+      _camForwardVec.y,
+      _camForwardVec.z,
+      nightFactor,
+      isSurfaceVisible ? 0.12 : 0.9,
+      _shaftScratch
+    );
+
+    if (this.webGpuPipeline) {
+      this.webGpuPipeline.updateEnvironmentUniforms(
+        _shaftScratch.uvX,
+        _shaftScratch.uvY,
+        isSurfaceVisible && this.config.postProcessingEnabled ? _shaftScratch.strength : 0,
+        nightFactor,
+        this.gpuWakeParams[0],
+        this.gpuWakeParams[1],
+        this.gpuWakeParams[2],
+        this.gpuWakeParams[3],
+        this.clusteredLightCount
+      );
+    }
+
     if (this.masterFilterPass) {
       this.masterFilterPass.uniforms['uTime'].value = this.elapsedTime;
       this.masterFilterPass.uniforms['uCameraNear'].value = this.camera.near;
       this.masterFilterPass.uniforms['uCameraFar'].value = this.camera.far;
+      this.masterFilterPass.uniforms['uSunScreenUv'].value.set(_shaftScratch.uvX, _shaftScratch.uvY);
+      this.masterFilterPass.uniforms['uSunRayStrength'].value =
+        isSurfaceVisible && !this.isSoftwareGl ? _shaftScratch.strength : 0.0;
     }
+  }
+
+  public setGpuWakeParams(u: number, v: number, impulse: number, domain: number): void {
+    this.gpuWakeParams[0] = u;
+    this.gpuWakeParams[1] = v;
+    this.gpuWakeParams[2] = impulse;
+    this.gpuWakeParams[3] = domain;
+  }
+
+  public markIdleWarmupComplete(complete: boolean = true): void {
+    this.idleWarmupDone = complete;
   }
 
   private shouldActivateComposer(): boolean {
@@ -1238,6 +1367,18 @@ export class HardwareGpuEngine {
       estimatedTotalVramMB: memFoot.estimatedTotalVramMB,
       deviceMemoryGb: memFoot.deviceMemoryGb,
       lowMemoryModeActive: this.isLowMemoryDevice || this.config.qualityPreset === 'performance',
+      indirectCullingActive: true,
+      culledBatches: this.culledBatchesCount,
+      visibleBatches: this.visibleBatchesCount,
+      clusteredLightsActive:
+        this.isWebGpu ? CLUSTER_GRID_X * CLUSTER_GRID_Y * CLUSTER_GRID_Z : this.clusteredLightCount,
+      gpuWaterWakeGridSize: this.webGpuPipeline ? this.webGpuPipeline.gpuWaterWakeGridSize : 24,
+      subgroupsSupported: Boolean(this.webGpuPipeline?.subgroupsSupported),
+      taaEnabled: Boolean(this.webGpuPipeline?.taaActive),
+      volumetricShaftsActive: Boolean(
+        this.isPostProcessingRunning() && _shaftScratch.strength > 0.005
+      ),
+      idleWarmupComplete: this.idleWarmupDone,
     };
   }
 

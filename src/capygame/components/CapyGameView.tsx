@@ -70,6 +70,8 @@ import {
   parseAndValidateProceduralConfig,
   cloneProceduralConfig,
 } from '../config/ProceduralGameConfig';
+import { FOREST_MICRO_SPECIMENS } from '../engine/forestMicroSpecimens';
+import { formatFlightSpeedReadout } from '../engine/UniverseScaleMath';
 import {
   Sparkles,
   Volume2,
@@ -108,6 +110,7 @@ import {
   Sun,
   Moon,
   Shuffle,
+  BookOpen,
 } from 'lucide-react';
 
 type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
@@ -557,6 +560,10 @@ export const CapyGameView: React.FC = () => {
   });
 
   const [isScaleAtlasOpen, setIsScaleAtlasOpen] = useState<boolean>(false);
+  const [isStickerBookOpen, setIsStickerBookOpen] = useState<boolean>(false);
+  const [isSpokenScaleCardsEnabled, setIsSpokenScaleCardsEnabled] = useState<boolean>(false);
+  const discoveredSpecimensRef = useRef(stats.discoveredForestSpecimens ?? []);
+  discoveredSpecimensRef.current = stats.discoveredForestSpecimens ?? [];
   const [isOpticsOpen, setIsOpticsOpen] = useState<boolean>(false);
   const [liveZoomThumbnails, setLiveZoomThumbnails] = useState<
     Partial<Record<UniverseScaleBandId, string>>
@@ -945,6 +952,18 @@ export const CapyGameView: React.FC = () => {
         },
         onZoomThumbnailsReset: () => {
           setLiveZoomThumbnails({});
+        },
+        onForestSpecimenDiscovered: (specimenId, label) => {
+          const alreadyHas = discoveredSpecimensRef.current.includes(specimenId);
+          setStats((prev) => ProgressionService.discoverForestSpecimen(prev, specimenId).stats);
+          if (!alreadyHas) {
+            const nextCount = Math.min(
+              FOREST_MICRO_SPECIMENS.length,
+              discoveredSpecimensRef.current.length + 1
+            );
+            showToast(`Sticker Found: ${label} (${nextCount}/${FOREST_MICRO_SPECIMENS.length})`);
+            AudioService.playScaleCardChime('microscopic');
+          }
         },
       },
       webGpuInit
@@ -2329,10 +2348,18 @@ export const CapyGameView: React.FC = () => {
           <button
             type="button"
             data-testid="scale-zoom-out-btn"
-            onClick={() => managerRef.current?.stepScaleBand(1)}
-            title={isAdvancedMode ? 'Zoom Out 1 Scale Band (Toward Big Bang 10^+28m)' : 'Zoom Out'}
-            aria-label="Zoom Out Scale"
-            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-6 sm:h-7' : 'w-7 h-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0`}
+            onClick={() =>
+              isAdvancedMode
+                ? managerRef.current?.stepScaleBand(1)
+                : managerRef.current?.stepFlightThrottle(-1)
+            }
+            title={
+              isAdvancedMode
+                ? 'Zoom Out 1 Scale Band (Toward Big Bang 10^+30m)'
+                : 'Slower / Fly Back Smoothly'
+            }
+            aria-label={isAdvancedMode ? 'Zoom Out Scale' : 'Fly Slower or Back'}
+            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-6 sm:h-7' : 'w-6 h-7 sm:w-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0`}
           >
             <Minus className="w-3.5 h-3.5" />
           </button>
@@ -2349,13 +2376,12 @@ export const CapyGameView: React.FC = () => {
                   setIsOpticsOpen(false);
                   setIsInfographicExpanded(false);
                   setIsMenuOpen(false);
-                  managerRef.current?.requestCurrentBandThumbnail();
                 }
                 return next;
               });
             }}
-            title={isAdvancedMode ? 'Open 63-Orders-of-Magnitude Universe Scale Scrubber' : 'Choose Zoom Level'}
-            className={`${isAdvancedMode ? 'h-6 sm:h-7 px-1 sm:px-2' : 'h-7 px-2'} rounded border flex items-center gap-1 text-left transition-colors cursor-pointer ${
+            title={isAdvancedMode ? 'Open 65-Orders-of-Magnitude Universe Scale Scrubber' : 'Choose Zoom Level & Sticker Book'}
+            className={`${isAdvancedMode ? 'h-6 sm:h-7 px-1 sm:px-2' : 'h-7 px-1.5 sm:px-2'} rounded border flex items-center gap-1 text-left transition-colors cursor-pointer ${
               isScaleAtlasOpen
                 ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
                 : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-100'
@@ -2377,10 +2403,18 @@ export const CapyGameView: React.FC = () => {
                 </span>
               </>
             ) : (
-              <span className="text-[11px] font-medium text-zinc-100 max-w-[125px] sm:max-w-[180px] truncate">
-                {universeScale.bandId === 'leaf_fur_micro' && universeScale.forestSpecimenLabel
-                  ? `Leaf & Fur · ${universeScale.forestSpecimenLabel}`
-                  : UNIVERSE_SCALE_BANDS[universeScale.bandIndex]?.shortLabel || 'Zoom'}
+              <span className="flex items-center gap-1 min-w-0 max-w-[96px] sm:max-w-[230px]">
+                <span className="text-[11px] font-medium text-zinc-100 truncate">
+                  {universeScale.bandId === 'leaf_fur_micro' && universeScale.forestSpecimenLabel
+                    ? `Glade · ${universeScale.forestSpecimenLabel}`
+                    : UNIVERSE_SCALE_BANDS[universeScale.bandIndex]?.shortLabel || 'Zoom'}
+                </span>
+                <span
+                  data-testid="basic-top-scale-readout"
+                  className="hidden sm:inline text-[10px] font-mono tabular-nums text-sky-300 shrink-0"
+                >
+                  · {universeScale.scaleFormatted}
+                </span>
               </span>
             )}
             <ChevronDown
@@ -2409,10 +2443,18 @@ export const CapyGameView: React.FC = () => {
           <button
             type="button"
             data-testid="scale-zoom-in-btn"
-            onClick={() => managerRef.current?.stepScaleBand(-1)}
-            title={isAdvancedMode ? 'Zoom In 1 Scale Band (Toward Electron & Photon 10^-35m)' : 'Zoom In'}
-            aria-label="Zoom In Scale"
-            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-6 sm:h-7' : 'w-7 h-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0`}
+            onClick={() =>
+              isAdvancedMode
+                ? managerRef.current?.stepScaleBand(-1)
+                : managerRef.current?.stepFlightThrottle(1)
+            }
+            title={
+              isAdvancedMode
+                ? 'Zoom In 1 Scale Band (Toward Electron & Photon 10^-35m)'
+                : 'Faster / Fly Forward Smoothly'
+            }
+            aria-label={isAdvancedMode ? 'Zoom In Scale' : 'Fly Faster or Forward'}
+            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-6 sm:h-7' : 'w-6 h-7 sm:w-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0`}
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
@@ -2535,14 +2577,19 @@ export const CapyGameView: React.FC = () => {
                       </span>
                     </span>
                   ) : (
-                    <span className="font-medium text-zinc-100 truncate">
-                      {universeScale.active
-                        ? universeScale.bandId === 'leaf_fur_micro' && universeScale.forestSpecimenLabel
-                          ? `Glade · ${universeScale.forestSpecimenLabel}`
-                          : UNIVERSE_SCALE_BANDS[universeScale.bandIndex]?.shortLabel || 'Space'
-                        : cosmicStage === 'singularity'
-                          ? 'Play'
-                          : infographicTargetTitle}
+                    <span className="font-mono text-[10px] sm:text-[11px] font-medium text-sky-300 tabular-nums whitespace-nowrap">
+                      {universeScale.active ? (
+                        <>
+                          <span className="sm:hidden">{universeScale.scaleFormatted}</span>
+                          <span className="hidden sm:inline">
+                            {formatFlightSpeedReadout(universeScale.cruiseVelocityLogPerSec).kidLabel}
+                          </span>
+                        </>
+                      ) : cosmicStage === 'singularity' ? (
+                        'Play'
+                      ) : (
+                        infographicTargetTitle
+                      )}
                     </span>
                   )
                 ) : cosmicStage === 'playing' && !universeScale.active && activeMode === 'sanctuary' ? (
@@ -2681,7 +2728,7 @@ export const CapyGameView: React.FC = () => {
             ) : (
               <Menu className="w-3.5 h-3.5 text-sky-400" />
             )}
-            <span className={isAdvancedMode ? 'hidden sm:inline' : 'inline'}>
+            <span className="hidden sm:inline">
               {isAdvancedMode ? 'World' : 'Worlds'}
             </span>
           </button>
@@ -3195,63 +3242,178 @@ export const CapyGameView: React.FC = () => {
           data-testid="universe-scale-atlas-panel"
           className="fixed top-11 left-2 z-40 pointer-events-auto w-[calc(100vw-16px)] max-w-[390px] bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5"
         >
-          <div className="flex items-start justify-between gap-2 border-b border-white/10 pb-2">
-            <div className="min-w-0">
-              {isAdvancedMode ? (
-                <>
-                  <div className="flex items-center gap-1.5 text-[10px] font-mono tabular-nums text-sky-400">
-                    <span data-testid="scale-scientific-readout">{universeScale.scientificLabel}</span>
-                    <span className="text-zinc-600">·</span>
-                    <span data-testid="scale-human-readout" className="text-amber-300 font-semibold">
-                      {universeScale.scaleFormatted}
-                    </span>
-                  </div>
-                  <h3
-                    data-testid="scale-band-title"
-                    className="text-xs font-semibold text-zinc-100 truncate mt-0.5"
-                  >
-                    {universeScale.bandTitle}
-                  </h3>
-                  <p className="text-[10px] text-zinc-400 line-clamp-1 mt-0.5">
-                    {universeScale.bandSubtitle}
-                  </p>
-                </>
-              ) : (
-                <>
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-400">
-                    Zoom Explorer ({UNIVERSE_SCALE_BANDS.length} Sizes)
-                  </div>
-                  <h3
-                    data-testid="scale-band-title"
-                    className="text-sm font-semibold text-zinc-100 truncate mt-0.5"
-                  >
-                    {UNIVERSE_SCALE_BANDS[universeScale.bandIndex]?.shortLabel || universeScale.bandTitle}
-                  </h3>
-                  <p className="text-[11px] text-zinc-400 line-clamp-1 mt-0.5">
-                    Scroll up or down and tap any picture to fly there!
-                  </p>
-                </>
-              )}
+          <div className="border-b border-white/10 pb-2 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                {isAdvancedMode ? (
+                  <>
+                    <div className="flex items-center gap-1.5 text-[10px] font-mono tabular-nums text-sky-400">
+                      <span data-testid="scale-scientific-readout">{universeScale.scientificLabel}</span>
+                      <span className="text-zinc-600">·</span>
+                      <span data-testid="scale-human-readout" className="text-amber-300 font-semibold whitespace-nowrap">
+                        {universeScale.scaleFormatted}
+                      </span>
+                    </div>
+                    <h3
+                      data-testid="scale-band-title"
+                      className="text-xs font-semibold text-zinc-100 truncate mt-0.5"
+                    >
+                      {universeScale.bandTitle}
+                    </h3>
+                    <p className="text-[10px] text-zinc-400 line-clamp-1 mt-0.5">
+                      {universeScale.bandSubtitle}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-sky-400 whitespace-nowrap">
+                      <span>Zoom Explorer · {UNIVERSE_SCALE_BANDS.length} Sizes</span>
+                      <span className="text-zinc-600">·</span>
+                      <span className="font-mono text-amber-300 tabular-nums normal-case">
+                        {universeScale.scaleFormatted}
+                      </span>
+                    </div>
+                    <h3
+                      data-testid="scale-band-title"
+                      className="text-sm font-semibold text-zinc-100 truncate mt-0.5"
+                    >
+                      {UNIVERSE_SCALE_BANDS[universeScale.bandIndex]?.shortLabel || universeScale.bandTitle}
+                    </h3>
+                    <p className="text-[11px] text-zinc-400 line-clamp-1 mt-0.5">
+                      Tap any card to fly there, or open the Sticker Book!
+                    </p>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                data-testid="close-scale-atlas-btn"
+                onClick={() => setIsScaleAtlasOpen(false)}
+                className="min-h-9 min-w-9 flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
+                aria-label="Collapse Universe Scale Atlas"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
-            <button
-              type="button"
-              data-testid="close-scale-atlas-btn"
-              onClick={() => setIsScaleAtlasOpen(false)}
-              className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
-              aria-label="Collapse Universe Scale Atlas"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                data-testid="toggle-speak-cards-btn"
+                aria-pressed={isSpokenScaleCardsEnabled}
+                onClick={() => {
+                  const next = !isSpokenScaleCardsEnabled;
+                  setIsSpokenScaleCardsEnabled(next);
+                  const curBand = UNIVERSE_SCALE_BANDS[universeScale.bandIndex];
+                  AudioService.playScaleCardChime(curBand?.domain ?? 'cosmic');
+                  if (next && curBand) {
+                    AudioService.speakScaleCardCaption(
+                      `${curBand.shortLabel}. ${KID_FRIENDLY_BAND_DESCRIPTIONS[curBand.id]}`
+                    );
+                  }
+                }}
+                title={isSpokenScaleCardsEnabled ? 'Mute Spoken Scale Cards' : 'Read Scale Cards Aloud'}
+                aria-label="Toggle Spoken Scale Cards"
+                className={`min-h-9 px-2.5 rounded-lg border text-[11px] font-medium flex items-center justify-center gap-1.5 cursor-pointer ${
+                  isSpokenScaleCardsEnabled
+                    ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
+                    : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
+                }`}
+              >
+                <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                <span>{isSpokenScaleCardsEnabled ? 'Voice On' : 'Read Aloud'}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="toggle-sticker-book-btn"
+                aria-pressed={isStickerBookOpen}
+                onClick={() => {
+                  AudioService.playCoin();
+                  setIsStickerBookOpen((prev) => !prev);
+                }}
+                title="Forest Glade Discovery Sticker Book"
+                aria-label="Toggle Forest Glade Sticker Book"
+                className={`min-h-9 px-2.5 rounded-lg border text-[11px] font-medium flex items-center justify-center gap-1.5 cursor-pointer ${
+                  isStickerBookOpen
+                    ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
+                    : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-amber-300'
+                }`}
+              >
+                <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  Stickers {(stats.discoveredForestSpecimens?.length ?? 0)}/{FOREST_MICRO_SPECIMENS.length}
+                </span>
+              </button>
+            </div>
           </div>
 
-          {isAdvancedMode && (
+          {isStickerBookOpen && (
+            <div
+              data-testid="forest-sticker-book-panel"
+              className="p-2.5 rounded-xl bg-zinc-900/95 border border-amber-400/30 space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold text-amber-300">
+                  Micro-Glade Sticker Book ({stats.discoveredForestSpecimens?.length ?? 0}/
+                  {FOREST_MICRO_SPECIMENS.length} Found)
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsStickerBookOpen(false)}
+                  className="text-[10px] text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                >
+                  Back to Sizes
+                </button>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5 max-h-[38vh] overflow-y-auto pr-0.5">
+                {FOREST_MICRO_SPECIMENS.map((spec) => {
+                  const found = Boolean(stats.discoveredForestSpecimens?.includes(spec.id));
+                  const isActiveSpecimen =
+                    universeScale.bandId === 'leaf_fur_micro' &&
+                    universeScale.forestSpecimenId === spec.id;
+                  return (
+                    <button
+                      key={spec.id}
+                      type="button"
+                      data-testid={`sticker-specimen-${spec.id}`}
+                      onClick={() => {
+                        AudioService.playScaleCardChime('microscopic');
+                        if (isSpokenScaleCardsEnabled) {
+                          AudioService.speakScaleCardCaption(`${spec.title}. ${spec.subtitle}`);
+                        }
+                        managerRef.current?.jumpToScaleBand('leaf_fur_micro', false);
+                        managerRef.current?.rerollForestSpecimen(spec.id);
+                      }}
+                      className={`min-h-12 p-1.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                        isActiveSpecimen
+                          ? 'bg-amber-400/25 border-amber-300 text-amber-100'
+                          : found
+                            ? 'bg-emerald-500/15 border-emerald-400/45 text-emerald-100 hover:bg-emerald-500/25'
+                            : 'bg-zinc-950/80 border-white/10 text-zinc-400 hover:bg-zinc-800'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] font-semibold truncate">{spec.kidLabel}</span>
+                        {found && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
+                      </div>
+                      <div className="text-[9px] text-zinc-400 truncate mt-0.5">
+                        {found ? 'Collected!' : 'Tap to Spot'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {isAdvancedMode && !isStickerBookOpen && (
             <>
-              {/* Continuous Logarithmic Powers-of-10 Scrubber (+28 Big Bang <-> +0.8 Forest <-> -35 Photon) */}
+              {/* Continuous Logarithmic Powers-of-10 Scrubber (+30 Multiverse <-> +0.8 Forest <-> -35 Photon) */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-[9px] font-mono text-zinc-400 tabular-nums">
-                  <span>10^-35m Photon</span>
+                  <span>10^-35m Planck</span>
                   <span className="text-emerald-300">10^+0.8m Capy Forest</span>
-                  <span>10^+28m Big Bang</span>
+                  <span>10^+30m Multiverse</span>
                 </div>
                 <input
                   type="range"
@@ -3293,7 +3455,7 @@ export const CapyGameView: React.FC = () => {
                       : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-300'
                   }`}
                 >
-                  {universeScale.autoZoomDir === 1 ? 'Pause ↑' : 'Rise 10⁺²⁸'}
+                  {universeScale.autoZoomDir === 1 ? 'Pause ↑' : 'Rise 10⁺³⁰'}
                 </button>
                 <button
                   type="button"
@@ -3324,64 +3486,77 @@ export const CapyGameView: React.FC = () => {
           )}
 
           {/* Single Long Vertically Scrollable List of All 27 Zoom Levels with Up-to-Date Thumbnails */}
-          <div
-            data-testid="zoom-levels-list"
-            className="flex flex-col gap-2 max-h-[54vh] overflow-y-auto pr-1"
-          >
-            {UNIVERSE_SCALE_BANDS.map((band, idx) => {
-              const isCurrent = band.id === universeScale.bandId;
-              const thumbSrc =
-                liveZoomThumbnails[band.id] || `./assets/zoom_thumbs/${band.id}.jpg`;
-              return (
-                <button
-                  key={band.id}
-                  type="button"
-                  data-testid={`scale-band-btn-${band.id}`}
-                  onClick={() => managerRef.current?.jumpToScaleBand(band.id, false)}
-                  className={`w-full flex items-center gap-2.5 p-2 rounded-xl border text-left transition-colors cursor-pointer shrink-0 ${
-                    isCurrent
-                      ? 'bg-sky-500/20 border-sky-400 text-zinc-100'
-                      : 'bg-zinc-900/90 hover:bg-zinc-800 border-white/10 text-zinc-200'
-                  }`}
-                >
-                  <img
-                    data-testid={`scale-band-thumb-${band.id}`}
-                    src={thumbSrc}
-                    alt={`${band.shortLabel} preview`}
-                    className="w-24 h-[60px] sm:w-28 sm:h-[70px] rounded-lg object-cover shrink-0 bg-zinc-950 border border-white/15"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1.5">
-                      <span className="text-[10px] font-mono text-sky-400 tabular-nums truncate">
-                        {isAdvancedMode
-                          ? `10^${band.logMeters >= 0 ? `+${band.logMeters}` : band.logMeters}m · #${idx + 1}`
-                          : `#${idx + 1} · ${
-                              band.domain === 'cosmic'
-                                ? 'Space'
-                                : band.domain === 'planetary'
-                                  ? 'Earth'
-                                  : 'Tiny World'
-                            }`}
-                      </span>
-                      {isCurrent && (
-                        <span className="px-1.5 py-0.5 rounded bg-sky-400 text-zinc-950 text-[9px] font-semibold shrink-0">
-                          HERE
+          {!isStickerBookOpen && (
+            <div
+              data-testid="zoom-levels-list"
+              className="flex flex-col gap-2 max-h-[54vh] overflow-y-auto pr-1"
+            >
+              {UNIVERSE_SCALE_BANDS.map((band, idx) => {
+                const isCurrent = band.id === universeScale.bandId;
+                const thumbSrc =
+                  liveZoomThumbnails[band.id] || `./assets/zoom_thumbs/${band.id}.jpg`;
+                const realisticSizeShort = formatPhysicalScaleMeters(band.logMeters);
+                return (
+                  <button
+                    key={band.id}
+                    type="button"
+                    data-testid={`scale-band-btn-${band.id}`}
+                    onClick={() => {
+                      AudioService.playScaleCardChime(band.domain);
+                      if (isSpokenScaleCardsEnabled) {
+                        AudioService.speakScaleCardCaption(
+                          `${band.shortLabel}. ${realisticSizeShort}. ${KID_FRIENDLY_BAND_DESCRIPTIONS[band.id]}`
+                        );
+                      }
+                      managerRef.current?.jumpToScaleBand(band.id, false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 rounded-xl border text-left transition-colors cursor-pointer shrink-0 ${
+                      isAdvancedMode ? 'p-2 min-h-[64px]' : 'p-2.5 min-h-[76px]'
+                    } ${
+                      isCurrent
+                        ? 'bg-sky-500/20 border-sky-400 text-zinc-100'
+                        : 'bg-zinc-900/90 hover:bg-zinc-800 border-white/10 text-zinc-200'
+                    }`}
+                  >
+                    <img
+                      data-testid={`scale-band-thumb-${band.id}`}
+                      src={thumbSrc}
+                      alt={`${band.shortLabel} preview`}
+                      className="w-24 h-[60px] sm:w-28 sm:h-[70px] rounded-lg object-cover shrink-0 bg-zinc-950 border border-white/15"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="text-[10px] font-mono text-sky-400 tabular-nums truncate">
+                          {isAdvancedMode
+                            ? `10^${band.logMeters >= 0 ? `+${band.logMeters}` : band.logMeters}m · ${realisticSizeShort} · #${idx + 1}`
+                            : `#${idx + 1} · ${realisticSizeShort} · ${
+                                band.domain === 'cosmic' || band.domain === 'stellar'
+                                  ? 'Space'
+                                  : band.domain === 'planetary' || band.domain === 'terrestrial'
+                                    ? 'Earth'
+                                    : 'Tiny World'
+                              }`}
                         </span>
-                      )}
+                        {isCurrent && (
+                          <span className="px-1.5 py-0.5 rounded bg-sky-400 text-zinc-950 text-[9px] font-semibold shrink-0">
+                            HERE
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs sm:text-sm font-semibold text-zinc-100 truncate mt-0.5">
+                        {isAdvancedMode ? band.title : band.shortLabel}
+                      </div>
+                      <p className="text-[11px] text-zinc-400 line-clamp-2 mt-0.5 leading-snug">
+                        {isAdvancedMode
+                          ? band.subtitle
+                          : KID_FRIENDLY_BAND_DESCRIPTIONS[band.id]}
+                      </p>
                     </div>
-                    <div className="text-xs sm:text-sm font-semibold text-zinc-100 truncate mt-0.5">
-                      {isAdvancedMode ? band.title : band.shortLabel}
-                    </div>
-                    <p className="text-[11px] text-zinc-400 line-clamp-2 mt-0.5 leading-snug">
-                      {isAdvancedMode
-                        ? band.subtitle
-                        : KID_FRIENDLY_BAND_DESCRIPTIONS[band.id]}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <button
             type="button"
@@ -3390,7 +3565,7 @@ export const CapyGameView: React.FC = () => {
               managerRef.current?.resumeSurfacePlayFromForest();
               setIsScaleAtlasOpen(false);
             }}
-            className="w-full py-2 px-3 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 font-semibold text-xs transition-colors cursor-pointer"
+            className="w-full min-h-11 py-2 px-3 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 font-semibold text-xs transition-colors cursor-pointer"
           >
             {isAdvancedMode
               ? 'Land & Control Capybara in Forest (10⁺⁰·⁸ m)'
@@ -7511,35 +7686,128 @@ export const CapyGameView: React.FC = () => {
       })()}
 
       {/* =====================================================================
+          RIGHT-HAND VERTICAL FLIGHT SPEED SLIDER (Forward + / Hover 0 / Back -)
+          Solid zinc surface (zero backdrop-blur) pinned cleanly on right margin.
+         ===================================================================== */}
+      {universeScale.active &&
+        !isFirstRunSetupOpen &&
+        !webglError &&
+        !isJsonEditorOpen &&
+        !isSettingsOpen &&
+        !isAboutOpen &&
+        !isDebugReportOpen &&
+        !isMenuOpen &&
+        !isOpticsOpen && (() => {
+          const speedReadout = formatFlightSpeedReadout(universeScale.cruiseVelocityLogPerSec);
+          const sliderVal = Math.max(-8, Math.min(8, speedReadout.forwardSpeed));
+          return (
+            <aside
+              data-testid="right-flight-speed-panel"
+              aria-label="Ship Forward and Back Speed Control"
+              className="fixed right-2 sm:right-3 top-1/2 -translate-y-1/2 z-20 pointer-events-auto flex flex-col items-center gap-1.5 px-1.5 py-2 rounded-2xl bg-zinc-950/92 border border-white/15 shadow-2xl text-zinc-100 select-none"
+            >
+              <button
+                type="button"
+                data-testid="right-speed-fwd-btn"
+                onClick={() => managerRef.current?.stepFlightThrottle(1)}
+                title="Fly Faster / Forward"
+                aria-label="Increase Forward Flight Speed"
+                className="w-9 h-9 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-cyan-300 flex flex-col items-center justify-center text-[9px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span className="leading-none">Fwd</span>
+              </button>
+
+              <div className="relative w-9 h-32 sm:h-40 flex items-center justify-center">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-y-2 left-1/2 -translate-x-1/2 w-2 rounded-full bg-gradient-to-b from-cyan-400/35 via-zinc-700 to-amber-400/35 border border-white/10"
+                />
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-1.5 right-1.5 top-1/2 -translate-y-1/2 h-0.5 bg-white/45 rounded-full"
+                />
+                <input
+                  type="range"
+                  data-testid="right-flight-speed-slider"
+                  min={-8}
+                  max={8}
+                  step={0.1}
+                  value={sliderVal}
+                  onChange={(e) => {
+                    const fwd = parseFloat(e.target.value);
+                    managerRef.current?.setForwardFlightSpeed(fwd);
+                  }}
+                  aria-label="Ship Flight Speed Slider (Up Forward, Center Hover, Down Back)"
+                  title={`Flight Speed: ${speedReadout.kidLabel}`}
+                  className="relative z-10 w-32 sm:w-36 h-4 -rotate-90 appearance-none bg-transparent cursor-pointer accent-cyan-300"
+                />
+              </div>
+
+              <button
+                type="button"
+                data-testid="right-speed-stop-btn"
+                onClick={() => managerRef.current?.setForwardFlightSpeed(0)}
+                title="Click to Stop / Hover"
+                aria-label="Hover and Stop Ship"
+                className={`w-12 min-h-8 px-1 py-1 rounded-lg border text-[9px] font-mono tabular-nums text-center cursor-pointer transition-colors ${
+                  speedReadout.mode === 'forward'
+                    ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+                    : speedReadout.mode === 'reverse'
+                      ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
+                      : 'bg-zinc-900 border-white/10 text-zinc-300'
+                }`}
+              >
+                {speedReadout.shortLabel}
+              </button>
+
+              <button
+                type="button"
+                data-testid="right-speed-back-btn"
+                onClick={() => managerRef.current?.stepFlightThrottle(-1)}
+                title="Fly Slower / Backward"
+                aria-label="Increase Backward Flight Speed"
+                className="w-9 h-9 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-amber-300 flex flex-col items-center justify-center text-[9px] font-semibold cursor-pointer"
+              >
+                <Minus className="w-3.5 h-3.5" />
+                <span className="leading-none">Back</span>
+              </button>
+            </aside>
+          );
+        })()}
+
+      {/* =====================================================================
           FUTURE CAPYBARA CHRONO-VESSEL FLIGHT STRIP (Collapsible Bottom Controls)
           Crisp solid zinc surface (zero backdrop-blur) during cosmic voyage.
          ===================================================================== */}
       {universeScale.active && !isFirstRunSetupOpen && !webglError && !isJsonEditorOpen && !isSettingsOpen && (
         <div
           data-testid="chrono-vessel-flight-strip"
-          className={`fixed bottom-2 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2.5 py-1.5 text-zinc-100 ${
-            isAdvancedMode ? 'w-[calc(100vw-16px)] max-w-[700px]' : 'w-auto max-w-[calc(100vw-16px)]'
+          className={`fixed bottom-2 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2 py-1.5 text-zinc-100 ${
+            isAdvancedMode ? 'w-[calc(100vw-16px)] max-w-[700px]' : 'w-auto max-w-[calc(100vw-12px)]'
           }`}
         >
           {!isAdvancedMode ? (
-            <div className="flex flex-wrap items-center justify-center gap-1.5">
+            <div className="flex flex-nowrap items-center justify-center gap-1.5 whitespace-nowrap">
               <button
                 type="button"
-                onClick={() => managerRef.current?.stepScaleBand(1)}
-                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                data-testid="basic-throttle-slower-btn"
+                onClick={() => managerRef.current?.stepFlightThrottle(-1)}
+                title="Fly Slower or Backward Smoothly"
+                className="min-h-11 px-2.5 sm:px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-white/12 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
               >
-                <Minus className="w-3 h-3" />
-                <span>Zoom Out</span>
+                <Minus className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span>Slower</span>
               </button>
               <button
                 type="button"
                 data-testid="chrono-land-pad-btn"
                 onClick={() => managerRef.current?.engageAutoLanding()}
-                className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-xs font-semibold cursor-pointer whitespace-nowrap"
+                className="min-h-11 px-3 sm:px-3.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
               >
                 Play on Island!
               </button>
-              {universeScale.bandId === 'leaf_fur_micro' && (
+              {universeScale.bandId === 'leaf_fur_micro' ? (
                 <button
                   type="button"
                   data-testid="shuffle-forest-specimen-btn"
@@ -7548,19 +7816,35 @@ export const CapyGameView: React.FC = () => {
                     managerRef.current?.rerollForestSpecimen();
                   }}
                   title="Pick a random Forest Glade specimen"
-                  className="px-2.5 py-1.5 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 border border-amber-400/45 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                  className="min-h-11 px-2.5 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 border border-amber-400/45 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
                 >
-                  <Shuffle className="w-3 h-3 shrink-0" />
-                  <span>{universeScale.forestSpecimenLabel || 'Specimen'}</span>
+                  <Shuffle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{universeScale.forestSpecimenLabel || 'Glade'}</span>
                 </button>
+              ) : (
+                universeScale.autoZoomDir !== 0 && (
+                  <button
+                    type="button"
+                    data-testid="basic-throttle-hover-btn"
+                    onClick={() => managerRef.current?.setForwardFlightSpeed(0)}
+                    title="Stop & Hover"
+                    aria-label="Stop and Hover"
+                    className="min-h-11 px-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 border border-cyan-400/45 text-xs font-mono tabular-nums cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
+                  >
+                    <Pause className="w-3 h-3 shrink-0" />
+                    <span>Hover</span>
+                  </button>
+                )
               )}
               <button
                 type="button"
-                onClick={() => managerRef.current?.stepScaleBand(-1)}
-                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                data-testid="basic-throttle-faster-btn"
+                onClick={() => managerRef.current?.stepFlightThrottle(1)}
+                title="Fly Faster Forward Smoothly"
+                className="min-h-11 px-2.5 sm:px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-white/12 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
               >
-                <span>Zoom In</span>
-                <Plus className="w-3 h-3" />
+                <span>Faster</span>
+                <Plus className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
               </button>
             </div>
           ) : (

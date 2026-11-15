@@ -468,6 +468,41 @@ export class ShallowWaterFluidSolver {
 
     return _fluidScratch;
   }
+
+  /**
+   * Computes normalized UV coordinates and wake displacement impulse for the
+   * 128x128 WGSL compute shallow-water wake grid (`@compute @workgroup_size(8, 8)`).
+   * Zero per-frame heap allocations.
+   */
+  public writeGpuWakeParams(
+    heroWx: number,
+    heroWz: number,
+    heroSpeed: number,
+    outParams: Float32Array
+  ): boolean {
+    const dPool = Math.hypot(heroWx - -8.8, heroWz - 3.0);
+    if (dPool < 4.2 && heroSpeed > 0.2) {
+      outParams[0] = (heroWx - -8.8) / 8.4 + 0.5;
+      outParams[1] = (heroWz - 3.0) / 8.4 + 0.5;
+      outParams[2] = Math.min(0.16, heroSpeed * 0.016);
+      outParams[3] = 1.0; // Home Pool domain
+      return true;
+    }
+    const dLagoon = Math.hypot(
+      heroWx - ZONE_LOCATIONS.spore.x,
+      heroWz - ZONE_LOCATIONS.spore.z
+    );
+    if (dLagoon < 36.0 && heroSpeed > 0.2) {
+      outParams[0] = (heroWx - ZONE_LOCATIONS.spore.x) / 76.0 + 0.5;
+      outParams[1] = (heroWz - ZONE_LOCATIONS.spore.z) / 76.0 + 0.5;
+      outParams[2] = Math.min(0.18, heroSpeed * 0.017);
+      outParams[3] = 2.0; // Spore Lagoon domain
+      return true;
+    }
+    outParams[2] = 0;
+    outParams[3] = 0;
+    return false;
+  }
 }
 
 /**

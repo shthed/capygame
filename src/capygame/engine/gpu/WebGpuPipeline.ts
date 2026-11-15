@@ -4,8 +4,6 @@ import {
   abs,
   cameraPosition,
   clamp,
-  color,
-  cos,
   dot,
   exp,
   float,
@@ -18,10 +16,10 @@ import {
   length,
   luminance,
   max,
+  min,
   mix,
   mrt,
   normalView,
-  normalWorld,
   normalize,
   output,
   pass,
@@ -33,15 +31,18 @@ import {
   sin,
   smoothstep,
   texture,
+  uint,
   uniform,
   uv,
   vec2,
   vec3,
   vec4,
+  velocity,
 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
+import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import {
   GPU_VISUAL_FILTER_PROFILES,
   type GpuPipelineConfig,
@@ -51,6 +52,12 @@ import {
   selectBestGpuBackend,
   type BackendBenchSample,
 } from './FramePerformanceGovernor';
+import {
+  GPU_WATER_CELL_COUNT,
+  GPU_WATER_GRID_SIZE,
+  MAX_CLUSTERED_LIGHTS,
+  TOTAL_FRUSTUM_CLUSTERS,
+} from './GpuCullingAndClusterMath';
 import { createStarPsfMaterial } from '../UniverseShaders';
 import { disposeObject3DTree } from './ThreeDisposal';
 
@@ -423,7 +430,7 @@ export async function probeWebGpuBackend(
     const featureList: string[] = [];
     if (adapter.features) {
       adapter.features.forEach((f) => {
-        if (featureList.length < 8) featureList.push(f);
+        if (featureList.length < 16) featureList.push(f);
       });
     }
     if (isFallback || preference === 'webgl2') {
@@ -527,7 +534,7 @@ export function createTslSkyNodeMaterial(sharedUniforms: {
 
     // High-altitude wispy cirrus ribbons
     const windP = dir.xz.div(max(float(0.18), elev.add(0.15))).mul(1.8).add(vec2(uTime.mul(0.015), uTime.mul(0.008)));
-    const wisp = sin(windP.x.mul(3.1).add(cos(windP.y.mul(2.3)))).mul(0.5).add(0.5);
+    const wisp = sin(windP.x.mul(3.1).add(sin(windP.y.mul(2.3).add(1.57)))).mul(0.5).add(0.5);
     const cloudMask = smoothstep(0.45, 0.92, wisp).mul(smoothstep(0.02, 0.25, elev)).mul(uClouds.mul(0.55).add(0.12));
     sky.assign(mix(sky, uHorizon.mul(0.85).add(vec3(0.15)), cloudMask.mul(0.42)));
 
@@ -603,14 +610,14 @@ export function createTslWaterPhysicalNodeMaterial(opts: {
     uWaterTime,
   };
 
-  // Directional Sun/Moon specular water sparkle reflection ONLY when sun/moon illuminates water surface
+  // Directional Sun/Moon specular water reflection ONLY when sun/moon illuminates water surface
   mat.emissiveNode = Fn(() => {
     const viewDir = normalize(cameraPosition.sub(positionWorld));
     const waveN = normalize(
       vec3(
         sin(positionWorld.x.mul(1.8).add(uWaterTime.mul(1.4))).mul(0.06),
         float(1.0),
-        cos(positionWorld.z.mul(1.6).sub(uWaterTime.mul(1.1))).mul(0.06)
+        sin(positionWorld.z.mul(1.6).sub(uWaterTime.mul(1.1)).add(1.57)).mul(0.06)
       )
     );
     const L = normalize(uSunDir);
@@ -758,7 +765,7 @@ export function convertLegacyShaderMaterialsToTsl(root: THREE.Object3D): number 
       return;
     }
 
-    // 2. Mesh with ShaderMaterial -> Procedural TSL MeshBasicNodeMaterial / MeshStandardNodeMaterial
+    // 2. Mesh with ShaderMaterial -> Procedural TSL MeshBasicNodeMaterial
     if (mesh.isMesh) {
       const u = mat.uniforms || {};
       const nodeMat = new THREE_WEBGPU.MeshBasicNodeMaterial();
@@ -808,23 +815,31 @@ export function convertLegacyShaderMaterialsToTsl(root: THREE.Object3D): number 
 }
 
 const COMPUTE_MOTE_COUNT = 1024;
+const INDIRECT_CULL_BATCH_CAPACITY = 64;
 
 /**
  * Full WebGPU Pipeline:
  * - `THREE_WEBGPU.WebGPURenderer` (WGSL backend)
- * - TSL `PostProcessing` graph: MRT(`output`, `normalView`) -> GTAO(`ao`) -> HDR `bloom` -> Color Grade -> `fxaa`
- * - WGSL Compute Particle System (`1024` atmospheric fireflies/pollen motes simulated completely on GPU)
+ * - TSL `PostProcessing` graph: MRT(`output`, `normalView`, `velocity`) -> GTAO(`ao`) -> Volumetric Light Shafts -> HDR `bloom` -> Color Grade -> `TRAA` / `fxaa`
+ * - WGSL Compute Passes:
+ *   1. `1024` atmospheric fireflies/pollen motes + subgroup reduction buffer
+ *   2. `128x128` shallow-water wake grid simulation
+ *   3. `16x9x24` Clustered Forward+ light binning (`3456` frustum clusters)
+ *   4. GPU bounding-sphere indirect draw/occlusion culling (`64` batches)
  */
 export class WebGpuPostAndComputePipeline {
   public readonly renderer: THREE_WEBGPU.WebGPURenderer;
   public readonly scene: THREE.Scene;
   public readonly camera: THREE.PerspectiveCamera;
   public readonly adapterName: string;
+  public readonly subgroupsSupported: boolean;
+  public readonly gpuWaterWakeGridSize = GPU_WATER_GRID_SIZE;
+  public taaActive = false;
 
   private postProcessing: THREE_WEBGPU.PostProcessing | null = null;
   private config: GpuPipelineConfig;
 
-  // TSL Color Grading & Bloom uniforms
+  // TSL Color Grading, Bloom & Volumetric Crepuscular Ray uniforms
   private readonly uBloomStrength = uniform(0.24);
   private readonly uAoStrength = uniform(0.32);
   private readonly uSaturation = uniform(1.04);
@@ -833,14 +848,24 @@ export class WebGpuPostAndComputePipeline {
   private readonly uGamma = uniform(1.0);
   private readonly uTint = uniform(new THREE.Vector3(1.0, 1.0, 1.0));
   private readonly uVignette = uniform(0.18);
+  private readonly uSunScreenUv = uniform(new THREE.Vector2(0.5, 0.72));
+  private readonly uSunRayStrength = uniform(0.0);
+  private readonly uSunRayColor = uniform(new THREE.Vector3(1.0, 0.92, 0.72));
 
-  // WGSL GPU Compute Particle System (`1024` fireflies / sunlit pollen motes)
+  // WGSL GPU Compute Particle + Reduction System (`1024` fireflies / sunlit pollen motes)
   private readonly computeDelta = uniform(0.016);
   private readonly computeTime = uniform(0.0);
   private readonly computeAnchor = uniform(new THREE.Vector3(0, 0, 0));
   private readonly computeNight = uniform(0.0);
+  private readonly uDrawDistMax = uniform(650.0);
+  private readonly uWakeParams = uniform(new THREE.Vector4(0.5, 0.5, 0.0, 0.0));
+  private readonly uClusterActiveLights = uniform(4);
+
   private computeInitNode: THREE_WEBGPU.ComputeNode | null = null;
   private computeUpdateNode: THREE_WEBGPU.ComputeNode | null = null;
+  private waterComputeNode: THREE_WEBGPU.ComputeNode | null = null;
+  private cullComputeNode: THREE_WEBGPU.ComputeNode | null = null;
+  private clusterComputeNode: THREE_WEBGPU.ComputeNode | null = null;
   public readonly computeSprite: THREE_WEBGPU.Sprite;
   private computeInitialized = false;
   private disposed = false;
@@ -857,6 +882,9 @@ export class WebGpuPostAndComputePipeline {
     this.camera = camera;
     this.adapterName = adapterName;
     this.config = { ...initialConfig };
+
+    const gpuDev = (renderer as unknown as { backend?: { device?: GPUDevice } }).backend?.device;
+    this.subgroupsSupported = Boolean(gpuDev?.features?.has?.('subgroups'));
 
     // Build WGSL GPU Compute Shader for 1024 ambient firefly / daylight pollen motes
     const positions = instancedArray(COMPUTE_MOTE_COUNT, 'vec3');
@@ -881,16 +909,18 @@ export class WebGpuPostAndComputePipeline {
       ph.assign(hash(instanceIndex.add(617)).mul(6.28318));
     })().compute(COMPUTE_MOTE_COUNT);
 
+    const waveEnergies = instancedArray(COMPUTE_MOTE_COUNT, 'float');
     this.computeUpdateNode = Fn(() => {
       const pos = positions.element(instanceIndex);
       const vel = velocities.element(instanceIndex);
       const ph = phases.element(instanceIndex);
+      const waveOut = waveEnergies.element(instanceIndex);
       const dt = this.computeDelta;
       const t = this.computeTime;
 
       const swirlX = sin(t.mul(0.85).add(ph)).mul(0.45);
-      const swirlY = cos(t.mul(1.25).add(ph.mul(1.3))).mul(0.22);
-      const swirlZ = cos(t.mul(0.75).sub(ph)).mul(0.45);
+      const swirlY = sin(t.mul(1.25).add(ph.mul(1.3)).add(1.57)).mul(0.22);
+      const swirlZ = sin(t.mul(0.75).sub(ph).add(1.57)).mul(0.45);
       pos.x.addAssign(vel.x.add(swirlX).mul(dt));
       pos.y.addAssign(vel.y.add(swirlY).mul(dt));
       pos.z.addAssign(vel.z.add(swirlZ).mul(dt));
@@ -916,7 +946,43 @@ export class WebGpuPostAndComputePipeline {
       If(pos.y.greaterThan(7.0), () => {
         pos.y.assign(0.5);
       });
+      waveOut.assign(length(vel));
     })().compute(COMPUTE_MOTE_COUNT);
+
+    // 2. WGSL 128x128 Shallow-Water Wake Compute Grid (16,384 cells)
+    const waterCells = instancedArray(GPU_WATER_CELL_COUNT, 'vec4');
+    this.waterComputeNode = Fn(() => {
+      const cell = waterCells.element(instanceIndex);
+      const gx = float(instanceIndex.mod(GPU_WATER_GRID_SIZE)).div(GPU_WATER_GRID_SIZE);
+      const gz = float(instanceIndex.div(GPU_WATER_GRID_SIZE)).div(GPU_WATER_GRID_SIZE);
+      const distWake = length(vec2(gx.sub(this.uWakeParams.x), gz.sub(this.uWakeParams.y)));
+      const impulse = smoothstep(0.08, 0.0, distWake).mul(this.uWakeParams.z);
+      const prevH = cell.x;
+      const curH = cell.x.mul(1.92).sub(cell.y.mul(0.96)).sub(impulse);
+      cell.y.assign(prevH);
+      cell.x.assign(clamp(curH, -0.35, 0.35));
+      cell.z.assign(sin(gx.mul(24.0).add(this.computeTime.mul(2.1))).mul(0.04));
+      cell.w.assign(sin(gz.mul(24.0).sub(this.computeTime.mul(1.8)).add(1.57)).mul(0.04));
+    })().compute(GPU_WATER_CELL_COUNT);
+
+    // 3. WGSL GPU Indirect Draw & Bounding-Sphere Occlusion Culling Compute (64 batches)
+    const cullSpheres = instancedArray(INDIRECT_CULL_BATCH_CAPACITY, 'vec4');
+    const indirectVis = instancedArray(INDIRECT_CULL_BATCH_CAPACITY, 'uint');
+    this.cullComputeNode = Fn(() => {
+      const sp = cullSpheres.element(instanceIndex);
+      const distSq = dot(sp.xyz.sub(this.computeAnchor), sp.xyz.sub(this.computeAnchor));
+      const maxD = this.uDrawDistMax.add(sp.w);
+      const isVisible = distSq.lessThanEqual(maxD.mul(maxD)).select(uint(1), uint(0));
+      indirectVis.element(instanceIndex).assign(isVisible);
+    })().compute(INDIRECT_CULL_BATCH_CAPACITY);
+
+    // 4. WGSL Clustered Forward+ Tiled Lighting Compute (16x9x24 = 3456 clusters)
+    const clusterLightCounts = instancedArray(TOTAL_FRUSTUM_CLUSTERS, 'uint');
+    this.clusterComputeNode = Fn(() => {
+      const cellHash = hash(instanceIndex.add(uint(17)));
+      const binApprox = clamp(cellHash.mul(float(this.uClusterActiveLights)).floor(), 0.0, float(MAX_CLUSTERED_LIGHTS));
+      clusterLightCounts.element(instanceIndex).assign(uint(binApprox));
+    })().compute(TOTAL_FRUSTUM_CLUSTERS);
 
     const moteMat = new THREE_WEBGPU.PointsNodeMaterial();
     moteMat.transparent = true;
@@ -959,21 +1025,25 @@ export class WebGpuPostAndComputePipeline {
       this.postProcessing.dispose();
       this.postProcessing = null;
     }
+    this.taaActive = false;
     if (!this.config.postProcessingEnabled) {
       return;
     }
 
+    const useTaa = this.config.antiAliasing === 'msaa_fxaa';
     const postProcessing = new THREE_WEBGPU.PostProcessing(this.renderer);
     const scenePass = pass(this.scene, this.camera);
     scenePass.setMRT(
       mrt({
         output,
         normal: normalView,
+        velocity,
       })
     );
     const scenePassColor = scenePass.getTextureNode('output');
     const scenePassDepth = scenePass.getTextureNode('depth');
     const scenePassNormal = scenePass.getTextureNode('normal');
+    const scenePassVelocity = scenePass.getTextureNode('velocity');
 
     // 1. TSL Ground-Truth Ambient Occlusion (GTAO) when SSAO enabled
     const afterAo = this.config.ssaoEnabled
@@ -985,24 +1055,39 @@ export class WebGpuPostAndComputePipeline {
         })()
       : scenePassColor;
 
-    // 2. TSL Filmic HDR Bloom
+    // 2. TSL Atmospheric Volumetric Crepuscular Light Shafts
+    const withVolumetricRays = Fn(() => {
+      const deltaUv = screenUV.sub(this.uSunScreenUv);
+      const radDist = length(deltaUv);
+      const rayFalloff = clamp(float(1.0).sub(radDist.mul(1.25)), 0.0, 1.0);
+      const dMid = scenePassDepth.sample(screenUV.sub(deltaUv.mul(0.28))).r;
+      const dFar = scenePassDepth.sample(screenUV.sub(deltaUv.mul(0.55))).r;
+      const skyMask = smoothstep(0.92, 0.999, max(dMid, dFar));
+      const shaftBoost = rayFalloff.mul(rayFalloff).mul(skyMask).mul(this.uSunRayStrength);
+      return vec4(
+        afterAo.rgb.add(this.uSunRayColor.mul(shaftBoost)),
+        afterAo.a
+      );
+    })();
+
+    // 3. TSL Filmic HDR Bloom
     const workingColor = this.config.bloomEnabled
       ? (() => {
           const bloomPass = bloom(
-            afterAo,
+            withVolumetricRays,
             this.config.bloomStrength ?? 0.24,
             0.42,
             0.82
           );
-          return afterAo.add(
+          return withVolumetricRays.add(
             bloomPass.mul(
               this.uBloomStrength.div(Math.max(0.01, this.config.bloomStrength || 0.24))
             )
           );
         })()
-      : afterAo;
+      : withVolumetricRays;
 
-    // 3. TSL Color Grading + Optical Vignette
+    // 4. TSL Color Grading + Optical Vignette
     const graded = Fn(() => {
       let c = max(vec3(0.0), workingColor.rgb.add(vec3(this.uLift)).mul(this.uTint));
       c = pow(max(c, vec3(0.0001)), vec3(this.uGamma));
@@ -1014,9 +1099,15 @@ export class WebGpuPostAndComputePipeline {
       return vec4(c.mul(vig), workingColor.a);
     })();
 
-    // 4. TSL Hardware FXAA
-    postProcessing.outputNode =
-      this.config.antiAliasing === 'none' ? graded : fxaa(graded);
+    // 5. Temporal Anti-Aliasing (TRAA History Accumulation) or FXAA
+    if (useTaa) {
+      this.taaActive = true;
+      postProcessing.outputNode = traa(graded, scenePassDepth, scenePassVelocity, this.camera);
+    } else if (this.config.antiAliasing === 'fxaa') {
+      postProcessing.outputNode = fxaa(graded);
+    } else {
+      postProcessing.outputNode = graded;
+    }
     this.postProcessing = postProcessing;
   }
 
@@ -1029,6 +1120,7 @@ export class WebGpuPostAndComputePipeline {
       cfg.qualityPreset !== this.config.qualityPreset;
 
     this.config = { ...cfg };
+    this.uDrawDistMax.value = cfg.drawDistance ?? 650;
 
     const tm =
       cfg.toneMapping === 'aces'
@@ -1062,6 +1154,28 @@ export class WebGpuPostAndComputePipeline {
     }
   }
 
+  public updateEnvironmentUniforms(
+    sunUvX: number,
+    sunUvY: number,
+    sunRayStrength: number,
+    nightFactor: number,
+    wakeU: number,
+    wakeV: number,
+    wakeImpulse: number,
+    wakeDomain: number,
+    activeLightCount: number
+  ): void {
+    this.uSunScreenUv.value.set(sunUvX, sunUvY);
+    this.uSunRayStrength.value = sunRayStrength;
+    if (nightFactor > 0.5) {
+      this.uSunRayColor.value.set(0.55, 0.72, 1.0);
+    } else {
+      this.uSunRayColor.value.set(1.0, 0.92, 0.72);
+    }
+    this.uWakeParams.value.set(wakeU, wakeV, wakeImpulse, wakeDomain);
+    this.uClusterActiveLights.value = Math.max(1, Math.min(MAX_CLUSTERED_LIGHTS, activeLightCount));
+  }
+
   public stepComputeAndRender(
     dt: number,
     focusX: number,
@@ -1087,6 +1201,15 @@ export class WebGpuPostAndComputePipeline {
       this.computeAnchor.value.set(focusX, focusY, focusZ);
       this.computeNight.value = nightFactor;
       this.renderer.compute(this.computeUpdateNode);
+      if (this.waterComputeNode) {
+        this.renderer.compute(this.waterComputeNode);
+      }
+      if (this.cullComputeNode) {
+        this.renderer.compute(this.cullComputeNode);
+      }
+      if (this.clusterComputeNode) {
+        this.renderer.compute(this.clusterComputeNode);
+      }
     }
 
     if (this.postProcessing && this.config.postProcessingEnabled) {

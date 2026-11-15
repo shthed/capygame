@@ -508,6 +508,63 @@ class CapyAudioService {
     }
   }
 
+  public playScaleCardChime(
+    domain: 'cosmic' | 'stellar' | 'planetary' | 'terrestrial' | 'microscopic' | 'quantum'
+  ): void {
+    if (this.isMuted) return;
+    this.initContext();
+    const dry = this.getDryNode();
+    if (!this.ctx || !dry) return;
+
+    const domainRootFreqs: Record<typeof domain, [number, number]> = {
+      cosmic: [392.0, 587.33],
+      stellar: [440.0, 659.25],
+      planetary: [493.88, 739.99],
+      terrestrial: [523.25, 783.99],
+      microscopic: [587.33, 880.0],
+      quantum: [659.25, 987.77],
+    };
+    const [rootHz, fifthHz] = domainRootFreqs[domain] || [523.25, 783.99];
+    const t = this.ctx.currentTime;
+    const oscA = this.ctx.createOscillator();
+    const oscB = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    oscA.type = 'sine';
+    oscA.frequency.setValueAtTime(rootHz, t);
+    oscB.type = 'triangle';
+    oscB.frequency.setValueAtTime(fifthHz, t + 0.045);
+
+    gain.gain.setValueAtTime(0.08, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+
+    oscA.connect(gain);
+    oscB.connect(gain);
+    gain.connect(dry);
+    if (this.reverbInput) gain.connect(this.reverbInput);
+
+    oscA.start(t);
+    oscB.start(t + 0.045);
+    oscA.stop(t + 0.3);
+    oscB.stop(t + 0.3);
+  }
+
+  public speakScaleCardCaption(text: string): void {
+    if (this.isMuted || typeof window === 'undefined' || !text.trim()) return;
+    try {
+      const synth = window.speechSynthesis;
+      if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return;
+      synth.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 1.02;
+      utter.pitch = 1.08;
+      utter.volume = 0.82;
+      synth.speak(utter);
+    } catch {
+      // Ignore speech synthesis restrictions cleanly
+    }
+  }
+
   public dispose(): void {
     this.stopAmbientMusic();
     if (this.ctx) {

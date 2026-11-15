@@ -1,4 +1,5 @@
 import type { ForestMicroSpecimenId } from './engine/forestMicroSpecimens';
+import { formatRealisticScaleMeters } from './engine/UniverseScaleMath';
 export type { ForestMicroSpecimenId };
 
 export type PlayStyle = 'sanctuary' | 'spore' | 'breakout' | 'runner' | 'fallguys';
@@ -460,6 +461,7 @@ export interface PlayerStats {
   unlockedCosmetics: string[];
   unlockedObjectMarkers?: boolean;
   unlockedRealityRescaler?: boolean;
+  discoveredForestSpecimens?: ForestMicroSpecimenId[];
 }
 
 export const OBJECT_MARKERS_DNA_COST = 12;
@@ -521,6 +523,7 @@ export const INITIAL_PLAYER_STATS: PlayerStats = {
   unlockedCosmetics: ['yuzu', 'flower'],
   unlockedObjectMarkers: false,
   unlockedRealityRescaler: false,
+  discoveredForestSpecimens: [],
 };
 
 // ============================================================================
@@ -1493,18 +1496,18 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     shortLabel: 'Filament',
     subtitle: 'Gravitational dark matter and baryon bridge linking galaxy superclusters across intergalactic space',
     logMeters: 24.0,
-    typicalSizeLabel: '1.0×10^24 m · 105 Mly',
+    typicalSizeLabel: '1.0×10^24 m · 106 Mly',
     domain: 'cosmic',
     skyHex: 0x02040c,
     accentHex: 0x67e8f9,
   },
   {
     id: 'supercluster',
-    title: 'Supercluster (Laniakea & Great Attractor)',
+    title: 'Supercluster Core (Laniakea Basin)',
     shortLabel: 'Supercluster',
-    subtitle: 'Gravitational basin of 100,000 galaxies streaming along cosmic streamlines toward the Great Attractor',
+    subtitle: 'Central supercluster basin (10.6 Mly view) channeling galactic flows toward the Great Attractor',
     logMeters: 23.0,
-    typicalSizeLabel: '1.0×10^23 m · 10.5 Mly',
+    typicalSizeLabel: '1.0×10^23 m · 10.6 Mly',
     domain: 'cosmic',
     skyHex: 0x02040a,
     accentHex: 0xfbbf24,
@@ -1515,7 +1518,7 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     shortLabel: 'Cluster',
     subtitle: 'Gravitationally bound swarm of thousands of galaxies immersed in hot X-ray intracluster plasma',
     logMeters: 22.2,
-    typicalSizeLabel: '1.6×10^22 m · 1.7 Mly',
+    typicalSizeLabel: '1.6×10^22 m · 1.68 Mly',
     domain: 'cosmic',
     skyHex: 0x03040e,
     accentHex: 0xf472b6,
@@ -1533,11 +1536,11 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
   },
   {
     id: 'spiral_arms',
-    title: 'Spiral Arms (Orion-Cygnus Spur · 26,000 ly)',
+    title: 'Spiral Arms (Orion-Cygnus Spur · 2,655 ly)',
     shortLabel: 'Spiral Arms',
-    subtitle: 'Solar neighborhood inside the Milky Way Orion-Cygnus Spur, ~50% radius from core, OB supergiants & dust rifts',
+    subtitle: 'Solar neighborhood inside the Milky Way Orion-Cygnus Spur (~26,000 ly from Galactic Core)',
     logMeters: 19.4,
-    typicalSizeLabel: '2.5×10^19 m · 2,600 ly',
+    typicalSizeLabel: '2.5×10^19 m · 2,655 ly',
     domain: 'cosmic',
     skyHex: 0x030209,
     accentHex: 0x38bdf8,
@@ -1548,18 +1551,18 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     shortLabel: 'Nebulas',
     subtitle: 'Ionized H-II gas clouds, dark absorptive Bok globules, M16 pillars of creation, and Herbig-Haro shock jets',
     logMeters: 17.2,
-    typicalSizeLabel: '1.6×10^17 m · 17 ly',
+    typicalSizeLabel: '1.6×10^17 m · 16.8 ly',
     domain: 'stellar',
     skyHex: 0x030208,
     accentHex: 0xf43f5e,
   },
   {
     id: 'stellar_systems',
-    title: 'Stellar & Planetary Systems (Solar System)',
+    title: 'Stellar & Planetary Systems (CapySol System)',
     shortLabel: 'Stellar System',
-    subtitle: '0.005–50,000 AU · Central Star, Terrestrial Planets, Asteroids, Jovian Giants, Kuiper Belt & Oort Cloud',
+    subtitle: '59.6 AU Neptune-Kuiper orbital span · Central Star, Rocky Worlds, Asteroid Belt & Gas Giants',
     logMeters: 12.95,
-    typicalSizeLabel: '1.5×10^13 m · 100 AU',
+    typicalSizeLabel: '8.9×10^12 m · 59.6 AU',
     domain: 'stellar',
     skyHex: 0x010308,
     accentHex: 0xfacc15,
@@ -1568,20 +1571,20 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     id: 'planetary_system',
     title: 'Planetary System & Moon Orbits',
     shortLabel: 'Planetary System',
-    subtitle: 'Planetary Hill sphere, Capy-Moon orbital ellipse (384,400 km), and ring plane',
+    subtitle: 'CapyWorld Hill sphere & Capy-Moon orbital span (384,400 km semi-major radius)',
     logMeters: 8.85,
-    typicalSizeLabel: '7.1×10^8 m · Hill Sphere & Moon Orbit',
+    typicalSizeLabel: '7.1×10^8 m · 708,000 km',
     domain: 'planetary',
     skyHex: 0x010206,
     accentHex: 0x38bdf8,
   },
   {
     id: 'planet',
-    title: 'Planet & Continents (Capy-Earth)',
+    title: 'Planet & Continents (CapyWorld)',
     shortLabel: 'Planet',
-    subtitle: '12,742 km terrestrial sphere, azure oceans, green continents, and polar ice caps',
+    subtitle: '12,589 km terrestrial view (~12,742 km Earth diameter), azure oceans & green continents',
     logMeters: 7.10,
-    typicalSizeLabel: '1.27×10^7 m · Planetary Diameter',
+    typicalSizeLabel: '1.26×10^7 m · 12,589 km',
     domain: 'planetary',
     skyHex: 0x01040c,
     accentHex: 0x22c55e,
@@ -1722,9 +1725,9 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     id: 'planck_quantum_foam',
     title: 'Planck Quantum Foam',
     shortLabel: 'Planck Scale',
-    subtitle: 'Spacetime metric fluctuations at 1.616×10^-35 m bridging to T=0 Big Bang',
+    subtitle: 'Spacetime metric fluctuations at 10^-35 m (0.62 Planck length; 1 l_P = 1.616×10^-35 m)',
     logMeters: -35.0,
-    typicalSizeLabel: '1.62×10^-35 m · 1 l_P',
+    typicalSizeLabel: '1.0×10^-35 m · 0.62 l_P',
     domain: 'quantum',
     skyHex: 0x020108,
     accentHex: 0xe879f9,
@@ -1785,58 +1788,5 @@ export function findNearestScaleBandIndex(logMeters: number): number {
 }
 
 export function formatPhysicalScaleMeters(logMeters: number): string {
-  const meters = Math.pow(10, logMeters);
-  if (logMeters >= 25.0) {
-    const gly = meters / 9.4607e24;
-    return `${gly >= 10 ? gly.toFixed(0) : gly.toFixed(2)} Gly`;
-  }
-  if (logMeters >= 22.0) {
-    const mly = meters / 9.4607e21;
-    return `${mly >= 10 ? mly.toFixed(0) : mly.toFixed(1)} Mly`;
-  }
-  if (logMeters >= 15.98) {
-    const ly = meters / 9.4607e15;
-    return `${ly >= 100 ? ly.toFixed(0) : ly.toFixed(2)} ly`;
-  }
-  if (logMeters >= 11.0) {
-    const au = meters / 1.4959787e11;
-    return `${au >= 10 ? au.toFixed(1) : au.toFixed(2)} AU`;
-  }
-  if (logMeters >= 3.0) {
-    const km = meters / 1e3;
-    return km >= 1e5
-      ? `${(km / 1e3).toFixed(0)}k km`
-      : km >= 100
-        ? `${km.toFixed(0)} km`
-        : `${km.toFixed(2)} km`;
-  }
-  if (logMeters >= 0.0) {
-    return `${meters >= 10 ? meters.toFixed(1) : meters.toFixed(2)} m`;
-  }
-  if (logMeters >= -2.5) {
-    return `${(meters * 100).toFixed(2)} cm`;
-  }
-  if (logMeters >= -3.5) {
-    return `${(meters * 1e3).toFixed(2)} mm`;
-  }
-  if (logMeters >= -6.5) {
-    return `${(meters * 1e6).toFixed(2)} µm`;
-  }
-  if (logMeters >= -9.5) {
-    return `${(meters * 1e9).toFixed(2)} nm`;
-  }
-  if (logMeters >= -12.5) {
-    return `${(meters * 1e12).toFixed(2)} pm`;
-  }
-  if (logMeters >= -16.5) {
-    return `${(meters * 1e15).toFixed(2)} fm`;
-  }
-  if (logMeters >= -20.5) {
-    return `${(meters * 1e18).toFixed(2)} am`;
-  }
-  const planckLengths = Math.pow(10, logMeters - -34.7915);
-  if (logMeters <= -33.0) {
-    return `${planckLengths.toFixed(1)} l_P`;
-  }
-  return `10^${logMeters.toFixed(1)} m`;
+  return formatRealisticScaleMeters(logMeters);
 }

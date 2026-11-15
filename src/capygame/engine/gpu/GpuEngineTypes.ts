@@ -245,6 +245,15 @@ export interface GpuEngineTelemetry {
   estimatedTotalVramMB: number;
   deviceMemoryGb: number | null;
   lowMemoryModeActive: boolean;
+  indirectCullingActive?: boolean;
+  culledBatches?: number;
+  visibleBatches?: number;
+  clusteredLightsActive?: number;
+  gpuWaterWakeGridSize?: number;
+  subgroupsSupported?: boolean;
+  taaEnabled?: boolean;
+  volumetricShaftsActive?: boolean;
+  idleWarmupComplete?: boolean;
 }
 
 export type ProfilerPhaseId =
