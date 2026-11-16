@@ -33,6 +33,7 @@ export default defineConfig({
     format: 'es',
   },
   optimizeDeps: {
+    holdUntilCrawlEnd: false,
     esbuildOptions: {
       sourcemap: false,
     },

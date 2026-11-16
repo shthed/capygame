@@ -96,7 +96,22 @@ test('Target scale flight advances steadily through intervening space without ju
   assert.equal(current, target);
 });
 
-test('Spiral flight curve sweeps an exact 360 degrees (2π rad) through every zoom level band', () => {
+test('Spiral flight curve is the default trajectory (migrating legacy saves) and sweeps 360° (2π rad) per band', () => {
+  assert.equal(ProgressionService.sanitizeGameSettings(null).flightTrajectory, 'spiral');
+  // Legacy localStorage settings saved before spiral became default must migrate to spiral
+  assert.equal(
+    ProgressionService.sanitizeGameSettings({ flightTrajectory: 'straight' }).flightTrajectory,
+    'spiral'
+  );
+  // Explicit user toggle to straight persists cleanly
+  assert.equal(
+    ProgressionService.sanitizeGameSettings({
+      flightTrajectory: 'straight',
+      flightTrajectoryUserSelected: true,
+    }).flightTrajectory,
+    'straight'
+  );
+
   const bandLogs = UNIVERSE_SCALE_BANDS.map((b) => b.logMeters);
   for (let i = 0; i < bandLogs.length - 1; i++) {
     const startAngle = computeSpiralOrbitAngleRadians(bandLogs[i], bandLogs);

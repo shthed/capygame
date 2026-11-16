@@ -7797,7 +7797,10 @@ export const CapyGameView: React.FC = () => {
                 aria-pressed={isSpiral}
                 onClick={() => {
                   const next = isSpiral ? 'straight' : 'spiral';
-                  updateGameSettings({ flightTrajectory: next });
+                  updateGameSettings({
+                    flightTrajectory: next,
+                    flightTrajectoryUserSelected: true,
+                  });
                   managerRef.current?.setFlightTrajectory(next);
                 }}
                 title={
