@@ -10,20 +10,20 @@ import { FOREST_MICRO_SPECIMENS, type ForestMicroSpecimenId } from './forestMicr
  * `cruiseVelocityLogPerSec = -forwardSpeed`.
  */
 export const FLIGHT_SPEED_GEARS: readonly number[] = [
-  -8.0,
-  -5.5,
-  -3.2,
-  -1.6,
+  -1.25,
   -0.65,
+  -0.32,
+  -0.16,
+  -0.08,
   0.0,
+  0.08,
+  0.16,
+  0.32,
   0.65,
-  1.6,
-  3.2,
-  5.5,
-  8.0,
+  1.25,
 ];
 
-export const MAX_FLIGHT_SPEED_MAGNITUDE = 12.0;
+export const MAX_FLIGHT_SPEED_MAGNITUDE = 2.0;
 
 /**
  * Steps to the next discrete smooth speed gear (`direction: +1` for Faster / more forward,
@@ -39,7 +39,7 @@ export function stepFlightSpeedGear(
   if (direction > 0) {
     // Faster -> find first gear strictly greater than currentForward + epsilon
     for (let i = 0; i < FLIGHT_SPEED_GEARS.length; i++) {
-      if (FLIGHT_SPEED_GEARS[i] > currentForward + 0.08) {
+      if (FLIGHT_SPEED_GEARS[i] > currentForward + 0.025) {
         const next = -FLIGHT_SPEED_GEARS[i];
         return next === 0 ? 0 : next;
       }
@@ -49,7 +49,7 @@ export function stepFlightSpeedGear(
   } else {
     // Slower -> find highest gear strictly less than currentForward - epsilon
     for (let i = FLIGHT_SPEED_GEARS.length - 1; i >= 0; i--) {
-      if (FLIGHT_SPEED_GEARS[i] < currentForward - 0.08) {
+      if (FLIGHT_SPEED_GEARS[i] < currentForward - 0.025) {
         const prev = -FLIGHT_SPEED_GEARS[i];
         return prev === 0 ? 0 : prev;
       }
@@ -62,7 +62,7 @@ export function stepFlightSpeedGear(
 export function clampForwardFlightSpeed(forwardSpeed: number): number {
   if (!Number.isFinite(forwardSpeed)) return 0;
   const clamped = Math.max(-MAX_FLIGHT_SPEED_MAGNITUDE, Math.min(MAX_FLIGHT_SPEED_MAGNITUDE, forwardSpeed));
-  return Math.abs(clamped) < 0.08 ? 0 : Math.round(clamped * 100) / 100;
+  return Math.abs(clamped) < 0.03 ? 0 : Math.round(clamped * 100) / 100;
 }
 
 export function formatFlightSpeedReadout(cruiseVelLogPerSec: number): {
@@ -71,7 +71,7 @@ export function formatFlightSpeedReadout(cruiseVelLogPerSec: number): {
   shortLabel: string;
   kidLabel: string;
 } {
-  const forwardSpeed = Math.abs(cruiseVelLogPerSec) < 0.08 ? 0 : -cruiseVelLogPerSec;
+  const forwardSpeed = Math.abs(cruiseVelLogPerSec) < 0.03 ? 0 : -cruiseVelLogPerSec;
   if (forwardSpeed === 0) {
     return {
       mode: 'hover',
@@ -81,7 +81,7 @@ export function formatFlightSpeedReadout(cruiseVelLogPerSec: number): {
     };
   }
   const abs = Math.abs(forwardSpeed);
-  const mag = abs >= 10 ? abs.toFixed(0) : abs.toFixed(1);
+  const mag = abs >= 10 ? abs.toFixed(0) : abs >= 1.0 ? abs.toFixed(1) : abs.toFixed(2);
   if (forwardSpeed > 0) {
     return {
       mode: 'forward',
@@ -101,7 +101,27 @@ export function formatFlightSpeedReadout(cruiseVelLogPerSec: number): {
 export type FlightTrajectoryMode = 'straight' | 'spiral';
 export type MediaSpeedAction = 'rewind' | 'play_pause' | 'fast_forward';
 
-export const MEDIA_SPEED_GEARS: readonly number[] = [0.65, 1.6, 3.2, 5.5, 8.0];
+export const MEDIA_SPEED_GEARS: readonly number[] = [0.08, 0.16, 0.32, 0.65, 1.25];
+export const STEADY_TARGET_GLIDE_MAX_LOG_PER_SEC = 0.9;
+
+/**
+ * Advances `currentLog` steadily through space toward `targetLog` at a bounded,
+ * constant cruise rate with a gentle arrival cushion instead of exponential warping.
+ */
+export function stepSteadyLogScaleTowardTarget(
+  currentLog: number,
+  targetLog: number,
+  dt: number,
+  maxRateLogPerSec: number = STEADY_TARGET_GLIDE_MAX_LOG_PER_SEC
+): number {
+  const diff = targetLog - currentLog;
+  const absDiff = Math.abs(diff);
+  if (absDiff < 0.0004 || dt <= 0) return targetLog;
+  const easeWindow = 0.25;
+  const easeFactor = absDiff < easeWindow ? Math.max(0.3, absDiff / easeWindow) : 1.0;
+  const step = Math.min(absDiff, Math.max(0.005 * dt, maxRateLogPerSec * easeFactor * dt));
+  return currentLog + Math.sign(diff) * step;
+}
 
 /**
  * Steps cruise velocity using a clean 3-button transport interface:
@@ -110,24 +130,24 @@ export const MEDIA_SPEED_GEARS: readonly number[] = [0.65, 1.6, 3.2, 5.5, 8.0];
 export function stepMediaSpeedControl(
   currentCruiseVelLogPerSec: number,
   action: MediaSpeedAction,
-  resumeForwardMagnitude: number = 1.6
+  resumeForwardMagnitude: number = 0.16
 ): number {
-  const currentForward = Math.abs(currentCruiseVelLogPerSec) < 0.05 ? 0 : -currentCruiseVelLogPerSec;
+  const currentForward = Math.abs(currentCruiseVelLogPerSec) < 0.03 ? 0 : -currentCruiseVelLogPerSec;
 
   if (action === 'play_pause') {
-    if (Math.abs(currentForward) > 0.05) {
+    if (Math.abs(currentForward) > 0.03) {
       return 0;
     }
-    const clampedResume = Math.max(0.65, Math.min(8.0, Math.abs(resumeForwardMagnitude) || 1.6));
+    const clampedResume = Math.max(0.08, Math.min(1.25, Math.abs(resumeForwardMagnitude) || 0.16));
     return -clampedResume;
   }
 
   if (action === 'fast_forward') {
-    if (currentForward <= 0.05) {
-      return -1.6;
+    if (currentForward <= 0.03) {
+      return -0.32;
     }
     for (let i = 0; i < MEDIA_SPEED_GEARS.length; i++) {
-      if (MEDIA_SPEED_GEARS[i] > currentForward + 0.08) {
+      if (MEDIA_SPEED_GEARS[i] > currentForward + 0.025) {
         return -MEDIA_SPEED_GEARS[i];
       }
     }
@@ -135,12 +155,12 @@ export function stepMediaSpeedControl(
   }
 
   // action === 'rewind'
-  if (currentForward >= -0.05) {
-    return 1.6;
+  if (currentForward >= -0.03) {
+    return 0.16;
   }
   const currentReverseMag = -currentForward;
   for (let i = 0; i < MEDIA_SPEED_GEARS.length; i++) {
-    if (MEDIA_SPEED_GEARS[i] > currentReverseMag + 0.08) {
+    if (MEDIA_SPEED_GEARS[i] > currentReverseMag + 0.025) {
       return MEDIA_SPEED_GEARS[i];
     }
   }

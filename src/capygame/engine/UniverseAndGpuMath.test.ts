@@ -14,6 +14,7 @@ import {
   sanitizeDiscoveredSpecimens,
   stepFlightSpeedGear,
   stepMediaSpeedControl,
+  stepSteadyLogScaleTowardTarget,
 } from './UniverseScaleMath';
 import {
   GPU_WATER_CELL_COUNT,
@@ -31,47 +32,68 @@ import {
   type VolumetricShaftProjection,
 } from './gpu/GpuCullingAndClusterMath';
 
-test('Flight throttle gears & 3-button media controls (Fast Forward, Play/Pause, Rewind) work cleanly', () => {
+test('Flight throttle gears & 3-button media controls (Fast Forward, Play/Pause, Rewind) run slow and steady', () => {
   let cruiseVel = 0; // Hover
-  cruiseVel = stepFlightSpeedGear(cruiseVel, 1); // Faster -> Forward 0.65x (internal -0.65)
-  assert.equal(cruiseVel, -0.65);
+  cruiseVel = stepFlightSpeedGear(cruiseVel, 1); // Faster -> Forward 0.08x (internal -0.08)
+  assert.equal(cruiseVel, -0.08);
   assert.equal(formatFlightSpeedReadout(cruiseVel).mode, 'forward');
 
-  cruiseVel = stepFlightSpeedGear(cruiseVel, 1); // Forward 1.6x
-  assert.equal(cruiseVel, -1.6);
+  cruiseVel = stepFlightSpeedGear(cruiseVel, 1); // Forward 0.16x
+  assert.equal(cruiseVel, -0.16);
 
-  // Decelerate step-by-step back down through 0.65 -> Hover (0) -> Reverse
+  // Decelerate step-by-step back down through 0.08 -> Hover (0) -> Reverse
   cruiseVel = stepFlightSpeedGear(cruiseVel, -1);
-  assert.equal(cruiseVel, -0.65);
+  assert.equal(cruiseVel, -0.08);
   cruiseVel = stepFlightSpeedGear(cruiseVel, -1);
   assert.equal(cruiseVel, 0);
   assert.equal(formatFlightSpeedReadout(cruiseVel).shortLabel, 'Hover');
 
-  cruiseVel = stepFlightSpeedGear(cruiseVel, -1); // Back 0.65x (internal +0.65)
-  assert.equal(cruiseVel, 0.65);
+  cruiseVel = stepFlightSpeedGear(cruiseVel, -1); // Back 0.08x (internal +0.08)
+  assert.equal(cruiseVel, 0.08);
   assert.equal(formatFlightSpeedReadout(cruiseVel).mode, 'reverse');
 
   // 3-Button Media Transport (Play/Pause, Fast Forward, Rewind)
   let mediaVel = 0;
-  mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause', 1.6); // Play forward
-  assert.equal(mediaVel, -1.6);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause', 0.16); // Play forward calmly
+  assert.equal(mediaVel, -0.16);
   mediaVel = stepMediaSpeedControl(mediaVel, 'fast_forward'); // Faster forward
-  assert.equal(mediaVel, -3.2);
+  assert.equal(mediaVel, -0.32);
   mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause'); // Pause
   assert.equal(mediaVel, 0);
-  mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause', 3.2); // Resume forward speed
-  assert.equal(mediaVel, -3.2);
-  mediaVel = stepMediaSpeedControl(mediaVel, 'rewind'); // Immediate rewind
-  assert.equal(mediaVel, 1.6);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause', 0.32); // Resume forward speed
+  assert.equal(mediaVel, -0.32);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'rewind'); // Immediate gentle rewind
+  assert.equal(mediaVel, 0.16);
   mediaVel = stepMediaSpeedControl(mediaVel, 'rewind'); // Faster rewind
-  assert.equal(mediaVel, 3.2);
+  assert.equal(mediaVel, 0.32);
   mediaVel = stepMediaSpeedControl(mediaVel, 'fast_forward'); // Back into forward flight
-  assert.equal(mediaVel, -1.6);
+  assert.equal(mediaVel, -0.32);
 
-  assert.equal(clampForwardFlightSpeed(0.03), 0);
-  assert.equal(clampForwardFlightSpeed(99), 12);
-  assert.equal(clampForwardFlightSpeed(-99), -12);
+  assert.equal(clampForwardFlightSpeed(0.01), 0);
+  assert.equal(clampForwardFlightSpeed(99), 2.0);
+  assert.equal(clampForwardFlightSpeed(-99), -2.0);
   assert.equal(FLIGHT_SPEED_GEARS.includes(0), true);
+});
+
+test('Target scale flight advances steadily through intervening space without jumping', () => {
+  let current = 30.0;
+  const target = 20.0;
+  const steps: number[] = [];
+  for (let i = 0; i < 10; i++) {
+    current = stepSteadyLogScaleTowardTarget(current, target, 0.5);
+    steps.push(current);
+  }
+  // Over 5.0 seconds at <= 0.90 log/s, it must progress steadily (~4.5 units) rather than jumping straight to 20.0
+  assert.ok(current > 24.5 && current < 26.5, `Expected smooth intermediate progression after 5s, got ${current}`);
+  // Step deltas far from target must be uniform (steady cruise rate)
+  const delta0 = Math.abs(steps[1] - steps[0]);
+  const delta1 = Math.abs(steps[2] - steps[1]);
+  assert.ok(Math.abs(delta0 - delta1) < 1e-6 && delta0 <= 0.4501);
+  // Eventually settles cleanly on exact target
+  for (let i = 0; i < 30; i++) {
+    current = stepSteadyLogScaleTowardTarget(current, target, 0.5);
+  }
+  assert.equal(current, target);
 });
 
 test('Spiral flight curve sweeps an exact 360 degrees (2π rad) through every zoom level band', () => {

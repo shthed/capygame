@@ -169,8 +169,8 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 - **Hardware GPU Timer Queries**: Supports non-blocking `EXT_disjoint_timer_query_webgl2` on WebGL2 to measure true hardware GPU execution times in milliseconds, identifying whether bottlenecks are CPU-bound or GPU-bound.
 - **Action & Event Tracer**: Automatically logs and times discrete asynchronous and user actions (e.g., district transitions, cosmic launches, scale jumps, LOD adaptations) with timestamps and durations.
 - **Continuous Spaceship Flight & Mouselook Controls**:
-  - In spaceship mode, mouse wheel directly controls cruise velocity (`targetCruiseVelocityLogPerSec`) instead of jumping discrete zoom levels.
-  - Smooth aerospace momentum damping (`damp(..., 5.0, dt)`) continuously accelerates or brakes the vessel between `-12.0` and `+12.0` log-meters per second with zero snapping.
+  - In spaceship mode, mouse wheel and bottom-right `Rewind / Play-Pause / Fast Forward` gears (`0.08..1.25 log/s`) smoothly control cruise velocity (`targetCruiseVelocityLogPerSec`) instead of jumping discrete zoom levels.
+  - Gentle aerospace momentum damping (`damp(..., 3.2, dt)`) continuously accelerates or brakes the vessel between `-2.0` and `+2.0` log-meters per second, while scale-band selections travel at a constant steady cruise rate (`stepSteadyLogScaleTowardTarget` at `<= 0.90 log/s`) through intervening space with zero exponential snapping.
   - Cherenkov thruster flares, plume length, flight pitch attitude, and velocity-reactive FOV dynamically respond to active throttle.
   - Across both spaceship/cosmic zoom and surface gameplay, dragging with Left/Right mouse smoothly orbits (`applyMouseLookDelta`) without interfering with `WASD` steering or mobile touch joysticks, and pressing `M` toggles Free Mouselook (`requestPointerLock` with seamless cursor-delta fallback inside sandboxed iframes).
 

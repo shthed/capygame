@@ -142,11 +142,13 @@ import {
 import { computeCosmicAgeGyr } from './SeamlessUniverseSimulator';
 import {
   FlightTrajectoryMode,
+  MEDIA_SPEED_GEARS,
   MediaSpeedAction,
   clampForwardFlightSpeed,
   computeSpiralOrbitAngleRadians,
   stepFlightSpeedGear,
   stepMediaSpeedControl,
+  stepSteadyLogScaleTowardTarget,
 } from './UniverseScaleMath';
 
 // Pre-allocated math helpers for zero per-frame garbage collection
@@ -374,7 +376,7 @@ export class PlayStyleManager {
   private quantumFocusMode: QuantumFocusMode = 'auto';
   private autoZoomDirection: -1 | 0 | 1 = 0;
   public flightTrajectory: FlightTrajectoryMode = 'straight';
-  private lastPlayingForwardSpeed: number = 1.6;
+  private lastPlayingForwardSpeed: number = 0.16;
   private readonly spiralBandLogs: readonly number[] = UNIVERSE_SCALE_BANDS.map(
     (b) => b.logMeters
   );
@@ -2591,48 +2593,52 @@ export class PlayStyleManager {
     if (!this.seamlessZoomActive) {
       this.launchIntoCosmos(this.currentLogScaleMeters);
     }
-    // wheelDelta > 0 is forward mouse wheel roll -> accelerate forward into the universe
-    // wheelDelta < 0 is backward mouse wheel roll -> reverse throttle / brake
-    const impulse = -wheelDelta * 2.8;
+    // wheelDelta > 0 is forward mouse wheel roll -> gently glide inward into the universe
+    // wheelDelta < 0 is backward mouse wheel roll -> gently glide outward / brake
+    const impulse = -wheelDelta * 0.16;
     let nextTarget = this.targetCruiseVelocityLogPerSec + impulse;
 
-    // Smooth soft-clamp between -12.0 (forward warp) and +12.0 (reverse warp)
-    nextTarget = THREE.MathUtils.clamp(nextTarget, -12.0, 12.0);
+    // Gentle bounded cruise between -2.0 (inward) and +2.0 (outward)
+    nextTarget = THREE.MathUtils.clamp(nextTarget, -2.0, 2.0);
 
-    // Provide a gentle deadband around 0 for clean zero-G station keeping
-    if (Math.abs(nextTarget) < 0.15) {
+    // Clean deadband around 0 for zero-G station keeping
+    if (Math.abs(nextTarget) < 0.04) {
       nextTarget = 0;
     }
 
     this.targetCruiseVelocityLogPerSec = nextTarget;
-    if (Math.abs(nextTarget) < 0.05) {
+    if (Math.abs(nextTarget) < 0.03) {
       this.autoZoomDirection = 0;
     } else if (nextTarget < 0) {
       this.autoZoomDirection = -1;
     } else {
       this.autoZoomDirection = 1;
     }
+    this.targetLogScaleMeters = this.currentLogScaleMeters;
 
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
     return this.targetCruiseVelocityLogPerSec;
   }
 
   public setCruiseVelocity(velLogPerSec: number): void {
-    if (Math.abs(velLogPerSec) < 0.05) {
+    if (Math.abs(velLogPerSec) < 0.03) {
       this.autoZoomDirection = 0;
       this.targetCruiseVelocityLogPerSec = 0;
       this.cruiseVelocityLogPerSec = 0;
+      this.targetLogScaleMeters = this.currentLogScaleMeters;
     } else if (velLogPerSec < 0) {
       this.autoZoomDirection = -1;
-      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -12.0, -0.25);
-      if (this.cruiseVelocityLogPerSec >= -0.05) {
-        this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.35;
+      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -2.0, -0.05);
+      this.targetLogScaleMeters = this.currentLogScaleMeters;
+      if (this.cruiseVelocityLogPerSec >= -0.02) {
+        this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.45;
       }
     } else {
       this.autoZoomDirection = 1;
-      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.25, 12.0);
-      if (this.cruiseVelocityLogPerSec <= 0.05) {
-        this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.35;
+      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.05, 2.0);
+      this.targetLogScaleMeters = this.currentLogScaleMeters;
+      if (this.cruiseVelocityLogPerSec <= 0.02) {
+        this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.45;
       }
     }
     if (this.autoZoomDirection !== 0 && !this.seamlessZoomActive) {
@@ -2644,7 +2650,7 @@ export class PlayStyleManager {
   public stepFlightThrottle(direction: -1 | 1): number {
     const nextCruiseVel = stepFlightSpeedGear(this.targetCruiseVelocityLogPerSec, direction);
     this.setCruiseVelocity(nextCruiseVel);
-    if (Math.abs(nextCruiseVel) < 0.05) {
+    if (Math.abs(nextCruiseVel) < 0.03) {
       AudioService.playSplash();
     } else {
       AudioService.playCosmicWarp(direction > 0 ? 1.08 : 0.92);
@@ -2654,7 +2660,7 @@ export class PlayStyleManager {
 
   public setForwardFlightSpeed(forwardSpeed: number): void {
     const clampedForward = clampForwardFlightSpeed(forwardSpeed);
-    if (clampedForward > 0.08) {
+    if (clampedForward > 0.03) {
       this.lastPlayingForwardSpeed = clampedForward;
     }
     this.setCruiseVelocity(clampedForward === 0 ? 0 : -clampedForward);
@@ -2666,11 +2672,11 @@ export class PlayStyleManager {
       action,
       this.lastPlayingForwardSpeed
     );
-    if (nextVel < -0.08) {
+    if (nextVel < -0.03) {
       this.lastPlayingForwardSpeed = Math.abs(nextVel);
     }
     this.setCruiseVelocity(nextVel);
-    if (Math.abs(nextVel) < 0.05) {
+    if (Math.abs(nextVel) < 0.03) {
       AudioService.playSplash();
     } else {
       AudioService.playCosmicWarp(nextVel < 0 ? 1.12 : 0.9);
@@ -2689,8 +2695,12 @@ export class PlayStyleManager {
     this.autoLandAtForestPending = true;
     this.vesselMode = 'chase_pod';
     this.chronoVessel?.setMode('chase_pod');
-    this.autoZoomDirection = -1;
-    this.cruiseVelocityLogPerSec = -Math.max(2.6, Math.abs(this.cruiseVelocityLogPerSec));
+    const delta = CAPYBARA_FOREST_LOG_METERS - this.currentLogScaleMeters;
+    const dir: -1 | 1 = delta >= 0 ? 1 : -1;
+    const landingSpeed = THREE.MathUtils.clamp(Math.abs(delta) * 0.22, 0.85, 2.0);
+    this.autoZoomDirection = dir;
+    this.targetCruiseVelocityLogPerSec = dir * landingSpeed;
+    this.cruiseVelocityLogPerSec = dir * Math.max(0.55, Math.min(landingSpeed, Math.abs(this.cruiseVelocityLogPerSec) || 0.75));
     this.targetLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
     AudioService.playCosmicWarp(1.35);
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
@@ -9587,53 +9597,59 @@ export class PlayStyleManager {
   // ============================================================================
 
   private tickSeamlessUniverse(dt: number) {
-    // Smoothly damp cruiseVelocity toward targetCruiseVelocity with realistic aerospace momentum
+    // Smoothly damp cruiseVelocity toward targetCruiseVelocity with gentle aerospace momentum
     this.cruiseVelocityLogPerSec = THREE.MathUtils.damp(
       this.cruiseVelocityLogPerSec,
       this.targetCruiseVelocityLogPerSec,
-      5.0,
+      3.2,
       dt
     );
 
+    const prevLogVal = this.currentLogScaleMeters;
     const activeVelocity = this.cruiseVelocityLogPerSec;
-    if (Math.abs(activeVelocity) > 0.04) {
-      const prevTarget = this.targetLogScaleMeters;
-      const nextTarget = prevTarget + activeVelocity * dt;
-
-      if (
-        this.autoLandAtForestPending &&
+    if (Math.abs(activeVelocity) > 0.02) {
+      const nextLog = prevLogVal + activeVelocity * dt;
+      const crossedForestFromCosmos =
         activeVelocity < 0 &&
-        prevTarget >= CAPYBARA_FOREST_LOG_METERS - 0.05 &&
-        nextTarget <= CAPYBARA_FOREST_LOG_METERS
-      ) {
+        prevLogVal >= CAPYBARA_FOREST_LOG_METERS - 0.05 &&
+        nextLog <= CAPYBARA_FOREST_LOG_METERS;
+      const crossedForestFromQuantum =
+        activeVelocity > 0 &&
+        prevLogVal <= CAPYBARA_FOREST_LOG_METERS + 0.05 &&
+        nextLog >= CAPYBARA_FOREST_LOG_METERS;
+
+      if (this.autoLandAtForestPending && (crossedForestFromCosmos || crossedForestFromQuantum)) {
+        this.currentLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
         this.targetLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
         this.targetCruiseVelocityLogPerSec = 0;
         this.cruiseVelocityLogPerSec = 0;
-        this.autoZoomDirection = 0;
-      } else if (nextTarget >= MAX_UNIVERSE_LOG_METERS) {
+      } else if (nextLog >= MAX_UNIVERSE_LOG_METERS) {
+        this.currentLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
         this.targetLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
         this.targetCruiseVelocityLogPerSec = 0;
         this.cruiseVelocityLogPerSec = 0;
         this.autoZoomDirection = 0;
-      } else if (nextTarget <= MIN_UNIVERSE_LOG_METERS) {
+      } else if (nextLog <= MIN_UNIVERSE_LOG_METERS) {
+        this.currentLogScaleMeters = MIN_UNIVERSE_LOG_METERS;
         this.targetLogScaleMeters = MIN_UNIVERSE_LOG_METERS;
         this.targetCruiseVelocityLogPerSec = 0;
         this.cruiseVelocityLogPerSec = 0;
         this.autoZoomDirection = 0;
       } else {
-        this.targetLogScaleMeters = nextTarget;
+        this.currentLogScaleMeters = nextLog;
+        this.targetLogScaleMeters = nextLog;
       }
-    } else if (this.autoZoomDirection === 0 && Math.abs(this.targetCruiseVelocityLogPerSec) < 0.05) {
-      this.cruiseVelocityLogPerSec = 0;
+    } else {
+      if (this.autoZoomDirection === 0 && Math.abs(this.targetCruiseVelocityLogPerSec) < 0.03) {
+        this.cruiseVelocityLogPerSec = 0;
+      }
+      // Fly steadily through intervening space toward any chosen zoom target without snapping
+      this.currentLogScaleMeters = stepSteadyLogScaleTowardTarget(
+        prevLogVal,
+        this.targetLogScaleMeters,
+        dt
+      );
     }
-
-    const prevLogVal = this.currentLogScaleMeters;
-    this.currentLogScaleMeters = THREE.MathUtils.damp(
-      this.currentLogScaleMeters,
-      this.targetLogScaleMeters,
-      9.5,
-      dt
-    );
 
     const logVal = this.currentLogScaleMeters;
     let spiralAngle = 0;
@@ -9646,12 +9662,11 @@ export class PlayStyleManager {
       spiralAngularVel = dt > 0.0005 ? deltaSpiralYaw / dt : 0;
     }
 
-    // Auto-touchdown onto Sanctuary Chrono-Pad once descending vessel settles into Capybara Forest window
+    // Auto-touchdown onto Sanctuary Chrono-Pad once vessel settles into Capybara Forest window
     if (
       this.autoLandAtForestPending &&
-      this.autoZoomDirection === -1 &&
-      this.targetLogScaleMeters <= CAPYBARA_FOREST_LOG_METERS + 0.06 &&
-      Math.abs(logVal - CAPYBARA_FOREST_LOG_METERS) <= 0.16
+      Math.abs(logVal - CAPYBARA_FOREST_LOG_METERS) <= 0.16 &&
+      Math.abs(this.targetLogScaleMeters - CAPYBARA_FOREST_LOG_METERS) <= 0.16
     ) {
       this.autoLandAtForestPending = false;
       this.currentMode = 'sanctuary';
@@ -10330,13 +10345,13 @@ export class PlayStyleManager {
 
   public toggleAutoZoom(direction: -1 | 0 | 1) {
     this.autoLandAtForestPending = false;
-    if (direction !== 0 && this.autoZoomDirection === direction) {
-      this.autoZoomDirection = 0;
+    if (direction === 0 || this.autoZoomDirection === direction) {
+      this.setCruiseVelocity(0);
     } else {
-      this.autoZoomDirection = direction;
-      if (direction !== 0 && !this.seamlessZoomActive) {
-        this.setSeamlessLogScale(this.currentLogScaleMeters, false);
+      if (!this.seamlessZoomActive) {
+        this.launchIntoCosmos(this.currentLogScaleMeters);
       }
+      this.setCruiseVelocity(direction * MEDIA_SPEED_GEARS[1]);
     }
     AudioService.playCoin();
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());

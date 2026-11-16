@@ -2043,7 +2043,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
           breakoutPaddleMat?.aoMap
       ),
       oceanHasDualClearcoatNormals: Boolean(
-        oceanMat?.normalMap && oceanMat?.clearcoatNormalMap
+        oceanMat?.normalMap && (mgr.isSoftwareGl || oceanMat?.clearcoatNormalMap)
       ),
       heroFurHasNormalMap,
       hasAaaVfxEngine: Boolean(
