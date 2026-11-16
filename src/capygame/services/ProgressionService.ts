@@ -240,7 +240,7 @@ export class ProgressionService {
       astrophysicsPalette:
         parsed.astrophysicsPalette === 'hubble' ? 'hubble' : 'natural',
       flightTrajectory:
-        parsed.flightTrajectory === 'spiral' ? 'spiral' : 'straight',
+        parsed.flightTrajectory === 'straight' ? 'straight' : 'spiral',
       cameraDistance:
         typeof parsed.cameraDistance === 'number' && Number.isFinite(parsed.cameraDistance)
           ? Math.max(0.6, Math.min(1.5, parsed.cameraDistance))

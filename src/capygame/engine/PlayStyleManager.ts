@@ -375,7 +375,7 @@ export class PlayStyleManager {
   private autoLandAtForestPending: boolean = false;
   private quantumFocusMode: QuantumFocusMode = 'auto';
   private autoZoomDirection: -1 | 0 | 1 = 0;
-  public flightTrajectory: FlightTrajectoryMode = 'straight';
+  public flightTrajectory: FlightTrajectoryMode = 'spiral';
   private lastPlayingForwardSpeed: number = 0.16;
   private readonly spiralBandLogs: readonly number[] = UNIVERSE_SCALE_BANDS.map(
     (b) => b.logMeters
@@ -746,7 +746,7 @@ export class PlayStyleManager {
     this.performanceLog.lock60FpsEnabled = initialSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = initialSettings.fpsTarget ?? 60;
     this.performanceLog.maxFpsLimit = initialSettings.maxFpsLimit ?? 60;
-    this.flightTrajectory = initialSettings.flightTrajectory === 'spiral' ? 'spiral' : 'straight';
+    this.flightTrajectory = initialSettings.flightTrajectory === 'straight' ? 'straight' : 'spiral';
 
     this.isSoftwareGl = webGpuInit?.renderer
       ? webGpuInit.probe.isFallbackAdapter
@@ -1391,7 +1391,7 @@ export class PlayStyleManager {
     this.performanceLog.lock60FpsEnabled = newSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = newSettings.fpsTarget ?? 60;
     this.performanceLog.maxFpsLimit = newSettings.maxFpsLimit ?? 60;
-    this.flightTrajectory = newSettings.flightTrajectory === 'spiral' ? 'spiral' : 'straight';
+    this.flightTrajectory = newSettings.flightTrajectory === 'straight' ? 'straight' : 'spiral';
 
     // Reset adaptive degradation whenever user explicitly changes graphics/FPS settings
     this.adaptiveMitigationLevel = 0;

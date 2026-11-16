@@ -332,7 +332,7 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   dayNightAutoCycle: true,
   timeOfDayHours: 9.5,
   weatherMode: 'auto',
-  flightTrajectory: 'straight',
+  flightTrajectory: 'spiral',
   showObjectMarkers: false,
   realityScaleGamma: 1.0, // Strict 1:1 physical reality by default
   astrophysicsPalette: 'natural',

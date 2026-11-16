@@ -121,7 +121,7 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 | `dayNightAutoCycle` | `boolean` | `true` | Simulation Settings Modal; advances solar/lunar time continuously across 24 hours. |
 | `timeOfDayHours` | `number` (`0` – `24`) | `9.5` | Simulation Settings Modal; sets manual solar hour (`0.0` to `24.0`). |
 | `weatherMode` | `'auto' \| 'clear' \| 'rain' \| 'storm' \| 'snow'` | `'auto'` | Simulation Settings Modal; selects automatic weather progression or locks a specific clear/precipitation state without obstructive fog. |
-| `flightTrajectory` | `'straight' \| 'spiral'` | `'straight'` | Bottom-Right Flight Toggle (`toggle-flight-trajectory-btn`); switches between straight radial zoom flight and a 360°-per-zoom-band curved spiral orbit with dynamic vessel banking. |
+| `flightTrajectory` | `'straight' \| 'spiral'` | `'spiral'` | Bottom-Right Flight Toggle (`toggle-flight-trajectory-btn`); defaults to a 360°-per-zoom-band curved spiral orbit with dynamic vessel banking and switches cleanly to straight radial flight. |
 | `cameraDistance` | `number` | `1.0` | Simulation Settings Modal; scales camera follow distance (`0.6x` to `1.5x`). |
 | `turnSensitivity` | `number` | `1.0` | Simulation Settings Modal; scales angular steering rate (`0.5x` to `2.0x`). |
 | `fov` | `number` | `58` | Simulation Settings Modal; adjusts baseline vertical perspective field of view (`45` to `75` degrees). |

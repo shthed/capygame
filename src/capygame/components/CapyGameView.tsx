@@ -595,7 +595,7 @@ export const CapyGameView: React.FC = () => {
     cosmicAgeGyr: 0.0,
     cruiseVelocityLogPerSec: 0,
     vesselMode: 'chase_pod',
-    flightTrajectory: 'straight',
+    flightTrajectory: 'spiral',
     fineStructureInverse: CODATA_FINE_STRUCTURE_INVERSE,
     fineStructureAlpha: 1 / CODATA_FINE_STRUCTURE_INVERSE,
     galaxyMorphology: 'spiral',
@@ -7781,7 +7781,7 @@ export const CapyGameView: React.FC = () => {
           const isRewinding = !isPaused && activeVel > 0;
           const isFastForward = !isPaused && activeVel < 0;
           const isSpiral =
-            (universeScale.flightTrajectory ?? gameSettings.flightTrajectory ?? 'straight') ===
+            (universeScale.flightTrajectory ?? gameSettings.flightTrajectory ?? 'spiral') ===
             'spiral';
           return (
             <aside

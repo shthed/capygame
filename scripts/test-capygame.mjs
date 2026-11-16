@@ -142,26 +142,38 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   }
   await page.getByTestId('speed-play-pause-btn').click({ force: true });
 
-  await page.getByTestId('toggle-flight-trajectory-btn').click({ force: true });
-  await page.waitForTimeout(60);
   const spiralSweep = await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return null;
-    const traj = mgr.getUniverseScaleTelemetry().flightTrajectory;
+    const defaultTraj = mgr.getUniverseScaleTelemetry().flightTrajectory;
     mgr.setSeamlessLogScale(30.0, true); // Multiverse
     const yawBefore = mgr.cosmicOrbitYaw;
     mgr.setSeamlessLogScale(28.0, false); // Transition across 1 zoom band (30.0 -> 28.0 Big Bang)
     for (let i = 0; i < 65; i++) mgr.tick(0.05);
     const yawDelta = mgr.cosmicOrbitYaw - yawBefore;
-    mgr.setFlightTrajectory('straight');
     mgr.setCruiseVelocity(0);
     mgr.setSeamlessLogScale(30.0, true);
-    return { traj, yawDelta };
+    return { defaultTraj, yawDelta };
   });
   await page.getByTestId('toggle-flight-trajectory-btn').click({ force: true });
-  if (!spiralSweep || spiralSweep.traj !== 'spiral' || Math.abs(spiralSweep.yawDelta - Math.PI * 2) > 0.35) {
+  await page.waitForTimeout(60);
+  const toggledStraightTraj = await page.evaluate(
+    () => window.__capyManager?.getUniverseScaleTelemetry().flightTrajectory
+  );
+  await page.getByTestId('toggle-flight-trajectory-btn').click({ force: true });
+  await page.waitForTimeout(60);
+  const toggledBackSpiralTraj = await page.evaluate(
+    () => window.__capyManager?.getUniverseScaleTelemetry().flightTrajectory
+  );
+  if (
+    !spiralSweep ||
+    spiralSweep.defaultTraj !== 'spiral' ||
+    toggledStraightTraj !== 'straight' ||
+    toggledBackSpiralTraj !== 'spiral' ||
+    Math.abs(spiralSweep.yawDelta - Math.PI * 2) > 0.35
+  ) {
     throw new Error(
-      `Expected Spiral trajectory toggle to sweep ~2π (360°) across 1 zoom level band, got ${JSON.stringify(spiralSweep)}`
+      `Expected default Spiral trajectory to sweep ~2π (360°) and toggle cleanly to Straight & back, got ${JSON.stringify({ spiralSweep, toggledStraightTraj, toggledBackSpiralTraj })}`
     );
   }
   console.log(
