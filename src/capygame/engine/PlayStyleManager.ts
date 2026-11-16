@@ -5185,6 +5185,9 @@ export class PlayStyleManager {
       this.spineZ[n] = this.heroLocalPos.z + backZ * accumDist;
       this.spineYaw[n] = this.heroYaw;
     }
+    this.heroVelocity.set(0, 0, 0);
+    this.isGrounded = this.heroLocalPos.y <= 0.05;
+    this.isStuckNoFooting = false;
     this.spineInitialized = true;
   }
 
@@ -8450,12 +8453,13 @@ export class PlayStyleManager {
       let jumpImpulseY = 0;
       if (this.isJumping) {
         if (this.groundedFeetCount > 0 || this.isSwimmingInPool || this.isGrounded) {
-          // Crisp realistic hop (~1.15m peak under g=24) with true forward leap propulsion along heading!
+          // Crisp realistic hop (~1.0–1.45m peak under g=24) with true forward leap propulsion along heading!
+          const dampedJumpScale = 1 + (heroJumpScale - 1) * 0.42;
           jumpImpulseY =
-            (7.4 + Math.min(1.6, (this.stats.upgrades.bounciness - 1) * 0.45)) * heroJumpScale;
+            (6.4 + Math.min(1.1, (this.stats.upgrades.bounciness - 1) * 0.35)) * dampedJumpScale;
           const launchYaw = this.isWalkingBackward ? this.spineYaw[cabNode] : this.heroYaw;
           const leapDir = this.isWalkingBackward ? -1 : 1;
-          const leapSpeed = hasWalkIntent ? Math.max(speed * 1.18, 7.2) : Math.max(speed * 0.85, 5.5);
+          const leapSpeed = hasWalkIntent ? Math.max(speed * 1.18, 7.2) : Math.max(speed * 0.9, 5.8);
           this.heroVelocity.x = Math.sin(launchYaw) * leapSpeed * leapDir;
           this.heroVelocity.z = Math.cos(launchYaw) * leapSpeed * leapDir;
           this.isGrounded = false;
@@ -8522,8 +8526,8 @@ export class PlayStyleManager {
           }
         }
         if (physStep.trampolineBoostY > 0) {
-          // Gentle joyful Sanctuary mushroom hop (~1.6–2.3m high) with forward leap arc (zero sky-rocket disconnect)
-          const clampedHopVy = Math.min(10.4, Math.max(8.0, physStep.trampolineBoostY * 0.56));
+          // Gentle joyful Sanctuary mushroom hop (~1.4–2.1m high) with forward leap arc (zero sky-rocket disconnect)
+          const clampedHopVy = Math.min(9.8, Math.max(7.8, physStep.trampolineBoostY * 0.52));
           this.heroVelocity.y = clampedHopVy;
           const launchYaw = this.isWalkingBackward ? this.spineYaw[cabNode] : this.heroYaw;
           const leapDir = this.isWalkingBackward ? -1 : 1;

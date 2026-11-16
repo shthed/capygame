@@ -890,8 +890,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     for (let b = 0; b < mgr.sanctuaryCapys.length; b++) {
       mgr.sanctuaryCapys[b].capy.position.set(-15.5 - b * 2.5, 0, 16.2);
     }
-    mgr.heroLocalPos.set(3.5, 0.0, 9.2);
-    mgr.heroYaw = 0; // Facing +Z -> walking backward moves toward -Z!
+    mgr.heroLocalPos.set(11.5, 0.0, 16.0);
+    mgr.heroYaw = 0; // Facing +Z on open flat meadow clear of b_init_pad (3.4, 7.8) -> walking backward moves toward -Z!
     mgr.resetDachshundTrail();
     mgr.tick(0.03);
 
@@ -952,7 +952,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     );
 
     // 5. Realistic Foot-Motion & Ground-Contact Traction: "If 0 feet touch the ground -> get stuck!"
-    mgr.heroLocalPos.set(3.5, 0.0, 9.2);
+    mgr.heroLocalPos.set(11.5, 0.0, 16.0);
     mgr.heroYaw = Math.PI;
     mgr.resetDachshundTrail();
     mgr.suspendedFootTestHeight = 0.85; // Suspend Capybara & all segments 85cm in the air -> 0 feet touch ground!
@@ -984,8 +984,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     mgr.suspendedFootTestHeight = null;
     mgr.moveInput.x = 0;
     mgr.moveInput.z = 0;
-    mgr.heroLocalPos.set(3.5, 0.0, 9.2);
-    mgr.heroYaw = Math.PI; // Facing -Z
+    mgr.heroLocalPos.set(11.5, 0.0, 16.0);
+    mgr.heroYaw = Math.PI; // Facing -Z on open flat meadow
     mgr.resetDachshundTrail();
     mgr.tick(0.03);
 
@@ -1105,11 +1105,11 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     !advancedSimCheck.resumedGroundedFeet ||
     !advancedSimCheck.resumedWalkingDisplacement ||
     advancedSimCheck.jumpMaxHeroY < 0.7 ||
-    advancedSimCheck.jumpMaxHeroY > 2.35 ||
+    advancedSimCheck.jumpMaxHeroY > 1.85 ||
     advancedSimCheck.jumpForwardDist < 1.2 ||
     advancedSimCheck.jumpMaxJointDy > 0.62 ||
     advancedSimCheck.padMaxY < 0.9 ||
-    advancedSimCheck.padMaxY > 2.9 ||
+    advancedSimCheck.padMaxY > 2.6 ||
     advancedSimCheck.padMaxJointDy > 0.65
   ) {
     throw new Error(
