@@ -68,45 +68,105 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     throw new Error(`Expected advanced buttons hidden in Basic Mode (optics=${basicOpticsCount}, json=${basicJsonCount})`);
   }
 
-  // Verify top-right Fullscreen button, compact bottom-right speed slider, and ZERO duplicate flight controls in Basic Mode
+  // Verify top-right Fullscreen button, bottom-right Straight/Spiral toggle + 3 speed buttons (Rewind, Play/Pause, Fast Forward), and ZERO sliders/duplicate controls
   const fullscreenBtn = page.getByTestId('toggle-fullscreen-btn');
   await fullscreenBtn.waitFor({ state: 'visible', timeout: 5000 });
   const fullscreenBox = await fullscreenBtn.boundingBox();
   const speedPanel = page.getByTestId('right-flight-speed-panel');
   await speedPanel.waitFor({ state: 'visible', timeout: 5000 });
   const speedPanelBox = await speedPanel.boundingBox();
-  const duplicateCounts = await page.evaluate(() => ({
+  const hudCounts = await page.evaluate(() => ({
     zoomOut: document.querySelectorAll('[data-testid="scale-zoom-out-btn"]').length,
     zoomIn: document.querySelectorAll('[data-testid="scale-zoom-in-btn"]').length,
+    sliderCount: document.querySelectorAll('[data-testid="right-flight-speed-slider"]').length,
+    stopCount: document.querySelectorAll('[data-testid="right-speed-stop-btn"]').length,
     basicSlower: document.querySelectorAll('[data-testid="basic-throttle-slower-btn"]').length,
     basicHover: document.querySelectorAll('[data-testid="basic-throttle-hover-btn"]').length,
     basicFaster: document.querySelectorAll('[data-testid="basic-throttle-faster-btn"]').length,
-    rightFwd: document.querySelectorAll('[data-testid="right-speed-fwd-btn"]').length,
-    rightBack: document.querySelectorAll('[data-testid="right-speed-back-btn"]').length,
+    advThrottle: document.querySelectorAll('[data-testid^="throttle-btn-"]').length,
+    rewindBtn: document.querySelectorAll('[data-testid="speed-rewind-btn"]').length,
+    playPauseBtn: document.querySelectorAll('[data-testid="speed-play-pause-btn"]').length,
+    fastFwdBtn: document.querySelectorAll('[data-testid="speed-fast-forward-btn"]').length,
+    trajBtn: document.querySelectorAll('[data-testid="toggle-flight-trajectory-btn"]').length,
     viewportW: window.innerWidth,
     viewportH: window.innerHeight,
   }));
+  const flightStripBox = await page.getByTestId('chrono-vessel-flight-strip').boundingBox();
   if (
     !fullscreenBox ||
     fullscreenBox.y >= 44 ||
-    fullscreenBox.x < duplicateCounts.viewportW * 0.78 ||
+    fullscreenBox.x < hudCounts.viewportW * 0.78 ||
+    fullscreenBox.x + fullscreenBox.width > hudCounts.viewportW ||
     !speedPanelBox ||
-    speedPanelBox.x < duplicateCounts.viewportW * 0.72 ||
-    speedPanelBox.y < duplicateCounts.viewportH * 0.72 ||
-    speedPanelBox.height > 155 ||
-    duplicateCounts.zoomOut !== 0 ||
-    duplicateCounts.zoomIn !== 0 ||
-    duplicateCounts.basicSlower !== 0 ||
-    duplicateCounts.basicHover !== 0 ||
-    duplicateCounts.basicFaster !== 0 ||
-    duplicateCounts.rightFwd !== 0 ||
-    duplicateCounts.rightBack !== 0
+    speedPanelBox.x < hudCounts.viewportW * 0.6 ||
+    speedPanelBox.x + speedPanelBox.width < hudCounts.viewportW - 16 ||
+    speedPanelBox.y < hudCounts.viewportH * 0.72 ||
+    !flightStripBox ||
+    flightStripBox.x + flightStripBox.width > speedPanelBox.x - 4 ||
+    hudCounts.zoomOut !== 0 ||
+    hudCounts.zoomIn !== 0 ||
+    hudCounts.sliderCount !== 0 ||
+    hudCounts.stopCount !== 0 ||
+    hudCounts.basicSlower !== 0 ||
+    hudCounts.basicHover !== 0 ||
+    hudCounts.basicFaster !== 0 ||
+    hudCounts.advThrottle !== 0 ||
+    hudCounts.rewindBtn !== 1 ||
+    hudCounts.playPauseBtn !== 1 ||
+    hudCounts.fastFwdBtn !== 1 ||
+    hudCounts.trajBtn !== 1
   ) {
     throw new Error(
-      `Expected top-right Fullscreen, compact bottom-right speed slider & zero duplicate controls in Basic Mode, got fs=${JSON.stringify(fullscreenBox)}, speed=${JSON.stringify(speedPanelBox)}, dup=${JSON.stringify(duplicateCounts)}`
+      `Expected top-right Fullscreen, bottom-right Straight/Spiral + 3 speed buttons & zero sliders/duplicates, got fs=${JSON.stringify(fullscreenBox)}, speed=${JSON.stringify(speedPanelBox)}, strip=${JSON.stringify(flightStripBox)}, counts=${JSON.stringify(hudCounts)}`
     );
   }
-  console.log('✓ Basic Mode HUD layout verified: top-right Fullscreen button, compact bottom-right speed slider & zero duplicate controls');
+
+  // Test 3 speed buttons + Straight/Spiral toggle + 360-degree per-zoom-band spiral flight curve!
+  await page.getByTestId('speed-fast-forward-btn').click({ force: true });
+  await page.waitForTimeout(80);
+  const ffVel = await page.evaluate(() => window.__capyManager?.getUniverseScaleTelemetry().cruiseVelocityLogPerSec);
+  if (typeof ffVel !== 'number' || ffVel >= 0) {
+    throw new Error(`Expected Fast Forward button to set negative inward cruise velocity, got ${ffVel}`);
+  }
+  await page.getByTestId('speed-play-pause-btn').click({ force: true });
+  await page.waitForTimeout(80);
+  const pausedVel = await page.evaluate(() => window.__capyManager?.getUniverseScaleTelemetry().cruiseVelocityLogPerSec);
+  if (pausedVel !== 0) {
+    throw new Error(`Expected Play/Pause button to pause cruise velocity to 0, got ${pausedVel}`);
+  }
+  await page.getByTestId('speed-rewind-btn').click({ force: true });
+  await page.waitForTimeout(80);
+  const rwVel = await page.evaluate(() => window.__capyManager?.getUniverseScaleTelemetry().cruiseVelocityLogPerSec);
+  if (typeof rwVel !== 'number' || rwVel <= 0) {
+    throw new Error(`Expected Rewind button to set positive outward cruise velocity, got ${rwVel}`);
+  }
+  await page.getByTestId('speed-play-pause-btn').click({ force: true });
+
+  await page.getByTestId('toggle-flight-trajectory-btn').click({ force: true });
+  await page.waitForTimeout(60);
+  const spiralSweep = await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return null;
+    const traj = mgr.getUniverseScaleTelemetry().flightTrajectory;
+    mgr.setSeamlessLogScale(30.0, true); // Multiverse
+    const yawBefore = mgr.cosmicOrbitYaw;
+    mgr.setSeamlessLogScale(28.0, false); // Transition across 1 zoom band (30.0 -> 28.0 Big Bang)
+    for (let i = 0; i < 65; i++) mgr.tick(0.05);
+    const yawDelta = mgr.cosmicOrbitYaw - yawBefore;
+    mgr.setFlightTrajectory('straight');
+    mgr.setCruiseVelocity(0);
+    mgr.setSeamlessLogScale(30.0, true);
+    return { traj, yawDelta };
+  });
+  await page.getByTestId('toggle-flight-trajectory-btn').click({ force: true });
+  if (!spiralSweep || spiralSweep.traj !== 'spiral' || Math.abs(spiralSweep.yawDelta - Math.PI * 2) > 0.35) {
+    throw new Error(
+      `Expected Spiral trajectory toggle to sweep ~2π (360°) across 1 zoom level band, got ${JSON.stringify(spiralSweep)}`
+    );
+  }
+  console.log(
+    `✓ Basic Mode HUD verified: top-right Fullscreen, 3 speed buttons (Rewind/Play-Pause/Fast Forward) & Spiral 360° orbit (delta=${spiralSweep.yawDelta.toFixed(2)} rad)`
+  );
 
   // Open Zoom Explorer and verify single-column scrollable list of 27 zoom levels with real thumbnails
   await page.getByTestId('toggle-scale-atlas-btn').click({ force: true });

@@ -7,11 +7,13 @@ import { ShallowWaterFluidSolver } from './physics/ContiguousWorldTopology';
 import {
   FLIGHT_SPEED_GEARS,
   clampForwardFlightSpeed,
+  computeSpiralOrbitAngleRadians,
   formatFlightSpeedReadout,
   formatRealisticScaleMeters,
   mergeDiscoveredSpecimen,
   sanitizeDiscoveredSpecimens,
   stepFlightSpeedGear,
+  stepMediaSpeedControl,
 } from './UniverseScaleMath';
 import {
   GPU_WATER_CELL_COUNT,
@@ -29,7 +31,7 @@ import {
   type VolumetricShaftProjection,
 } from './gpu/GpuCullingAndClusterMath';
 
-test('Flight throttle gears step smoothly forward, hover, and reverse without skipping Hover detent', () => {
+test('Flight throttle gears & 3-button media controls (Fast Forward, Play/Pause, Rewind) work cleanly', () => {
   let cruiseVel = 0; // Hover
   cruiseVel = stepFlightSpeedGear(cruiseVel, 1); // Faster -> Forward 0.65x (internal -0.65)
   assert.equal(cruiseVel, -0.65);
@@ -49,10 +51,44 @@ test('Flight throttle gears step smoothly forward, hover, and reverse without sk
   assert.equal(cruiseVel, 0.65);
   assert.equal(formatFlightSpeedReadout(cruiseVel).mode, 'reverse');
 
+  // 3-Button Media Transport (Play/Pause, Fast Forward, Rewind)
+  let mediaVel = 0;
+  mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause', 1.6); // Play forward
+  assert.equal(mediaVel, -1.6);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'fast_forward'); // Faster forward
+  assert.equal(mediaVel, -3.2);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause'); // Pause
+  assert.equal(mediaVel, 0);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'play_pause', 3.2); // Resume forward speed
+  assert.equal(mediaVel, -3.2);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'rewind'); // Immediate rewind
+  assert.equal(mediaVel, 1.6);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'rewind'); // Faster rewind
+  assert.equal(mediaVel, 3.2);
+  mediaVel = stepMediaSpeedControl(mediaVel, 'fast_forward'); // Back into forward flight
+  assert.equal(mediaVel, -1.6);
+
   assert.equal(clampForwardFlightSpeed(0.03), 0);
   assert.equal(clampForwardFlightSpeed(99), 12);
   assert.equal(clampForwardFlightSpeed(-99), -12);
   assert.equal(FLIGHT_SPEED_GEARS.includes(0), true);
+});
+
+test('Spiral flight curve sweeps an exact 360 degrees (2π rad) through every zoom level band', () => {
+  const bandLogs = UNIVERSE_SCALE_BANDS.map((b) => b.logMeters);
+  for (let i = 0; i < bandLogs.length - 1; i++) {
+    const startAngle = computeSpiralOrbitAngleRadians(bandLogs[i], bandLogs);
+    const midAngle = computeSpiralOrbitAngleRadians((bandLogs[i] + bandLogs[i + 1]) * 0.5, bandLogs);
+    const endAngle = computeSpiralOrbitAngleRadians(bandLogs[i + 1], bandLogs);
+    assert.ok(
+      Math.abs((midAngle - startAngle) - Math.PI) < 1e-6,
+      `Expected halfway through band ${i} -> ${i + 1} to rotate 180°, got ${midAngle - startAngle}`
+    );
+    assert.ok(
+      Math.abs((endAngle - startAngle) - Math.PI * 2) < 1e-6,
+      `Expected full band ${i} -> ${i + 1} to rotate 360° (2π), got ${endAngle - startAngle}`
+    );
+  }
 });
 
 test('Realistic zoom scale formatting produces physically consistent units across all 27 bands', () => {

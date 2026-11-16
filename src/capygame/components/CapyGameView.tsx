@@ -113,6 +113,10 @@ import {
   BookOpen,
   Maximize2,
   Minimize2,
+  FastForward,
+  Rewind,
+  Orbit,
+  MoveRight,
 } from 'lucide-react';
 
 type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
@@ -591,6 +595,7 @@ export const CapyGameView: React.FC = () => {
     cosmicAgeGyr: 0.0,
     cruiseVelocityLogPerSec: 0,
     vesselMode: 'chase_pod',
+    flightTrajectory: 'straight',
     fineStructureInverse: CODATA_FINE_STRUCTURE_INVERSE,
     fineStructureAlpha: 1 / CODATA_FINE_STRUCTURE_INVERSE,
     galaxyMorphology: 'spiral',
@@ -1632,6 +1637,9 @@ export const CapyGameView: React.FC = () => {
     const rootEl = document.documentElement as HTMLElement & {
       webkitRequestFullscreen?: () => Promise<void> | void;
     };
+    const canvasHostEl = mountRef.current as (HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    }) | null;
     const activeEl = doc.fullscreenElement || doc.webkitFullscreenElement;
     if (activeEl) {
       const exitFn = doc.exitFullscreen || doc.webkitExitFullscreen;
@@ -1645,13 +1653,24 @@ export const CapyGameView: React.FC = () => {
       return;
     }
     const reqFn = rootEl.requestFullscreen || rootEl.webkitRequestFullscreen;
+    const hostReqFn = canvasHostEl?.requestFullscreen || canvasHostEl?.webkitRequestFullscreen;
     if (reqFn) {
       Promise.resolve(reqFn.call(rootEl))
         .then(() => setIsFullscreen(true))
         .catch(() => {
-          // Graceful toggle when iframe sandbox disallows native fullscreen API
-          setIsFullscreen((prev) => !prev);
+          if (hostReqFn && canvasHostEl) {
+            Promise.resolve(hostReqFn.call(canvasHostEl))
+              .then(() => setIsFullscreen(true))
+              .catch(() => setIsFullscreen((prev) => !prev));
+          } else {
+            // Graceful immersive toggle when iframe sandbox disallows native fullscreen API
+            setIsFullscreen((prev) => !prev);
+          }
         });
+    } else if (hostReqFn && canvasHostEl) {
+      Promise.resolve(hostReqFn.call(canvasHostEl))
+        .then(() => setIsFullscreen(true))
+        .catch(() => setIsFullscreen((prev) => !prev));
     } else {
       setIsFullscreen((prev) => !prev);
     }
@@ -2394,7 +2413,7 @@ export const CapyGameView: React.FC = () => {
           data-testid="universe-scale-hud"
           data-scale-band={universeScale.bandId}
           data-seamless-active={universeScale.active ? 'true' : 'false'}
-          className="flex items-center gap-0.5 sm:gap-1 shrink-0"
+          className="flex items-center gap-0.5 sm:gap-1 min-w-0 shrink"
         >
           {isAdvancedMode && (
             <button
@@ -7744,8 +7763,8 @@ export const CapyGameView: React.FC = () => {
       })()}
 
       {/* =====================================================================
-          SMALL BOTTOM-RIGHT FLIGHT SPEED SLIDER (Forward + / Hover 0 / Back -)
-          Compact & out of center sightlines; single non-duplicated speed control.
+          BOTTOM-RIGHT FLIGHT CONTROLS: STRAIGHT/SPIRAL TOGGLE + 3 SPEED BUTTONS
+          Just 3 speed buttons (Rewind, Play/Pause, Fast Forward) + Straight/Spiral toggle.
          ===================================================================== */}
       {universeScale.active &&
         !isFirstRunSetupOpen &&
@@ -7756,57 +7775,103 @@ export const CapyGameView: React.FC = () => {
         !isDebugReportOpen &&
         !isMenuOpen &&
         !isOpticsOpen && (() => {
-          const speedReadout = formatFlightSpeedReadout(universeScale.cruiseVelocityLogPerSec);
-          const sliderVal = Math.max(-8, Math.min(8, speedReadout.forwardSpeed));
+          const activeVel =
+            universeScale.autoZoomDir === 0 ? 0 : universeScale.cruiseVelocityLogPerSec;
+          const isPaused = universeScale.autoZoomDir === 0 || Math.abs(activeVel) < 0.05;
+          const isRewinding = !isPaused && activeVel > 0;
+          const isFastForward = !isPaused && activeVel < 0;
+          const isSpiral =
+            (universeScale.flightTrajectory ?? gameSettings.flightTrajectory ?? 'straight') ===
+            'spiral';
           return (
             <aside
               data-testid="right-flight-speed-panel"
-              aria-label="Ship Forward and Back Speed Slider"
-              className={`fixed right-2 z-30 pointer-events-auto flex flex-col items-center gap-1 px-1 py-1.5 rounded-xl bg-zinc-950/90 border border-white/15 shadow-xl text-zinc-100 select-none ${
-                isAdvancedMode ? 'bottom-24 sm:bottom-20' : 'bottom-2'
+              aria-label="Flight Trajectory and Speed Controls"
+              className={`fixed right-2 z-30 pointer-events-auto flex flex-col items-end gap-1.5 select-none ${
+                isAdvancedMode ? 'bottom-24 sm:bottom-2' : 'bottom-2'
               }`}
             >
               <button
                 type="button"
-                data-testid="right-speed-stop-btn"
-                onClick={() => managerRef.current?.setForwardFlightSpeed(0)}
-                title="Tap to Stop / Hover"
-                aria-label="Hover and Stop Ship"
-                className={`w-10 px-1 py-0.5 rounded-md border text-[9px] font-mono tabular-nums text-center leading-tight cursor-pointer transition-colors ${
-                  speedReadout.mode === 'forward'
-                    ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
-                    : speedReadout.mode === 'reverse'
-                      ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
-                      : 'bg-zinc-900 border-white/10 text-zinc-300'
+                data-testid="toggle-flight-trajectory-btn"
+                aria-pressed={isSpiral}
+                onClick={() => {
+                  const next = isSpiral ? 'straight' : 'spiral';
+                  updateGameSettings({ flightTrajectory: next });
+                  managerRef.current?.setFlightTrajectory(next);
+                }}
+                title={
+                  isSpiral
+                    ? 'Spiral Flight: Curves 360° around each zoom level (tap for Straight)'
+                    : 'Straight Flight: Direct path (tap for 360° Spiral curve)'
+                }
+                aria-label={`Flight Path: ${isSpiral ? 'Spiral' : 'Straight'}`}
+                className={`h-7 px-2 rounded-lg border flex items-center gap-1 text-[10px] font-medium shadow-lg cursor-pointer transition-colors whitespace-nowrap ${
+                  isSpiral
+                    ? 'bg-violet-500/25 border-violet-400/60 text-violet-100'
+                    : 'bg-zinc-950/90 hover:bg-zinc-900 border-white/15 text-zinc-200'
                 }`}
               >
-                {speedReadout.shortLabel}
+                {isSpiral ? (
+                  <Orbit className="w-3.5 h-3.5 text-violet-300 shrink-0" />
+                ) : (
+                  <MoveRight className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
+                )}
+                <span>{isSpiral ? 'Spiral' : 'Straight'}</span>
               </button>
 
-              <div className="relative w-8 h-20 flex items-center justify-center">
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-y-1.5 left-1/2 -translate-x-1/2 w-1.5 rounded-full bg-gradient-to-b from-cyan-400/40 via-zinc-700 to-amber-400/40 border border-white/10"
-                />
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-1.5 right-1.5 top-1/2 -translate-y-1/2 h-0.5 bg-white/45 rounded-full"
-                />
-                <input
-                  type="range"
-                  data-testid="right-flight-speed-slider"
-                  min={-8}
-                  max={8}
-                  step={0.1}
-                  value={sliderVal}
-                  onChange={(e) => {
-                    const fwd = parseFloat(e.target.value);
-                    managerRef.current?.setForwardFlightSpeed(fwd);
-                  }}
-                  aria-label="Ship Flight Speed Slider (Up Forward, Center Hover, Down Back)"
-                  title={`Flight Speed: ${speedReadout.kidLabel}`}
-                  className="relative z-10 w-20 h-4 -rotate-90 appearance-none bg-transparent cursor-pointer accent-cyan-300"
-                />
+              <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-950/92 border border-white/15 shadow-xl text-zinc-100">
+                <button
+                  type="button"
+                  data-testid="speed-rewind-btn"
+                  onClick={() => managerRef.current?.applyMediaSpeedControl('rewind')}
+                  title="Rewind"
+                  aria-label="Rewind"
+                  aria-pressed={isRewinding}
+                  className={`w-9 h-9 rounded-lg border flex items-center justify-center cursor-pointer transition-colors ${
+                    isRewinding
+                      ? 'bg-amber-500/25 border-amber-400/65 text-amber-200'
+                      : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-200'
+                  }`}
+                >
+                  <Rewind className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="speed-play-pause-btn"
+                  onClick={() => managerRef.current?.applyMediaSpeedControl('play_pause')}
+                  title={isPaused ? 'Play' : 'Pause'}
+                  aria-label={isPaused ? 'Play' : 'Pause'}
+                  aria-pressed={!isPaused}
+                  className={`w-9 h-9 rounded-lg border flex items-center justify-center cursor-pointer transition-colors ${
+                    !isPaused
+                      ? 'bg-cyan-500/25 border-cyan-400/65 text-cyan-200'
+                      : 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/50 text-emerald-200'
+                  }`}
+                >
+                  {isPaused ? (
+                    <Play className="w-4 h-4" />
+                  ) : (
+                    <Pause className="w-4 h-4" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="speed-fast-forward-btn"
+                  onClick={() => managerRef.current?.applyMediaSpeedControl('fast_forward')}
+                  title="Fast Forward"
+                  aria-label="Fast Forward"
+                  aria-pressed={isFastForward}
+                  className={`w-9 h-9 rounded-lg border flex items-center justify-center cursor-pointer transition-colors ${
+                    isFastForward
+                      ? 'bg-cyan-500/25 border-cyan-400/65 text-cyan-200'
+                      : 'bg-zinc-900 hover:bg-zinc-800 border-white/10 text-zinc-200'
+                  }`}
+                >
+                  <FastForward className="w-4 h-4" />
+                </button>
               </div>
             </aside>
           );
@@ -7819,8 +7884,10 @@ export const CapyGameView: React.FC = () => {
       {universeScale.active && !isFirstRunSetupOpen && !webglError && !isJsonEditorOpen && !isSettingsOpen && (
         <div
           data-testid="chrono-vessel-flight-strip"
-          className={`fixed bottom-2 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2 py-1.5 text-zinc-100 ${
-            isAdvancedMode ? 'w-[calc(100vw-16px)] max-w-[700px]' : 'w-auto max-w-[calc(100vw-12px)]'
+          className={`fixed bottom-2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2 py-1.5 text-zinc-100 ${
+            isAdvancedMode
+              ? 'left-1/2 -translate-x-1/2 w-[calc(100vw-16px)] max-w-[700px]'
+              : 'left-2 sm:left-1/2 sm:-translate-x-1/2 w-auto max-w-[calc(100vw-156px)]'
           }`}
         >
           {!isAdvancedMode ? (
@@ -7829,7 +7896,7 @@ export const CapyGameView: React.FC = () => {
                 type="button"
                 data-testid="chrono-land-pad-btn"
                 onClick={() => managerRef.current?.engageAutoLanding()}
-                className="min-h-11 px-4 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                className="min-h-11 px-3.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
               >
                 Play on Island!
               </button>
@@ -7910,47 +7977,7 @@ export const CapyGameView: React.FC = () => {
               </div>
 
               {!isFlightStripCollapsed && (
-                <div className="mt-1.5 pt-1.5 border-t border-white/10 flex flex-wrap items-center justify-between gap-1.5">
-                  <div className="flex items-center gap-1 overflow-x-auto">
-                    <span className="text-[9px] font-mono uppercase text-zinc-500 mr-0.5">
-                      Throttle:
-                    </span>
-                    {[
-                      { vel: -6.0, label: '-6/s' },
-                      { vel: -2.2, label: '-2.2/s' },
-                      { vel: 0.0, label: 'Hold' },
-                      { vel: 2.2, label: '+2.2/s' },
-                      { vel: 6.0, label: '+6/s' },
-                    ].map((btn) => {
-                      const isActive =
-                        btn.vel === 0
-                          ? universeScale.autoZoomDir === 0
-                          : universeScale.autoZoomDir !== 0 &&
-                            Math.abs(universeScale.cruiseVelocityLogPerSec - btn.vel) < 0.25 &&
-                            Math.sign(btn.vel) === universeScale.autoZoomDir;
-                      return (
-                        <button
-                          key={btn.label}
-                          type="button"
-                          data-testid={`throttle-btn-${btn.vel}`}
-                          onClick={() => managerRef.current?.setCruiseVelocity(btn.vel)}
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono border cursor-pointer flex items-center gap-0.5 ${
-                            isActive
-                              ? 'bg-cyan-500/25 text-cyan-200 border-cyan-400/60 font-semibold'
-                              : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border-white/10'
-                          }`}
-                        >
-                          {btn.vel === 0 ? (
-                            <Pause className="w-2.5 h-2.5" />
-                          ) : (
-                            <Play className="w-2.5 h-2.5" />
-                          )}
-                          <span>{btn.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
+                <div className="mt-1.5 pt-1.5 border-t border-white/10 flex flex-wrap items-center justify-end gap-1.5">
                   <button
                     type="button"
                     data-testid="toggle-vessel-view-btn"

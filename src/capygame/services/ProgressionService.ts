@@ -239,6 +239,8 @@ export class ProgressionService {
       showObjectMarkers: Boolean(parsed.showObjectMarkers),
       astrophysicsPalette:
         parsed.astrophysicsPalette === 'hubble' ? 'hubble' : 'natural',
+      flightTrajectory:
+        parsed.flightTrajectory === 'spiral' ? 'spiral' : 'straight',
       cameraDistance:
         typeof parsed.cameraDistance === 'number' && Number.isFinite(parsed.cameraDistance)
           ? Math.max(0.6, Math.min(1.5, parsed.cameraDistance))

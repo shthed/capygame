@@ -141,8 +141,12 @@ import {
 } from '../config/ProceduralGameConfig';
 import { computeCosmicAgeGyr } from './SeamlessUniverseSimulator';
 import {
+  FlightTrajectoryMode,
+  MediaSpeedAction,
   clampForwardFlightSpeed,
+  computeSpiralOrbitAngleRadians,
   stepFlightSpeedGear,
+  stepMediaSpeedControl,
 } from './UniverseScaleMath';
 
 // Pre-allocated math helpers for zero per-frame garbage collection
@@ -369,6 +373,11 @@ export class PlayStyleManager {
   private autoLandAtForestPending: boolean = false;
   private quantumFocusMode: QuantumFocusMode = 'auto';
   private autoZoomDirection: -1 | 0 | 1 = 0;
+  public flightTrajectory: FlightTrajectoryMode = 'straight';
+  private lastPlayingForwardSpeed: number = 1.6;
+  private readonly spiralBandLogs: readonly number[] = UNIVERSE_SCALE_BANDS.map(
+    (b) => b.logMeters
+  );
   private seamlessTelemetryAccum: number = 0;
   private lastSoftwareRenderMs: number = -1000;
   public allFeaturesUnlockedOverride: boolean = false;
@@ -735,6 +744,7 @@ export class PlayStyleManager {
     this.performanceLog.lock60FpsEnabled = initialSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = initialSettings.fpsTarget ?? 60;
     this.performanceLog.maxFpsLimit = initialSettings.maxFpsLimit ?? 60;
+    this.flightTrajectory = initialSettings.flightTrajectory === 'spiral' ? 'spiral' : 'straight';
 
     this.isSoftwareGl = webGpuInit?.renderer
       ? webGpuInit.probe.isFallbackAdapter
@@ -1379,6 +1389,7 @@ export class PlayStyleManager {
     this.performanceLog.lock60FpsEnabled = newSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = newSettings.fpsTarget ?? 60;
     this.performanceLog.maxFpsLimit = newSettings.maxFpsLimit ?? 60;
+    this.flightTrajectory = newSettings.flightTrajectory === 'spiral' ? 'spiral' : 'straight';
 
     // Reset adaptive degradation whenever user explicitly changes graphics/FPS settings
     this.adaptiveMitigationLevel = 0;
@@ -2614,9 +2625,15 @@ export class PlayStyleManager {
     } else if (velLogPerSec < 0) {
       this.autoZoomDirection = -1;
       this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -12.0, -0.25);
+      if (this.cruiseVelocityLogPerSec >= -0.05) {
+        this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.35;
+      }
     } else {
       this.autoZoomDirection = 1;
       this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.25, 12.0);
+      if (this.cruiseVelocityLogPerSec <= 0.05) {
+        this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.35;
+      }
     }
     if (this.autoZoomDirection !== 0 && !this.seamlessZoomActive) {
       this.launchIntoCosmos(this.currentLogScaleMeters);
@@ -2637,7 +2654,34 @@ export class PlayStyleManager {
 
   public setForwardFlightSpeed(forwardSpeed: number): void {
     const clampedForward = clampForwardFlightSpeed(forwardSpeed);
+    if (clampedForward > 0.08) {
+      this.lastPlayingForwardSpeed = clampedForward;
+    }
     this.setCruiseVelocity(clampedForward === 0 ? 0 : -clampedForward);
+  }
+
+  public applyMediaSpeedControl(action: MediaSpeedAction): number {
+    const nextVel = stepMediaSpeedControl(
+      this.targetCruiseVelocityLogPerSec,
+      action,
+      this.lastPlayingForwardSpeed
+    );
+    if (nextVel < -0.08) {
+      this.lastPlayingForwardSpeed = Math.abs(nextVel);
+    }
+    this.setCruiseVelocity(nextVel);
+    if (Math.abs(nextVel) < 0.05) {
+      AudioService.playSplash();
+    } else {
+      AudioService.playCosmicWarp(nextVel < 0 ? 1.12 : 0.9);
+    }
+    return nextVel;
+  }
+
+  public setFlightTrajectory(mode: FlightTrajectoryMode): void {
+    this.flightTrajectory = mode === 'spiral' ? 'spiral' : 'straight';
+    AudioService.playCoin();
+    this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
   }
 
   public engageAutoLanding(): void {
@@ -9583,6 +9627,7 @@ export class PlayStyleManager {
       this.cruiseVelocityLogPerSec = 0;
     }
 
+    const prevLogVal = this.currentLogScaleMeters;
     this.currentLogScaleMeters = THREE.MathUtils.damp(
       this.currentLogScaleMeters,
       this.targetLogScaleMeters,
@@ -9591,6 +9636,15 @@ export class PlayStyleManager {
     );
 
     const logVal = this.currentLogScaleMeters;
+    let spiralAngle = 0;
+    let spiralAngularVel = 0;
+    if (this.flightTrajectory === 'spiral') {
+      const prevSpiral = computeSpiralOrbitAngleRadians(prevLogVal, this.spiralBandLogs);
+      spiralAngle = computeSpiralOrbitAngleRadians(logVal, this.spiralBandLogs);
+      const deltaSpiralYaw = spiralAngle - prevSpiral;
+      this.cosmicOrbitYaw += deltaSpiralYaw;
+      spiralAngularVel = dt > 0.0005 ? deltaSpiralYaw / dt : 0;
+    }
 
     // Auto-touchdown onto Sanctuary Chrono-Pad once descending vessel settles into Capybara Forest window
     if (
@@ -9743,7 +9797,12 @@ export class PlayStyleManager {
           dt
         );
       }
-      if (Math.abs(this.moveInput.x) < 0.05 && logVal >= 0.4 && logVal <= 14.8) {
+      if (
+        this.flightTrajectory !== 'spiral' &&
+        Math.abs(this.moveInput.x) < 0.05 &&
+        logVal >= 0.4 &&
+        logVal <= 14.8
+      ) {
         const signedYaw = normalizeAngleSigned(this.cosmicOrbitYaw);
         const guideYaw = logVal <= 3.2 ? 0.15 : 0.06;
         const dampedYaw = THREE.MathUtils.damp(signedYaw, guideYaw, 1.4, dt);
@@ -9845,12 +9904,23 @@ export class PlayStyleManager {
       this.scene.background = _seamlessSkyColor.clone();
     }
 
+    const spiralPitchMod =
+      this.flightTrajectory === 'spiral' ? Math.sin(spiralAngle) * 0.085 : 0;
+    const spiralRadiusScale =
+      this.flightTrajectory === 'spiral' ? 1.0 + Math.sin(spiralAngle * 2.0) * 0.07 : 1.0;
+    const effectiveOrbitPitch = THREE.MathUtils.clamp(
+      this.cosmicOrbitPitch + spiralPitchMod,
+      horizonMinPitch,
+      1.22
+    );
+    const effectiveCamRadius = camRadius * spiralRadiusScale;
+
     _camTarget.set(
       _seamlessFocalPos.x +
-        Math.sin(this.cosmicOrbitYaw) * Math.cos(this.cosmicOrbitPitch) * camRadius,
-      _seamlessFocalPos.y + Math.sin(this.cosmicOrbitPitch) * camRadius,
+        Math.sin(this.cosmicOrbitYaw) * Math.cos(effectiveOrbitPitch) * effectiveCamRadius,
+      _seamlessFocalPos.y + Math.sin(effectiveOrbitPitch) * effectiveCamRadius,
       _seamlessFocalPos.z +
-        Math.cos(this.cosmicOrbitYaw) * Math.cos(this.cosmicOrbitPitch) * camRadius
+        Math.cos(this.cosmicOrbitYaw) * Math.cos(effectiveOrbitPitch) * effectiveCamRadius
     );
     this.camera.position.copy(_camTarget);
     this.camera.lookAt(_seamlessFocalPos);
@@ -9890,6 +9960,7 @@ export class PlayStyleManager {
             : (this.targetLogScaleMeters - this.currentLogScaleMeters) * 4.0;
 
         // Autopilot banking & nose lead when navigating off-center into Earth's Milky Way Orion-Cygnus Spur
+        // or sweeping along the 360-degree-per-band curved spiral trajectory!
         let navSteerX = 0;
         let navPitchZ = 0;
         if (vt.worldSpaceBlend <= 0.001 && logVal >= 18.8 && logVal <= 21.1) {
@@ -9901,6 +9972,11 @@ export class PlayStyleManager {
             navPitchZ = _galaxyArmWorldDir.dot(_camUp) * armNav.navActiveWeight * 0.85 * dirSign;
           }
         }
+        if (this.flightTrajectory === 'spiral' && Math.abs(spiralAngularVel) > 0.02) {
+          const spiralLead = THREE.MathUtils.clamp(spiralAngularVel * 0.28, -0.95, 0.95);
+          navSteerX += spiralLead;
+          navPitchZ += Math.cos(spiralAngle) * 0.16 * Math.min(1, Math.abs(spiralAngularVel));
+        }
 
         if (vt.worldSpaceBlend > 0.001) {
           _vesselEuler.set(0, this.cosmicOrbitYaw, 0);
@@ -9911,7 +9987,7 @@ export class PlayStyleManager {
         } else {
           this.chronoVessel.root.quaternion.copy(this.camera.quaternion);
           if (navSteerX !== 0 || navPitchZ !== 0) {
-            _vesselNavEuler.set(navPitchZ * 0.34, -navSteerX * 0.42, 0);
+            _vesselNavEuler.set(navPitchZ * 0.34, -navSteerX * 0.42, -navSteerX * 0.22);
             _vesselNavQuat.setFromEuler(_vesselNavEuler);
             this.chronoVessel.root.quaternion.multiply(_vesselNavQuat);
           }
@@ -10150,6 +10226,7 @@ export class PlayStyleManager {
           ? 0
           : +(this.autoZoomDirection * Math.abs(this.cruiseVelocityLogPerSec)).toFixed(2),
       vesselMode: this.vesselMode,
+      flightTrajectory: this.flightTrajectory,
       fineStructureInverse: +(this.proceduralConfig.universe.fineStructureInverse ?? 137.036).toFixed(3),
       fineStructureAlpha: +(1.0 / (this.proceduralConfig.universe.fineStructureInverse ?? 137.036)).toFixed(6),
       galaxyMorphology: this.seamlessUniverse.getGalaxyMorphology(),

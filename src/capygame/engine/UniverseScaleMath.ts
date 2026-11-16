@@ -98,6 +98,81 @@ export function formatFlightSpeedReadout(cruiseVelLogPerSec: number): {
   };
 }
 
+export type FlightTrajectoryMode = 'straight' | 'spiral';
+export type MediaSpeedAction = 'rewind' | 'play_pause' | 'fast_forward';
+
+export const MEDIA_SPEED_GEARS: readonly number[] = [0.65, 1.6, 3.2, 5.5, 8.0];
+
+/**
+ * Steps cruise velocity using a clean 3-button transport interface:
+ * Rewind (zoom outward) · Play/Pause · Fast Forward (zoom inward).
+ */
+export function stepMediaSpeedControl(
+  currentCruiseVelLogPerSec: number,
+  action: MediaSpeedAction,
+  resumeForwardMagnitude: number = 1.6
+): number {
+  const currentForward = Math.abs(currentCruiseVelLogPerSec) < 0.05 ? 0 : -currentCruiseVelLogPerSec;
+
+  if (action === 'play_pause') {
+    if (Math.abs(currentForward) > 0.05) {
+      return 0;
+    }
+    const clampedResume = Math.max(0.65, Math.min(8.0, Math.abs(resumeForwardMagnitude) || 1.6));
+    return -clampedResume;
+  }
+
+  if (action === 'fast_forward') {
+    if (currentForward <= 0.05) {
+      return -1.6;
+    }
+    for (let i = 0; i < MEDIA_SPEED_GEARS.length; i++) {
+      if (MEDIA_SPEED_GEARS[i] > currentForward + 0.08) {
+        return -MEDIA_SPEED_GEARS[i];
+      }
+    }
+    return -MEDIA_SPEED_GEARS[MEDIA_SPEED_GEARS.length - 1];
+  }
+
+  // action === 'rewind'
+  if (currentForward >= -0.05) {
+    return 1.6;
+  }
+  const currentReverseMag = -currentForward;
+  for (let i = 0; i < MEDIA_SPEED_GEARS.length; i++) {
+    if (MEDIA_SPEED_GEARS[i] > currentReverseMag + 0.08) {
+      return MEDIA_SPEED_GEARS[i];
+    }
+  }
+  return MEDIA_SPEED_GEARS[MEDIA_SPEED_GEARS.length - 1];
+}
+
+/**
+ * Computes cumulative orbital spiral angle in radians across `UNIVERSE_SCALE_BANDS`
+ * so flying smoothly through any zoom band completes an exact full 360° (2π rad) circle.
+ */
+export function computeSpiralOrbitAngleRadians(
+  logMeters: number,
+  bandLogMetersDescending: readonly number[]
+): number {
+  const count = bandLogMetersDescending.length;
+  if (count < 2) return 0;
+  if (logMeters >= bandLogMetersDescending[0]) return 0;
+  if (logMeters <= bandLogMetersDescending[count - 1]) {
+    return (count - 1) * Math.PI * 2;
+  }
+  for (let i = 0; i < count - 1; i++) {
+    const hi = bandLogMetersDescending[i];
+    const lo = bandLogMetersDescending[i + 1];
+    if (logMeters <= hi && logMeters >= lo) {
+      const span = Math.max(1e-6, hi - lo);
+      const frac = (hi - logMeters) / span;
+      return (i + frac) * Math.PI * 2;
+    }
+  }
+  return 0;
+}
+
 const VALID_SPECIMEN_SET: ReadonlySet<string> = new Set(
   FOREST_MICRO_SPECIMENS.map((s) => s.id)
 );

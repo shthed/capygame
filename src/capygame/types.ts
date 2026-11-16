@@ -289,6 +289,7 @@ export interface CapyGameSettings {
   dayNightAutoCycle: boolean;
   timeOfDayHours: number;
   weatherMode: 'auto' | WeatherType;
+  flightTrajectory: 'straight' | 'spiral';
   showObjectMarkers: boolean;
   realityScaleGamma: number;
   astrophysicsPalette: AstrophysicsPaletteMode;
@@ -331,6 +332,7 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   dayNightAutoCycle: true,
   timeOfDayHours: 9.5,
   weatherMode: 'auto',
+  flightTrajectory: 'straight',
   showObjectMarkers: false,
   realityScaleGamma: 1.0, // Strict 1:1 physical reality by default
   astrophysicsPalette: 'natural',
@@ -1767,6 +1769,7 @@ export interface UniverseScaleTelemetry {
   cosmicAgeGyr: number;
   cruiseVelocityLogPerSec: number;
   vesselMode: ChronoVesselViewMode;
+  flightTrajectory: 'straight' | 'spiral';
   fineStructureInverse: number;
   fineStructureAlpha: number;
   galaxyMorphology: GalaxyMorphology;
