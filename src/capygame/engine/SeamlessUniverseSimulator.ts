@@ -4152,11 +4152,11 @@ export class SeamlessUniverseSimulator {
       let alpha = 1.0;
       if (isPlanet) {
         // Unified Single Planet remains continuous down through stratosphere & land_masses, fading cleanly
-        // across 3.35 -> 2.55 so planetLod3 blends smoothly into Sanctuary without popping or bare water gaps
+        // across 3.15 -> 2.15 so planetLod3 blends smoothly into Sanctuary without popping or bare water gaps
         if (scaledDelta < 0) {
           alpha = smoothstep01(maxShrinkDex, -2.05, scaledDelta);
         } else {
-          alpha = smoothstep01(2.55, 3.35, logScaleMeters);
+          alpha = smoothstep01(2.15, 3.15, logScaleMeters);
         }
       } else if (isGalaxy) {
         if (scaledDelta < 0) {
@@ -4444,7 +4444,7 @@ export class SeamlessUniverseSimulator {
         const lod3Op =
           alpha *
           smoothstep01(3.50, 3.05, logScaleMeters) *
-          smoothstep01(2.55, 2.95, logScaleMeters);
+          smoothstep01(2.15, 2.75, logScaleMeters);
 
         const lodPairs: Array<[THREE.Mesh | null, THREE.ShaderMaterial | undefined, number]> = [
           [this.planetLod1Mesh, this.planetLodMats[0], lod1Op],

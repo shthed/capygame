@@ -1309,13 +1309,25 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await settingsModal.waitFor({ state: 'hidden', timeout: 5000 });
   console.log('✓ Settings Page camera, 60 FPS Dynamic LOD, Day/Night & Weather controls verified and closed');
 
-  // 11. Verify Overview / About modal opens on demand from Menu
+  // 11. Verify Overview / About modal opens with unified CapyGame 3D branding & Privacy Policy viewer
   await page.getByTestId('open-about-btn').click();
   const aboutModal = page.getByTestId('capygame-about-modal');
   await aboutModal.waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('close-about-btn').click();
+  const aboutText = (await aboutModal.innerText()) || '';
+  if (!aboutText.toLowerCase().includes('capygame 3d')) {
+    throw new Error(`Expected unified 'CapyGame 3D' branding in About modal, got: ${aboutText}`);
+  }
+  await aboutModal.getByTestId('open-privacy-policy-btn').click();
+  const privacyModal = page.getByTestId('privacy-policy-modal');
+  await privacyModal.waitFor({ state: 'visible', timeout: 5000 });
+  const privacyIframeCount = await privacyModal.locator('iframe[src="./privacy.html"]').count();
+  if (privacyIframeCount !== 1) {
+    throw new Error(`Expected embedded ./privacy.html iframe inside privacy-policy-modal, got ${privacyIframeCount}`);
+  }
+  await page.getByTestId('close-privacy-policy-btn').click();
+  await privacyModal.waitFor({ state: 'hidden', timeout: 5000 });
   await aboutModal.waitFor({ state: 'hidden', timeout: 5000 });
-  console.log('✓ Overview modal opened from Menu and closed cleanly');
+  console.log('✓ Unified CapyGame 3D About modal & embedded Privacy Policy modal opened and closed cleanly');
 
   // 12. Progressive Unlock & Transit across all 5 World Sectors
   const modes = ['spore', 'breakout', 'runner', 'fallguys', 'sanctuary'];
@@ -2138,6 +2150,92 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.getByTestId('toggle-infographic-btn').click({ force: true });
   console.log(
     `✓ Hardware-Accelerated 3D GPU Engine verified: PMREM IBL + 3-Point Rim Light + Texel-Snapped Hero Shadow Cascade, ${gpuEngineCheck.registeredPbrTextures} PBR Normal/Roughness/AO Textures, Live Trilinear/Aniso/Nearest Filtering & HDR Post-Processing Filters (Cinema Filmic, Golden Hour, Retro CRT)!`
+  );
+
+  // 14F. Verify Seamless Orbit-to-Surface Descent, Skydiving Rings, Docked Chrono-Vessel, Dash/Dive, Arcade Combo & Bounties HUD
+  const orbitDescentCheck = await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return null;
+
+    mgr.launchIntoCosmos(4.65);
+    mgr.tick(0.05);
+    const startRingsHit = mgr.getUniverseScaleTelemetry().descentRingsHit;
+
+    // Descend through orbital approach band (~log 2.95) and inspect smooth atmospheric & outer island reveal
+    mgr.setSeamlessLogScale(2.95, true);
+    mgr.tick(0.05);
+    const skyAlphaApproach = mgr.worldEnv?.skyMaterial?.uniforms?.uSkyAlpha?.value ?? -1;
+    const outerIslandsVisibleFromOrbit = Boolean(
+      mgr.sporeGroup?.visible &&
+        mgr.breakoutGroup?.visible &&
+        mgr.runnerGroup?.visible &&
+        mgr.fallGuysGroup?.visible
+    );
+
+    // Engage auto-landing from log 2.2 down onto Sanctuary Chrono-Pad
+    mgr.setSeamlessLogScale(2.2, true);
+    mgr.engageAutoLanding();
+    let safety = 0;
+    while (mgr.cosmicStage !== 'playing' && safety++ < 220) {
+      mgr.tick(0.05);
+    }
+    const telAfterLanding = mgr.getUniverseScaleTelemetry();
+
+    // Test Kinetic Dash & airborne Belly-Flop Splash into Home Pool
+    mgr.switchMode('sanctuary', true);
+    mgr.heroLocalPos.set(-8.8, 0.2, 3.0); // Center of Home Pool
+    mgr.heroVelocity.y = 6.5;
+    mgr.tick(0.05);
+    const dashFired = mgr.triggerDash();
+    const diveFired = mgr.triggerGroundPound();
+    for (let i = 0; i < 20; i++) {
+      mgr.tick(0.05);
+    }
+    const snakeTel = mgr.getCapySnakeTelemetry();
+
+    return {
+      startRingsHit,
+      skyAlphaApproach: +skyAlphaApproach.toFixed(3),
+      outerIslandsVisibleFromOrbit,
+      landedInPlaying: mgr.cosmicStage === 'playing',
+      dockedOnChronoPad: Boolean(telAfterLanding.dockedOnChronoPad && mgr.chronoVessel?.root?.visible),
+      dashFired,
+      diveFired,
+      comboActive: Boolean(snakeTel.arcadeCombo?.active),
+      comboCount: snakeTel.arcadeCombo?.count ?? 0,
+    };
+  });
+
+  if (
+    !orbitDescentCheck ||
+    orbitDescentCheck.startRingsHit !== 0 ||
+    !(orbitDescentCheck.skyAlphaApproach > 0 && orbitDescentCheck.skyAlphaApproach <= 1.0) ||
+    !orbitDescentCheck.outerIslandsVisibleFromOrbit ||
+    !orbitDescentCheck.landedInPlaying ||
+    !orbitDescentCheck.dockedOnChronoPad ||
+    !orbitDescentCheck.dashFired ||
+    !orbitDescentCheck.diveFired ||
+    !orbitDescentCheck.comboActive ||
+    orbitDescentCheck.comboCount < 1
+  ) {
+    throw new Error(
+      `Seamless Orbit Descent / Fun Loop verification failed: ${JSON.stringify(orbitDescentCheck)}`
+    );
+  }
+
+  // Verify live Arcade Combo HUD, Surface Dash/Dive action buttons & Bounties drawer in DOM
+  await page.getByTestId('arcade-combo-hud').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('surface-action-controls').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('surface-dash-btn').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('surface-dive-btn').waitFor({ state: 'visible', timeout: 5000 });
+  const bountiesToggle = page.getByTestId('bounties-hud-toggle');
+  await bountiesToggle.waitFor({ state: 'visible', timeout: 5000 });
+  await bountiesToggle.click({ force: true });
+  await page.getByTestId('bounties-panel').waitFor({ state: 'visible', timeout: 5000 });
+  await bountiesToggle.click({ force: true });
+  await page.getByTestId('bounties-panel').waitFor({ state: 'hidden', timeout: 5000 });
+  console.log(
+    `✓ Seamless Orbit Descent, Outer Archipelago Orbital Reveal (skyAlpha=${orbitDescentCheck.skyAlphaApproach}), Docked Chrono-Vessel, Dash/Dive/Combo HUD (x${orbitDescentCheck.comboCount}) & Bounties Drawer verified!`
   );
 
   if (consoleErrors.length > 0) {

@@ -43,6 +43,8 @@ import {
   OrbitTelemetry,
   OrbitTimeScaleId,
   ORBIT_TIME_SCALES,
+  BountyEventType,
+  createDefaultBounties,
 } from '../types';
 import { ProgressionService } from '../services/ProgressionService';
 import {
@@ -117,6 +119,8 @@ import {
   Rewind,
   Orbit,
   MoveRight,
+  Zap,
+  Shield,
 } from 'lucide-react';
 
 type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
@@ -336,6 +340,8 @@ export const CapyGameView: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
+  const [isBountiesOpen, setIsBountiesOpen] = useState<boolean>(false);
   const [isJsonEditorOpen, setIsJsonEditorOpen] = useState<boolean>(false);
   const [isFirstRunSetupOpen, setIsFirstRunSetupOpen] = useState<boolean>(() => {
     try {
@@ -475,7 +481,8 @@ export const CapyGameView: React.FC = () => {
   });
 
   const modalOpenRef = useRef<boolean>(false);
-  modalOpenRef.current = isSettingsOpen || isAboutOpen || isJsonEditorOpen || isDebugReportOpen;
+  modalOpenRef.current =
+    isSettingsOpen || isAboutOpen || isJsonEditorOpen || isDebugReportOpen || isPrivacyOpen;
   const menuOpenRef = useRef<boolean>(false);
   menuOpenRef.current = isMenuOpen;
 
@@ -759,6 +766,7 @@ export const CapyGameView: React.FC = () => {
     const anyOpen =
       isAboutOpen ||
       isSettingsOpen ||
+      isPrivacyOpen ||
       isJsonEditorOpen ||
       isMenuOpen ||
       isScaleAtlasOpen ||
@@ -766,7 +774,8 @@ export const CapyGameView: React.FC = () => {
       isInfographicExpanded ||
       isPerfLogOpen;
     NativeBridge.setBackModalOpen(anyOpen, () => {
-      if (isAboutOpen) setIsAboutOpen(false);
+      if (isPrivacyOpen) setIsPrivacyOpen(false);
+      else if (isAboutOpen) setIsAboutOpen(false);
       else if (isSettingsOpen) setIsSettingsOpen(false);
       else if (isJsonEditorOpen) setIsJsonEditorOpen(false);
       else if (isPerfLogOpen) setIsPerfLogOpen(false);
@@ -781,6 +790,7 @@ export const CapyGameView: React.FC = () => {
   }, [
     isAboutOpen,
     isSettingsOpen,
+    isPrivacyOpen,
     isJsonEditorOpen,
     isMenuOpen,
     isScaleAtlasOpen,
@@ -884,6 +894,23 @@ export const CapyGameView: React.FC = () => {
               score,
               proceduralConfigRef.current.economy.coinRewardMultiplier
             );
+          });
+        },
+        onBountyEvent: (eventType: BountyEventType, amount: number = 1) => {
+          setStats((prev: PlayerStats) => {
+            const res = ProgressionService.recordBountyProgress(prev, eventType, amount);
+            if (res.stats === prev) return prev;
+            if (res.completed.length > 0) {
+              const first = res.completed[0];
+              window.setTimeout(() => {
+                managerRef.current?.updateStats(res.stats);
+              }, 0);
+              AudioService.playPrestigeFanfare();
+              showToast(
+                `Bounty Complete: ${first.title}! +${first.coinReward}c +${first.dnaReward} DNA`
+              );
+            }
+            return res.stats;
           });
         },
         onTelemetryUpdate: (live: LiveModeTelemetry) => {
@@ -1166,6 +1193,12 @@ export const CapyGameView: React.FC = () => {
         if (key === 'a' || key === 'arrowleft') managerRef.current.moveInput.x = -1;
         if (key === 'd' || key === 'arrowright') managerRef.current.moveInput.x = 1;
         if (key === ' ') managerRef.current.isJumping = true;
+        if ((e.key === 'Shift' || key === 'q') && !e.repeat) {
+          managerRef.current.triggerDash();
+        }
+        if ((key === 'c' || e.key === 'Control') && !e.repeat) {
+          managerRef.current.triggerGroundPound();
+        }
         if (
           key === 'm' &&
           !e.repeat &&
@@ -1188,6 +1221,7 @@ export const CapyGameView: React.FC = () => {
           setIsOpticsOpen(false);
           setIsInfographicExpanded(false);
           setIsPerfLogOpen(false);
+          setIsPrivacyOpen(false);
           setIsAboutOpen(false);
           setIsSettingsOpen(false);
           setIsJsonEditorOpen(false);
@@ -5489,6 +5523,200 @@ export const CapyGameView: React.FC = () => {
         </header>
       )}
 
+      {/* Compact Arcade Combo Multiplier HUD (Right Below Top Bar During Active Chains) */}
+      {cosmicStage === 'playing' &&
+        !universeScale.active &&
+        !webglError &&
+        telemetry.arcadeCombo?.active && (() => {
+          const combo = telemetry.arcadeCombo;
+          const pct = Math.max(
+            0,
+            Math.min(100, (combo.timeRemainingSec / Math.max(0.1, combo.maxWindowSec)) * 100)
+          );
+          return (
+            <div
+              data-testid="arcade-combo-hud"
+              className={`fixed top-12 right-2.5 z-20 pointer-events-none px-3 py-2 rounded-xl bg-zinc-950/95 border shadow-xl tabular-nums min-w-[168px] ${
+                combo.feverActive ? 'border-amber-400/75' : 'border-sky-400/45'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-mono font-bold text-amber-300">
+                  {combo.multiplier}x COMBO ({combo.count})
+                </span>
+                {combo.feverActive && (
+                  <span className="text-[9px] font-mono font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-200 border border-amber-400/45">
+                    FEVER
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] font-medium text-zinc-200 truncate mt-0.5">
+                {combo.lastActionLabel || 'Chain Active'}
+              </div>
+              <div className="mt-1.5 h-1 w-full rounded-full bg-zinc-800 overflow-hidden">
+                <div
+                  style={{ width: `${pct}%` }}
+                  className={`h-full transition-[width] duration-75 ${
+                    combo.feverActive ? 'bg-amber-400' : 'bg-sky-400'
+                  }`}
+                />
+              </div>
+            </div>
+          );
+        })()}
+
+      {/* Collapsible 3-Slot Archipelago Bounties Drawer (Bottom-Left During Surface Play) */}
+      {cosmicStage === 'playing' &&
+        !universeScale.active &&
+        !webglError &&
+        !isMenuOpen &&
+        !isSettingsOpen &&
+        !isAboutOpen &&
+        !isPrivacyOpen &&
+        !isJsonEditorOpen && (() => {
+          const activeBounties =
+            stats.bounties && stats.bounties.length > 0
+              ? stats.bounties
+              : createDefaultBounties();
+          const lead = activeBounties[0];
+          return (
+            <aside
+              data-testid="bounties-hud-container"
+              aria-label="Archipelago Bounties"
+              className="fixed bottom-2.5 left-2.5 z-20 pointer-events-auto flex flex-col items-start gap-1.5"
+            >
+              {isBountiesOpen && (
+                <div
+                  data-testid="bounties-panel"
+                  className="w-64 sm:w-72 rounded-xl bg-zinc-950/95 border border-white/15 shadow-2xl p-2.5 space-y-2 text-zinc-100"
+                >
+                  <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+                      <Trophy className="w-3.5 h-3.5 shrink-0" />
+                      <span>Island Bounties</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsBountiesOpen(false)}
+                      aria-label="Close Bounties"
+                      className="p-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="space-y-1.5">
+                    {activeBounties.map((b) => {
+                      const pct = Math.min(100, Math.round((b.progress / b.target) * 100));
+                      return (
+                        <div
+                          key={b.id}
+                          data-testid={`bounty-slot-${b.id}`}
+                          className="p-2 rounded-lg bg-zinc-900/90 border border-white/8 space-y-1"
+                        >
+                          <div className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="font-medium text-zinc-100 truncate">{b.title}</span>
+                            <span className="font-mono tabular-nums text-amber-300 shrink-0">
+                              {b.progress}/{b.target}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400 leading-snug">
+                            {b.description}
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-0.5">
+                            <div className="flex-1 h-1 rounded-full bg-zinc-800 overflow-hidden">
+                              <div
+                                style={{ width: `${pct}%` }}
+                                className="h-full bg-emerald-400"
+                              />
+                            </div>
+                            <span className="text-[9px] font-mono tabular-nums text-emerald-300 shrink-0">
+                              +{b.coinReward}c +{b.dnaReward} DNA
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="button"
+                data-testid="bounties-hud-toggle"
+                aria-expanded={isBountiesOpen}
+                onClick={() => {
+                  AudioService.playCoin();
+                  setIsBountiesOpen((prev) => !prev);
+                }}
+                className="h-9 px-2.5 rounded-lg bg-zinc-950/95 hover:bg-zinc-900 border border-white/15 shadow-lg flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-zinc-100 cursor-pointer"
+              >
+                <Trophy className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span className="font-sans font-medium truncate max-w-[140px]">
+                  {lead.title}
+                </span>
+                <span className="text-amber-300">
+                  {lead.progress}/{lead.target}
+                </span>
+              </button>
+            </aside>
+          );
+        })()}
+
+      {/* Kinetic Surface Ability Buttons (Dash + Dive / Belly-Flop Slam) */}
+      {cosmicStage === 'playing' &&
+        !universeScale.active &&
+        !webglError &&
+        gameSettings.touchControlsMode !== 'hidden' &&
+        !isMenuOpen &&
+        !isSettingsOpen &&
+        !isAboutOpen &&
+        !isPrivacyOpen &&
+        !isJsonEditorOpen && (() => {
+          const dashCd = telemetry.dashCooldownFrac ?? 0;
+          const dashReady = dashCd <= 0.02;
+          const canDive = Boolean(telemetry.canDive);
+          return (
+            <div
+              data-testid="surface-action-controls"
+              className={`fixed bottom-3 z-20 flex items-center gap-1.5 pointer-events-auto ${
+                showTouchDpad ? 'right-36' : 'right-3'
+              }`}
+            >
+              <button
+                type="button"
+                data-testid="surface-dive-btn"
+                onClick={() => managerRef.current?.triggerGroundPound()}
+                title="Airborne Belly-Flop Slam (Ctrl / C)"
+                aria-label="Belly-Flop Dive"
+                className={`min-h-12 min-w-12 px-2.5 rounded-xl border shadow-lg flex flex-col items-center justify-center text-[10px] font-mono cursor-pointer transition-colors ${
+                  canDive
+                    ? 'bg-amber-500/25 hover:bg-amber-500/35 border-amber-400/70 text-amber-100'
+                    : 'bg-zinc-950/90 border-white/12 text-zinc-400 hover:bg-zinc-900'
+                }`}
+              >
+                <ChevronDown className="w-4 h-4 shrink-0" />
+                <span>Dive</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="surface-dash-btn"
+                onClick={() => managerRef.current?.triggerDash()}
+                title="Kinetic Dash Surge (Shift / Q)"
+                aria-label="Kinetic Dash"
+                className={`min-h-12 min-w-12 px-2.5 rounded-xl border shadow-lg flex flex-col items-center justify-center text-[10px] font-mono tabular-nums cursor-pointer transition-colors ${
+                  dashReady
+                    ? 'bg-sky-500/25 hover:bg-sky-500/35 border-sky-400/70 text-sky-100'
+                    : 'bg-zinc-950/90 border-white/12 text-zinc-400'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5 shrink-0" />
+                <span>{dashReady ? 'Dash' : `${Math.round((1 - dashCd) * 100)}%`}</span>
+              </button>
+            </div>
+          );
+        })()}
+
       {/* Optional On-Screen Steering Pad (Hidden unless explicitly set to 'always' in Settings) */}
       {showTouchDpad && (
         <div
@@ -5550,7 +5778,7 @@ export const CapyGameView: React.FC = () => {
             <div className="bg-zinc-950 px-5 py-4 border-b border-white/10 flex items-center justify-between">
               <div>
                 <h2 className="text-sm sm:text-base font-semibold tracking-wider uppercase text-zinc-100">
-                  Capy Universe 3D · System Architecture
+                  CapyGame 3D · System Architecture
                 </h2>
                 <p className="text-xs font-mono text-zinc-400 mt-0.5">
                   63-Order Seamless Zoom (10^+28m to 10^-35m) · N-Body Galaxies · 5 Surface Sectors
@@ -5603,7 +5831,20 @@ export const CapyGameView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-3 pt-2 border-t border-white/10">
+              <div className="flex items-center justify-between gap-3 pt-2 border-t border-white/10">
+                <button
+                  type="button"
+                  data-testid="open-privacy-policy-btn"
+                  onClick={() => {
+                    AudioService.playCoin();
+                    setIsAboutOpen(false);
+                    setIsPrivacyOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
+                >
+                  <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Privacy Policy</span>
+                </button>
                 <button
                   type="button"
                   data-testid="close-about-btn"
@@ -5866,13 +6107,28 @@ export const CapyGameView: React.FC = () => {
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
-                    <button
-                      type="button"
-                      onClick={handleUnlockAllFeatures}
-                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-semibold border border-white/10 cursor-pointer"
-                    >
-                      Unlock Everything
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleUnlockAllFeatures}
+                        className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-semibold border border-white/10 cursor-pointer"
+                      >
+                        Unlock Everything
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="open-privacy-policy-btn"
+                        onClick={() => {
+                          AudioService.playCoin();
+                          setIsSettingsOpen(false);
+                          setIsPrivacyOpen(true);
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                      >
+                        <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Privacy Policy</span>
+                      </button>
+                    </div>
 
                     <button
                       type="button"
@@ -7096,13 +7352,28 @@ export const CapyGameView: React.FC = () => {
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
-                <button
-                  type="button"
-                  onClick={handleUnlockAllFeatures}
-                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
-                >
-                  Unlock All Sectors
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleUnlockAllFeatures}
+                    className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                  >
+                    Unlock All Sectors
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="open-privacy-policy-btn"
+                    onClick={() => {
+                      AudioService.playCoin();
+                      setIsSettingsOpen(false);
+                      setIsPrivacyOpen(true);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                  >
+                    <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Privacy Policy</span>
+                  </button>
+                </div>
 
                 <button
                   type="button"
@@ -7114,6 +7385,46 @@ export const CapyGameView: React.FC = () => {
               </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EMBEDDED PRIVACY POLICY MODAL */}
+      {isPrivacyOpen && (
+        <div
+          data-testid="privacy-policy-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/90"
+        >
+          <div className="relative w-full max-w-2xl bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100 flex flex-col max-h-[90vh]">
+            <div className="bg-zinc-950 px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
+                <div>
+                  <h2 className="text-sm font-semibold tracking-wider uppercase text-zinc-100">
+                    CapyGame 3D · Privacy Policy
+                  </h2>
+                  <p className="text-[11px] font-mono text-zinc-400">
+                    100% On-Device Saves · Zero Tracking SDKs
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                data-testid="close-privacy-policy-btn"
+                onClick={() => setIsPrivacyOpen(false)}
+                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
+                aria-label="Close Privacy Policy"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-3 bg-zinc-950 flex-1 min-h-0">
+              <iframe
+                src="./privacy.html"
+                title="CapyGame 3D Privacy Policy"
+                className="w-full h-[64vh] rounded-lg border border-white/10 bg-zinc-950"
+              />
             </div>
           </div>
         </div>
@@ -7903,6 +8214,14 @@ export const CapyGameView: React.FC = () => {
               >
                 Play on Island!
               </button>
+              {universeScale.logScaleMeters <= 5.4 && universeScale.logScaleMeters >= 0.9 && (
+                <span
+                  data-testid="descent-rings-hud"
+                  className="px-2 py-1.5 rounded-lg bg-sky-500/20 border border-sky-400/45 text-[11px] font-mono tabular-nums text-sky-200 shrink-0"
+                >
+                  Rings {universeScale.descentRingsHit ?? 0}/{universeScale.descentRingsTotal ?? 6}
+                </span>
+              )}
               {universeScale.bandId === 'leaf_fur_micro' && (
                 <button
                   type="button"
@@ -7940,6 +8259,14 @@ export const CapyGameView: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
+                  {universeScale.logScaleMeters <= 5.4 && universeScale.logScaleMeters >= 0.9 && (
+                    <span
+                      data-testid="descent-rings-hud"
+                      className="px-2 py-1 rounded bg-sky-500/20 border border-sky-400/45 text-[10px] font-mono tabular-nums text-sky-200 whitespace-nowrap"
+                    >
+                      Rings {universeScale.descentRingsHit ?? 0}/{universeScale.descentRingsTotal ?? 6}
+                    </span>
+                  )}
                   {universeScale.bandId === 'leaf_fur_micro' && (
                     <button
                       type="button"

@@ -17,6 +17,16 @@ import {
   stepSteadyLogScaleTowardTarget,
 } from './UniverseScaleMath';
 import {
+  applyBountyEvent,
+  computeContinuousDescentCamRadius,
+  computeDescentApproachDampingFactor,
+  computeOrbitalSurfaceBlend,
+  createEmptyComboState,
+  registerComboHit,
+  sanitizeBountyState,
+  tickComboDecay,
+} from './GameplayFunMath';
+import {
   GPU_WATER_CELL_COUNT,
   GPU_WATER_GRID_SIZE,
   TOTAL_FRUSTUM_CLUSTERS,
@@ -261,4 +271,70 @@ test('GPU Indirect Culling, 16x9x24 Clustered Forward+ binning & 128x128 Wake pa
   assert.ok(wakeOut[0] > 0.1 && wakeOut[0] < 0.9);
   assert.ok(wakeOut[2] > 0.01 && wakeOut[2] <= 0.16);
   assert.equal(wakeOut[3], 1.0);
+});
+
+test('Smooth orbital descent curves damp spiral spin cleanly and crossfade lighting & camera without snaps', () => {
+  assert.equal(computeDescentApproachDampingFactor(6.0), 1.0);
+  assert.equal(computeDescentApproachDampingFactor(2.0), 0.0);
+  const midDamp = computeDescentApproachDampingFactor(3.65);
+  assert.ok(midDamp > 0.1 && midDamp < 0.9, `Expected smooth mid-approach damping, got ${midDamp}`);
+
+  const highOrbit = computeOrbitalSurfaceBlend(5.0, false);
+  assert.equal(highOrbit.inSurfaceWindow, false);
+  assert.equal(highOrbit.terrestrialBlend, 0);
+  assert.equal(highOrbit.archipelagoVisible, false);
+
+  const upperAtmos = computeOrbitalSurfaceBlend(3.2, false);
+  assert.equal(upperAtmos.inSurfaceWindow, true);
+  assert.equal(upperAtmos.archipelagoVisible, true);
+  assert.ok(upperAtmos.terrestrialBlend > 0.05 && upperAtmos.terrestrialBlend < 0.55);
+
+  const canopy = computeOrbitalSurfaceBlend(0.8, false);
+  assert.equal(canopy.inSurfaceWindow, true);
+  assert.equal(canopy.terrestrialBlend, 1.0);
+
+  const chaseDist = 11.4;
+  assert.equal(computeContinuousDescentCamRadius(4.0, chaseDist), 38.0);
+  assert.equal(computeContinuousDescentCamRadius(0.8, chaseDist), chaseDist);
+  const midCam = computeContinuousDescentCamRadius(1.85, chaseDist);
+  assert.ok(midCam > chaseDist && midCam < 38.0);
+});
+
+test('Arcade Combo Multiplier, Yuzu Fever state & Rotating 3-Slot Bounties persist and migrate cleanly', () => {
+  const combo = createEmptyComboState();
+  let hit = registerComboHit(combo, 'Yuzu Chomp!');
+  assert.equal(hit.count, 1);
+  assert.equal(hit.multiplier, 1);
+  assert.equal(hit.feverJustTriggered, false);
+
+  registerComboHit(combo, 'Dash');
+  registerComboHit(combo, 'Bounce');
+  hit = registerComboHit(combo, 'Splash!');
+  assert.equal(hit.count, 4);
+  assert.equal(hit.multiplier, 3);
+  assert.equal(hit.feverJustTriggered, true);
+  assert.equal(combo.feverActive, true);
+
+  tickComboDecay(combo, 5.0);
+  assert.equal(combo.active, false);
+  assert.equal(combo.count, 0);
+  assert.equal(combo.feverActive, false);
+
+  // Legacy save backfill adds 3 valid default bounties
+  const legacyCleaned = sanitizeBountyState(undefined);
+  assert.equal(legacyCleaned.length, 3);
+  assert.equal(legacyCleaned[0].id, 'descent_rings');
+
+  // Completing a bounty slot awards rewards and rotates to a fresh objective
+  const prog1 = ProgressionService.recordBountyProgress(INITIAL_PLAYER_STATS, 'collect_yuzu', 5);
+  assert.equal(prog1.completed.length, 1);
+  assert.ok(prog1.stats.coins > INITIAL_PLAYER_STATS.coins);
+  assert.ok(prog1.stats.dna > INITIAL_PLAYER_STATS.dna);
+  assert.equal(prog1.stats.bounties?.length, 3);
+  assert.ok(!prog1.stats.bounties?.some((b) => b.id === 'collect_yuzu'));
+
+  const applied = applyBountyEvent(prog1.stats.bounties, 'ground_pound_splash', 1);
+  assert.equal(applied.changed, true);
+  const gpSlot = applied.nextItems.find((b) => b.id === 'ground_pound_splash');
+  assert.equal(gpSlot?.progress, 1);
 });

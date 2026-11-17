@@ -27,6 +27,12 @@ import {
   mergeDiscoveredSpecimen,
   sanitizeDiscoveredSpecimens,
 } from '../engine/UniverseScaleMath';
+import {
+  applyBountyEvent,
+  sanitizeBountyState,
+  type BountyCatalogSpec,
+  type BountyEventType,
+} from '../engine/GameplayFunMath';
 
 const SAVE_KEY = 'capy_game_save_v3';
 const LEGACY_SAVE_KEY_V2 = 'capy_game_save_v2';
@@ -211,6 +217,7 @@ export class ProgressionService {
       unlockedObjectMarkers: Boolean(parsed.unlockedObjectMarkers),
       unlockedRealityRescaler: Boolean(parsed.unlockedRealityRescaler),
       discoveredForestSpecimens: sanitizeDiscoveredSpecimens(parsed.discoveredForestSpecimens),
+      bounties: sanitizeBountyState(parsed.bounties),
     };
   }
 
@@ -812,5 +819,30 @@ export class ProgressionService {
     };
     this.scheduleSaveStats(updated, 150);
     return { stats: updated, isNew: true };
+  }
+
+  public static recordBountyProgress(
+    stats: PlayerStats,
+    eventType: BountyEventType,
+    amount: number = 1
+  ): { stats: PlayerStats; completed: BountyCatalogSpec[] } {
+    const res = applyBountyEvent(stats.bounties, eventType, amount);
+    if (!res.changed) {
+      return { stats, completed: [] };
+    }
+    let bonusCoins = 0;
+    let bonusDna = 0;
+    for (let i = 0; i < res.completedBounties.length; i++) {
+      bonusCoins += res.completedBounties[i].coinReward;
+      bonusDna += res.completedBounties[i].dnaReward;
+    }
+    const updated: PlayerStats = {
+      ...stats,
+      coins: (stats.coins || 0) + bonusCoins,
+      dna: (stats.dna || 0) + bonusDna,
+      bounties: res.nextItems,
+    };
+    this.scheduleSaveStats(updated, 200);
+    return { stats: updated, completed: res.completedBounties };
   }
 }

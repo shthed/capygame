@@ -10,12 +10,33 @@ class CapyAudioService {
   private isMusicPlaying: boolean = false;
   private musicTimer: number | null = null;
   private lastFootstepMs: number = 0;
+  private lifecycleHooked: boolean = false;
 
   constructor() {
     // Lazy initialize on first user gesture
   }
 
+  private ensureLifecycleHooks(): void {
+    if (this.lifecycleHooked || typeof document === 'undefined') return;
+    this.lifecycleHooked = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        try {
+          window.speechSynthesis?.cancel();
+        } catch {
+          // Ignore speechSynthesis availability issues
+        }
+        if (this.ctx && this.ctx.state === 'running') {
+          this.ctx.suspend().catch(() => {});
+        }
+      } else if (!this.isMuted && this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    });
+  }
+
   private initContext(): void {
+    this.ensureLifecycleHooks();
     if (!this.ctx && typeof window !== 'undefined') {
       const AudioCtx =
         window.AudioContext ||
@@ -563,6 +584,99 @@ class CapyAudioService {
     } catch {
       // Ignore speech synthesis restrictions cleanly
     }
+  }
+
+  public playComboChime(comboCount: number): void {
+    if (this.isMuted) return;
+    this.initContext();
+    const dry = this.getDryNode();
+    if (!this.ctx || !dry) return;
+
+    const pentatonic = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51];
+    const idx = Math.max(0, Math.min(pentatonic.length - 1, comboCount - 1));
+    const freq = pentatonic[idx];
+    const t = this.ctx.currentTime;
+
+    const osc = this.ctx.createOscillator();
+    const harm = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, t);
+    harm.type = 'triangle';
+    harm.frequency.setValueAtTime(freq * 1.5, t);
+
+    gain.gain.setValueAtTime(0.085, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+
+    osc.connect(gain);
+    harm.connect(gain);
+    gain.connect(dry);
+    if (this.reverbInput) gain.connect(this.reverbInput);
+
+    osc.start(t);
+    harm.start(t);
+    osc.stop(t + 0.24);
+    harm.stop(t + 0.24);
+  }
+
+  public playDashWhoosh(): void {
+    if (this.isMuted) return;
+    this.initContext();
+    const dry = this.getDryNode();
+    if (!this.ctx || !dry || !this.noiseBuffer) return;
+
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(420, t);
+    filter.frequency.exponentialRampToValueAtTime(1680, t + 0.09);
+    filter.frequency.exponentialRampToValueAtTime(340, t + 0.24);
+    filter.Q.value = 1.6;
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.14, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(dry);
+    src.start(t, 0, 0.26);
+  }
+
+  public playDescentRingChime(ringIndex: number): void {
+    if (this.isMuted) return;
+    this.initContext();
+    const dry = this.getDryNode();
+    if (!this.ctx || !dry) return;
+
+    const scale = [392.0, 493.88, 587.33, 739.99, 880.0, 1174.66];
+    const root = scale[Math.max(0, Math.min(scale.length - 1, ringIndex))];
+    const t = this.ctx.currentTime;
+
+    const oscA = this.ctx.createOscillator();
+    const oscB = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    oscA.type = 'sine';
+    oscA.frequency.setValueAtTime(root, t);
+    oscB.type = 'triangle';
+    oscB.frequency.setValueAtTime(root * 1.5, t + 0.04);
+
+    gain.gain.setValueAtTime(0.11, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+
+    oscA.connect(gain);
+    oscB.connect(gain);
+    gain.connect(dry);
+    if (this.reverbInput) gain.connect(this.reverbInput);
+
+    oscA.start(t);
+    oscB.start(t + 0.04);
+    oscA.stop(t + 0.36);
+    oscB.stop(t + 0.36);
   }
 
   public dispose(): void {

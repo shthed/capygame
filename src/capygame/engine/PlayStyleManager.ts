@@ -43,7 +43,9 @@ import {
 } from './gpu/FramePerformanceGovernor';
 import { PerformanceProfiler } from './gpu/PerformanceProfiler';
 import {
+  ArcadeComboTelemetry,
   AstrophysicsPaletteMode,
+  BountyEventType,
   BuildingType,
   CAPYBARA_FOREST_LOG_METERS,
   CapyGameSettings,
@@ -150,6 +152,18 @@ import {
   stepMediaSpeedControl,
   stepSteadyLogScaleTowardTarget,
 } from './UniverseScaleMath';
+import {
+  COMBO_WINDOW_SEC,
+  DESCENT_RING_SPECS,
+  MutableComboState,
+  computeContinuousDescentCamRadius,
+  computeDescentApproachDampingFactor,
+  computeOrbitalSurfaceBlend,
+  createEmptyComboState,
+  registerComboHit,
+  smoothstep01,
+  tickComboDecay,
+} from './GameplayFunMath';
 
 // Pre-allocated math helpers for zero per-frame garbage collection
 const _tempVec3 = new THREE.Vector3();
@@ -167,6 +181,8 @@ const _rayDir = new THREE.Vector3();
 const _camForward = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _camUp = new THREE.Vector3();
+const _ringPosScratch = new THREE.Vector3();
+const _ringVesselScratch = new THREE.Vector3();
 const _rayHits: THREE.Intersection[] = [];
 const _occluderCandidates: THREE.Object3D[] = [];
 const _rendererSizeVec2 = new THREE.Vector2(1280, 720);
@@ -183,6 +199,10 @@ const _seamlessSkyColor = new THREE.Color();
 const _seamlessFocalPos = new THREE.Vector3();
 const _sanctuaryGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const _ghostWorldHit = new THREE.Vector3();
+const _storyDescentStartCam = new THREE.Vector3(0, 6, 30);
+const _storyDescentStartLook = new THREE.Vector3(0, 0, 0);
+const _storySelectionCamPos = new THREE.Vector3(0, 4.2, 9.8);
+const _storySelectionLook = new THREE.Vector3(0, 0.9, -1.0);
 const _spineSupportY = new Float32Array(52);
 const _cachedPoolSpec = { x: -8.8, z: 3.0, radius: 4.8 };
 const EMPTY_PROJECTED_MARKERS: ProjectedObjectMarker[] = [];
@@ -295,6 +315,7 @@ export interface GameEventCallbacks {
   onZoomThumbnailUpdated?: (bandId: UniverseScaleBandId, dataUrl: string) => void;
   onZoomThumbnailsReset?: () => void;
   onForestSpecimenDiscovered?: (specimenId: ForestMicroSpecimenId, label: string) => void;
+  onBountyEvent?: (eventType: BountyEventType, amount?: number) => void;
 }
 
 export class PlayStyleManager {
@@ -502,10 +523,34 @@ export class PlayStyleManager {
     toWorldPos: new THREE.Vector3(),
   };
 
-  // Unified Input State (Keyboard + Touch D-pad + Pointer Drag)
+  // Unified Input State (Keyboard + Touch D-pad + Pointer Drag + Kinetic Abilities)
   public moveInput = { x: 0, z: 0 };
   public pointerTargetX: number | null = null;
   public isJumping: boolean = false;
+  private heroDashCooldown: number = 0;
+  private heroDashActiveTimer: number = 0;
+  private heroDashDirX: number = 0;
+  private heroDashDirZ: number = 0;
+  private isGroundPounding: boolean = false;
+  private coyoteGroundedTimer: number = 0;
+
+  // Arcade Combo Multiplier & Orbital Skydiving Descent Rings
+  private comboState: MutableComboState = createEmptyComboState();
+  private readonly comboTelemetryScratch: ArcadeComboTelemetry = {
+    active: false,
+    count: 0,
+    multiplier: 1,
+    timeRemainingSec: 0,
+    maxWindowSec: COMBO_WINDOW_SEC,
+    feverActive: false,
+    lastActionLabel: '',
+  };
+  private descentRingsGroup = new THREE.Group();
+  private descentRingMeshes: THREE.Mesh[] = [];
+  private descentRingHitFlags: boolean[] = DESCENT_RING_SPECS.map(() => false);
+  private descentRingsHitCount: number = 0;
+  private dockedChronoVesselVisible: boolean = false;
+  private storySurfaceRevealed: boolean = false;
 
   // --- Dynamic 60 FPS Capybara Level-of-Detail (LOD) Governor & Frame Budget Pacing ---
   private rollingFps: number = 60;
@@ -988,6 +1033,27 @@ export class PlayStyleManager {
     this.chronoVessel.root.visible = false;
     this.chronoVessel.root.matrixWorldAutoUpdate = false;
     this.scene.add(this.chronoVessel.root);
+
+    // Build 6 Orbital Skydiving Descent Rings for the atmosphere-to-Sanctuary glide path
+    const descentRingGeo = new THREE.TorusGeometry(1.75, 0.11, 14, 36);
+    this.descentRingsGroup.visible = false;
+    this.descentRingsGroup.matrixWorldAutoUpdate = false;
+    for (let ri = 0; ri < DESCENT_RING_SPECS.length; ri++) {
+      const rSpec = DESCENT_RING_SPECS[ri];
+      const rMat = new THREE.MeshBasicMaterial({
+        color: rSpec.colorHex,
+        transparent: true,
+        opacity: 0.78,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const rMesh = new THREE.Mesh(descentRingGeo, rMat);
+      rMesh.visible = false;
+      this.descentRingsGroup.add(rMesh);
+      this.descentRingMeshes.push(rMesh);
+    }
+    this.scene.add(this.descentRingsGroup);
+
     this.buildSelectableCapyHeroCircle();
     this.prewarmOccluderShaderPrograms();
 
@@ -1005,6 +1071,7 @@ export class PlayStyleManager {
     installFastMatrixCull(this.heroCapy);
     installFastMatrixCull(this.dachshundGroup);
     installFastMatrixCull(this.chronoVessel.root);
+    installFastMatrixCull(this.descentRingsGroup);
 
     if (this.isWebGpu) {
       convertLegacyShaderMaterialsToTsl(this.scene);
@@ -1244,9 +1311,205 @@ export class PlayStyleManager {
     const pagodaLevels = this.getBuildingLevelSum('zen_pagoda');
     const pagodaMult = 1 + pagodaLevels * 0.1;
     const cfgMult = this.proceduralConfig.economy.dnaRewardMultiplier;
+    const comboMult =
+      this.comboState.active && this.comboState.multiplier > 1
+        ? 1 + (this.comboState.multiplier - 1) * 0.5
+        : 1;
     const scaledDna =
-      baseDna > 0 ? Math.max(1, Math.round(baseDna * pagodaMult * cfgMult)) : 0;
+      baseDna > 0 ? Math.max(1, Math.round(baseDna * pagodaMult * cfgMult * comboMult)) : 0;
     this.callbacks.onProgressEarned(scaledDna, mode, score);
+  }
+
+  private registerArcadeCombo(actionLabel: string, bonusBaseDna: number = 0): void {
+    const res = registerComboHit(this.comboState, actionLabel);
+    AudioService.playComboChime(res.count);
+    if (res.feverJustTriggered) {
+      AudioService.playPrestigeFanfare();
+      this.addCameraTrauma(0.18);
+      if (this.heroCapy.visible && this.vfxEngine) {
+        this.vfxEngine.emitBurst(
+          this.heroCapy.position.x,
+          this.heroCapy.position.y + 0.9,
+          this.heroCapy.position.z,
+          'xpbd_launch',
+          10,
+          0xfacc15
+        );
+      }
+      this.callbacks.onModeNotification?.(
+        `YUZU FEVER ${res.multiplier}x! Bonus DNA & shimmer active!`
+      );
+    }
+    if (bonusBaseDna > 0) {
+      this.awardProgress(bonusBaseDna, this.currentMode, 0);
+    }
+    this.emitTelemetry();
+  }
+
+  private setSkyDomeAlpha(alpha: number): void {
+    if (!this.worldEnv) return;
+    const clamped = THREE.MathUtils.clamp(alpha, 0, 1);
+    const shaderMat = this.worldEnv.skyMaterial as THREE.ShaderMaterial;
+    if (shaderMat?.uniforms?.uSkyAlpha) {
+      shaderMat.uniforms.uSkyAlpha.value = clamped;
+    }
+    this.worldEnv.skyMesh.visible = clamped > 0.04;
+  }
+
+  private resetDescentRings(): void {
+    for (let i = 0; i < this.descentRingHitFlags.length; i++) {
+      this.descentRingHitFlags[i] = false;
+    }
+    this.descentRingsHitCount = 0;
+  }
+
+  private syncDockedVesselPose(dt: number, isDockedInSanctuary: boolean): void {
+    if (!this.chronoVessel) return;
+    if (!isDockedInSanctuary) {
+      if (!this.seamlessZoomActive) {
+        this.chronoVessel.root.visible = false;
+        this.chronoVessel.root.matrixWorldAutoUpdate = false;
+      }
+      this.dockedChronoVesselVisible = false;
+      return;
+    }
+    this.dockedChronoVesselVisible = true;
+    this.chronoVessel.setMode('chase_pod');
+    this.chronoVessel.root.visible = true;
+    this.chronoVessel.root.matrixWorldAutoUpdate = true;
+    const hoverBob = Math.sin(performance.now() * 0.0022) * 0.09;
+    this.chronoVessel.root.position.set(
+      CHRONO_PAD_X + 1.25,
+      1.05 + hoverBob,
+      CHRONO_PAD_Z - 1.15
+    );
+    this.chronoVessel.root.scale.setScalar(1.95);
+    _vesselEuler.set(0, Math.PI * 0.25, 0);
+    this.chronoVessel.root.quaternion.setFromEuler(_vesselEuler);
+    this.chronoVessel.update(dt, 0, 0, 0);
+  }
+
+  public triggerDash(): boolean {
+    if (this.seamlessZoomActive || this.cosmicStage !== 'playing') return false;
+    if (this.heroDashCooldown > 0) return false;
+
+    const hasGlowTail = this.stats.activeMutations.includes('glow_tail');
+    this.heroDashCooldown = hasGlowTail ? 0.9 : 1.35;
+    this.heroDashActiveTimer = 0.22;
+
+    if (this.settings.cameraFollowBehind !== false) {
+      const sign = this.isWalkingBackward ? -1 : 1;
+      this.heroDashDirX = Math.sin(this.heroYaw) * sign;
+      this.heroDashDirZ = Math.cos(this.heroYaw) * sign;
+    } else if (Math.abs(this.moveInput.x) > 0.05 || Math.abs(this.moveInput.z) > 0.05) {
+      const len = Math.hypot(this.moveInput.x, this.moveInput.z) || 1;
+      this.heroDashDirX = this.moveInput.x / len;
+      this.heroDashDirZ = this.moveInput.z / len;
+    } else {
+      this.heroDashDirX = Math.sin(this.heroYaw);
+      this.heroDashDirZ = Math.cos(this.heroYaw);
+    }
+
+    this.heroVelocity.x += this.heroDashDirX * 14.5;
+    this.heroVelocity.z += this.heroDashDirZ * 14.5;
+    this.heroSoftSquashVel -= 1.6;
+    AudioService.playDashWhoosh();
+    NativeBridge.haptic('tick');
+
+    if (this.vfxEngine) {
+      this.vfxEngine.emitBurst(
+        this.heroCapy.position.x,
+        Math.max(0.3, this.heroCapy.position.y + 0.35),
+        this.heroCapy.position.z,
+        'citrus_burst',
+        8,
+        0x38bdf8
+      );
+    }
+    this.emitTelemetry();
+    return true;
+  }
+
+  public triggerGroundPound(): boolean {
+    if (this.seamlessZoomActive || this.cosmicStage !== 'playing') return false;
+    if (this.isGroundPounding) return false;
+    const isAirborne = !this.isGrounded && !this.isSwimmingInPool && this.heroLocalPos.y > 0.25;
+    if (!isAirborne) return false;
+
+    this.isGroundPounding = true;
+    this.heroVelocity.y = -24.5;
+    this.heroSoftSquashVel += 1.4;
+    AudioService.playDashWhoosh();
+    NativeBridge.haptic('tick');
+    this.emitTelemetry();
+    return true;
+  }
+
+  private handleGroundPoundImpact(wx: number, wy: number, wz: number, inWater: boolean): void {
+    this.isGroundPounding = false;
+    this.heroSoftSquashVel -= 2.8;
+    this.addCameraTrauma(0.34);
+    AudioService.playSplash();
+    NativeBridge.haptic('success');
+
+    if (this.vfxEngine) {
+      this.vfxEngine.emitBurst(
+        wx,
+        Math.max(0.15, wy + 0.2),
+        wz,
+        'xpbd_launch',
+        14,
+        inWater ? 0x38bdf8 : 0xfacc15
+      );
+    }
+
+    if (inWater && this.physicsBridge?.fluidSolver) {
+      this.physicsBridge.fluidSolver.writeGpuWakeParams(
+        wx,
+        wz,
+        24.0,
+        this.gpuWakeParamsScratch
+      );
+      this.gpuEngine?.setGpuWakeParams(
+        this.gpuWakeParamsScratch[0],
+        this.gpuWakeParamsScratch[1],
+        Math.max(0.14, this.gpuWakeParamsScratch[2]),
+        1.0
+      );
+      if (this.homePool) {
+        this.worldEnv.triggerPondSplashBurst(this.homePool, 10);
+      }
+    }
+
+    // Scatter nearby rolling fruits & knock down 1 nearby tree fruit playfully
+    if (this.currentMode === 'sanctuary') {
+      for (let i = 0; i < this.physicsFruits.length; i++) {
+        const f = this.physicsFruits[i];
+        if (!f.active || f.inPond) continue;
+        const dx = f.x - this.heroLocalPos.x;
+        const dz = f.z - this.heroLocalPos.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.05 && d < 6.5) {
+          const push = (1 - d / 6.5) * 6.5;
+          f.vx += (dx / d) * push;
+          f.vz += (dz / d) * push;
+          f.vy += 2.2;
+        }
+      }
+      for (let t = 0; t < this.sanctuaryTrees.length; t++) {
+        const tr = this.sanctuaryTrees[t];
+        if (Math.hypot(tr.x - this.heroLocalPos.x, tr.z - this.heroLocalPos.z) < 7.2) {
+          this.bumpTreeAndSpawnFruits(tr, 0.5, 0.5);
+          break;
+        }
+      }
+    }
+
+    this.registerArcadeCombo(inWater ? 'Splash Belly-Flop!' : 'Ground Pound!', 1);
+    this.callbacks.onBountyEvent?.('ground_pound_splash', 1);
+    this.callbacks.onModeNotification?.(
+      inWater ? 'Belly-Flop Splash Wave! +1 DNA!' : 'Shockwave Belly-Flop! +1 DNA!'
+    );
   }
 
   private applyFogSetting() {
@@ -2267,10 +2530,16 @@ export class PlayStyleManager {
     }
     if (stage === 'playing') {
       this.vesselMode = 'landed';
-      this.chronoVessel?.setMode('landed');
-      if (this.chronoVessel) {
-        this.chronoVessel.root.visible = false;
-        this.chronoVessel.root.matrixWorldAutoUpdate = false;
+      this.descentRingsGroup.visible = false;
+      this.descentRingsGroup.matrixWorldAutoUpdate = false;
+      this.setSkyDomeAlpha(1.0);
+      this.syncDockedVesselPose(0.016, this.currentMode === 'sanctuary');
+    } else {
+      this.dockedChronoVesselVisible = false;
+      this.descentRingsGroup.visible = false;
+      this.descentRingsGroup.matrixWorldAutoUpdate = false;
+      if (stage === 'capy_selection') {
+        this.setSkyDomeAlpha(1.0);
       }
     }
     const isSurfaceStage = stage === 'capy_selection' || stage === 'playing';
@@ -2368,10 +2637,14 @@ export class PlayStyleManager {
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'planet_descent') {
       this.cosmicDescentElapsed = 0;
+      this.storySurfaceRevealed = false;
+      _storyDescentStartCam.copy(this.camera.position);
+      _storyDescentStartLook.copy(this.cosmicCamLook);
+      this.setSkyDomeAlpha(0);
     } else if (stage === 'capy_selection') {
       this.setSceneBackgroundHex(this.activeBiome.skyHex);
-      this.camera.position.set(0, 4.2, 9.8);
-      this.camera.lookAt(0, 0.9, -1.0);
+      this.camera.position.copy(_storySelectionCamPos);
+      this.camera.lookAt(_storySelectionLook);
     } else if (stage === 'playing') {
       this.setSceneBackgroundHex(
         this.currentMode === 'sanctuary' ? this.activeBiome.skyHex : 0x38bdf8
@@ -2717,9 +2990,14 @@ export class PlayStyleManager {
     );
     if (!this.seamlessZoomActive) {
       this.seamlessZoomActive = true;
+      this.dockedChronoVesselVisible = false;
       this.currentLogScaleMeters = Math.max(CAPYBARA_FOREST_LOG_METERS, this.currentLogScaleMeters);
       this.performanceLog.notifyTransitionWarmup(4);
+      // Match departure orbit yaw cleanly to current player look heading so liftoff doesn't flip the camera
+      this.cosmicOrbitYaw = this.surfaceCamYaw - Math.PI;
+      this.cosmicOrbitPitch = THREE.MathUtils.clamp(this.surfaceCamPitch, 0.16, 1.05);
     }
+    this.resetDescentRings();
     this.autoLandAtForestPending = false;
     this.vesselMode = 'chase_pod';
     this.chronoVessel?.setMode('chase_pod');
@@ -6311,6 +6589,13 @@ export class PlayStyleManager {
     if (this.buddyBumpCooldown > 0) this.buddyBumpCooldown -= dt;
     if (this.mouthFullNotifyCooldown > 0) this.mouthFullNotifyCooldown -= dt;
     if (this.sporeLargeCritterKnockbackCd > 0) this.sporeLargeCritterKnockbackCd -= dt;
+    if (this.heroDashCooldown > 0) this.heroDashCooldown = Math.max(0, this.heroDashCooldown - dt);
+    if (this.heroDashActiveTimer > 0) this.heroDashActiveTimer = Math.max(0, this.heroDashActiveTimer - dt);
+    if (tickComboDecay(this.comboState, dt)) {
+      if (!this.comboState.active) {
+        this.emitTelemetry();
+      }
+    }
 
     // Monitor live frame rate to dynamically scale Capybara mesh detail at smooth 60 FPS
     const measuredFps = this.isSoftwareGl
@@ -6319,11 +6604,16 @@ export class PlayStyleManager {
     this.ingestFpsSample(measuredFps, dt);
 
     // Update GPU Day/Night solar/lunar lighting, sky dome, weather & coupled shallow-water ripples
+    const seamlessSurfaceWindow =
+      this.seamlessZoomActive &&
+      this.currentLogScaleMeters >= -0.85 &&
+      this.currentLogScaleMeters <= 4.15;
     if (
-      this.sanctuaryGroup.visible &&
-      (this.cosmicStage === 'capy_selection' ||
-        this.cosmicStage === 'playing' ||
-        this.seamlessZoomActive)
+      (this.sanctuaryGroup.visible &&
+        (this.cosmicStage === 'capy_selection' ||
+          this.cosmicStage === 'playing' ||
+          this.cosmicStage === 'planet_descent')) ||
+      seamlessSurfaceWindow
     ) {
       const isPerfMode = this.settings.gpuQualityPreset === 'performance';
       this.profiler.startPhase('world_simulation');
@@ -6408,7 +6698,7 @@ export class PlayStyleManager {
       this.profiler.endPhase('world_simulation');
     }
 
-    // 0. Handle Seamless 63-Orders-of-Magnitude Universe Zoom (+28 Big Bang <-> +0.8 Forest <-> -35 Photon)
+    // 0. Handle Seamless 63-Orders-of-Magnitude Universe Zoom (+30 Multiverse <-> +0.8 Forest <-> -35 Photon)
     if (this.seamlessZoomActive) {
       this.profiler.startPhase('cosmic_universe');
       this.tickSeamlessUniverse(dt);
@@ -6417,8 +6707,7 @@ export class PlayStyleManager {
       const activeBandId = UNIVERSE_SCALE_BANDS[findNearestScaleBandIndex(this.currentLogScaleMeters)].id;
       this.trackSettledBandForThumbnail(activeBandId, dt);
 
-      const inForestWindow =
-        this.currentLogScaleMeters >= -0.85 && this.currentLogScaleMeters <= 2.85;
+      const orbBlend = computeOrbitalSurfaceBlend(this.currentLogScaleMeters, this.isSoftwareGl);
       this.profiler.startPhase('gpu_shadow_cascade');
       this.gpuEngine.updateLightingAndShadowCascade(
         dt,
@@ -6426,7 +6715,7 @@ export class PlayStyleManager {
         this.heroCapy.position.y,
         this.heroCapy.position.z,
         0,
-        inForestWindow,
+        orbBlend.inSurfaceWindow && orbBlend.terrestrialBlend > 0.25,
         this.worldEnv.currentNightFactor,
         this.worldEnv.currentSunDir,
         this.worldEnv.currentMoonDir,
@@ -6589,8 +6878,13 @@ export class PlayStyleManager {
     this.updateHeadLineOfSightTransparency(dt);
     this.profiler.endPhase('sightline_occlusion');
 
+    if (this.cosmicStage === 'playing') {
+      this.syncDockedVesselPose(dt, this.currentMode === 'sanctuary');
+    }
+
     this.telemetryTimer += dt;
-    if (this.telemetryTimer >= 0.25) {
+    const telemetryInterval = this.comboState.active || this.heroDashCooldown > 0 ? 0.11 : 0.25;
+    if (this.telemetryTimer >= telemetryInterval) {
       this.telemetryTimer = 0;
       this.profiler.startPhase('telemetry_hud');
       this.emitTelemetry();
@@ -6950,19 +7244,91 @@ export class PlayStyleManager {
 
     if (this.cosmicStage === 'planet_descent') {
       this.cosmicDescentElapsed += dt;
-      const descentDuration = this.isSoftwareGl ? 0.5 : 1.15;
+      const descentDuration = this.isSoftwareGl ? 0.65 : 1.55;
       const t = Math.min(1.0, this.cosmicDescentElapsed / descentDuration);
-      const ease = t * t * (3.0 - 2.0 * t);
+      const ease = smoothstep01(0.0, 1.0, t);
 
+      if (t >= 0.40 && !this.storySurfaceRevealed) {
+        this.storySurfaceRevealed = true;
+        this.worldBaseGroup.visible = true;
+        this.worldBaseGroup.matrixWorldAutoUpdate = true;
+        this.sanctuaryGroup.visible = true;
+        this.sanctuaryGroup.matrixWorldAutoUpdate = true;
+        this.sporeGroup.visible = true;
+        this.sporeGroup.matrixWorldAutoUpdate = true;
+        this.breakoutGroup.visible = true;
+        this.breakoutGroup.matrixWorldAutoUpdate = true;
+        this.runnerGroup.visible = true;
+        this.runnerGroup.matrixWorldAutoUpdate = true;
+        this.fallGuysGroup.visible = true;
+        this.fallGuysGroup.matrixWorldAutoUpdate = true;
+        this.selectableCapyGroup.visible = true;
+        this.selectableCapyGroup.matrixWorldAutoUpdate = true;
+        this.applySurfaceDrawDistanceAndCulling(true);
+      }
+
+      if (this.cosmicBuilder) {
+        const showOrbitalGlobe = t < 0.72;
+        this.cosmicBuilder.rootGroup.visible = showOrbitalGlobe;
+        this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = showOrbitalGlobe;
+      }
+
+      const skyAlpha = smoothstep01(0.40, 0.92, t);
+      this.setSkyDomeAlpha(skyAlpha);
+
+      const surfaceLightBlend = smoothstep01(0.40, 0.96, t);
+      if (this.worldEnv) {
+        if (surfaceLightBlend <= 0.01) {
+          this.worldEnv.ambientLight.intensity = 0.08;
+          this.worldEnv.hemiLight.intensity = 0.24;
+          this.worldEnv.sunLight.intensity = 2.45;
+          this.worldEnv.moonLight.intensity = 0.0;
+        } else {
+          this.worldEnv.ambientLight.intensity = THREE.MathUtils.lerp(
+            0.08,
+            this.worldEnv.lastAmbientIntensity,
+            surfaceLightBlend
+          );
+          this.worldEnv.hemiLight.intensity = THREE.MathUtils.lerp(
+            0.24,
+            this.worldEnv.lastHemiIntensity,
+            surfaceLightBlend
+          );
+          this.worldEnv.sunLight.intensity = THREE.MathUtils.lerp(
+            2.45,
+            this.worldEnv.lastSunIntensity,
+            surfaceLightBlend
+          );
+          this.worldEnv.moonLight.intensity = THREE.MathUtils.lerp(
+            0.0,
+            this.worldEnv.lastMoonIntensity,
+            surfaceLightBlend
+          );
+          this.renderer.toneMappingExposure = THREE.MathUtils.lerp(
+            this.settings.gpuExposure ?? 1.02,
+            this.worldEnv.lastExposure,
+            surfaceLightBlend
+          );
+        }
+      }
+
+      // Smoothly sweep camera along curved atmospheric plunge from landing beacon to selection meadow
       this.cosmicBuilder.getLandingBeaconWorldPosition(this.selectedLandingIndex, _tempVec3);
-      _camTarget.copy(_tempVec3).multiplyScalar(1.05 + (1.0 - ease) * 1.65);
-      this.camera.position.lerp(_camTarget, 0.25);
-      this.camera.lookAt(0, 0, 0);
+      const beaconApproachWeight = Math.sin(Math.min(1, t / 0.65) * Math.PI);
+      const handoff = smoothstep01(0.28, 1.0, t);
+      _camTarget
+        .copy(_storyDescentStartCam)
+        .lerp(_tempVec3.multiplyScalar(1.35), beaconApproachWeight * 0.48)
+        .lerp(_storySelectionCamPos, handoff);
+      this.camera.position.copy(_camTarget);
 
-      // Blend sky color from deep space into the planet's atmospheric sky color with zero allocations
+      _lookTarget.copy(_storyDescentStartLook).lerp(_storySelectionLook, smoothstep01(0.22, 0.95, t));
+      this.camera.lookAt(_lookTarget);
+
+      // Blend sky color smoothly from deep space into horizon atmosphere with zero allocations
       _colorHelper.setHex(0x020617);
       _colorHelper2.setHex(this.activeBiome.skyHex);
-      _colorHelper.lerp(_colorHelper2, ease);
+      _colorHelper.lerp(_colorHelper2, smoothstep01(0.18, 0.92, t));
       if (this.scene.background instanceof THREE.Color) {
         this.scene.background.copy(_colorHelper);
       } else {
@@ -7008,6 +7374,24 @@ export class PlayStyleManager {
     const coords = `(${zone.x}, ${zone.z})`;
     this.callbacks.onSnakeTelemetryUpdate?.(this.getCapySnakeTelemetry());
 
+    this.comboTelemetryScratch.active = this.comboState.active;
+    this.comboTelemetryScratch.count = this.comboState.count;
+    this.comboTelemetryScratch.multiplier = this.comboState.multiplier;
+    this.comboTelemetryScratch.timeRemainingSec = +this.comboState.timeRemainingSec.toFixed(2);
+    this.comboTelemetryScratch.maxWindowSec = COMBO_WINDOW_SEC;
+    this.comboTelemetryScratch.feverActive = this.comboState.feverActive;
+    this.comboTelemetryScratch.lastActionLabel = this.comboState.lastActionLabel;
+
+    const arcadeCombo = this.comboState.active ? { ...this.comboTelemetryScratch } : undefined;
+    const dashCooldownFrac = +THREE.MathUtils.clamp(this.heroDashCooldown / 1.35, 0, 1).toFixed(2);
+    const canDive =
+      this.cosmicStage === 'playing' &&
+      !this.seamlessZoomActive &&
+      !this.isGrounded &&
+      !this.isSwimmingInPool &&
+      !this.isGroundPounding &&
+      this.heroLocalPos.y > 0.25;
+
     if (this.currentMode === 'sanctuary') {
       const snake = this.getCapySnakeTelemetry();
       this.callbacks.onTelemetryUpdate({
@@ -7017,6 +7401,9 @@ export class PlayStyleManager {
         secondaryLabel: 'Head Orange',
         secondaryValue: snake.headOrangeName,
         zoneCoordsLabel: coords,
+        arcadeCombo,
+        dashCooldownFrac,
+        canDive,
       });
     } else if (this.currentMode === 'spore') {
       this.callbacks.onTelemetryUpdate({
@@ -7026,6 +7413,9 @@ export class PlayStyleManager {
         secondaryLabel: 'DNA Harvested',
         secondaryValue: `+${this.sporeDnaEarned}`,
         zoneCoordsLabel: coords,
+        arcadeCombo,
+        dashCooldownFrac,
+        canDive,
       });
     } else if (this.currentMode === 'breakout') {
       this.callbacks.onTelemetryUpdate({
@@ -7035,6 +7425,9 @@ export class PlayStyleManager {
         secondaryLabel: 'Endless Wave',
         secondaryValue: `Wave ${this.breakoutWave}`,
         zoneCoordsLabel: coords,
+        arcadeCombo,
+        dashCooldownFrac,
+        canDive,
       });
     } else if (this.currentMode === 'runner') {
       this.callbacks.onTelemetryUpdate({
@@ -7044,6 +7437,9 @@ export class PlayStyleManager {
         secondaryLabel: 'Distance',
         secondaryValue: `${Math.round(this.runnerDistance)}m`,
         zoneCoordsLabel: coords,
+        arcadeCombo,
+        dashCooldownFrac,
+        canDive,
       });
     } else if (this.currentMode === 'fallguys') {
       const pbLabel = this.yuzuBestGhostRun
@@ -7059,6 +7455,9 @@ export class PlayStyleManager {
         secondaryLabel: this.yuzuBestGhostRun ? 'Run / Ghost PB' : 'Course Round',
         secondaryValue: runLabel,
         zoneCoordsLabel: coords,
+        arcadeCombo,
+        dashCooldownFrac,
+        canDive,
       });
     }
   }
@@ -7988,6 +8387,8 @@ export class PlayStyleManager {
             'sanctuary',
             this.bestSnakeSegments * 10 + this.orangesCollectedCount
           );
+          this.registerArcadeCombo('Yuzu Chomp!');
+          this.callbacks.onBountyEvent?.('collect_yuzu', 1);
           const variety = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex];
           const onBack = Math.max(0, this.fruitsCarried - 1);
           this.callbacks.onModeNotification?.(
@@ -8503,10 +8904,15 @@ export class PlayStyleManager {
         (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
       const wasAirborne = !this.isGrounded;
       const prevVy = this.heroVelocity.y;
+      const canJumpSanctuary =
+        this.coyoteGroundedTimer > 0 ||
+        this.groundedFeetCount > 0 ||
+        this.isSwimmingInPool ||
+        this.isGrounded;
 
       let jumpImpulseY = 0;
       if (this.isJumping) {
-        if (this.groundedFeetCount > 0 || this.isSwimmingInPool || this.isGrounded) {
+        if (canJumpSanctuary) {
           // Crisp realistic hop (~1.0–1.45m peak under g=24) with true forward leap propulsion along heading!
           const dampedJumpScale = 1 + (heroJumpScale - 1) * 0.42;
           jumpImpulseY =
@@ -8517,6 +8923,7 @@ export class PlayStyleManager {
           this.heroVelocity.x = Math.sin(launchYaw) * leapSpeed * leapDir;
           this.heroVelocity.z = Math.cos(launchYaw) * leapSpeed * leapDir;
           this.isGrounded = false;
+          this.coyoteGroundedTimer = 0;
           this.heroSoftSquashVel -= 1.5;
           AudioService.playJump();
         }
@@ -8560,27 +8967,61 @@ export class PlayStyleManager {
           this.spineY[leaderIdx] = targetPoolY;
           if (!this.isWalkingBackward) this.heroLocalPos.y = targetPoolY;
           this.heroVelocity.y = 0;
-          this.heroVelocity.x = 0;
-          this.heroVelocity.z = 0;
+          if (this.heroDashActiveTimer <= 0) {
+            this.heroVelocity.x = 0;
+            this.heroVelocity.z = 0;
+          } else {
+            const dDecay = Math.exp(-4.5 * dt);
+            this.heroVelocity.x *= dDecay;
+            this.heroVelocity.z *= dDecay;
+          }
           this.isGrounded = true;
+          this.coyoteGroundedTimer = 0.14;
+          if (this.isGroundPounding) {
+            this.handleGroundPoundImpact(activeLeaderX, targetPoolY, activeLeaderZ, true);
+          }
         } else {
           this.spineY[leaderIdx] = nextY;
           if (!this.isWalkingBackward) this.heroLocalPos.y = nextY;
+          this.coyoteGroundedTimer = Math.max(0, this.coyoteGroundedTimer - dt);
         }
       } else {
         this.spineY[leaderIdx] = physStep.wy;
         if (!this.isWalkingBackward) this.heroLocalPos.y = physStep.wy;
         this.heroVelocity.y = physStep.vy;
+        if (physStep.grounded || physStep.inFluid) {
+          this.coyoteGroundedTimer = 0.14;
+        } else {
+          this.coyoteGroundedTimer = Math.max(0, this.coyoteGroundedTimer - dt);
+        }
         if (physStep.grounded) {
           this.isGrounded = true;
-          this.heroVelocity.x = 0;
-          this.heroVelocity.z = 0;
+          if (this.heroDashActiveTimer <= 0) {
+            this.heroVelocity.x = 0;
+            this.heroVelocity.z = 0;
+          } else {
+            const dDecay = Math.exp(-4.5 * dt);
+            this.heroVelocity.x *= dDecay;
+            this.heroVelocity.z *= dDecay;
+          }
           if (wasAirborne && prevVy < -3.0) {
             this.heroSoftSquashVel += Math.min(2.2, -prevVy * 0.16);
           }
+          if (this.isGroundPounding) {
+            this.handleGroundPoundImpact(
+              activeLeaderX,
+              physStep.wy,
+              activeLeaderZ,
+              physStep.inFluid
+            );
+          }
+        } else if (this.isGroundPounding && physStep.inFluid) {
+          this.handleGroundPoundImpact(activeLeaderX, physStep.wy, activeLeaderZ, true);
         }
         if (physStep.trampolineBoostY > 0) {
           // Gentle joyful Sanctuary mushroom hop (~1.4–2.1m high) with forward leap arc (zero sky-rocket disconnect)
+          this.isGroundPounding = false;
+          this.coyoteGroundedTimer = 0;
           const clampedHopVy = Math.min(9.8, Math.max(7.8, physStep.trampolineBoostY * 0.52));
           this.heroVelocity.y = clampedHopVy;
           const launchYaw = this.isWalkingBackward ? this.spineYaw[cabNode] : this.heroYaw;
@@ -8591,6 +9032,8 @@ export class PlayStyleManager {
           this.heroSoftSquashVel -= 1.8;
           AudioService.playJump();
           this.awardProgress(1, 'sanctuary', this.bestSnakeSegments * 10);
+          this.registerArcadeCombo('Mushroom Bounce!');
+          this.callbacks.onBountyEvent?.('mushroom_bounce', 1);
           this.callbacks.onModeNotification?.('XPBD Soft-Body Mushroom Bounce! +1 Spore DNA!');
         }
       }
@@ -8846,6 +9289,10 @@ export class PlayStyleManager {
         this.sporeDnaEarned += dnaGain;
         AudioService.playCoin();
         this.awardProgress(dnaGain, 'spore', Math.round(this.sporeMass));
+        if (orb.isDna) {
+          this.registerArcadeCombo('DNA Plankton');
+          this.callbacks.onBountyEvent?.('spore_chomp', 1);
+        }
         const angle = this.proceduralPrng() * Math.PI * 2;
         const rad = 4 + this.proceduralPrng() * 28;
         orb.mesh.position.set(Math.cos(angle) * rad, 0.45, Math.sin(angle) * rad);
@@ -8879,6 +9326,8 @@ export class PlayStyleManager {
           this.sporeMass += 18 * growthMult;
           this.sporeDnaEarned += 5;
           this.awardProgress(5, 'spore', Math.round(this.sporeMass));
+          this.registerArcadeCombo('Spore Chomp!');
+          this.callbacks.onBountyEvent?.('spore_chomp', 1);
           this.callbacks.onModeNotification?.('Chomped Spore Critter! +18 Mass & +5 DNA!');
           const ang = this.proceduralPrng() * Math.PI * 2;
           critter.mesh.position.set(Math.cos(ang) * 26, 0, Math.sin(ang) * 26);
@@ -8955,6 +9404,11 @@ export class PlayStyleManager {
     const jumpBoost =
       (hasWings ? 1.18 : 1.0) *
       (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
+    const dashVx = this.heroDashActiveTimer > 0 ? this.heroDashDirX * 14.5 : 0;
+    const dashVz = this.heroDashActiveTimer > 0 ? this.heroDashDirZ * 14.5 : 0;
+    const canJumpBreakout = this.coyoteGroundedTimer > 0 || this.isGrounded;
+    const jumpImpBreakout = this.isJumping && canJumpBreakout ? 9.5 * jumpBoost : 0;
+    if (jumpImpBreakout > 0) this.coyoteGroundedTimer = 0;
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
       {
         wx: zone.x + prevLx,
@@ -8963,11 +9417,11 @@ export class PlayStyleManager {
         vx: 0,
         vy: this.heroVelocity.y,
         vz: 0,
-        desiredMoveVx: (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt),
-        desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt),
+        desiredMoveVx: (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) + dashVx,
+        desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) + dashVz,
         radius: 0.68,
         halfHeight: 0.25,
-        jumpImpulseY: this.isJumping && this.isGrounded ? 9.5 * jumpBoost : 0,
+        jumpImpulseY: jumpImpBreakout,
         gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
@@ -8977,6 +9431,8 @@ export class PlayStyleManager {
     this.isJumping = false;
     this.isGrounded = phys.grounded;
     this.isSwimmingInPool = phys.inFluid;
+    this.coyoteGroundedTimer =
+      phys.grounded || phys.inFluid ? 0.14 : Math.max(0, this.coyoteGroundedTimer - dt);
     const finalBz = phys.wz - zone.z;
     const finalBx = phys.wx - zone.x;
     this.heroLocalPos.set(
@@ -8985,6 +9441,9 @@ export class PlayStyleManager {
       Math.abs(finalBx) < 8.4 && finalBz >= 7.6 && finalBz < 9.8 ? 9.8 : finalBz
     );
     this.heroVelocity.y = phys.vy;
+    if (this.isGroundPounding && (phys.grounded || phys.inFluid)) {
+      this.handleGroundPoundImpact(phys.wx, phys.wy, phys.wz, phys.inFluid);
+    }
 
     // Couple Breakout Deflector Paddle smoothly to Hero's X position while on the court apron
     const targetPaddleX = THREE.MathUtils.clamp(this.heroLocalPos.x, -6.4, 6.4);
@@ -9188,6 +9647,8 @@ export class PlayStyleManager {
                   'breakout',
                   this.breakoutScore
                 );
+                this.registerArcadeCombo('Brick Break');
+                this.callbacks.onBountyEvent?.('breakout_smash', 1);
               }
             } else if (playerPresent) {
               AudioService.playBrickHit(0.95);
@@ -9270,6 +9731,11 @@ export class PlayStyleManager {
     const jumpBoost =
       (hasWings ? 1.18 : 1.0) *
       (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
+    const runnerDashVx = this.heroDashActiveTimer > 0 ? this.heroDashDirX * 14.5 : 0;
+    const runnerDashVz = this.heroDashActiveTimer > 0 ? this.heroDashDirZ * 14.5 : 0;
+    const canJumpRunner = this.coyoteGroundedTimer > 0 || this.isGrounded;
+    const jumpImpRunner = this.isJumping && canJumpRunner ? 10.0 * jumpBoost : 0;
+    if (jumpImpRunner > 0) this.coyoteGroundedTimer = 0;
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
       {
         wx: zone.x + prevLx,
@@ -9278,11 +9744,11 @@ export class PlayStyleManager {
         vx: 0,
         vy: this.heroVelocity.y,
         vz: 0,
-        desiredMoveVx: (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt),
-        desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt),
+        desiredMoveVx: (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) + runnerDashVx,
+        desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) + runnerDashVz,
         radius: 0.68,
         halfHeight: 0.25,
-        jumpImpulseY: this.isJumping && this.isGrounded ? 10.0 * jumpBoost : 0,
+        jumpImpulseY: jumpImpRunner,
         gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
@@ -9292,8 +9758,13 @@ export class PlayStyleManager {
     this.isJumping = false;
     this.isGrounded = phys.grounded;
     this.isSwimmingInPool = phys.inFluid;
+    this.coyoteGroundedTimer =
+      phys.grounded || phys.inFluid ? 0.14 : Math.max(0, this.coyoteGroundedTimer - dt);
     this.heroLocalPos.set(phys.wx - zone.x, phys.wy, phys.wz - zone.z);
     this.heroVelocity.y = phys.vy;
+    if (this.isGroundPounding && (phys.grounded || phys.inFluid)) {
+      this.handleGroundPoundImpact(phys.wx, phys.wy, phys.wz, phys.inFluid);
+    }
 
     // Update visible 3D Herd followers in formation around the hero
     for (let i = 0; i < this.runnerHerdMeshes.length; i++) {
@@ -9357,6 +9828,10 @@ export class PlayStyleManager {
           'runner',
           this.runnerCapyCount * 10 + Math.round(this.runnerDistance)
         );
+        if (gate.type === 'add' || gate.type === 'multiply') {
+          this.registerArcadeCombo(gate.type === 'multiply' ? 'Herd Multiply!' : 'Gate Boost');
+          this.callbacks.onBountyEvent?.('runner_gates', 1);
+        }
         this.callbacks.onModeNotification?.(
           `Stampede Herd: ${this.runnerCapyCount} Capybaras!`
         );
@@ -9418,11 +9893,15 @@ export class PlayStyleManager {
     this.applyPlayerMovementAndCamera(dt, speed, 6.2, 10.2);
 
     let jumpImpulseY = 0;
-    if (this.isJumping && this.isGrounded) {
+    const canJumpFallGuys = this.coyoteGroundedTimer > 0 || this.isGrounded;
+    if (this.isJumping && canJumpFallGuys) {
       jumpImpulseY = (11.5 + (this.stats.upgrades.bounciness - 1) * 1.0) * jumpBoost;
       this.isGrounded = false;
+      this.coyoteGroundedTimer = 0;
       this.isJumping = false;
       AudioService.playJump();
+    } else if (this.isJumping) {
+      this.isJumping = false;
     }
 
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
@@ -9454,8 +9933,16 @@ export class PlayStyleManager {
     }
     this.isGrounded = phys.grounded;
     this.isSwimmingInPool = phys.inFluid;
+    this.coyoteGroundedTimer =
+      phys.grounded || phys.inFluid ? 0.14 : Math.max(0, this.coyoteGroundedTimer - dt);
+
+    if (this.isGroundPounding && (phys.grounded || phys.inFluid)) {
+      this.handleGroundPoundImpact(phys.wx, phys.wy, phys.wz, phys.inFluid);
+    }
 
     if (phys.trampolineBoostY > 0) {
+      this.isGroundPounding = false;
+      this.coyoteGroundedTimer = 0;
       AudioService.playTrampolineLaunch();
       this.addCameraTrauma(0.46);
       NativeBridge.haptic('success');
@@ -9581,6 +10068,8 @@ export class PlayStyleManager {
         Math.round(this.proceduralConfig.districts.fallguys.crownCoinReward / 4)
       );
       this.awardProgress(crownDna, 'fallguys', this.fallGuysCrowns);
+      this.registerArcadeCombo('Golden Crown!', 0);
+      this.callbacks.onBountyEvent?.('fallguys_crown', 1);
       this.callbacks.onModeNotification?.(
         `GOLDEN CROWN #${this.fallGuysCrowns} CLAIMED${ghostFinishNote}! Advancing to Round ${this.fallGuysRound}!`
       );
@@ -9652,14 +10141,20 @@ export class PlayStyleManager {
     }
 
     const logVal = this.currentLogScaleMeters;
+    const approachDamping = computeDescentApproachDampingFactor((prevLogVal + logVal) * 0.5);
     let spiralAngle = 0;
     let spiralAngularVel = 0;
     if (this.flightTrajectory === 'spiral') {
       const prevSpiral = computeSpiralOrbitAngleRadians(prevLogVal, this.spiralBandLogs);
       spiralAngle = computeSpiralOrbitAngleRadians(logVal, this.spiralBandLogs);
-      const deltaSpiralYaw = spiralAngle - prevSpiral;
+      const deltaSpiralYaw = (spiralAngle - prevSpiral) * approachDamping;
       this.cosmicOrbitYaw += deltaSpiralYaw;
       spiralAngularVel = dt > 0.0005 ? deltaSpiralYaw / dt : 0;
+    }
+
+    // Reset orbital descent rings when flying high out past stratosphere so next descent replays cleanly
+    if (logVal > 5.3 && this.descentRingsHitCount > 0) {
+      this.resetDescentRings();
     }
 
     // Auto-touchdown onto Sanctuary Chrono-Pad once vessel settles into Capybara Forest window
@@ -9682,6 +10177,13 @@ export class PlayStyleManager {
       return;
     }
 
+    // Keep Chrono-Pad hero alignment converged before touchdown so focal target slides onto the Pad with zero jump
+    if (this.autoLandAtForestPending && logVal <= 2.5) {
+      this.currentMode = 'sanctuary';
+      this.heroLocalPos.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+      this.heroCapy.position.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+    }
+
     // Seamless automatic handover into live surface gameplay when steering/jumping inside Capybara Forest!
     const hasSurfaceSteerIntent =
       Math.abs(this.moveInput.x) > 0.06 ||
@@ -9697,7 +10199,8 @@ export class PlayStyleManager {
       return;
     }
 
-    const inForestWindow = logVal >= -0.85 && logVal <= 2.85;
+    const orbBlend = computeOrbitalSurfaceBlend(logVal, this.isSoftwareGl);
+    const inForestWindow = orbBlend.inSurfaceWindow;
 
     this.cosmicBuilder.setSuspended(true);
     this.cosmicBuilder.rootGroup.visible = false;
@@ -9708,15 +10211,18 @@ export class PlayStyleManager {
     this.sanctuaryGroup.matrixWorldAutoUpdate = inForestWindow;
     this.seamlessUniverse.forestGroveGroup.visible = inForestWindow;
     this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = inForestWindow;
-    // Keep non-Sanctuary mini-game districts culled while flying through seamless scales (re-enabled on surface landing)
-    this.sporeGroup.visible = false;
-    this.sporeGroup.matrixWorldAutoUpdate = false;
-    this.breakoutGroup.visible = false;
-    this.breakoutGroup.matrixWorldAutoUpdate = false;
-    this.runnerGroup.visible = false;
-    this.runnerGroup.matrixWorldAutoUpdate = false;
-    this.fallGuysGroup.visible = false;
-    this.fallGuysGroup.matrixWorldAutoUpdate = false;
+
+    // Smoothly reveal all 4 outer archipelago mini-game islands across planetary approach (zero sudden pop-in at touchdown)
+    const archVisible = orbBlend.archipelagoVisible;
+    this.sporeGroup.visible = archVisible;
+    this.sporeGroup.matrixWorldAutoUpdate = archVisible;
+    this.breakoutGroup.visible = archVisible;
+    this.breakoutGroup.matrixWorldAutoUpdate = archVisible;
+    this.runnerGroup.visible = archVisible;
+    this.runnerGroup.matrixWorldAutoUpdate = archVisible;
+    this.fallGuysGroup.visible = archVisible;
+    this.fallGuysGroup.matrixWorldAutoUpdate = archVisible;
+
     this.selectableCapyGroup.visible = false;
     this.selectableCapyGroup.matrixWorldAutoUpdate = false;
     this.heroCapy.visible = inForestWindow;
@@ -9735,22 +10241,61 @@ export class PlayStyleManager {
     }
     this.scene.fog = null;
 
-    if (!inForestWindow && this.worldEnv) {
-      // Dedicated calibrated deep-space key/fill rig so UFO & cosmic bodies retain crisp contrast
-      this.worldEnv.ambientLight.intensity = 0.08;
-      this.worldEnv.hemiLight.color.setHex(0x60a5fa);
-      this.worldEnv.hemiLight.groundColor.setHex(0x0f172a);
-      this.worldEnv.hemiLight.intensity = 0.24;
-      this.worldEnv.sunLight.color.setHex(0xfffaf0);
-      this.worldEnv.sunLight.intensity = 2.45;
-      if (logVal >= 3.5 && logVal <= 14.5) {
-        const sunDir = this.seamlessUniverse.getSharedSunDir();
-        this.worldEnv.sunLight.position.set(sunDir.x * 90, sunDir.y * 90, sunDir.z * 90);
+    // Fade atmospheric sky dome continuously during orbital plunge instead of 1-frame snap
+    this.setSkyDomeAlpha(smoothstep01(0.16, 0.86, orbBlend.terrestrialBlend));
+
+    if (this.worldEnv) {
+      const tb = orbBlend.terrestrialBlend;
+      if (!inForestWindow || tb <= 0.005) {
+        // Dedicated calibrated deep-space key/fill rig so UFO & cosmic bodies retain crisp contrast
+        this.worldEnv.ambientLight.intensity = 0.08;
+        this.worldEnv.hemiLight.color.setHex(0x60a5fa);
+        this.worldEnv.hemiLight.groundColor.setHex(0x0f172a);
+        this.worldEnv.hemiLight.intensity = 0.24;
+        this.worldEnv.sunLight.color.setHex(0xfffaf0);
+        this.worldEnv.sunLight.intensity = 2.45;
+        if (logVal >= 3.5 && logVal <= 14.5) {
+          const sunDir = this.seamlessUniverse.getSharedSunDir();
+          this.worldEnv.sunLight.position.set(sunDir.x * 90, sunDir.y * 90, sunDir.z * 90);
+        }
+        this.worldEnv.moonLight.intensity = 0.0;
+        if (this.homePool) this.homePool.lanternLight.intensity = 0.0;
+        if (this.chronoPad) this.chronoPad.beaconLight.intensity = 0.0;
+        this.renderer.toneMappingExposure = this.settings.gpuExposure ?? 1.02;
+      } else if (tb < 0.995) {
+        // Continuous crossfade between space lighting rig and live terrestrial atmosphere
+        this.worldEnv.ambientLight.intensity = THREE.MathUtils.lerp(
+          0.08,
+          this.worldEnv.lastAmbientIntensity,
+          tb
+        );
+        _colorHelper.setHex(0x60a5fa).lerp(this.worldEnv.hemiLight.color, tb);
+        this.worldEnv.hemiLight.color.copy(_colorHelper);
+        _colorHelper.setHex(0x0f172a).lerp(this.worldEnv.hemiLight.groundColor, tb);
+        this.worldEnv.hemiLight.groundColor.copy(_colorHelper);
+        this.worldEnv.hemiLight.intensity = THREE.MathUtils.lerp(
+          0.24,
+          this.worldEnv.lastHemiIntensity,
+          tb
+        );
+        _colorHelper.setHex(0xfffaf0).lerp(this.worldEnv.sunLight.color, tb);
+        this.worldEnv.sunLight.color.copy(_colorHelper);
+        this.worldEnv.sunLight.intensity = THREE.MathUtils.lerp(
+          2.45,
+          this.worldEnv.lastSunIntensity,
+          tb
+        );
+        this.worldEnv.moonLight.intensity = THREE.MathUtils.lerp(
+          0.0,
+          this.worldEnv.lastMoonIntensity,
+          tb
+        );
+        this.renderer.toneMappingExposure = THREE.MathUtils.lerp(
+          this.settings.gpuExposure ?? 1.02,
+          this.worldEnv.lastExposure,
+          tb
+        );
       }
-      this.worldEnv.moonLight.intensity = 0.0;
-      if (this.homePool) this.homePool.lanternLight.intensity = 0.0;
-      if (this.chronoPad) this.chronoPad.beaconLight.intensity = 0.0;
-      this.renderer.toneMappingExposure = this.settings.gpuExposure ?? 1.02;
     }
 
     // Keep sanctuary companion Capybaras & portals gently alive while zooming through the forest!
@@ -9787,7 +10332,7 @@ export class PlayStyleManager {
     const isBasicComfortMode = !this.settings.advancedMode;
     const idleSpaceDrift =
       !isBasicComfortMode && !this.mouselookLocked && idleLookMs > 3200
-        ? 0.04
+        ? 0.04 * approachDamping
         : 0;
     this.cosmicOrbitYaw += (idleSpaceDrift - this.moveInput.x * 1.45) * dt;
     this.cosmicOrbitPitch = THREE.MathUtils.clamp(
@@ -9796,9 +10341,12 @@ export class PlayStyleManager {
       1.18
     );
 
-    // Basic Mode Guided Autopilot & Camera Comfort Guardrails:
-    // Smooth horizon pitch stabilization and gentle landmark framing between CapySol, CapyWorld & Sanctuary.
-    if (isBasicComfortMode && !this.mouselookLocked && idleLookMs > 1100) {
+    // Smooth yaw orientation stabilization during final orbital plunge so camera never stays tilted sideways
+    if (
+      (isBasicComfortMode || (logVal <= 2.4 && approachDamping < 0.35)) &&
+      !this.mouselookLocked &&
+      idleLookMs > 900
+    ) {
       if (Math.abs(this.moveInput.z) < 0.05) {
         const comfortPitchTarget = inForestWindow
           ? 0.34
@@ -9813,14 +10361,14 @@ export class PlayStyleManager {
         );
       }
       if (
-        this.flightTrajectory !== 'spiral' &&
+        (this.flightTrajectory !== 'spiral' || approachDamping < 0.35) &&
         Math.abs(this.moveInput.x) < 0.05 &&
         logVal >= 0.4 &&
         logVal <= 14.8
       ) {
         const signedYaw = normalizeAngleSigned(this.cosmicOrbitYaw);
         const guideYaw = logVal <= 3.2 ? 0.15 : 0.06;
-        const dampedYaw = THREE.MathUtils.damp(signedYaw, guideYaw, 1.4, dt);
+        const dampedYaw = THREE.MathUtils.damp(signedYaw, guideYaw, 1.8, dt);
         this.cosmicOrbitYaw = dampedYaw;
       }
     }
@@ -9832,30 +10380,18 @@ export class PlayStyleManager {
 
     // Compute projective-invariant camera radius & smooth multi-sector focal anchor
     const canonicalRadius = 38.0;
-    let camRadius = canonicalRadius;
+    const chaseBaseDist = 11.4 * (this.settings.cameraDistance || 1.0);
+    const camRadius = computeContinuousDescentCamRadius(logVal, chaseBaseDist);
 
     if (inForestWindow) {
       const lowBlend = THREE.MathUtils.smoothstep(logVal, -0.85, -0.22);
-      const highBlend = 1 - THREE.MathUtils.smoothstep(logVal, 1.85, 2.85);
+      const highBlend = 1 - THREE.MathUtils.smoothstep(logVal, 1.85, 3.35);
       const anchorWeight = lowBlend * highBlend;
       _seamlessFocalPos.set(
         this.heroCapy.position.x * anchorWeight,
         (this.heroCapy.position.y + 0.96) * anchorWeight,
         (this.heroCapy.position.z + 0.2) * anchorWeight
       );
-      if (logVal >= 0.8) {
-        const t = THREE.MathUtils.clamp((logVal - 0.8) / (2.85 - 0.8), 0, 1);
-        const s = t * t * (3 - 2 * t);
-        camRadius = THREE.MathUtils.lerp(7.6, canonicalRadius, s);
-      } else if (logVal >= -0.15) {
-        const t = THREE.MathUtils.clamp((logVal - -0.15) / (0.8 - -0.15), 0, 1);
-        const s = t * t * (3 - 2 * t);
-        camRadius = THREE.MathUtils.lerp(1.25, 7.6, s);
-      } else {
-        const t = THREE.MathUtils.clamp((logVal - -0.85) / (-0.15 - -0.85), 0, 1);
-        const s = t * t * (3 - 2 * t);
-        camRadius = THREE.MathUtils.lerp(0.65, 1.25, s);
-      }
       const forestFar = computeEffectiveCameraFar(
         this.settings.drawDistance ?? 650,
         this.settings.gpuQualityPreset ?? 'high',
@@ -9904,14 +10440,14 @@ export class PlayStyleManager {
     );
     this.seamlessUniverse.rootGroup.scale.setScalar(camRadius / canonicalRadius);
 
-    // Blend sky dome color in sunny forest & ecosystem window
-    if (inForestWindow && logVal >= -0.15 && logVal <= 2.35) {
-      _colorHelper.setHex(this.activeBiome?.skyHex ?? 0x38bdf8);
-      const forestBlend = Math.min(
-        1,
-        Math.min((logVal - -0.15) / 0.5, (2.35 - logVal) / 0.7)
-      );
-      _seamlessSkyColor.lerp(_colorHelper, THREE.MathUtils.clamp(forestBlend, 0, 1));
+    // Blend background sky color cleanly across cosmic stratosphere -> daylight/night horizon
+    if (inForestWindow && orbBlend.terrestrialBlend > 0.005) {
+      if (this.worldEnv) {
+        _colorHelper.copy(this.worldEnv.currentHorizonSkyColor);
+      } else {
+        _colorHelper.setHex(this.activeBiome?.skyHex ?? 0x38bdf8);
+      }
+      _seamlessSkyColor.lerp(_colorHelper, orbBlend.terrestrialBlend);
     }
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background.copy(_seamlessSkyColor);
@@ -9920,9 +10456,11 @@ export class PlayStyleManager {
     }
 
     const spiralPitchMod =
-      this.flightTrajectory === 'spiral' ? Math.sin(spiralAngle) * 0.085 : 0;
+      this.flightTrajectory === 'spiral' ? Math.sin(spiralAngle) * 0.085 * approachDamping : 0;
     const spiralRadiusScale =
-      this.flightTrajectory === 'spiral' ? 1.0 + Math.sin(spiralAngle * 2.0) * 0.07 : 1.0;
+      this.flightTrajectory === 'spiral'
+        ? 1.0 + Math.sin(spiralAngle * 2.0) * 0.07 * approachDamping
+        : 1.0;
     const effectiveOrbitPitch = THREE.MathUtils.clamp(
       this.cosmicOrbitPitch + spiralPitchMod,
       horizonMinPitch,
@@ -9950,6 +10488,7 @@ export class PlayStyleManager {
         this.camera.updateMatrixWorld();
         _camForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
         _camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+        _camRight.crossVectors(_camForward, _camUp).normalize();
         const vt = computeVesselOneToOneTransform(
           logVal,
           this.vesselMode,
@@ -9981,7 +10520,6 @@ export class PlayStyleManager {
         if (vt.worldSpaceBlend <= 0.001 && logVal >= 18.8 && logVal <= 21.1) {
           const armNav = this.seamlessUniverse.getSpiralArmNavigationState(_galaxyArmWorldDir);
           if (armNav.navActiveWeight > 0.005) {
-            _camRight.crossVectors(_camForward, _camUp).normalize();
             const dirSign = scaleVel > 0.08 ? -1 : 1;
             navSteerX = _galaxyArmWorldDir.dot(_camRight) * armNav.navActiveWeight * 1.15 * dirSign;
             navPitchZ = _galaxyArmWorldDir.dot(_camUp) * armNav.navActiveWeight * 0.85 * dirSign;
@@ -10017,6 +10555,59 @@ export class PlayStyleManager {
           this.moveInput.x + navSteerX + this.mouselookBankX,
           this.moveInput.z + navPitchZ + this.mouselookPitchZ
         );
+
+        // Animate & check 6 Atmospheric Skydiving Descent Rings between log 5.2 and 1.0
+        const showRings = logVal >= 1.0 && logVal <= 5.2;
+        this.descentRingsGroup.visible = showRings;
+        this.descentRingsGroup.matrixWorldAutoUpdate = showRings;
+        if (showRings && this.descentRingMeshes.length === DESCENT_RING_SPECS.length) {
+          _ringVesselScratch.copy(this.chronoVessel.root.position);
+          const nowPulse = performance.now() * 0.004;
+          for (let i = 0; i < DESCENT_RING_SPECS.length; i++) {
+            const spec = DESCENT_RING_SPECS[i];
+            const mesh = this.descentRingMeshes[i];
+            const deltaLog = logVal - spec.logMeters;
+            const ringVisible =
+              !this.descentRingHitFlags[i] && deltaLog >= -0.04 && deltaLog <= 1.15;
+            mesh.visible = ringVisible;
+            if (!ringVisible) continue;
+
+            const distAlongCam = 8.4 + deltaLog * 18.0;
+            const mat = mesh.material as THREE.MeshBasicMaterial;
+            mat.opacity =
+              smoothstep01(-0.04, 0.1, deltaLog) *
+              (1.0 - smoothstep01(0.75, 1.15, deltaLog)) *
+              0.84;
+            _ringPosScratch
+              .copy(this.camera.position)
+              .addScaledVector(_camForward, distAlongCam)
+              .addScaledVector(_camRight, spec.offsetX * 0.42 * smoothstep01(0.0, 0.65, deltaLog))
+              .addScaledVector(_camUp, spec.offsetZ * 0.34 * smoothstep01(0.0, 0.65, deltaLog));
+            mesh.position.copy(_ringPosScratch);
+            mesh.lookAt(this.camera.position);
+            mesh.rotateZ(nowPulse * 0.35 + i * 0.8);
+            const ringScale =
+              (spec.radiusMeters / 6.2) * (1.0 + Math.sin(nowPulse + i) * 0.05);
+            mesh.scale.setScalar(ringScale);
+
+            if (
+              Math.abs(deltaLog) <= 0.22 &&
+              _ringVesselScratch.distanceTo(_ringPosScratch) <= ringScale * 3.8 + 4.5
+            ) {
+              this.descentRingHitFlags[i] = true;
+              this.descentRingsHitCount += 1;
+              mesh.visible = false;
+              AudioService.playDescentRingChime(i);
+              NativeBridge.haptic('tick');
+              this.awardProgress(2, 'sanctuary', this.descentRingsHitCount * 10);
+              this.registerArcadeCombo('Descent Ring!', 0);
+              this.callbacks.onBountyEvent?.('descent_rings', 1);
+              this.callbacks.onModeNotification?.(
+                `Orbital Descent Ring ${this.descentRingsHitCount}/${DESCENT_RING_SPECS.length}! +2 DNA`
+              );
+            }
+          }
+        }
       }
     }
 
@@ -10247,6 +10838,9 @@ export class PlayStyleManager {
       galaxyMorphology: this.seamlessUniverse.getGalaxyMorphology(),
       forestSpecimenId: this.seamlessUniverse.getActiveForestSpecimenSpec().id,
       forestSpecimenLabel: this.seamlessUniverse.getActiveForestSpecimenSpec().label,
+      descentRingsHit: this.descentRingsHitCount,
+      descentRingsTotal: DESCENT_RING_SPECS.length,
+      dockedOnChronoPad: this.dockedChronoVesselVisible,
     };
   }
 
@@ -10361,15 +10955,16 @@ export class PlayStyleManager {
     this.autoZoomDirection = 0;
     this.autoLandAtForestPending = false;
     this.vesselMode = 'landed';
-    this.chronoVessel?.setMode('landed');
-    if (this.chronoVessel) {
-      this.chronoVessel.root.visible = false;
-    }
+    this.descentRingsGroup.visible = false;
+    this.descentRingsGroup.matrixWorldAutoUpdate = false;
+    this.setSkyDomeAlpha(1.0);
     const savedCamPos = _tempVec3.copy(this.camera.position);
     AudioService.playCoin();
     this.setCosmicStage('playing');
     if (!snapCamera) {
       this.surfaceCamYaw = this.cosmicOrbitYaw + Math.PI;
+      this.heroYaw = this.surfaceCamYaw;
+      this.heroCapy.rotation.y = this.heroYaw;
       this.surfaceCamPitch = THREE.MathUtils.clamp(this.cosmicOrbitPitch, 0.14, 1.05);
       this.camera.position.copy(savedCamPos);
       this.camera.lookAt(
@@ -10378,6 +10973,7 @@ export class PlayStyleManager {
         this.heroCapy.position.z
       );
     }
+    this.syncDockedVesselPose(0.016, this.currentMode === 'sanctuary');
   }
 
   public setMouselookLocked(locked: boolean): void {

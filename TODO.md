@@ -17,8 +17,8 @@ For subsystem references, see:
 | Priority | Workstream | Release Blocker | Target Outcome |
 | :--- | :--- | :--- | :--- |
 | **P0** | Android Packaging & TWA / Capacitor | Yes | Signed release `.aab` with verified Digital Asset Links |
-| **P0** | Play Policy, Privacy & Families Compliance | Yes | Approved Privacy URL, Data Safety, and IARC Age Rating |
-| **P0** | Branding, Manifest Screenshots & Storefront Assets | Yes | Unified branding, 512px icon, 1024x500 graphic, device screenshots |
+| **P0** | Play Console Policy, Hosting & Data Safety | Yes | Production HTTPS Privacy URL, Data Safety, and IARC Age Rating |
+| **P0** | Play Store Listing Copy & Asset Upload | Yes | Store title/descriptions, category, and maskable safe-zone QA |
 | **P1** | Android Runtime, Hardware GPU & Ergonomics QA | Yes | Verified touch/back-button, cutouts, context loss, low-end GPU FPS |
 | **P1** | Release Pipeline, CI Gates & Staged Rollout | Recommended | Automated E2E + TWA build checks and staged 10% -> 100% rollout |
 
@@ -40,31 +40,25 @@ For subsystem references, see:
 
 ---
 
-### Milestone 4: Google Play Console Policy, Privacy & Families Compliance (`P0`)
+### Milestone 4: Google Play Console Policy, Hosting & Data Safety (`P0`)
 
-- **Wire and Publish Privacy Policy**:
+- **Publish Production HTTPS Privacy URL**:
   - Host `public/privacy.html` on the production HTTPS origin and submit its public URL in Play Console (`App content -> Privacy policy`).
-  - Add an in-app **Privacy Policy** link inside the Settings / About modal (`src/capygame/components/CapyGameView.tsx`) using an in-app viewer or safe link rather than `window.open` / `window.alert`.
 - **Complete Data Safety & Permissions Declarations**:
   - Fill out Google Play Data Safety accurately: declare on-device local storage (`localStorage`, Cache Storage) only, zero account sign-in, zero third-party ad/analytics SDKs, and zero server transmission of user data.
-  - Audit `metadata.json` (`capabilities` and `requestFramePermissions`) and Android `AndroidManifest.xml` to strip unused permissions or server capability flags before submission.
-- **IARC Content Rating & Target Audience (Kids-Friendly Basic Mode)**:
-  - Complete the IARC content rating questionnaire and select appropriate age groups in Play Console (`Target audience and content`).
-  - If opting into Google Play's **Designed for Families** / Teacher Approved programs, audit Basic Mode text-to-speech (`speechSynthesis`), external links (must be behind a parental gate or kept strictly in-app), and tactile button compliance (`>= 48dp`).
+  - Audit `metadata.json` (`capabilities` and `requestFramePermissions`) and Android `AndroidManifest.xml` to strip unused permissions before submission.
+- **IARC Content Rating & General-Audience Target Posture**:
+  - Complete the IARC content rating questionnaire and select standard general-audience age groups in Play Console (`Target audience and content`).
 
 ---
 
-### Milestone 5: Branding Unification, Manifest Rich UI & Storefront Assets (`P0`)
+### Milestone 5: Play Console Listing Copy & Final Asset Upload (`P0`)
 
-- **Unify Product Naming Across Entry Metadata**:
-  - Replace the legacy placeholder string `"Capy - Color by Number & CapyGame 3D"` in `index.html` (`<title>`, `og:title`) and `metadata.json` (`name`) with final Play Store branding (`CapyGame 3D`), and keep `public/manifest.webmanifest` aligned.
-- **Generate Required Google Play Graphic & Rich Install Assets**:
-  - Finalize high-resolution Play Store icon (`512x512` 32-bit PNG) and ensure `public/assets/icon-maskable-512.png` keeps all artwork within the central 80% safe zone.
-  - Create **Feature Graphic** (`1024x500` PNG/JPG) with legible `CapyGame 3D` title treatment and key cosmic-to-island artwork.
-  - Capture clean promotional **Screenshots** (minimum 4 Phone screenshots in 16:9 or 9:16, plus 7-inch and 10-inch Tablet screenshots) showcasing Multiverse scale, CapySol/CapyWorld orbit, Micro-Glade Discovery Sticker Book, and Capybara Island world building.
-  - Add verified `narrow` and `wide` screenshot entries to `public/manifest.webmanifest` referencing committed files under `public/assets/` for Chrome Richer Install UI and PWABuilder verification.
+- **Verify Maskable Icon Safe Zone**:
+  - Confirm `public/assets/icon-maskable-512.png` keeps central artwork cleanly inside the 80% Android adaptive icon safe zone across circular and squircle masks.
 - **Finalize Store Listing Copy**:
-  - Draft Store Title (<= 30 chars), Short Description (<= 80 chars), Full Description (<= 4000 chars), app category (`Game -> Simulation` or `Educational`), and release notes for `v1.0.0`.
+  - Draft Store Title (<= 30 chars: `CapyGame 3D`), Short Description (<= 80 chars), Full Description (<= 4000 chars), app category (`Game -> Simulation`), and release notes for `v1.0.0`.
+  - Upload `public/assets/feature-graphic-1024x500.png` and device screenshots (`public/assets/screenshot-*.png`) to Play Console, adding a 7-inch/10-inch tablet capture if required by Play Console track rules.
 
 ---
 

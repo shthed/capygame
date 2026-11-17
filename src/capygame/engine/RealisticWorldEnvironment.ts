@@ -676,6 +676,12 @@ export class RealisticWorldEnvironment {
   public currentIblEnvIntensity: number = 1.15;
   public readonly currentSunDir = new THREE.Vector3(0.4, 0.8, 0.35).normalize();
   public readonly currentMoonDir = new THREE.Vector3(-0.4, 0.6, 0.35).normalize();
+  public readonly currentHorizonSkyColor = new THREE.Color(0xbae6fd);
+  public lastAmbientIntensity: number = 0.28;
+  public lastHemiIntensity: number = 0.62;
+  public lastSunIntensity: number = 2.6;
+  public lastMoonIntensity: number = 0.0;
+  public lastExposure: number = 1.02;
   private weatherAutoTimer: number = 0;
   private lightningFlash: number = 0;
   public elapsedSeconds: number = 0;
@@ -751,6 +757,7 @@ export class RealisticWorldEnvironment {
       uStarIntensity: { value: 0.0 },
       uCloudCover: { value: 0.15 },
       uTime: { value: 0.0 },
+      uSkyAlpha: { value: 1.0 },
     };
 
     // 1. Hardware-Accelerated Atmospheric Sky Dome Shader (WGSL TSL on WebGPU / GLSL on WebGL2)
@@ -759,6 +766,7 @@ export class RealisticWorldEnvironment {
       : new THREE.ShaderMaterial({
           side: THREE.BackSide,
           depthWrite: false,
+          transparent: true,
           fog: false,
           uniforms: skyUniforms,
           vertexShader: `
@@ -778,6 +786,7 @@ export class RealisticWorldEnvironment {
         uniform float uStarIntensity;
         uniform float uCloudCover;
         uniform float uTime;
+        uniform float uSkyAlpha;
 
         float hash(vec2 p) {
           return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -831,7 +840,7 @@ export class RealisticWorldEnvironment {
             }
           }
 
-          gl_FragColor = vec4(sky, 1.0);
+          gl_FragColor = vec4(sky, clamp(uSkyAlpha, 0.0, 1.0));
         }
       `,
         });
@@ -2803,6 +2812,13 @@ export class RealisticWorldEnvironment {
     }
 
     // Update Sun, Moon, Hemisphere & Lantern lights with a calibrated 5:1 outdoor contrast ratio
+    this.currentHorizonSkyColor.copy(_skyHorizon);
+    this.lastSunIntensity = rig.sunIntensity;
+    this.lastMoonIntensity = rig.moonIntensity;
+    this.lastHemiIntensity = rig.hemiIntensity;
+    this.lastAmbientIntensity = rig.ambientIntensity;
+    this.lastExposure = rig.exposure;
+
     this.sunLight.intensity = rig.sunIntensity;
     this.sunLight.color.setHex(duskFactor > 0.35 ? 0xffc68a : 0xfffaf0);
     this.moonLight.intensity = rig.moonIntensity;

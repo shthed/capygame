@@ -1,6 +1,22 @@
 import type { ForestMicroSpecimenId } from './engine/forestMicroSpecimens';
 import { formatRealisticScaleMeters } from './engine/UniverseScaleMath';
+import {
+  BOUNTY_CATALOG,
+  createDefaultBounties,
+  type ArcadeComboTelemetry,
+  type BountyCatalogSpec,
+  type BountyEventType,
+  type BountyProgressItem,
+} from './engine/GameplayFunMath';
 export type { ForestMicroSpecimenId };
+export {
+  BOUNTY_CATALOG,
+  createDefaultBounties,
+  type ArcadeComboTelemetry,
+  type BountyCatalogSpec,
+  type BountyEventType,
+  type BountyProgressItem,
+};
 
 export type PlayStyle = 'sanctuary' | 'spore' | 'breakout' | 'runner' | 'fallguys';
 
@@ -233,6 +249,9 @@ export interface LiveModeTelemetry {
   secondaryLabel: string;
   secondaryValue: string | number;
   zoneCoordsLabel: string;
+  arcadeCombo?: ArcadeComboTelemetry;
+  dashCooldownFrac?: number;
+  canDive?: boolean;
 }
 
 export type AstrophysicsPaletteMode = 'natural' | 'hubble';
@@ -466,6 +485,7 @@ export interface PlayerStats {
   unlockedObjectMarkers?: boolean;
   unlockedRealityRescaler?: boolean;
   discoveredForestSpecimens?: ForestMicroSpecimenId[];
+  bounties?: BountyProgressItem[];
 }
 
 export const OBJECT_MARKERS_DNA_COST = 12;
@@ -528,6 +548,7 @@ export const INITIAL_PLAYER_STATS: PlayerStats = {
   unlockedObjectMarkers: false,
   unlockedRealityRescaler: false,
   discoveredForestSpecimens: [],
+  bounties: createDefaultBounties(),
 };
 
 // ============================================================================
@@ -1777,6 +1798,9 @@ export interface UniverseScaleTelemetry {
   galaxyMorphology: GalaxyMorphology;
   forestSpecimenId?: ForestMicroSpecimenId;
   forestSpecimenLabel?: string;
+  descentRingsHit?: number;
+  descentRingsTotal?: number;
+  dockedOnChronoPad?: boolean;
 }
 
 export function findNearestScaleBandIndex(logMeters: number): number {
