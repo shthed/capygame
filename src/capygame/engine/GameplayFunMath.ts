@@ -4,7 +4,7 @@ export type BountyEventType =
   | 'ground_pound_splash'
   | 'mushroom_bounce'
   | 'spore_chomp'
-  | 'breakout_smash'
+  | 'capytorio_pack'
   | 'runner_gates'
   | 'fallguys_crown';
 
@@ -116,11 +116,11 @@ export const BOUNTY_CATALOG: readonly BountyCatalogSpec[] = [
     dnaReward: 4,
   },
   {
-    id: 'breakout_smash',
-    title: 'Crystal Shatter',
-    description: 'Break 8 Bricks in Yuzu Breakout',
-    target: 8,
-    coinReward: 16,
+    id: 'capytorio_pack',
+    title: 'Factory Automation',
+    description: 'Automate & Craft 4 Science Packs in Capytorio',
+    target: 4,
+    coinReward: 18,
     dnaReward: 4,
   },
   {

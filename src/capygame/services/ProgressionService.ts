@@ -34,6 +34,8 @@ import {
   type BountyEventType,
 } from '../engine/GameplayFunMath';
 
+import { sanitizeCapytorioState } from '../engine/CapytorioFactoryEngine';
+
 const SAVE_KEY = 'capy_game_save_v3';
 const LEGACY_SAVE_KEY_V2 = 'capy_game_save_v2';
 const SETTINGS_KEY = 'capy_game_settings_v1';
@@ -41,7 +43,7 @@ const SETTINGS_KEY = 'capy_game_settings_v1';
 const VALID_PLAY_STYLES: ReadonlySet<PlayStyle> = new Set([
   'sanctuary',
   'spore',
-  'breakout',
+  'capytorio',
   'runner',
   'fallguys',
 ]);
@@ -172,10 +174,13 @@ export class ProgressionService {
     const unlockedCosmetics =
       rawCosmetics.length > 0 ? Array.from(new Set(rawCosmetics)) : [...INITIAL_PLAYER_STATS.unlockedCosmetics];
 
+    const rawMode =
+      (parsed.selectedPlayStyle as unknown as string) === 'breakout'
+        ? 'capytorio'
+        : parsed.selectedPlayStyle;
     const selectedPlayStyle: PlayStyle =
-      typeof parsed.selectedPlayStyle === 'string' &&
-      VALID_PLAY_STYLES.has(parsed.selectedPlayStyle as PlayStyle)
-        ? (parsed.selectedPlayStyle as PlayStyle)
+      typeof rawMode === 'string' && VALID_PLAY_STYLES.has(rawMode as PlayStyle)
+        ? (rawMode as PlayStyle)
         : INITIAL_PLAYER_STATS.selectedPlayStyle;
 
     const rawUpgrades =
@@ -201,9 +206,14 @@ export class ProgressionService {
       unlockedMutations: Array.from(new Set(rawUnlockedMutations)),
       evolutionStage: cleanNum(parsed.evolutionStage, 1, 1),
       highScoreSpore: cleanNum(parsed.highScoreSpore, 0, 0),
-      highScoreBreakout: cleanNum(parsed.highScoreBreakout, 0, 0),
+      highScoreCapytorio: cleanNum(
+        parsed.highScoreCapytorio ?? (parsed as Record<string, unknown>).highScoreBreakout,
+        0,
+        0
+      ),
       highScoreRunner: cleanNum(parsed.highScoreRunner, 0, 0),
       highScoreFallGuys: cleanNum(parsed.highScoreFallGuys, 0, 0),
+      capytorioFactory: sanitizeCapytorioState(parsed.capytorioFactory),
       upgrades: {
         herdSize: cleanNum(rawUpgrades.herdSize, INITIAL_PLAYER_STATS.upgrades.herdSize, 1),
         yuzuMagnet: cleanNum(rawUpgrades.yuzuMagnet, INITIAL_PLAYER_STATS.upgrades.yuzuMagnet, 1),
@@ -231,6 +241,7 @@ export class ProgressionService {
       ...DEFAULT_CAPY_SETTINGS,
       ...parsed,
       advancedMode: Boolean(parsed.advancedMode),
+      capytorioCameraMode: parsed.capytorioCameraMode === 'chase' ? 'chase' : 'oblique',
       worldFogEnabled: false,
       drawDistance:
         typeof parsed.drawDistance === 'number' && Number.isFinite(parsed.drawDistance)
@@ -544,8 +555,8 @@ export class ProgressionService {
     if (mode && typeof modeScore === 'number') {
       if (mode === 'spore' && modeScore > next.highScoreSpore) {
         next.highScoreSpore = Math.round(modeScore);
-      } else if (mode === 'breakout' && modeScore > next.highScoreBreakout) {
-        next.highScoreBreakout = Math.round(modeScore);
+      } else if (mode === 'capytorio' && modeScore > next.highScoreCapytorio) {
+        next.highScoreCapytorio = Math.round(modeScore);
       } else if (mode === 'runner' && modeScore > next.highScoreRunner) {
         next.highScoreRunner = Math.round(modeScore);
       } else if (mode === 'fallguys' && modeScore > next.highScoreFallGuys) {

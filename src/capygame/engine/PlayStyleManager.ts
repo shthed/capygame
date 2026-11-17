@@ -164,6 +164,31 @@ import {
   smoothstep01,
   tickComboDecay,
 } from './GameplayFunMath';
+import {
+  CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_WORLD_ORIGIN_X,
+  CAPYTORIO_WORLD_ORIGIN_Z,
+  ensureLiveCapytorioLuaSync,
+  getCapytorioItemMeta,
+  subscribeCapytorioLuaChanges,
+  type CapytorioDirection,
+  type CapytorioItemId,
+  type CapytorioMachineType,
+  type CapytorioRecipeId,
+  type CapytorioTechId,
+} from './CapytorioData';
+import {
+  CapytorioFactoryEngine,
+  capytorioGridToWorldX,
+  capytorioGridToWorldZ,
+  tileKey as capytorioTileKey,
+  worldToCapytorioGridX,
+  worldToCapytorioGridZ,
+  type CapytorioSerializedState,
+  type CapytorioStepCallbacks,
+  type CapytorioUiSnapshot,
+} from './CapytorioFactoryEngine';
+import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
 
 // Pre-allocated math helpers for zero per-frame garbage collection
 const _tempVec3 = new THREE.Vector3();
@@ -178,6 +203,10 @@ const _headWorldPos = new THREE.Vector3();
 const _heroTorsoWorldPos = new THREE.Vector3();
 const _rayTargetPos = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
+const _capyGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const _capyGroundHit = new THREE.Vector3();
+const _capyPointerNdc = new THREE.Vector2();
+const _beltVelScratch: [number, number] = [0, 0];
 const _camForward = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _camUp = new THREE.Vector3();
@@ -316,6 +345,8 @@ export interface GameEventCallbacks {
   onZoomThumbnailsReset?: () => void;
   onForestSpecimenDiscovered?: (specimenId: ForestMicroSpecimenId, label: string) => void;
   onBountyEvent?: (eventType: BountyEventType, amount?: number) => void;
+  onCapytorioChange?: (snap: CapytorioUiSnapshot) => void;
+  onCapytorioFactorySaved?: (serialized: CapytorioSerializedState) => void;
 }
 
 export class PlayStyleManager {
@@ -371,7 +402,7 @@ export class PlayStyleManager {
   private worldBaseGroup = new THREE.Group();
   private sanctuaryGroup = new THREE.Group();
   private sporeGroup = new THREE.Group();
-  private breakoutGroup = new THREE.Group();
+  private capytorioGroup = new THREE.Group();
   private runnerGroup = new THREE.Group();
   private fallGuysGroup = new THREE.Group();
 
@@ -563,7 +594,7 @@ export class PlayStyleManager {
   private readonly bgDistrictDtAccum: Record<PlayStyle, number> = {
     sanctuary: 0,
     spore: 0,
-    breakout: 0,
+    capytorio: 0,
     runner: 0,
     fallguys: 0,
   };
@@ -698,45 +729,15 @@ export class PlayStyleManager {
   private sporeDashCooldown: number = 0;
   private sporeLargeCritterKnockbackCd: number = 0;
 
-  // --- 3. Breakout State ---
-  private breakoutPaddle: THREE.Mesh | null = null;
-  private breakoutBalls: Array<{
-    mesh: THREE.Mesh;
-    vel: THREE.Vector3;
-    active: boolean;
-  }> = [];
-  private breakoutBlocks: Array<{
-    mesh: THREE.Mesh;
-    mat: THREE.MeshStandardMaterial;
-    hp: number;
-    isBonus: boolean;
-    active: boolean;
-  }> = [];
-  private breakoutPowerups: Array<{
-    mesh: THREE.Mesh;
-    type: 'multiball' | 'wide';
-    active: boolean;
-  }> = [];
-  private breakoutPoolsInitialized: boolean = false;
-  private breakoutMegaPaddleTimer: number = 0;
-  private readonly sharedBreakoutPowerupGeo = (() => {
-    const geo = new THREE.CylinderGeometry(0.28, 0.28, 0.6, 12);
-    geo.userData.sharedAsset = true;
-    return geo;
-  })();
-  private readonly sharedBreakoutPowerupMat = (() => {
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
-      emissive: 0x0284c7,
-      emissiveIntensity: 0.5,
-    });
-    mat.userData.sharedAsset = true;
-    return mat;
-  })();
-  private breakoutScore: number = 0;
-  private breakoutWave: number = 1;
-  private breakoutCombo: number = 1;
-  private paddleWidthMultiplier: number = 1.0;
+  // --- 3. Capytorio Factory State (Far-Hemisphere Infinite Plain) ---
+  public capytorioEngine: CapytorioFactoryEngine;
+  private capytorioRenderer: Capytorio3DRenderer;
+  private capytorioUiAccum: number = 0;
+  private capytorioAutoSaveDirty: boolean = false;
+  private capytorioAutoSaveTimer: number = 0;
+  private pendingLandingPlayStyle: PlayStyle = 'sanctuary';
+  private readonly capytorioStepCallbacks: CapytorioStepCallbacks;
+  private unsubscribeCapytorioLua: (() => void) | null = null;
 
   // --- 4. Runner State ---
   private runnerHerdMeshes: CapyMeshGroup[] = [];
@@ -788,6 +789,51 @@ export class PlayStyleManager {
     this.stats = initialStats;
     this.settings = initialSettings;
     this.callbacks = callbacks;
+    this.capytorioEngine = new CapytorioFactoryEngine(initialStats.capytorioFactory ?? null);
+    this.capytorioRenderer = new Capytorio3DRenderer();
+    this.capytorioStepCallbacks = {
+      onTechCompleted: (_techId, techName, rewardDna, rewardCoins, isRocketLaunch) => {
+        const snap = this.capytorioEngine.getUiSnapshot();
+        this.awardProgress(rewardDna, 'capytorio', snap.score);
+        if (rewardCoins > 0) {
+          this.stats.coins = (this.stats.coins || 0) + rewardCoins;
+        }
+        AudioService.playPrestigeFanfare();
+        this.addCameraTrauma(isRocketLaunch ? 0.45 : 0.24);
+        NativeBridge.haptic('success');
+        this.callbacks.onBountyEvent?.('capytorio_pack', 1);
+        this.callbacks.onModeNotification?.(
+          isRocketLaunch
+            ? `ORBITAL YUZU ROCKET LAUNCHED! +${rewardDna} DNA · +15% Factory Productivity!`
+            : `Tech Researched: ${techName}! +${rewardDna} DNA!`
+        );
+        this.markCapytorioDirty();
+      },
+      onMilestoneItem: (itemId, count) => {
+        const meta = getCapytorioItemMeta(itemId);
+        if (meta.category === 'science') {
+          this.callbacks.onBountyEvent?.('capytorio_pack', count);
+        }
+      },
+      onMilestoneCompleted: (_id, label, rewardCoins) => {
+        if (rewardCoins > 0) {
+          this.stats.coins = (this.stats.coins || 0) + rewardCoins;
+        }
+        AudioService.playCoin();
+        NativeBridge.haptic('success');
+        this.callbacks.onModeNotification?.(
+          `Factory Milestone: ${label}! +${rewardCoins}c`
+        );
+        this.markCapytorioDirty();
+      },
+      onScoreChanged: (score) => {
+        this.awardProgress(0, 'capytorio', score);
+      },
+    };
+    ensureLiveCapytorioLuaSync();
+    this.unsubscribeCapytorioLua = subscribeCapytorioLuaChanges(() => {
+      this.emitCapytorioSnapshot();
+    });
     this.performanceLog.lock60FpsEnabled = initialSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = initialSettings.fpsTarget ?? 60;
     this.performanceLog.maxFpsLimit = initialSettings.maxFpsLimit ?? 60;
@@ -992,21 +1038,23 @@ export class PlayStyleManager {
     // 5. Place All 5 Game Zone Groups in the Shared 3D World
     this.sanctuaryGroup.position.set(ZONE_LOCATIONS.sanctuary.x, 0, ZONE_LOCATIONS.sanctuary.z);
     this.sporeGroup.position.set(ZONE_LOCATIONS.spore.x, 0, ZONE_LOCATIONS.spore.z);
-    this.breakoutGroup.position.set(ZONE_LOCATIONS.breakout.x, 0, ZONE_LOCATIONS.breakout.z);
+    // Capytorio3DRenderer manages world coordinates directly around (CAPYTORIO_WORLD_ORIGIN_X, 0, 0)
+    this.capytorioGroup.position.set(0, 0, 0);
     this.runnerGroup.position.set(ZONE_LOCATIONS.runner.x, 0, ZONE_LOCATIONS.runner.z);
     this.fallGuysGroup.position.set(ZONE_LOCATIONS.fallguys.x, 0, ZONE_LOCATIONS.fallguys.z);
 
     // All 5 game zones remain permanently visible in the same world
     this.sanctuaryGroup.visible = true;
     this.sporeGroup.visible = true;
-    this.breakoutGroup.visible = true;
+    this.capytorioGroup.visible = true;
     this.runnerGroup.visible = true;
     this.fallGuysGroup.visible = true;
 
     this.scene.add(this.worldBaseGroup);
     this.scene.add(this.sanctuaryGroup);
     this.scene.add(this.sporeGroup);
-    this.scene.add(this.breakoutGroup);
+    this.capytorioGroup.add(this.capytorioRenderer.root);
+    this.scene.add(this.capytorioGroup);
     this.scene.add(this.runnerGroup);
     this.scene.add(this.fallGuysGroup);
 
@@ -1015,7 +1063,7 @@ export class PlayStyleManager {
     this.buildSharedArchipelagoBase();
     this.buildSanctuary();
     this.buildSporeWorld();
-    this.buildBreakout();
+    this.buildCapytorioWorld();
     this.buildRunner();
     this.buildFallGuys();
     this.syncWorldPhysicsColliders();
@@ -1062,7 +1110,7 @@ export class PlayStyleManager {
     installFastMatrixCull(this.worldBaseGroup);
     installFastMatrixCull(this.sanctuaryGroup);
     installFastMatrixCull(this.sporeGroup);
-    installFastMatrixCull(this.breakoutGroup);
+    installFastMatrixCull(this.capytorioGroup);
     installFastMatrixCull(this.runnerGroup);
     installFastMatrixCull(this.fallGuysGroup);
     installFastMatrixCull(this.cosmicBuilder.rootGroup);
@@ -1647,10 +1695,15 @@ export class PlayStyleManager {
 
   public updateSettings(newSettings: CapyGameSettings) {
     const prevManualTime = this.settings.timeOfDayHours ?? 9.5;
+    const prevCapytorioCam = this.getCapytorioCameraMode();
     const manualTimeChanged =
       typeof newSettings.timeOfDayHours === 'number' &&
       Math.abs(newSettings.timeOfDayHours - prevManualTime) > 0.01;
     this.settings = newSettings;
+    const nextCapytorioCam = this.getCapytorioCameraMode();
+    if (nextCapytorioCam !== prevCapytorioCam && this.currentMode === 'capytorio') {
+      this.setCapytorioCameraMode(nextCapytorioCam);
+    }
     this.performanceLog.lock60FpsEnabled = newSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = newSettings.fpsTarget ?? 60;
     this.performanceLog.maxFpsLimit = newSettings.maxFpsLimit ?? 60;
@@ -1757,7 +1810,12 @@ export class PlayStyleManager {
     if (this.worldEnv) {
       this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
       this.worldEnv.skyMesh.scale.setScalar(farInfo.skyScale);
-      this.worldEnv.mountainMesh.visible = isSurfaceVisible && farInfo.showMountains;
+      // Keep Sanctuary's 220m alpine ring hidden when exploring the far-hemisphere Capytorio plain
+      this.worldEnv.mountainMesh.visible =
+        isSurfaceVisible &&
+        farInfo.showMountains &&
+        this.camera.position.x < 450 &&
+        this.currentMode !== 'capytorio';
     }
 
     if (this.oceanMesh && isSurfaceVisible) {
@@ -1803,15 +1861,8 @@ export class PlayStyleManager {
         drawDist,
         this.currentMode === 'spore'
       );
-      const visBreakout = shouldRenderDistrict(
-        ZONE_LOCATIONS.breakout.x,
-        ZONE_LOCATIONS.breakout.z + 4,
-        28,
-        camX,
-        camZ,
-        drawDist,
-        this.currentMode === 'breakout'
-      );
+      const visCapytorio =
+        this.currentMode === 'capytorio' || camX >= 450 - drawDist;
       const visRunner = shouldRenderDistrict(
         ZONE_LOCATIONS.runner.x,
         ZONE_LOCATIONS.runner.z - 43,
@@ -1835,8 +1886,8 @@ export class PlayStyleManager {
       this.sanctuaryGroup.matrixWorldAutoUpdate = visSanctuary;
       this.sporeGroup.visible = visSpore;
       this.sporeGroup.matrixWorldAutoUpdate = visSpore;
-      this.breakoutGroup.visible = visBreakout;
-      this.breakoutGroup.matrixWorldAutoUpdate = visBreakout;
+      this.capytorioGroup.visible = visCapytorio;
+      this.capytorioGroup.matrixWorldAutoUpdate = visCapytorio;
       this.runnerGroup.visible = visRunner;
       this.runnerGroup.matrixWorldAutoUpdate = visRunner;
       this.fallGuysGroup.visible = visFallGuys;
@@ -1870,7 +1921,7 @@ export class PlayStyleManager {
     this.worldBaseGroup.add(ocean);
 
     // 4 Wide Walkable Grand Promenade Causeways (9.6m wide) directly connecting Sanctuary (0,0)
-    // to Spore Lagoon, Yuzu Breakout, Number Stampede & Yuzu Mountain across open ocean channels
+    // to Spore Lagoon, Capytorio Frontier, Number Stampede & Yuzu Mountain across open ocean channels
     const cobbleTex = RealisticWorldEnvironment.getTextureSet('cobble', 8);
     const timberTex = RealisticWorldEnvironment.getTextureSet('timber', 6);
     const sandTex = RealisticWorldEnvironment.getTextureSet('sand', 8);
@@ -1987,19 +2038,7 @@ export class PlayStyleManager {
     lagoonRim.userData.ignoreCameraFade = true;
     this.worldBaseGroup.add(lagoonRim);
 
-    // Breakout Open South Forecourt Apron (+75, -60) connecting NE Causeway into the Breakout baseline
-    const breakoutApron = new THREE.Mesh(
-      PbrTextureSynthesizer.prepareGeometryForPbr(new THREE.BoxGeometry(18.4, 0.44, 9.6)),
-      promenadeDeckMat
-    );
-    breakoutApron.position.set(
-      ZONE_LOCATIONS.breakout.x,
-      -0.205,
-      ZONE_LOCATIONS.breakout.z + 15.2
-    );
-    breakoutApron.receiveShadow = true;
-    breakoutApron.userData.ignoreCameraFade = true;
-    this.worldBaseGroup.add(breakoutApron);
+    // Note: Capytorio Continental Shelf at wx >= 500 is rendered directly by Capytorio3DRenderer
 
     // Number Stampede North Forecourt, Side Return Boardwalks & South Turnaround Deck (-75, +75)
     const runnerForecourt = new THREE.Mesh(
@@ -2080,8 +2119,8 @@ export class PlayStyleManager {
     this.sanctuaryGroup.matrixWorldAutoUpdate = true;
     this.sporeGroup.visible = true;
     this.sporeGroup.matrixWorldAutoUpdate = true;
-    this.breakoutGroup.visible = true;
-    this.breakoutGroup.matrixWorldAutoUpdate = true;
+    this.capytorioGroup.visible = true;
+    this.capytorioGroup.matrixWorldAutoUpdate = true;
     this.runnerGroup.visible = true;
     this.runnerGroup.matrixWorldAutoUpdate = true;
     this.fallGuysGroup.visible = true;
@@ -2116,14 +2155,23 @@ export class PlayStyleManager {
       this.callbacks.onModeNotification?.(
         'Moved to Spore Lagoon (-110, -110) • Eat Yuzu Plankton & DNA Helixes to grow!'
       );
-    } else if (mode === 'breakout') {
-      this.heroLocalPos.set(0, 0.5, 10.6);
+    } else if (mode === 'capytorio') {
+      this.syncDachshundVisibility();
+      this.heroLocalPos.set(0, 0, 3.0);
       this.heroYaw = Math.PI;
-      this.setSceneBackgroundHex(0x1e293b);
-      this.resetBreakoutGame(true);
-      this.callbacks.onModeNotification?.(
-        'Moved to Yuzu Breakout (+110, -110) • Steer the paddle to smash crystal waves!'
+      this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
+      this.capytorioRenderer.sync(
+        this.capytorioEngine,
+        CAPYTORIO_WORLD_ORIGIN_X,
+        CAPYTORIO_WORLD_ORIGIN_Z + 3.0,
+        0.016,
+        this.worldEnv?.elapsedSeconds ?? 0,
+        true
       );
+      this.callbacks.onModeNotification?.(
+        'Capytorio Frontier (+1200, 0) • Blank infinite ore field! Click to place Drills [1], Belts [2], Furnaces [4] & Generators [6].'
+      );
+      this.emitCapytorioSnapshot();
     } else if (mode === 'runner') {
       this.heroLocalPos.set(0, 0, 0);
       this.heroYaw = Math.PI;
@@ -2163,9 +2211,48 @@ export class PlayStyleManager {
     }
 
     this.emitTelemetry();
-    if (this.cosmicStage === 'playing' && !this.isSoftwareGl) {
-      this.tick(0.016);
+    if (this.cosmicStage === 'playing') {
+      if (!this.isSoftwareGl) {
+        this.tick(0.016);
+      } else if (instant) {
+        this.renderImmediateFrame(0.016);
+      }
     }
+  }
+
+  public renderImmediateFrame(dt: number = 0.016): void {
+    if (this.disposed) return;
+    if (this.cosmicStage === 'playing') {
+      this.applySurfaceDrawDistanceAndCulling(true);
+      if (this.homePool) {
+        _cachedPoolSpec.x = this.homePool.centerX;
+        _cachedPoolSpec.z = this.homePool.centerZ;
+        _cachedPoolSpec.radius = this.homePool.basinRadius;
+      }
+      const heroGroundY = sampleContiguousGroundY(
+        this.heroCapy.position.x,
+        this.heroCapy.position.z,
+        this.homePool ? _cachedPoolSpec : null,
+        this.physicsBridge?.getSeeSawTiltAngle() ?? 0
+      );
+      this.gpuEngine?.updateLightingAndShadowCascade(
+        dt,
+        this.heroCapy.position.x,
+        this.heroCapy.position.y,
+        this.heroCapy.position.z,
+        heroGroundY,
+        this.heroCapy.visible,
+        this.worldEnv.currentNightFactor,
+        this.worldEnv.currentSunDir,
+        this.worldEnv.currentMoonDir,
+        this.worldEnv.activeShadowCaster,
+        this.worldEnv.getDayPhaseLabel(),
+        this.worldEnv.timeOfDayHours,
+        this.worldEnv.currentIblEnvIntensity
+      );
+      this.updateHeadLineOfSightTransparency(dt);
+    }
+    this.renderSceneFrame(dt);
   }
 
   private snapCameraToCurrentZone() {
@@ -2176,11 +2263,18 @@ export class PlayStyleManager {
     const distScale = this.settings.cameraDistance || 1.0;
     this.mouselookLastActiveTimeMs = -100000;
 
-    if (this.currentMode === 'breakout') {
-      this.surfaceCamYaw = Math.PI;
-      this.surfaceCamPitch = 0.85;
-      this.camera.position.set(zone.x, 17.5 * distScale, zone.z + 15.5 * distScale);
-      this.camera.lookAt(zone.x, 0, zone.z - 1.5);
+    if (this.currentMode === 'capytorio') {
+      if (this.getCapytorioCameraMode() === 'oblique') {
+        this.surfaceCamYaw = Math.PI;
+        this.surfaceCamPitch = 0.94;
+        this.camera.position.set(wx, wy + 18.5 * distScale, wz + 13.5 * distScale);
+        this.camera.lookAt(wx, wy + 0.35, wz - 0.8);
+      } else {
+        this.surfaceCamYaw = Math.PI;
+        this.surfaceCamPitch = 0.66;
+        this.camera.position.set(wx, wy + 13.5 * distScale, wz + 16.5 * distScale);
+        this.camera.lookAt(wx, wy + 0.5, wz - 2.0);
+      }
     } else if (this.currentMode === 'runner') {
       this.surfaceCamYaw = Math.PI;
       this.surfaceCamPitch = 0.46;
@@ -2576,8 +2670,8 @@ export class PlayStyleManager {
     this.sanctuaryGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.sporeGroup.visible = isSurfaceStage;
     this.sporeGroup.matrixWorldAutoUpdate = isSurfaceStage;
-    this.breakoutGroup.visible = isSurfaceStage;
-    this.breakoutGroup.matrixWorldAutoUpdate = isSurfaceStage;
+    this.capytorioGroup.visible = isSurfaceStage;
+    this.capytorioGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.runnerGroup.visible = isSurfaceStage;
     this.runnerGroup.matrixWorldAutoUpdate = isSurfaceStage;
     this.fallGuysGroup.visible = isSurfaceStage;
@@ -2799,6 +2893,7 @@ export class PlayStyleManager {
     this.selectedLandingIndex = THREE.MathUtils.clamp(index, 0, planet.landingSpots.length - 1);
     const spot = planet.landingSpots[this.selectedLandingIndex] || planet.landingSpots[0];
 
+    this.pendingLandingPlayStyle = spot.targetPlayStyle ?? 'sanctuary';
     this.applyPlanetaryBiome(spot.biome);
     AudioService.playCosmicWarp(1.75);
     this.setCosmicStage('planet_descent');
@@ -3172,7 +3267,6 @@ export class PlayStyleManager {
 
       // Re-seed all minigame pools deterministically without allocating new meshes/textures
       if (this.sporePoolsInitialized) this.resetSporeGame();
-      if (this.breakoutPoolsInitialized) this.resetBreakoutGame(false);
       if (this.runnerPoolsInitialized) this.refreshRunnerCircuitGates();
       if (this.fallGuysInitialized) this.resetFallGuysGame(false);
       this.sanitizeBuildingNonClipping();
@@ -3225,6 +3319,11 @@ export class PlayStyleManager {
       this.setCosmicStage('playing');
       this.resetDachshundTrail();
       this.updateDachshundTransforms(0);
+      const landingTarget = this.pendingLandingPlayStyle;
+      this.pendingLandingPlayStyle = 'sanctuary';
+      if (landingTarget && landingTarget !== 'sanctuary') {
+        this.switchMode(landingTarget, true);
+      }
     } else {
       this.emitCosmicState();
     }
@@ -3498,14 +3597,14 @@ export class PlayStyleManager {
         rotY: bridgeRotY('spore', Math.atan2(-1, -1)),
       },
       {
-        mode: 'breakout',
-        title: 'BREAKOUT',
-        sub: 'NE CAUSEWAY',
-        color: 0x3b82f6,
-        accent: '#60a5fa',
+        mode: 'capytorio',
+        title: 'CAPYTORIO',
+        sub: 'FAR HEMISPHERE',
+        color: 0xf59e0b,
+        accent: '#fbbf24',
         x: 20.5,
         z: -20.5,
-        rotY: bridgeRotY('breakout', Math.atan2(89.5, -74.0)),
+        rotY: Math.atan2(1, -1),
       },
       {
         mode: 'runner',
@@ -3870,47 +3969,6 @@ export class PlayStyleManager {
         });
       }
     }
-    // Breakout Stadium Left, Right & North Crystal Rebound Walls (+75, -75)
-    const bz = ZONE_LOCATIONS.breakout;
-    boxes.push(
-      {
-        id: 'breakout_wall_l',
-        wx: bz.x - 8.6,
-        wy: 0.8,
-        wz: bz.z,
-        halfX: 0.4,
-        halfY: 0.9,
-        halfZ: 11.5,
-        restitution: 0.95,
-        friction: 0.05,
-        kind: 'wall',
-      },
-      {
-        id: 'breakout_wall_r',
-        wx: bz.x + 8.6,
-        wy: 0.8,
-        wz: bz.z,
-        halfX: 0.4,
-        halfY: 0.9,
-        halfZ: 11.5,
-        restitution: 0.95,
-        friction: 0.05,
-        kind: 'wall',
-      },
-      {
-        id: 'breakout_wall_top',
-        wx: bz.x,
-        wy: 0.8,
-        wz: bz.z - 11.6,
-        halfX: 9.0,
-        halfY: 0.9,
-        halfZ: 0.4,
-        restitution: 0.95,
-        friction: 0.05,
-        kind: 'wall',
-      }
-    );
-
     this.physicsBridge.syncStaticWorldColliders(circles, boxes, softPads);
   }
 
@@ -4340,208 +4398,453 @@ export class PlayStyleManager {
   }
 
   // ============================================================================
-  // 3. YUZU BREAKOUT (AT WORLD +75, -75)
+  // 3. CAPYTORIO INFINITE FACTORY (FAR HEMISPHERE AT WORLD +1200, 0)
   // ============================================================================
-  private buildBreakout() {
-    const basaltTex = RealisticWorldEnvironment.getTextureSet('basalt');
-    const timberTex = RealisticWorldEnvironment.getTextureSet('timber');
-    const arenaMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      map: basaltTex.albedo,
-      normalMap: basaltTex.normal,
-      normalScale: new THREE.Vector2(0.84, 0.84),
-      roughnessMap: basaltTex.roughness,
-      aoMap: basaltTex.ao,
-      aoMapIntensity: 0.76,
-      roughness: 0.42,
-      metalness: 0.52,
-    });
-
-    const floorGeo = PbrTextureSynthesizer.prepareGeometryForPbr(
-      new THREE.BoxGeometry(16.8, 0.4, 23)
+  private buildCapytorioWorld() {
+    this.capytorioRenderer.sync(
+      this.capytorioEngine,
+      CAPYTORIO_WORLD_ORIGIN_X,
+      CAPYTORIO_WORLD_ORIGIN_Z,
+      0.016,
+      0,
+      this.capytorioGroup.visible
     );
-    const floor = new THREE.Mesh(floorGeo, arenaMat);
-    floor.position.set(0, -0.2, 0);
-    floor.receiveShadow = true;
-    floor.userData.ignoreCameraFade = true;
-    this.breakoutGroup.add(floor);
-
-    const wallSideGeo = PbrTextureSynthesizer.prepareGeometryForPbr(
-      new THREE.BoxGeometry(0.8, 1.8, 23)
-    );
-    const wallL = new THREE.Mesh(wallSideGeo, arenaMat);
-    wallL.position.set(-8.6, 0.8, 0);
-    this.breakoutGroup.add(wallL);
-
-    const wallR = wallL.clone();
-    wallR.position.x = 8.6;
-    this.breakoutGroup.add(wallR);
-
-    const wallTopGeo = PbrTextureSynthesizer.prepareGeometryForPbr(
-      new THREE.BoxGeometry(18.0, 1.8, 0.8)
-    );
-    const wallTop = new THREE.Mesh(wallTopGeo, arenaMat);
-    wallTop.position.set(0, 0.8, -11.6);
-    this.breakoutGroup.add(wallTop);
-
-    const paddleGeo = PbrTextureSynthesizer.prepareGeometryForPbr(
-      new THREE.BoxGeometry(3.8, 0.8, 0.9)
-    );
-    const paddleMat = new THREE.MeshStandardMaterial({
-      color: 0xf59e0b,
-      map: timberTex.albedo,
-      normalMap: timberTex.normal,
-      normalScale: new THREE.Vector2(0.68, 0.68),
-      roughnessMap: timberTex.roughness,
-      aoMap: timberTex.ao,
-      roughness: 0.28,
-      metalness: 0.4,
-    });
-    this.breakoutPaddle = new THREE.Mesh(paddleGeo, paddleMat);
-    this.breakoutPaddle.position.set(0, 0.5, 9.2);
-    this.breakoutPaddle.castShadow = true;
-    this.breakoutPaddle.userData.ignoreCameraFade = true;
-    this.breakoutGroup.add(this.breakoutPaddle);
-
-    const paddleCapy = CapyModelGenerator.createCapybara('yuzu', 0.58);
-    paddleCapy.position.set(0, 0.42, 0);
-    paddleCapy.rotation.y = Math.PI;
-    this.breakoutPaddle.add(paddleCapy);
-
-    this.initBreakoutPools();
-    this.resetBreakoutGame(true);
   }
 
-  private initBreakoutPools() {
-    if (this.breakoutPoolsInitialized) return;
-    this.breakoutPoolsInitialized = true;
-
-    const ballGeo = new THREE.SphereGeometry(0.38, 16, 16);
-    const ballMat = new THREE.MeshStandardMaterial({
-      color: 0xfbbf24,
-      roughness: 0.14,
-      metalness: 0.45,
-      envMapIntensity: 1.25,
-    });
-    for (let i = 0; i < MAX_BREAKOUT_BALLS; i++) {
-      const mesh = new THREE.Mesh(ballGeo, ballMat);
-      mesh.castShadow = true;
-      mesh.visible = false;
-      this.breakoutGroup.add(mesh);
-      this.breakoutBalls.push({
-        mesh,
-        vel: new THREE.Vector3(),
-        active: false,
-      });
-    }
-
-    const brickGeo = new THREE.BoxGeometry(2.0 - 0.18, 0.7, 0.95 - 0.18);
-    for (let i = 0; i < MAX_BREAKOUT_ROWS * MAX_BREAKOUT_COLS; i++) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0xef4444,
-        roughness: 0.22,
-        metalness: 0.3,
-      });
-      const mesh = new THREE.Mesh(brickGeo, mat);
-      mesh.castShadow = true;
-      mesh.visible = false;
-      this.breakoutGroup.add(mesh);
-      this.breakoutBlocks.push({
-        mesh,
-        mat,
-        hp: 1,
-        isBonus: false,
-        active: false,
-      });
-    }
-
-    for (let i = 0; i < MAX_BREAKOUT_POWERUPS; i++) {
-      const mesh = new THREE.Mesh(
-        this.sharedBreakoutPowerupGeo,
-        this.sharedBreakoutPowerupMat
-      );
-      mesh.rotation.z = Math.PI / 2;
-      mesh.visible = false;
-      this.breakoutGroup.add(mesh);
-      this.breakoutPowerups.push({
-        mesh,
-        type: 'multiball',
-        active: false,
-      });
-    }
+  public getCapytorioSnapshot(): CapytorioUiSnapshot {
+    return this.capytorioEngine.getUiSnapshot();
   }
 
-  private spawnBreakoutBall(x: number, z: number, vx: number, vz: number) {
-    for (let i = 0; i < this.breakoutBalls.length; i++) {
-      const b = this.breakoutBalls[i];
-      if (!b.active) {
-        b.active = true;
-        b.mesh.visible = true;
-        b.mesh.position.set(x, 0.5, z);
-        b.vel.set(Math.abs(vx) < 1.8 ? (vx >= 0 ? 1.8 : -1.8) : vx, 0, vz);
-        return;
+  private emitCapytorioSnapshot(): void {
+    this.callbacks.onCapytorioChange?.(this.capytorioEngine.getUiSnapshot());
+  }
+
+  private markCapytorioDirty(): void {
+    this.capytorioAutoSaveDirty = true;
+    this.emitCapytorioSnapshot();
+  }
+
+  public hydrateCapytorioFromStats(nextStats: PlayerStats): void {
+    if (nextStats.capytorioFactory) {
+      this.capytorioEngine.hydrate(nextStats.capytorioFactory);
+    } else {
+      this.capytorioEngine.resetToBlankStarterField();
+    }
+    this.markCapytorioDirty();
+  }
+
+  public resetCapytorioToBlankField(): void {
+    this.capytorioEngine.resetToBlankStarterField();
+    this.markCapytorioDirty();
+    this.emitTelemetry();
+    AudioService.playSplash();
+    this.callbacks.onModeNotification?.(
+      'Capytorio Frontier reset to untouched infinite ore field with full Starter Kit!'
+    );
+  }
+
+  public updateCapytorioHoverFromNdc(ndcX: number, ndcY: number): void {
+    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return;
+    _capyPointerNdc.set(ndcX, ndcY);
+    _raycaster.setFromCamera(_capyPointerNdc, this.camera);
+    const hit = _raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit);
+    if (!hit) return;
+    this.capytorioEngine.hoveredGx = worldToCapytorioGridX(_capyGroundHit.x);
+    this.capytorioEngine.hoveredGz = worldToCapytorioGridZ(_capyGroundHit.z);
+  }
+
+  public handleCapytorioPrimaryClick(
+    ndcX: number,
+    ndcY: number
+  ): { ok: boolean; message?: string } {
+    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+      return { ok: false };
+    }
+    this.updateCapytorioHoverFromNdc(ndcX, ndcY);
+    const gx = this.capytorioEngine.hoveredGx;
+    const gz = this.capytorioEngine.hoveredGz;
+    const tool = this.capytorioEngine.selectedTool;
+    const key = capytorioTileKey(gx, gz);
+    const existing = this.capytorioEngine.machines.get(key);
+
+    if (tool === 'demolish') {
+      const removed = this.capytorioEngine.demolishAt(gx, gz);
+      if (removed) {
+        AudioService.playBrickHit(0.9);
+        this.markCapytorioDirty();
+        return { ok: true, message: `Refunded ${CAPYTORIO_MACHINE_SPECS[removed].name}` };
       }
-    }
-  }
-
-  private resetBreakoutGame(fullReset: boolean = false) {
-    this.initBreakoutPools();
-    const bCfg = this.proceduralConfig.districts.breakout;
-    if (fullReset) {
-      this.breakoutScore = 0;
-      this.breakoutWave = 1;
-      this.breakoutCombo = 1;
+      return { ok: false, message: 'Nothing to demolish at cursor' };
     }
 
-    this.paddleWidthMultiplier = bCfg.paddleWidthMultiplier;
-    this.breakoutMegaPaddleTimer = 0;
-
-    for (let i = 0; i < this.breakoutBlocks.length; i++) {
-      this.breakoutBlocks[i].active = false;
-      this.breakoutBlocks[i].mesh.visible = false;
-    }
-    for (let i = 0; i < this.breakoutBalls.length; i++) {
-      this.breakoutBalls[i].active = false;
-      this.breakoutBalls[i].mesh.visible = false;
-    }
-    for (let i = 0; i < this.breakoutPowerups.length; i++) {
-      this.breakoutPowerups[i].active = false;
-      this.breakoutPowerups[i].mesh.visible = false;
-    }
-
-    const speedScale = (bCfg.ballBaseSpeed / 9.2) * (1 + (this.breakoutWave - 1) * 0.08);
-    this.spawnBreakoutBall(0, 6.5, 4.2 * speedScale, -9.2 * speedScale);
-
-    const blockColors = [0xef4444, 0xf97316, 0xeab308, 0x10b981, 0x06b6d4, 0x8b5cf6];
-    const rows = Math.min(
-      MAX_BREAKOUT_ROWS,
-      Math.max(2, bCfg.rows + Math.floor((this.breakoutWave - 1) / 2))
-    );
-    const cols = Math.min(MAX_BREAKOUT_COLS, Math.max(3, bCfg.cols));
-    const blockW = 2.0;
-    const blockD = 0.95;
-    const startX = -((cols - 1) * blockW) / 2;
-    const startZ = -9.5;
-
-    let slotIdx = 0;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (this.breakoutWave % 2 === 0 && (r + c) % 5 === 0) continue;
-        if (slotIdx >= this.breakoutBlocks.length) break;
-        const blk = this.breakoutBlocks[slotIdx++];
-        const isBonus =
-          (r === 0 && c === Math.floor(cols / 2)) || this.proceduralPrng() > 0.86;
-        blk.hp = isBonus ? 2 : 1;
-        blk.isBonus = isBonus;
-        blk.active = true;
-        blk.mat.color.setHex(
-          isBonus ? 0xfacc15 : blockColors[r % blockColors.length]
+    if (tool === 'mine') {
+      if (existing) {
+        this.capytorioEngine.inspectedKey = key;
+        this.emitCapytorioSnapshot();
+        return { ok: true, message: `Inspecting ${CAPYTORIO_MACHINE_SPECS[existing.type].name}` };
+      }
+      const mined = this.capytorioEngine.handMineAt(gx, gz, 2);
+      if (mined) {
+        const meta = getCapytorioItemMeta(mined);
+        AudioService.playCoin();
+        this.vfxEngine?.emitBurst(
+          capytorioGridToWorldX(gx),
+          0.4,
+          capytorioGridToWorldZ(gz),
+          'citrus_burst',
+          5,
+          meta.colorHex
         );
-        blk.mat.metalness = isBonus ? 0.75 : 0.3;
-        blk.mesh.position.set(startX + c * blockW, 0.5, startZ + r * blockD);
-        blk.mesh.visible = true;
+        this.markCapytorioDirty();
+        return { ok: true, message: `Mined +2 ${meta.name}` };
+      }
+      return { ok: false, message: 'Stand or point over ore to mine' };
+    }
+
+    if (existing && existing.type !== tool) {
+      this.capytorioEngine.inspectedKey = key;
+      this.emitCapytorioSnapshot();
+      return {
+        ok: true,
+        message: `Inspecting ${CAPYTORIO_MACHINE_SPECS[existing.type].name}`,
+      };
+    }
+
+    const res = this.capytorioEngine.placeMachine(tool, gx, gz, this.capytorioEngine.selectedDir);
+    if (res.ok) {
+      AudioService.playBrickHit(1.18);
+      this.vfxEngine?.emitBurst(
+        capytorioGridToWorldX(gx),
+        0.5,
+        capytorioGridToWorldZ(gz),
+        'citrus_burst',
+        5,
+        CAPYTORIO_MACHINE_SPECS[tool].colorHex
+      );
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+      return {
+        ok: true,
+        message: existing
+          ? `Rotated ${CAPYTORIO_MACHINE_SPECS[tool].shortName}`
+          : `Placed ${CAPYTORIO_MACHINE_SPECS[tool].name}`,
+      };
+    }
+    if (res.reason) {
+      AudioService.playSplash();
+    }
+    return { ok: false, message: res.reason };
+  }
+
+  public handleCapytorioSecondaryClick(ndcX: number, ndcY: number): boolean {
+    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return false;
+    this.updateCapytorioHoverFromNdc(ndcX, ndcY);
+    const removed = this.capytorioEngine.demolishAt(
+      this.capytorioEngine.hoveredGx,
+      this.capytorioEngine.hoveredGz
+    );
+    if (removed) {
+      AudioService.playBrickHit(0.85);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+      return true;
+    }
+    return false;
+  }
+
+  public setCapytorioTool(tool: CapytorioMachineType | 'demolish' | 'mine'): void {
+    this.capytorioEngine.selectedTool = tool;
+    AudioService.playCoin();
+    this.emitCapytorioSnapshot();
+  }
+
+  public rotateCapytorioDirection(): CapytorioDirection {
+    const nextDir = ((this.capytorioEngine.selectedDir + 1) & 3) as CapytorioDirection;
+    this.capytorioEngine.selectedDir = nextDir;
+    this.capytorioEngine.rotateMachineAt(
+      this.capytorioEngine.hoveredGx,
+      this.capytorioEngine.hoveredGz
+    );
+    AudioService.playCoin();
+    this.markCapytorioDirty();
+    return nextDir;
+  }
+
+  public rotateCapytorioMachineAt(gx: number, gz: number): CapytorioDirection | null {
+    const nextDir = this.capytorioEngine.rotateMachineAt(gx, gz);
+    if (nextDir !== null) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    }
+    return nextDir;
+  }
+
+  public getCapytorioCameraMode(): 'oblique' | 'chase' {
+    return this.settings.capytorioCameraMode === 'chase' ? 'chase' : 'oblique';
+  }
+
+  public setCapytorioCameraMode(mode: 'oblique' | 'chase'): void {
+    this.settings.capytorioCameraMode = mode;
+    if (this.currentMode === 'capytorio') {
+      this.surfaceCamYaw = Math.PI;
+      this.surfaceCamPitch = mode === 'oblique' ? 0.94 : 0.66;
+      if (mode === 'oblique') {
+        this.mouselookLastActiveTimeMs = -100000;
+      }
+      if (this.isSoftwareGl) {
+        this.snapCameraToCurrentZone();
+        this.renderImmediateFrame(0.016);
       }
     }
+    AudioService.playCoin();
+  }
+
+  public toggleCapytorioCameraMode(): 'oblique' | 'chase' {
+    const next = this.getCapytorioCameraMode() === 'oblique' ? 'chase' : 'oblique';
+    this.setCapytorioCameraMode(next);
+    return next;
+  }
+
+  public setCapytorioAssemblerRecipe(recipeId: CapytorioRecipeId): boolean {
+    let applied = false;
+    if (this.capytorioEngine.inspectedKey) {
+      const m = this.capytorioEngine.machines.get(this.capytorioEngine.inspectedKey);
+      if (m && m.type === 'assembler') {
+        applied = this.capytorioEngine.setAssemblerRecipeAt(m.gx, m.gz, recipeId);
+      }
+    }
+    if (!applied) {
+      applied = this.capytorioEngine.setAssemblerRecipeAt(
+        this.capytorioEngine.hoveredGx,
+        this.capytorioEngine.hoveredGz,
+        recipeId
+      );
+    }
+    this.capytorioEngine.selectedRecipeId = recipeId;
+    AudioService.playCoin();
+    this.markCapytorioDirty();
+    return applied;
+  }
+
+  public selectCapytorioTech(techId: CapytorioTechId): boolean {
+    const ok = this.capytorioEngine.selectActiveTech(techId);
+    if (ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    }
+    return ok;
+  }
+
+  public handMineCapytorioAtCursorOrHero(): CapytorioItemId | null {
+    const cursorOre = this.capytorioEngine.handMineAt(
+      this.capytorioEngine.hoveredGx,
+      this.capytorioEngine.hoveredGz,
+      2
+    );
+    if (cursorOre) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+      return cursorOre;
+    }
+    const hGx = worldToCapytorioGridX(CAPYTORIO_WORLD_ORIGIN_X + this.heroLocalPos.x);
+    const hGz = worldToCapytorioGridZ(CAPYTORIO_WORLD_ORIGIN_Z + this.heroLocalPos.z);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const ore = this.capytorioEngine.handMineAt(hGx + dx, hGz + dz, 2);
+        if (ore) {
+          AudioService.playCoin();
+          this.markCapytorioDirty();
+          return ore;
+        }
+      }
+    }
+    return null;
+  }
+
+  public pocketCraftCapytorioRecipe(recipeId: CapytorioRecipeId): boolean {
+    const ok = this.capytorioEngine.pocketCraftRecipe(recipeId);
+    if (ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return ok;
+  }
+
+  public craftCapytorioMachine(type: CapytorioMachineType): boolean {
+    const ok = this.capytorioEngine.craftMachineIntoPocket(type);
+    if (ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    }
+    return ok;
+  }
+
+  public feedScienceCapytorio(): number {
+    const fed = this.capytorioEngine.feedPocketScienceToLabs();
+    if (fed > 0) {
+      AudioService.playCoin();
+      // Step once immediately so tech completes cleanly if threshold was met
+      this.capytorioEngine.step(0.05, this.capytorioStepCallbacks);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return fed;
+  }
+
+  public collectAllCapytorioOutputs(): number {
+    const got = this.capytorioEngine.collectAllChestsAndOutputs();
+    if (got > 0) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    }
+    return got;
+  }
+
+  public handleCapytorioDragPaint(
+    ndcX: number,
+    ndcY: number,
+    prevPlacedGx: number | null,
+    prevPlacedGz: number | null,
+    alignPrevTile: boolean
+  ): {
+    placed: boolean;
+    gx: number;
+    gz: number;
+    tool: CapytorioMachineType | 'demolish' | 'mine';
+  } {
+    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+      return { placed: false, gx: 0, gz: 0, tool: this.capytorioEngine.selectedTool };
+    }
+    this.updateCapytorioHoverFromNdc(ndcX, ndcY);
+    const gx = this.capytorioEngine.hoveredGx;
+    const gz = this.capytorioEngine.hoveredGz;
+    const tool = this.capytorioEngine.selectedTool;
+
+    if (tool === 'demolish') {
+      const removed = this.capytorioEngine.demolishAt(gx, gz);
+      if (removed) {
+        AudioService.playBrickHit(0.85);
+        this.markCapytorioDirty();
+        this.emitTelemetry();
+        return { placed: true, gx, gz, tool };
+      }
+      return { placed: false, gx, gz, tool };
+    }
+
+    if (tool === 'mine') {
+      return { placed: false, gx, gz, tool };
+    }
+
+    const res = this.capytorioEngine.placeMachineDuringDrag(
+      tool,
+      gx,
+      gz,
+      prevPlacedGx,
+      prevPlacedGz,
+      alignPrevTile
+    );
+    if (res.ok) {
+      AudioService.playBrickHit(1.22);
+      this.vfxEngine?.emitBurst(
+        capytorioGridToWorldX(gx),
+        0.45,
+        capytorioGridToWorldZ(gz),
+        'citrus_burst',
+        4,
+        CAPYTORIO_MACHINE_SPECS[tool].colorHex
+      );
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+      return { placed: true, gx, gz, tool };
+    }
+    return { placed: false, gx, gz, tool };
+  }
+
+  public handleCapytorioDragDemolish(ndcX: number, ndcY: number): boolean {
+    return this.handleCapytorioSecondaryClick(ndcX, ndcY);
+  }
+
+  public pipetteCapytorioAtCursor(): {
+    tool: CapytorioMachineType | 'mine';
+    picked: boolean;
+    label: string;
+  } {
+    const res = this.capytorioEngine.pipetteAt(
+      this.capytorioEngine.hoveredGx,
+      this.capytorioEngine.hoveredGz
+    );
+    AudioService.playCoin();
+    this.emitCapytorioSnapshot();
+    const label = res.picked
+      ? `Picked ${CAPYTORIO_MACHINE_SPECS[res.tool as CapytorioMachineType].name}`
+      : 'Cursor cleared -> Mine / Inspect [E]';
+    return { tool: res.tool, picked: res.picked, label };
+  }
+
+  public returnToCapytorioBeacon(): void {
+    if (this.currentMode !== 'capytorio') {
+      this.switchMode('capytorio', true);
+    }
+    this.heroLocalPos.set(0, 0, 3.0);
+    this.heroVelocity.set(0, 0, 0);
+    this.resetDachshundTrail();
+    this.snapCameraToCurrentZone();
+    AudioService.playJump();
+    this.emitCapytorioSnapshot();
+    this.emitTelemetry();
+  }
+
+  public fuelCapytorioGenerator(gx: number, gz: number, maxAmount: number = 5): number {
+    const loaded = this.capytorioEngine.insertPocketFuelToGenerator(gx, gz, maxAmount);
+    if (loaded > 0) {
+      AudioService.playCoin();
+      this.vfxEngine?.emitBurst(
+        capytorioGridToWorldX(gx),
+        1.2,
+        capytorioGridToWorldZ(gz),
+        'citrus_burst',
+        8,
+        0xf97316
+      );
+      this.capytorioEngine.evaluateMilestones(this.capytorioStepCallbacks);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return loaded;
+  }
+
+  public insertInputsCapytorioMachine(gx: number, gz: number, batches: number = 4): number {
+    const moved = this.capytorioEngine.insertPocketInputsForMachine(gx, gz, batches);
+    if (moved > 0) {
+      AudioService.playCoin();
+      this.capytorioEngine.step(0.05, this.capytorioStepCallbacks);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return moved;
+  }
+
+  public takeOutputsCapytorioMachine(gx: number, gz: number): number {
+    const taken = this.capytorioEngine.takeMachineOutputsToPocket(gx, gz);
+    if (taken > 0) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return taken;
+  }
+
+  public launchCapytorioRocket(): { ok: boolean; reason?: string; rocketLaunches: number } {
+    const res = this.capytorioEngine.launchRocketManual(this.capytorioStepCallbacks);
+    if (res.ok) {
+      const zone = ZONE_LOCATIONS.capytorio;
+      this.vfxEngine?.emitBurst(zone.x, 1.5, zone.z - 6.8, 'citrus_burst', 28, 0xfacc15);
+      this.addCameraTrauma(0.5);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return res;
   }
 
   // ============================================================================
@@ -5174,19 +5477,33 @@ export class PlayStyleManager {
         variety.colorHex,
         variety.emissiveHex
       );
-      seg.userData.bodyMat.roughness = this.stats.activeSkin === 'golden' ? 0.45 : 0.84;
-      seg.userData.bodyMat.metalness = this.stats.activeSkin === 'golden' ? 0.38 : 0.04;
+      seg.userData.bodyMat.roughness = this.stats.activeSkin === 'golden' ? 0.42 : 0.78;
+      seg.userData.bodyMat.metalness = this.stats.activeSkin === 'golden' ? 0.34 : 0.02;
       if (heroBodyMat?.map) {
         seg.userData.bodyMat.map = heroBodyMat.map;
+        const pSeg = seg.userData.bodyMat as THREE.MeshPhysicalMaterial;
+        const pHero = heroBodyMat as THREE.MeshPhysicalMaterial;
+        if (pSeg.sheenColor && pHero.sheenColor) {
+          pSeg.sheen = pHero.sheen;
+          pSeg.sheenRoughness = pHero.sheenRoughness;
+          pSeg.sheenColor.copy(pHero.sheenColor);
+        }
         seg.userData.bodyMat.needsUpdate = true;
       }
     }
     if (this.dachshundCaboose && heroBodyMat?.map && furColor) {
       this.dachshundCaboose.userData.bodyMat.map = heroBodyMat.map;
       this.dachshundCaboose.userData.bodyMat.roughness =
-        this.stats.activeSkin === 'golden' ? 0.45 : 0.84;
+        this.stats.activeSkin === 'golden' ? 0.42 : 0.78;
       this.dachshundCaboose.userData.bodyMat.metalness =
-        this.stats.activeSkin === 'golden' ? 0.38 : 0.04;
+        this.stats.activeSkin === 'golden' ? 0.34 : 0.02;
+      const pCab = this.dachshundCaboose.userData.bodyMat as THREE.MeshPhysicalMaterial;
+      const pHero = heroBodyMat as THREE.MeshPhysicalMaterial;
+      if (pCab.sheenColor && pHero.sheenColor) {
+        pCab.sheen = pHero.sheen;
+        pCab.sheenRoughness = pHero.sheenRoughness;
+        pCab.sheenColor.copy(pHero.sheenColor);
+      }
       this.dachshundCaboose.userData.bodyMat.needsUpdate = true;
     }
 
@@ -6158,8 +6475,8 @@ export class PlayStyleManager {
           ? this.sanctuaryGroup
           : this.currentMode === 'spore'
             ? this.sporeGroup
-            : this.currentMode === 'breakout'
-              ? this.breakoutGroup
+            : this.currentMode === 'capytorio'
+              ? this.capytorioGroup
               : this.currentMode === 'runner'
                 ? this.runnerGroup
                 : this.fallGuysGroup;
@@ -6454,6 +6771,8 @@ export class PlayStyleManager {
               _occluderCandidates.push(seg);
             }
           }
+        } else if (this.currentMode === 'capytorio') {
+          this.capytorioRenderer.collectOccluderCandidates(_occluderCandidates);
         } else {
           const oz = ZONE_LOCATIONS[this.currentMode];
           for (let i = 0; i < activeGroup.children.length; i++) {
@@ -6609,7 +6928,11 @@ export class PlayStyleManager {
       this.currentLogScaleMeters >= -0.85 &&
       this.currentLogScaleMeters <= 4.15;
     if (
-      (this.sanctuaryGroup.visible &&
+      ((this.sanctuaryGroup.visible ||
+        this.sporeGroup.visible ||
+        this.capytorioGroup.visible ||
+        this.runnerGroup.visible ||
+        this.fallGuysGroup.visible) &&
         (this.cosmicStage === 'capy_selection' ||
           this.cosmicStage === 'playing' ||
           this.cosmicStage === 'planet_descent')) ||
@@ -7256,8 +7579,8 @@ export class PlayStyleManager {
         this.sanctuaryGroup.matrixWorldAutoUpdate = true;
         this.sporeGroup.visible = true;
         this.sporeGroup.matrixWorldAutoUpdate = true;
-        this.breakoutGroup.visible = true;
-        this.breakoutGroup.matrixWorldAutoUpdate = true;
+        this.capytorioGroup.visible = true;
+        this.capytorioGroup.matrixWorldAutoUpdate = true;
         this.runnerGroup.visible = true;
         this.runnerGroup.matrixWorldAutoUpdate = true;
         this.fallGuysGroup.visible = true;
@@ -7417,13 +7740,14 @@ export class PlayStyleManager {
         dashCooldownFrac,
         canDive,
       });
-    } else if (this.currentMode === 'breakout') {
+    } else if (this.currentMode === 'capytorio') {
+      const snap = this.capytorioEngine.getUiSnapshot();
       this.callbacks.onTelemetryUpdate({
-        mode: 'breakout',
-        primaryLabel: 'Score',
-        primaryValue: this.breakoutScore.toLocaleString(),
-        secondaryLabel: 'Endless Wave',
-        secondaryValue: `Wave ${this.breakoutWave}`,
+        mode: 'capytorio',
+        primaryLabel: 'Items Produced',
+        primaryValue: `${snap.totalProduced} (${snap.machineCount}m)`,
+        secondaryLabel: 'Power Grid',
+        secondaryValue: `${snap.powerSupplyMw.toFixed(1)}/${snap.powerDemandMw.toFixed(1)} MW`,
         zoneCoordsLabel: coords,
         arcadeCombo,
         dashCooldownFrac,
@@ -7571,7 +7895,9 @@ export class PlayStyleManager {
     const tractionMult =
       enforceFootTraction && this.isStuckNoFooting ? 0.0 : 1.0;
 
-    if (this.settings.cameraFollowBehind) {
+    const useObliqueFactorioMove =
+      this.currentMode === 'capytorio' && this.getCapytorioCameraMode() === 'oblique';
+    if (this.settings.cameraFollowBehind && !useObliqueFactorioMove) {
       const forwardRaw = -this.moveInput.z;
       const isReversing = forwardRaw < -0.04;
       this.isWalkingBackward = isReversing;
@@ -7670,6 +7996,17 @@ export class PlayStyleManager {
     this.heroCapy.position.set(wx, wy, wz);
 
     const distScale = this.settings.cameraDistance || 1.0;
+
+    if (this.currentMode === 'capytorio' && this.getCapytorioCameraMode() === 'oblique') {
+      this.surfaceCamYaw = Math.PI;
+      this.surfaceCamPitch = 0.94;
+      _camTarget.set(wx, wy + 18.5 * distScale, wz + 13.5 * distScale);
+      this.camera.position.lerp(_camTarget, 1 - Math.exp(-10.0 * dt));
+      _lookTarget.set(wx, wy + 0.35, wz - 0.8);
+      this.camera.lookAt(_lookTarget);
+      return;
+    }
+
     const camDist = baseCamDist * distScale;
     const camHeight = baseCamHeight * distScale;
     const lookBaseY = wy + 1.25;
@@ -8584,9 +8921,10 @@ export class PlayStyleManager {
         this.callbacks.onModeNotification?.(
           'Walked into Spore Lagoon (-110, -110) • Swim, chomp Yuzu Plankton & splice DNA!'
         );
-      } else if (nextDistrict === 'breakout') {
+      } else if (nextDistrict === 'capytorio') {
+        this.emitCapytorioSnapshot();
         this.callbacks.onModeNotification?.(
-          'Walked into Yuzu Breakout (+110, -110) • Move along the baseline to steer the paddle, or explore freely!'
+          'Arrived at Capytorio Infinite Plain (+1200, 0) • Build across endless mineral land!'
         );
       } else if (nextDistrict === 'runner') {
         this.callbacks.onModeNotification?.(
@@ -8659,7 +8997,7 @@ export class PlayStyleManager {
 
     stepBgDistrict('sanctuary', this.sanctuaryGroup, (sDt) => this.tickSanctuaryAmbientOnly(sDt));
     stepBgDistrict('spore', this.sporeGroup, (sDt) => this.tickSporeEcosystemOnly(sDt));
-    stepBgDistrict('breakout', this.breakoutGroup, (sDt) => this.tickBreakoutEcosystemOnly(sDt));
+    stepBgDistrict('capytorio', this.capytorioGroup, (sDt) => this.tickCapytorioEcosystemOnly(sDt));
     stepBgDistrict('runner', this.runnerGroup, (sDt) => this.tickRunnerEcosystemOnly(sDt));
     stepBgDistrict('fallguys', this.fallGuysGroup, (sDt) => this.tickFallGuysEcosystemOnly(sDt));
 
@@ -8668,8 +9006,8 @@ export class PlayStyleManager {
       this.tickSanctuary(dt);
     } else if (this.currentMode === 'spore') {
       this.tickSpore(dt);
-    } else if (this.currentMode === 'breakout') {
-      this.tickBreakout(dt);
+    } else if (this.currentMode === 'capytorio') {
+      this.tickCapytorio(dt);
     } else if (this.currentMode === 'runner') {
       this.tickRunner(dt);
     } else if (this.currentMode === 'fallguys') {
@@ -8745,25 +9083,28 @@ export class PlayStyleManager {
     }
   }
 
-  private tickBreakoutEcosystemOnly(dt: number) {
-    if (!this.breakoutPaddle) return;
-    // Autonomous rally by paddleCapy while Hero explores other districts
-    let leadBall = this.breakoutBalls[0];
-    for (let i = 0; i < this.breakoutBalls.length; i++) {
-      if (this.breakoutBalls[i].active) {
-        leadBall = this.breakoutBalls[i];
-        break;
-      }
-    }
-    if (leadBall && leadBall.active) {
-      const targetX = THREE.MathUtils.clamp(leadBall.mesh.position.x, -6.2, 6.2);
-      this.breakoutPaddle.position.x = THREE.MathUtils.lerp(
-        this.breakoutPaddle.position.x,
-        targetX,
-        1 - Math.exp(-5.5 * dt)
+  private syncCapytorioConfigMultipliers(): void {
+    const cCfg = this.proceduralConfig.districts.capytorio;
+    const upgradeBoost = 1 + (Math.max(1, this.stats.upgrades.paddleSize) - 1) * 0.15;
+    this.capytorioEngine.configCraftSpeedMult = cCfg.craftSpeedMultiplier * upgradeBoost;
+    this.capytorioEngine.configBeltSpeedMult =
+      cCfg.beltSpeedMultiplier * (1 + (Math.max(1, this.stats.upgrades.paddleSize) - 1) * 0.08);
+    this.capytorioEngine.configOreRichnessMult = cCfg.oreRichnessMultiplier;
+  }
+
+  private tickCapytorioEcosystemOnly(dt: number) {
+    this.syncCapytorioConfigMultipliers();
+    this.capytorioEngine.step(dt, this.capytorioStepCallbacks);
+    if (this.capytorioGroup.visible) {
+      this.capytorioRenderer.sync(
+        this.capytorioEngine,
+        this.camera.position.x,
+        this.camera.position.z,
+        dt,
+        this.worldEnv?.elapsedSeconds ?? performance.now() * 0.001,
+        true
       );
     }
-    this.stepBreakoutBallsAndBlocks(dt, false);
   }
 
   private tickRunnerEcosystemOnly(dt: number) {
@@ -8946,7 +9287,7 @@ export class PlayStyleManager {
           gravityScale,
           dt,
         },
-        this.breakoutPaddle?.position.x ?? 0,
+        0,
         this.hammerWorldScratch
       );
       this.lastOceanFluidActive = physStep.inFluid;
@@ -9262,7 +9603,7 @@ export class PlayStyleManager {
         gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
-      this.breakoutPaddle?.position.x ?? 0,
+      0,
       this.hammerWorldScratch
     );
 
@@ -9353,52 +9694,17 @@ export class PlayStyleManager {
     this.updateWorldHeroAndCamera(dt, 7.5 + heroScale * 2.2, 11.0 + heroScale * 1.8);
   }
 
-  // --- 3. YUZU BREAKOUT TICK (WALK-IN / WALK-OUT BASELINE PADDLE COUPLING + SWEPT BALL CCD) ---
-  private tickBreakout(dt: number) {
-    if (!this.breakoutPaddle) return;
-    const zone = ZONE_LOCATIONS.breakout;
-
-    const paddleWidthScale =
-      (1 + (this.stats.upgrades.paddleSize - 1) * 0.12) * this.paddleWidthMultiplier;
-    this.breakoutPaddle.scale.x = paddleWidthScale;
-
-    // Allow full 2D free movement on the Breakout baseline & south forecourt so player can walk out onto NE Causeway!
+  // --- 3. CAPYTORIO INFINITE FACTORY TICK (CONVEYOR GLIDE, AUTO-COLLECT & 3D INSTANCED SYNC) ---
+  private tickCapytorio(dt: number) {
+    const zone = ZONE_LOCATIONS.capytorio;
     const prevLx = this.heroLocalPos.x;
     const prevLz = this.heroLocalPos.z;
-    const moveSpeed = 12.5 * this.getEffectiveSpeedMultiplier();
 
-    if (this.pointerTargetX !== null && this.heroLocalPos.z <= 12.2) {
-      const targetX = THREE.MathUtils.clamp(this.pointerTargetX * 7.2, -6.4, 6.4);
-      this.heroLocalPos.x = THREE.MathUtils.lerp(
-        this.heroLocalPos.x,
-        targetX,
-        1 - Math.exp(-18 * dt)
-      );
-      this.animateCapyLegs(this.heroCapy, dt, 14);
-    } else {
-      // Direct court strafe + walk south/north so Left/Right strafes paddle AND Down/Back walks out to NE Causeway!
-      const vxMove = this.moveInput.x * moveSpeed;
-      const vzMove = this.moveInput.z * moveSpeed;
-      this.heroLocalPos.x += vxMove * dt;
-      this.heroLocalPos.z += vzMove * dt;
-      // Keep court brick field cleanly guarded at paddle baseline while leaving outside aprons open
-      if (
-        Math.abs(this.heroLocalPos.x) < 8.4 &&
-        this.heroLocalPos.z >= 7.6 &&
-        this.heroLocalPos.z < 9.8
-      ) {
-        this.heroLocalPos.z = 9.8;
-      }
-      if (Math.hypot(vxMove, vzMove) > 0.2) {
-        this.heroYaw = Math.atan2(vxMove, vzMove);
-        this.heroCapy.rotation.y = this.heroYaw;
-        this.animateCapyLegs(this.heroCapy, dt, 15);
-      } else {
-        this.heroYaw = Math.PI;
-        this.heroCapy.rotation.y = this.heroYaw;
-        this.resetCapyLegs(this.heroCapy, dt);
-      }
-    }
+    const moveSpeed = 10.5 * this.getEffectiveSpeedMultiplier();
+    this.applyPlayerMovementAndCamera(dt, moveSpeed, 11.5, 15.5);
+
+    this.syncCapytorioConfigMultipliers();
+    this.capytorioEngine.getBeltMomentumAtLocalPos(prevLx, prevLz, _beltVelScratch);
 
     const hasWings = this.stats.activeMutations.includes('wings');
     const jumpBoost =
@@ -9406,9 +9712,10 @@ export class PlayStyleManager {
       (this.proceduralConfig.player.jumpImpulseMultiplier ?? 1.0);
     const dashVx = this.heroDashActiveTimer > 0 ? this.heroDashDirX * 14.5 : 0;
     const dashVz = this.heroDashActiveTimer > 0 ? this.heroDashDirZ * 14.5 : 0;
-    const canJumpBreakout = this.coyoteGroundedTimer > 0 || this.isGrounded;
-    const jumpImpBreakout = this.isJumping && canJumpBreakout ? 9.5 * jumpBoost : 0;
-    if (jumpImpBreakout > 0) this.coyoteGroundedTimer = 0;
+    const canJumpCap = this.coyoteGroundedTimer > 0 || this.isGrounded;
+    const jumpImpCap = this.isJumping && canJumpCap ? 9.8 * jumpBoost : 0;
+    if (jumpImpCap > 0) this.coyoteGroundedTimer = 0;
+
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
       {
         wx: zone.x + prevLx,
@@ -9417,266 +9724,66 @@ export class PlayStyleManager {
         vx: 0,
         vy: this.heroVelocity.y,
         vz: 0,
-        desiredMoveVx: (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) + dashVx,
-        desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) + dashVz,
+        desiredMoveVx:
+          (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) + dashVx + _beltVelScratch[0],
+        desiredMoveVz:
+          (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) + dashVz + _beltVelScratch[1],
         radius: 0.68,
         halfHeight: 0.25,
-        jumpImpulseY: jumpImpBreakout,
+        jumpImpulseY: jumpImpCap,
         gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
-      this.breakoutPaddle.position.x,
+      0,
       this.hammerWorldScratch
     );
+
     this.isJumping = false;
     this.isGrounded = phys.grounded;
     this.isSwimmingInPool = phys.inFluid;
     this.coyoteGroundedTimer =
       phys.grounded || phys.inFluid ? 0.14 : Math.max(0, this.coyoteGroundedTimer - dt);
-    const finalBz = phys.wz - zone.z;
-    const finalBx = phys.wx - zone.x;
-    this.heroLocalPos.set(
-      finalBx,
-      phys.wy,
-      Math.abs(finalBx) < 8.4 && finalBz >= 7.6 && finalBz < 9.8 ? 9.8 : finalBz
-    );
+    this.heroLocalPos.set(phys.wx - zone.x, phys.wy, phys.wz - zone.z);
     this.heroVelocity.y = phys.vy;
     if (this.isGroundPounding && (phys.grounded || phys.inFluid)) {
       this.handleGroundPoundImpact(phys.wx, phys.wy, phys.wz, phys.inFluid);
     }
 
-    // Couple Breakout Deflector Paddle smoothly to Hero's X position while on the court apron
-    const targetPaddleX = THREE.MathUtils.clamp(this.heroLocalPos.x, -6.4, 6.4);
-    this.breakoutPaddle.position.x = THREE.MathUtils.lerp(
-      this.breakoutPaddle.position.x,
-      targetPaddleX,
-      1 - Math.exp(-22 * dt)
-    );
+    this.updateWorldHeroAndCamera(dt, 11.5, 15.5);
 
-    this.heroCapy.position.set(
+    // Friendly auto-pickup from adjacent chests, furnaces & assemblers
+    const pickedUp = this.capytorioEngine.collectFromNearbyChestsAndOutputs(
+      this.heroLocalPos.x,
+      this.heroLocalPos.z,
+      3.8
+    );
+    if (pickedUp > 0) {
+      AudioService.playCoin();
+      this.capytorioAutoSaveDirty = true;
+    }
+
+    this.capytorioEngine.step(dt, this.capytorioStepCallbacks);
+    this.capytorioRenderer.sync(
+      this.capytorioEngine,
       zone.x + this.heroLocalPos.x,
-      this.heroLocalPos.y,
-      zone.z + this.heroLocalPos.z
+      zone.z + this.heroLocalPos.z,
+      dt,
+      this.worldEnv?.elapsedSeconds ?? performance.now() * 0.001,
+      true
     );
 
-    const distScale = this.settings.cameraDistance || 1.0;
-    const followX = this.settings.cameraFollowBehind ? this.breakoutPaddle.position.x * 0.45 : 0;
-    _camTarget.set(
-      zone.x + followX,
-      17.5 * distScale,
-      zone.z + Math.max(15.5, this.heroLocalPos.z + 5.0) * distScale
-    );
-    this.camera.position.lerp(_camTarget, 1 - Math.exp(-8 * dt));
-    this.camera.lookAt(zone.x + followX * 0.5, 0, zone.z - 1.5);
-
-    this.stepBreakoutBallsAndBlocks(dt, true);
-  }
-
-  private stepBreakoutBallsAndBlocks(dt: number, playerPresent: boolean) {
-    if (!this.breakoutPaddle) return;
-    const bCfg = this.proceduralConfig.districts.breakout;
-    if (this.breakoutMegaPaddleTimer > 0) {
-      this.breakoutMegaPaddleTimer -= dt;
-      if (this.breakoutMegaPaddleTimer <= 0) {
-        this.breakoutMegaPaddleTimer = 0;
-        this.paddleWidthMultiplier = bCfg.paddleWidthMultiplier;
-      }
+    this.capytorioUiAccum += dt;
+    if (this.capytorioUiAccum >= 0.25) {
+      this.capytorioUiAccum = 0;
+      this.emitCapytorioSnapshot();
     }
 
-    const paddleWidthScale =
-      (1 + (this.stats.upgrades.paddleSize - 1) * 0.12) * this.paddleWidthMultiplier;
-    const halfPaddleW = 1.9 * paddleWidthScale;
-
-    // Update falling pooled powerup capsules
-    for (let i = 0; i < this.breakoutPowerups.length; i++) {
-      const p = this.breakoutPowerups[i];
-      if (!p.active) continue;
-      p.mesh.position.z += 6.5 * dt;
-      p.mesh.rotation.y += 3 * dt;
-      if (
-        p.mesh.position.z >= 8.4 &&
-        p.mesh.position.z <= 9.8 &&
-        Math.abs(p.mesh.position.x - this.breakoutPaddle.position.x) < halfPaddleW + 0.5
-      ) {
-        if (playerPresent) AudioService.playPrestigeFanfare();
-        if (p.type === 'multiball') {
-          this.spawnBreakoutBall(this.breakoutPaddle.position.x, 8.2, -4.5, -9.5);
-          this.spawnBreakoutBall(this.breakoutPaddle.position.x, 8.2, 4.5, -9.5);
-          if (playerPresent) {
-            this.callbacks.onModeNotification?.('MULTIBALL UNLEASHED! 3x Yuzu Melons!');
-          }
-        } else {
-          this.paddleWidthMultiplier = Math.max(
-            this.paddleWidthMultiplier,
-            bCfg.paddleWidthMultiplier * 1.35
-          );
-          this.breakoutMegaPaddleTimer = 12.0;
-          if (playerPresent) {
-            this.callbacks.onModeNotification?.('MEGA PADDLE ACTIVATED (12s)!');
-          }
-        }
-        p.active = false;
-        p.mesh.visible = false;
-      } else if (p.mesh.position.z > 12) {
-        p.active = false;
-        p.mesh.visible = false;
-      }
-    }
-
-    // Count active balls before substeps
-    let activeBallCount = 0;
-    for (let i = 0; i < this.breakoutBalls.length; i++) {
-      if (this.breakoutBalls[i].active) activeBallCount++;
-    }
-
-    // Swept CCD sub-stepping on pooled Breakout multiballs (zero brick tunneling, zero heap allocs!)
-    for (let bIdx = 0; bIdx < this.breakoutBalls.length; bIdx++) {
-      const b = this.breakoutBalls[bIdx];
-      if (!b.active) continue;
-      const speed = Math.hypot(b.vel.x, b.vel.z);
-      const substeps = Math.min(4, Math.max(1, Math.ceil((speed * dt) / 0.28)));
-      const subDt = dt / substeps;
-
-      let deactivated = false;
-      for (let s = 0; s < substeps && !deactivated; s++) {
-        b.mesh.position.addScaledVector(b.vel, subDt);
-
-        if (b.mesh.position.x <= -7.8) {
-          b.mesh.position.x = -7.8;
-          b.vel.x = Math.max(1.8, Math.abs(b.vel.x));
-          if (playerPresent) AudioService.playBrickHit(0.85);
-        } else if (b.mesh.position.x >= 7.8) {
-          b.mesh.position.x = 7.8;
-          b.vel.x = -Math.max(1.8, Math.abs(b.vel.x));
-          if (playerPresent) AudioService.playBrickHit(0.85);
-        }
-
-        if (b.mesh.position.z <= -10.8) {
-          b.mesh.position.z = -10.8;
-          b.vel.z = Math.abs(b.vel.z);
-          if (Math.abs(b.vel.x) < 1.8) {
-            b.vel.x = b.vel.x >= 0 ? 1.8 : -1.8;
-          }
-          if (playerPresent) AudioService.playBrickHit(0.9);
-        }
-
-        if (
-          b.vel.z > 0 &&
-          b.mesh.position.z >= 8.3 &&
-          b.mesh.position.z <= 9.6 &&
-          Math.abs(b.mesh.position.x - this.breakoutPaddle.position.x) < halfPaddleW + 0.35
-        ) {
-          b.vel.z = -Math.abs(b.vel.z);
-          const hitOffset = (b.mesh.position.x - this.breakoutPaddle.position.x) / halfPaddleW;
-          let bounceVx = hitOffset * 8.2;
-          if (Math.abs(bounceVx) < 1.8) {
-            bounceVx = hitOffset >= 0 ? 1.8 : -1.8;
-          }
-          b.vel.x = bounceVx;
-          this.breakoutCombo = 1;
-          if (playerPresent) AudioService.playJump();
-        }
-
-        if (b.mesh.position.z > 12.2) {
-          if (activeBallCount > 1) {
-            b.active = false;
-            b.mesh.visible = false;
-            activeBallCount--;
-            deactivated = true;
-            break;
-          } else {
-            b.mesh.position.set(this.breakoutPaddle.position.x, 0.5, 7.5);
-            const rawVx = (this.proceduralPrng() - 0.5) * 6.4;
-            b.vel.set(
-              Math.abs(rawVx) < 1.8 ? (rawVx >= 0 ? 1.8 : -1.8) : rawVx,
-              0,
-              -bCfg.ballBaseSpeed
-            );
-            this.breakoutCombo = 1;
-            if (playerPresent) AudioService.playSplash();
-          }
-        }
-
-        for (let i = 0; i < this.breakoutBlocks.length; i++) {
-          const blk = this.breakoutBlocks[i];
-          if (!blk.active) continue;
-          const dx = Math.abs(b.mesh.position.x - blk.mesh.position.x);
-          const dz = Math.abs(b.mesh.position.z - blk.mesh.position.z);
-          if (dx < 1.1 && dz < 0.65) {
-            b.vel.z = -b.vel.z;
-            if (Math.abs(b.vel.x) < 1.8) {
-              b.vel.x = b.vel.x >= 0 ? 1.8 : -1.8;
-            }
-            blk.hp--;
-            if (playerPresent) {
-              this.breakoutCombo = Math.min(10, this.breakoutCombo + 1);
-              const pts = 25 * this.breakoutCombo * this.breakoutWave;
-              this.breakoutScore += pts;
-            }
-
-            if (blk.hp <= 0) {
-              if (playerPresent && (blk.isBonus || this.proceduralPrng() < bCfg.powerupDropChance)) {
-                for (let pi = 0; pi < this.breakoutPowerups.length; pi++) {
-                  const pSlot = this.breakoutPowerups[pi];
-                  if (!pSlot.active) {
-                    pSlot.active = true;
-                    pSlot.type = this.proceduralPrng() > 0.35 ? 'multiball' : 'wide';
-                    pSlot.mesh.position.copy(blk.mesh.position);
-                    pSlot.mesh.visible = true;
-                    break;
-                  }
-                }
-              }
-
-              blk.active = false;
-              blk.mesh.visible = false;
-              if (playerPresent) {
-                AudioService.playBrickHit(1.1 + this.breakoutCombo * 0.08);
-                this.addCameraTrauma(0.24);
-                NativeBridge.haptic('tick');
-                this.vfxEngine?.emitBurst(
-                  ZONE_LOCATIONS.breakout.x + blk.mesh.position.x,
-                  blk.mesh.position.y,
-                  ZONE_LOCATIONS.breakout.z + blk.mesh.position.z,
-                  'citrus_burst',
-                  7,
-                  blk.isBonus ? 0x38bdf8 : 0xfbbf24
-                );
-                this.awardProgress(
-                  blk.isBonus ? 1 : 0,
-                  'breakout',
-                  this.breakoutScore
-                );
-                this.registerArcadeCombo('Brick Break');
-                this.callbacks.onBountyEvent?.('breakout_smash', 1);
-              }
-            } else if (playerPresent) {
-              AudioService.playBrickHit(0.95);
-            }
-
-            let activeBricks = 0;
-            for (let k = 0; k < this.breakoutBlocks.length; k++) {
-              if (this.breakoutBlocks[k].active) {
-                activeBricks++;
-                break;
-              }
-            }
-            if (activeBricks === 0) {
-              this.breakoutWave++;
-              if (playerPresent) {
-                AudioService.playPrestigeFanfare();
-                const waveBonus = 120 * this.breakoutWave;
-                this.breakoutScore += waveBonus;
-                this.awardProgress(3, 'breakout', this.breakoutScore);
-                this.callbacks.onModeNotification?.(
-                  `Wave ${this.breakoutWave - 1} Cleared! +3 Spore DNA! Launching Wave ${this.breakoutWave}!`
-                );
-              }
-              this.resetBreakoutGame(false);
-            }
-            break;
-          }
-        }
+    if (this.capytorioAutoSaveDirty) {
+      this.capytorioAutoSaveTimer += dt;
+      if (this.capytorioAutoSaveTimer >= 1.5) {
+        this.capytorioAutoSaveTimer = 0;
+        this.capytorioAutoSaveDirty = false;
+        this.callbacks.onCapytorioFactorySaved?.(this.capytorioEngine.serialize());
       }
     }
   }
@@ -9752,7 +9859,7 @@ export class PlayStyleManager {
         gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
-      this.breakoutPaddle?.position.x ?? 0,
+      0,
       this.hammerWorldScratch
     );
     this.isJumping = false;
@@ -9920,7 +10027,7 @@ export class PlayStyleManager {
         gravityScale: this.proceduralConfig.player.gravityScale ?? 1.0,
         dt,
       },
-      this.breakoutPaddle?.position.x ?? 0,
+      0,
       this.hammerWorldScratch
     );
 
@@ -10216,8 +10323,8 @@ export class PlayStyleManager {
     const archVisible = orbBlend.archipelagoVisible;
     this.sporeGroup.visible = archVisible;
     this.sporeGroup.matrixWorldAutoUpdate = archVisible;
-    this.breakoutGroup.visible = archVisible;
-    this.breakoutGroup.matrixWorldAutoUpdate = archVisible;
+    this.capytorioGroup.visible = archVisible;
+    this.capytorioGroup.matrixWorldAutoUpdate = archVisible;
     this.runnerGroup.visible = archVisible;
     this.runnerGroup.matrixWorldAutoUpdate = archVisible;
     this.fallGuysGroup.visible = archVisible;
@@ -11049,6 +11156,10 @@ export class PlayStyleManager {
       return;
     }
 
+    if (this.currentMode === 'capytorio' && this.getCapytorioCameraMode() === 'oblique') {
+      return;
+    }
+
     const res = computeMouseLookAngles(
       this.surfaceCamYaw,
       this.surfaceCamPitch,
@@ -11191,6 +11302,8 @@ export class PlayStyleManager {
 
   public dispose() {
     this.disposed = true;
+    this.unsubscribeCapytorioLua?.();
+    this.unsubscribeCapytorioLua = null;
     this.idleWarmupCancel?.();
     this.idleWarmupCancel = null;
     this.cancelBuildingPlacementGhost(true);
@@ -11211,8 +11324,7 @@ export class PlayStyleManager {
     this.sporeOrbDnaMat?.dispose();
     this.sporeRippleTexture?.dispose();
     this.sporeWaterMat?.dispose();
-    this.sharedBreakoutPowerupGeo.dispose();
-    this.sharedBreakoutPowerupMat.dispose();
+    this.capytorioRenderer?.dispose();
     this.fallGuysGhostMat?.dispose();
     disposeObject3DTree(this.scene);
     this.renderer.domElement.remove();

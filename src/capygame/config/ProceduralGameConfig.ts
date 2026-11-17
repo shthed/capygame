@@ -154,12 +154,11 @@ export interface ProceduralGameConfig {
       dashCooldownSec: number;
       growthRateMultiplier: number;
     };
-    breakout: {
-      rows: number;
-      cols: number;
-      ballBaseSpeed: number;
-      paddleWidthMultiplier: number;
-      powerupDropChance: number;
+    capytorio: {
+      craftSpeedMultiplier: number;
+      beltSpeedMultiplier: number;
+      oreRichnessMultiplier: number;
+      scienceCoinReward: number;
     };
     runner: {
       laneSpeed: number;
@@ -263,12 +262,11 @@ export const DEFAULT_PROCEDURAL_GAME_CONFIG: ProceduralGameConfig = {
       dashCooldownSec: 1.2,
       growthRateMultiplier: 1.0,
     },
-    breakout: {
-      rows: 5,
-      cols: 7,
-      ballBaseSpeed: 10.5,
-      paddleWidthMultiplier: 1.0,
-      powerupDropChance: 0.28,
+    capytorio: {
+      craftSpeedMultiplier: 1.0,
+      beltSpeedMultiplier: 1.0,
+      oreRichnessMultiplier: 1.0,
+      scienceCoinReward: 8,
     },
     runner: {
       laneSpeed: 11.5,
@@ -407,12 +405,11 @@ export const PROCEDURAL_CONFIG_PRESETS: ProceduralPresetEntry[] = [
           dashCooldownSec: 0.55,
           growthRateMultiplier: 1.6,
         },
-        breakout: {
-          rows: 6,
-          cols: 7,
-          ballBaseSpeed: 15.0,
-          paddleWidthMultiplier: 1.3,
-          powerupDropChance: 0.45,
+        capytorio: {
+          craftSpeedMultiplier: 1.75,
+          beltSpeedMultiplier: 1.65,
+          oreRichnessMultiplier: 1.5,
+          scienceCoinReward: 15,
         },
         runner: {
           laneSpeed: 18.5,
@@ -664,8 +661,8 @@ export function parseAndValidateProceduralConfig(rawJson: string): ProceduralCon
   const sporeObj = (
     typeof distObj.spore === 'object' && distObj.spore !== null ? distObj.spore : {}
   ) as Record<string, unknown>;
-  const brkObj = (
-    typeof distObj.breakout === 'object' && distObj.breakout !== null ? distObj.breakout : {}
+  const capyObj = (
+    typeof distObj.capytorio === 'object' && distObj.capytorio !== null ? distObj.capytorio : {}
   ) as Record<string, unknown>;
   const runObj = (
     typeof distObj.runner === 'object' && distObj.runner !== null ? distObj.runner : {}
@@ -1051,48 +1048,39 @@ export function parseAndValidateProceduralConfig(rawJson: string): ProceduralCon
           warnings
         ),
       },
-      breakout: {
-        rows: clampNum(
-          brkObj.rows,
-          2,
-          7,
-          def.districts.breakout.rows,
-          'districts.breakout.rows',
-          warnings,
-          true
-        ),
-        cols: clampNum(
-          brkObj.cols,
-          3,
-          7,
-          def.districts.breakout.cols,
-          'districts.breakout.cols',
-          warnings,
-          true
-        ),
-        ballBaseSpeed: clampNum(
-          brkObj.ballBaseSpeed,
+      capytorio: {
+        craftSpeedMultiplier: clampNum(
+          capyObj.craftSpeedMultiplier,
+          0.25,
           4.0,
-          24.0,
-          def.districts.breakout.ballBaseSpeed,
-          'districts.breakout.ballBaseSpeed',
+          def.districts.capytorio.craftSpeedMultiplier,
+          'districts.capytorio.craftSpeedMultiplier',
           warnings
         ),
-        paddleWidthMultiplier: clampNum(
-          brkObj.paddleWidthMultiplier,
+        beltSpeedMultiplier: clampNum(
+          capyObj.beltSpeedMultiplier,
+          0.25,
+          4.0,
+          def.districts.capytorio.beltSpeedMultiplier,
+          'districts.capytorio.beltSpeedMultiplier',
+          warnings
+        ),
+        oreRichnessMultiplier: clampNum(
+          capyObj.oreRichnessMultiplier,
           0.5,
-          2.5,
-          def.districts.breakout.paddleWidthMultiplier,
-          'districts.breakout.paddleWidthMultiplier',
+          5.0,
+          def.districts.capytorio.oreRichnessMultiplier,
+          'districts.capytorio.oreRichnessMultiplier',
           warnings
         ),
-        powerupDropChance: clampNum(
-          brkObj.powerupDropChance,
-          0.0,
-          1.0,
-          def.districts.breakout.powerupDropChance,
-          'districts.breakout.powerupDropChance',
-          warnings
+        scienceCoinReward: clampNum(
+          capyObj.scienceCoinReward,
+          1,
+          50,
+          def.districts.capytorio.scienceCoinReward,
+          'districts.capytorio.scienceCoinReward',
+          warnings,
+          true
         ),
       },
       runner: {

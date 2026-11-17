@@ -482,16 +482,16 @@ export class PbrTextureSynthesizer {
   }
 
   /**
-   * Directional bristle fur Tangent-Space Normal Map for Capybara coats.
+   * Fine silky coat Tangent-Space Normal Map for soft plush Capybara fur.
    */
   public static getCapyFurNormalMap(): THREE.DataTexture {
     if (!this.furNormalTex) {
-      const m = this.bakePbrDataMapsFromHeightfield(this.leanTextureMode ? 64 : 128, 2.15, 0.76, 0.16, (u, v) => {
-        const strands = periodicFbm(u * 4.0, v * 1.0, 32, 3, 1607);
-        const tufts = periodicWorley(u * 2.0, v * 0.75, 16, 1621).f1;
-        return strands * 0.72 + (1.0 - tufts) * 0.28;
+      const m = this.bakePbrDataMapsFromHeightfield(this.leanTextureMode ? 64 : 128, 0.58, 0.78, 0.10, (u, v) => {
+        const fineCoat = periodicFbm(u * 2.0, v * 8.0, 28, 2, 1607);
+        const velvetUnder = periodicFbm(u * 4.0, v * 4.0, 16, 2, 1621);
+        return fineCoat * 0.65 + velvetUnder * 0.35;
       });
-      m.normal.repeat.set(3, 3);
+      m.normal.repeat.set(2, 2);
       this.furNormalTex = m.normal;
     }
     return this.furNormalTex;

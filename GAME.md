@@ -26,6 +26,10 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/capygame/engine/forestMicroSpecimens.ts` | Pure deterministic definitions and random spotlight selector (`pickRandomForestSpecimen`) for all 11 Forest Micro-Glade specimens. |
 | `src/capygame/engine/UniverseScaleMath.ts` | Pure smooth flight throttle gear stepping (`stepFlightSpeedGear`, `clampForwardFlightSpeed`), realistic astronomical/physical scale formatting (`formatRealisticScaleMeters`), and Micro-Glade specimen sanitization/merging. |
 | `src/capygame/engine/GameplayFunMath.ts` | Pure deterministic orbital surface blend curves (`computeOrbitalSurfaceBlend`, `computeDescentApproachDampingFactor`, `computeContinuousDescentCamRadius`), `6` Orbital Skydiving Descent Ring specs, zero-allocation Arcade Combo Multiplier & Yuzu Fever decay math, and 3-slot Archipelago Bounty rotation logic. |
+| `src/capygame/engine/CapytorioData.ts` | Canonical Factorio `recipe.lua` + `technology.lua` integration layer (`FactorioLuaParser.ts`), machine catalog, starter kit definitions, and runtime `.lua` hot-reload support. |
+| `src/capygame/engine/FactorioLuaParser.ts` | Standalone zero-dependency parser for Factorio `data:extend` `recipe.lua` and `technology.lua` tables (`public/data/capytorio/*.lua`) supporting external user updates at runtime and build time. |
+| `src/capygame/engine/CapytorioFactoryEngine.ts` | Deterministic Capytorio factory simulation engine handling infinite `16x16` mineral chunks, mining drills, chevron belts, belt momentum gliding, splitters, underground tunnels, smart inserters, electric foundries, assemblers, coal steam generators, and science labs with 100% demolish refunds. |
+| `src/capygame/engine/CapytorioMeshBuilder.ts` | Pooled Three.js 3D factory renderer (`Capytorio3DRenderer`) with zero-allocation per-frame updates, `InstancedMesh` ore patches/belts/items, procedural limestone ground deck, and Drop-Pod Surveyor beacon. |
 | `src/capygame/engine/UniverseShaders.ts` | Flux-conserving PSF stars, Hubble narrowband/natural volumetric nebulae, spiral galaxies, and Rayleigh planetary atmospheres. |
 | `src/capygame/engine/gpu/HardwareGpuEngine.ts` | Dual WebGPU / WebGL2 hardware rendering orchestrator with PMREM IBL, 3-point lighting, `84 m` azimuth-invariant texel-snapped Hero shadow cascade, frustum indirect draw culling, volumetric crepuscular light shafts, HDR bloom, smooth `C^1` Depth-SSAO, DoF, and CAS. |
 | `src/capygame/engine/gpu/WebGpuPipeline.ts` | Native WebGPU TSL post-processing (`TRAANode`, `bloom`, volumetric sun-shaft god rays), `128x128` WGSL shallow-water wake compute, GPU indirect culling compute, `16x9x24` Clustered Forward+ light binning compute, and `subgroups` detection. |
@@ -34,7 +38,7 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/capygame/engine/gpu/PbrTextureSynthesizer.ts` | Seamless Sobel tangent-space `normalMap`, `roughnessMap`, and Laplacian `aoMap` synthesis across all 5 districts and live texture filter switching. |
 | `src/capygame/engine/gpu/AaaWorldVfxEngine.ts` | Zero-allocation Structure-of-Arrays `InstancedMesh` burst/footstep particles (with idle burst early-exit), GPU bokeh sun-motes/fireflies, and solar crepuscular god-rays. |
 | `src/capygame/engine/gpu/ThreeDisposal.ts` | WebGL subtree geometry, material, and texture disposal utility preventing VRAM leaks across stage transitions. |
-| `src/capygame/engine/physics/ContiguousWorldTopology.ts` | Analytic SDF walkability and ground heightfields across all 5 districts and 4 `9.6 m`-wide Grand Promenade Causeways. |
+| `src/capygame/engine/physics/ContiguousWorldTopology.ts` | Analytic SDF walkability and ground heightfields across Sanctuary, 3 archipelago outer districts, Grand Promenade Causeways, and the unbounded far-hemisphere Capytorio mineral plains (`wx >= 500`). |
 | `src/capygame/engine/physics/ColliderMath.ts` | Zero-allocation yaw-rotated 2D circle-vs-OBB collision resolver and star-system index clamping helpers. |
 | `src/capygame/engine/physics/PhysicsWorldBridge.ts` | `SharedArrayBuffer` / transferable `Float32Array` main-thread bridge to `physics.worker.ts`, yaw-aware swept-CCD projection, shallow-water buoyancy, and XPBD soft-body pads. |
 | `src/capygame/engine/physics/physics.worker.ts` | Dedicated Web Worker exclusively bundling `@dimforge/rapier3d-compat` Wasm rigid bodies, swept CCD, `RevoluteJoint` see-saws, and kinematic sweepers. |
@@ -45,7 +49,7 @@ This document details the architecture, multi-scale astrophysical simulation, co
 
 ## 2. Procedural Capybara Anatomy & 4-Tier Dynamic 60 FPS LOD Governor
 
-`CapyModelGenerator.ts` constructs anatomically detailed *Hydrochoerus hydrochaeris* models using contoured `LatheGeometry` barrels, beveled `ExtrudeGeometry` flat-topped skulls, directional bristle-fur albedo and Sobel normal maps, 4-front / 3-hind webbed toes with keratin claws, blinking eyelids, 16 tapered vibrissae whiskers, and 96 instanced 3D bristle-fur tufts (`InstancedMesh`). `PlayStyleManager.ingestFpsSample()` continuously monitors frame times and adjusts detail across four zero-allocation tiers to maintain a smooth 60 FPS:
+`CapyModelGenerator.ts` constructs anatomically detailed *Hydrochoerus hydrochaeris* models using contoured `LatheGeometry` barrels, vertex-sculpted smooth rounded heads and plush blunt muzzles (`SphereGeometry` profile displacement), soft `MeshPhysicalMaterial` velvety sheen with uniform warm chestnut undercoat textures (free of seams or stripes), plump wagging tail nubs, 4-front / 3-hind webbed toes with keratin claws, blinking eyelids, 16 tapered vibrissae whiskers, and 96 instanced 3D underbelly-contoured coat tufts (`InstancedMesh`). `PlayStyleManager.ingestFpsSample()` continuously monitors frame times and adjusts detail across four zero-allocation tiers to maintain a smooth 60 FPS:
 
 | LOD Tier | Label | Approximate Triangles | Active Anatomical Features |
 | :--- | :--- | :--- | :--- |
@@ -81,7 +85,7 @@ In the planetary surface simulation, `RealisticWorldEnvironment.ts` and `PlaySty
   - **Object Finder Markers** (`12 DNA` or `30` CapyCoins) project 3D Keplerian orbit hairlines and clickable screen-space diamond reticles (`object-finder-markers-layer`) onto sub-pixel `1:1` planets, moons, stellar cores, and atomic nuclei.
   - **Reality Rescaler** (`20 DNA` or `45` CapyCoins) exposes `realityScaleGamma` (`0.28` to `1.00`), logarithmically/exponentially compressing inter-band (`10^(gamma * deltaLog)`) and intra-system (`r' ~ r^gamma`) size ratios while preserving exact physical `logScaleMeters` telemetry.
 - **Seamless Orbit-to-Surface Flight Descent & Skydiving Rings**:
-  - Both story-mode atmospheric entry (`planet_descent`) and continuous spaceflight descent (`log 7.1 -> 0.8`) reveal Sanctuary and all 4 outer archipelago islands smoothly via `computeOrbitalSurfaceBlend`, continuously fade atmospheric sky dome shader opacity (`uSkyAlpha`) and space-to-sunlight intensity, damp spiral yaw near atmosphere entry (`computeDescentApproachDampingFactor`), and converge chase camera radius smoothly toward `Sanctuary Chrono-Pad` (`computeContinuousDescentCamRadius`) where the docked Chrono-Vessel rests proportionally upon landing.
+  - Both story-mode atmospheric entry (`planet_descent`) and continuous spaceflight descent (`log 7.1 -> 0.8`) reveal Sanctuary and outer archipelago islands smoothly via `computeOrbitalSurfaceBlend`, continuously fade atmospheric sky dome shader opacity (`uSkyAlpha`) and space-to-sunlight intensity, damp spiral yaw near atmosphere entry (`computeDescentApproachDampingFactor`), and converge chase camera radius smoothly toward `Sanctuary Chrono-Pad` (`computeContinuousDescentCamRadius`) or land directly onto the **Capytorio Frontier (Far Hemisphere)** mineral plains.
   - `6` animated holographic **Orbital Skydiving Descent Rings** spawn between `log 5.2` and `1.0`, awarding `+2 DNA` and combo chains as the Chrono-Vessel glides through them.
 - **Surface Fun Gameplay Loop & In-App Privacy Policy**:
   - Adds **Kinetic Dash** (`Shift`/`Q` or `48px` `surface-dash-btn`), `0.14s` **Coyote Jump** forgiveness, airborne **Belly-Flop Ground-Pound Splash** (`Ctrl`/`C` or `surface-dive-btn`), **Arcade Combo Multiplier & Yuzu Fever** (`arcade-combo-hud`), collapsible 3-slot **Archipelago Bounties** (`bounties-hud-toggle`), and an offline-safe embedded **Privacy Policy** viewer (`./privacy.html` inside `privacy-policy-modal`) reachable from About and Settings.
@@ -89,14 +93,14 @@ In the planetary surface simulation, `RealisticWorldEnvironment.ts` and `PlaySty
 
 ---
 
-## 5. Contiguous Single-World Causeways & Multi-Threaded Physics (`src/capygame/engine/physics/`)
+## 5. Contiguous Single-World Causeways, Far-Hemisphere Capytorio & Multi-Threaded Physics (`src/capygame/engine/physics/`)
 
-All 5 minigames run simultaneously inside one contiguous walkable world connected by 4 paved `9.6 m`-wide **Grand Promenade Causeways** (`CONTIGUOUS_BRIDGES`):
+All 5 minigames run inside one contiguous walkable world connected by paved `9.6 m`-wide **Grand Promenade Causeways** (`CONTIGUOUS_BRIDGES`) and open ocean crossing onto the far hemisphere:
 
-| Promenade Causeway | Origin (`Sanctuary`) | Destination District | Seamless Open-World Walk-In / Swim-Out Mechanics |
+| Sector / Causeway | Origin (`Sanctuary`) | Destination District | Seamless Open-World Mechanics |
 | :--- | :--- | :--- | :--- |
 | **NW Promenade** | `(-20.5, -20.5)` | `Spore Lagoon` (`-110, -110`) | Sandy beach rim (`33.2 m` to `42.0 m`) slopes into shallow bioluminescent water; walk back SE or swim across open sea straits anytime (`>= 75 m` Sanctuary clearance). |
-| **NE Promenade** | `(+20.5, -20.5)` | `Yuzu Breakout` (`+110, -110`) | Open south forecourt (`localZ` `+9.8` to `+19.5`) couples Hero X movement to the Breakout deflector paddle while keeping stadium exits open to the sea. |
+| **Far Hemisphere Sea Shelf** | `(+1200, 0)` | `Capytorio Frontier` (`+1200, 0`) | Unbounded far-hemisphere limestone plain (`wx >= 500`, `y = 0.0`, coastal beach shelf `490..500`). Land directly via the orbital **Capytorio Frontier** beacon or transit via World Dock to mine endless chunks and automate Mining Drills, drag-painted auto-turning Transport Belts (with hero gliding), Smart Inserters, Foundries, Assemblers, fuel-boosted Coal Generators (`1.5 MW` idle to `6.0 MW` burning), and Science Labs with `[Q]` Pipette, `[H]` Beacon return, `[F]` input loading, 6-step Milestones, and Rocket launches. |
 | **SW Promenade** | `(-20.5, +20.5)` | `Number Stampede` (`-110, +135`) | Open-water-separated 4-segment circuit (`localZ` `0` to `-86`) with east/west wooden return boardwalks (`x = +-6.3 m`) and turnaround deck (`z = -92 m`), `>= 69.6 m` clear of all other islands. |
 | **SE Promenade** | `(+20.5, +20.5)` | `Yuzu Mountain` (`+110, +135`) | Entry ramp (`localZ` `+8.5` to `+4.5`), continuous safety promenade, rigid-body sweeper hammers, torque-balanced see-saw, and XPBD launch pad. |
 
@@ -119,6 +123,7 @@ All 5 minigames run simultaneously inside one contiguous walkable world connecte
 | Setting Property | TypeScript Type | Default | UI Location & Behavior |
 | :--- | :--- | :--- | :--- |
 | `cameraFollowBehind` | `boolean` | `true` | World Dock & Simulation Settings Modal; aligns chase camera azimuth behind the Capybara heading. |
+| `capytorioCameraMode` | `'oblique' \| 'chase'` | `'oblique'` | Capytorio Toolbar (`Oblique [V]` / `3D Chase [V]`) & Simulation Settings Modal; defaults to top-down oblique Factorio projection with direct grid `WASD` movement and toggles live to 3D chase view. |
 | `mouselookEnabled` | `boolean` | `true` | Simulation Settings Modal; enables desktop left/right-drag mouselook and `M`-key free mouselook across cosmic orbit and surface modes. |
 | `mouselookSensitivity` | `number` (`0.2` – `2.5`) | `1.0` | Simulation Settings Modal; scales pointer angular look rate across space and surface cameras. |
 | `invertMouseY` | `boolean` | `false` | Simulation Settings Modal; reverses vertical pitch direction for flight-sim style mouselook. |

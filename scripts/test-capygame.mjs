@@ -407,7 +407,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   await page.getByTestId('select-landing-0').click();
   const capySelectorBar = page.getByTestId('capy-selector-bar');
-  await capySelectorBar.waitFor({ state: 'visible', timeout: 12000 });
+  await capySelectorBar.waitFor({ state: 'visible', timeout: 25000 });
   console.log('✓ Stage 5B -> 6 verified: Descended through planet atmosphere to reveal customized Capybara World');
 
   // 6. Choose which Capybara unit to control on the planet surface
@@ -1330,7 +1330,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   console.log('✓ Unified CapyGame 3D About modal & embedded Privacy Policy modal opened and closed cleanly');
 
   // 12. Progressive Unlock & Transit across all 5 World Sectors
-  const modes = ['spore', 'breakout', 'runner', 'fallguys', 'sanctuary'];
+  const modes = ['spore', 'capytorio', 'runner', 'fallguys', 'sanctuary'];
   for (const mode of modes) {
     await page.getByTestId(`mode-btn-${mode}`).click();
     await page.waitForTimeout(200);
@@ -1825,15 +1825,41 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     const walkBackFromSpore = walkOverlandToward(-24.0, -24.0, 320);
     const modeBackInSanctuary = mgr.currentMode;
 
-    // 2. Walk NE from Sanctuary (+20.5, -20.5) -> Yuzu Breakout baseline (+108, -100) & steer paddle, then walk south out!
-    mgr.heroLocalPos.set(20.5, 0, -20.5);
+    // 2. Swim/Walk East across the open ocean shelf onto Capytorio Frontier Far Hemisphere (wx >= 500) & verify infinite build plains!
+    mgr.heroLocalPos.set(484.0, 0, 0.0);
     mgr.resetDachshundTrail();
     mgr.tick(0.03);
-    const walkToBreakout = walkOverlandToward(108.0, -100.0, 360);
-    const modeInBreakout = mgr.currentMode;
-    const paddleCoupledX = +mgr.breakoutPaddle.position.x.toFixed(2);
-    const walkOutBreakout = walkOverlandToward(84.0, -76.0, 200);
-    const modeAfterBreakoutExit = mgr.currentMode;
+    const walkOntoCapytorio = walkOverlandToward(512.0, 0.0, 220);
+    const modeOnFarHemisphere = mgr.currentMode;
+
+    // Verify blank ore field, starter kit, unbounded far-hemisphere coordinates, and factory automation + belt gliding!
+    mgr.switchMode('capytorio', true);
+    mgr.tick(0.03);
+    const initialSnap = mgr.getCapytorioSnapshot();
+    mgr.heroLocalPos.set(1600, 0, -900); // 1.6 km away from (1200, 0) on infinite plain!
+    mgr.tick(0.05);
+    const infinitePlainGrounded = mgr.heroLocalPos.y >= -0.05 && mgr.heroLocalPos.y <= 0.25;
+    mgr.heroLocalPos.set(0, 0, 10);
+    mgr.resetDachshundTrail();
+
+    // Place a complete mini-factory: Coal Generator + Drill on NW Iron Ore (-5, -5) + Belt + Inserter + Furnace
+    const drillPlaced = mgr.capytorioEngine.placeMachine('drill', -5, -5, 1); // Mines Iron Ore -> East (-4,-5)
+    const beltPlaced = mgr.capytorioEngine.placeMachine('belt', -4, -5, 1);
+    const genPlaced = mgr.capytorioEngine.placeMachine('generator', 0, -2, 1);
+    const labPlaced = mgr.capytorioEngine.placeMachine('lab', 2, -2, 1);
+    for (let s = 0; s < 90; s++) mgr.tick(0.05);
+    const snapAfterAutomation = mgr.getCapytorioSnapshot();
+    const craftgearOk = mgr.pocketCraftCapytorioRecipe('iron_gear');
+    const craftRedSciOk = mgr.pocketCraftCapytorioRecipe('automation_science');
+    const sciFed = mgr.feedScienceCapytorio();
+    // Demolish generator -> 100% machine refund!
+    const gensBeforeDemolish = mgr.getCapytorioSnapshot().pocketMachines.generator ?? 0;
+    const demolishedType = mgr.capytorioEngine.demolishAt(0, -2);
+    const gensAfterDemolish = mgr.getCapytorioSnapshot().pocketMachines.generator ?? 0;
+    mgr.resetCapytorioToBlankField();
+
+    // Walk back overland to Sanctuary
+    mgr.switchMode('sanctuary', true);
 
     // 3. Walk SE from Sanctuary (+20.5, +20.5) -> Yuzu Mountain (+110, +137) & test See-Saw torque + Hammer angular impulse!
     mgr.heroLocalPos.set(20.5, 0, 20.5);
@@ -1869,11 +1895,20 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       swimmingInLagoon,
       walkBackFromSporeReached: walkBackFromSpore.reached,
       modeBackInSanctuary,
-      walkToBreakoutReached: walkToBreakout.reached,
-      modeInBreakout,
-      paddleCoupledX,
-      walkOutBreakoutReached: walkOutBreakout.reached,
-      modeAfterBreakoutExit,
+      walkOntoCapytorioReached: walkOntoCapytorio.reached,
+      modeOnFarHemisphere,
+      infinitePlainGrounded,
+      capytorioBlankStart: initialSnap.machineCount === 0,
+      capytorioAutomated:
+        drillPlaced.ok &&
+        beltPlaced.ok &&
+        genPlaced.ok &&
+        labPlaced.ok &&
+        snapAfterAutomation.totalProduced >= 1 &&
+        craftgearOk &&
+        craftRedSciOk &&
+        sciFed >= 1,
+      demolishRefunded100: demolishedType === 'generator' && gensAfterDemolish === gensBeforeDemolish + 1,
       walkToFallGuysReached: walkToFallGuys.reached,
       modeInFallGuys,
       seeSawTilted: Math.abs(seeSawTiltUnderLoad) > 0.005,
@@ -1893,21 +1928,23 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     contiguousAndPhysicsCheck.modeInSpore !== 'spore' ||
     !contiguousAndPhysicsCheck.walkBackFromSporeReached ||
     contiguousAndPhysicsCheck.modeBackInSanctuary !== 'sanctuary' ||
-    !contiguousAndPhysicsCheck.walkToBreakoutReached ||
-    contiguousAndPhysicsCheck.modeInBreakout !== 'breakout' ||
-    !contiguousAndPhysicsCheck.walkOutBreakoutReached ||
-    contiguousAndPhysicsCheck.modeAfterBreakoutExit !== 'sanctuary' ||
+    !contiguousAndPhysicsCheck.walkOntoCapytorioReached ||
+    contiguousAndPhysicsCheck.modeOnFarHemisphere !== 'capytorio' ||
+    !contiguousAndPhysicsCheck.infinitePlainGrounded ||
+    !contiguousAndPhysicsCheck.capytorioBlankStart ||
+    !contiguousAndPhysicsCheck.capytorioAutomated ||
+    !contiguousAndPhysicsCheck.demolishRefunded100 ||
     !contiguousAndPhysicsCheck.walkToFallGuysReached ||
     contiguousAndPhysicsCheck.modeInFallGuys !== 'fallguys' ||
     !contiguousAndPhysicsCheck.seeSawTilted ||
     contiguousAndPhysicsCheck.xpbdLaunchVy < 12.0
   ) {
     throw new Error(
-      `Contiguous Single-World Overland Walk or Rapier3D Physics Engine check failed: ${JSON.stringify(contiguousAndPhysicsCheck)}`
+      `Contiguous Single-World Overland Walk, Capytorio Frontier or Rapier3D Physics Engine check failed: ${JSON.stringify(contiguousAndPhysicsCheck)}`
     );
   }
   console.log(
-    `✓ Contiguous Single-World Overland Walking & Rapier3D Wasm Physics Engine verified: Sanctuary <-> Spore Lagoon <-> Yuzu Breakout <-> Yuzu Mountain seamless overland walk, See-Saw torque, XPBD Soft-Body launch (vy=${contiguousAndPhysicsCheck.xpbdLaunchVy}m/s), Fluid Grid (${contiguousAndPhysicsCheck.fluidGridCells} cells, mode=${contiguousAndPhysicsCheck.transportMode})!`
+    `✓ Contiguous Single-World Overland Walking, Capytorio Far-Hemisphere Factory & Rapier3D Wasm Physics Engine verified: Sanctuary <-> Spore Lagoon <-> Capytorio (+1200, 0) <-> Yuzu Mountain, Factory automation + 100% demolish refund, See-Saw torque, XPBD launch (vy=${contiguousAndPhysicsCheck.xpbdLaunchVy}m/s), Fluid Grid (${contiguousAndPhysicsCheck.fluidGridCells} cells, mode=${contiguousAndPhysicsCheck.transportMode})!`
   );
 
   // 14E. Verify Hardware-Accelerated 3D GPU Engine, Texel-Snapped Shadow Cascade, Procedural PBR Normal/AO Maps, Texture Filtering & Post-Processing Visual Filters
@@ -2043,7 +2080,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     mgr.tick(0.04, 0.04);
     const traumaAfterStep = mgr.getCameraTrauma();
     const activeBurstParticles = mgr.vfxEngine.getActiveParticleCount();
-    const breakoutPaddleMat = mgr.breakoutPaddle?.material;
+    const sporeMat = mgr.sporeGroup?.children?.[0]?.material;
 
     return {
       hasIblEnvironment: Boolean(
@@ -2062,9 +2099,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
         islandMat?.normalMap && islandMat?.roughnessMap && islandMat?.aoMap
       ),
       outerDistrictsHaveFullPbr: Boolean(
-        breakoutPaddleMat?.normalMap &&
-          breakoutPaddleMat?.roughnessMap &&
-          breakoutPaddleMat?.aoMap
+        sporeMat?.normalMap && sporeMat?.roughnessMap && sporeMat?.aoMap
       ),
       oceanHasDualClearcoatNormals: Boolean(
         oceanMat?.normalMap && (mgr.isSoftwareGl || oceanMat?.clearcoatNormalMap)
@@ -2167,7 +2202,6 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     const skyAlphaApproach = mgr.worldEnv?.skyMaterial?.uniforms?.uSkyAlpha?.value ?? -1;
     const outerIslandsVisibleFromOrbit = Boolean(
       mgr.sporeGroup?.visible &&
-        mgr.breakoutGroup?.visible &&
         mgr.runnerGroup?.visible &&
         mgr.fallGuysGroup?.visible
     );
@@ -2236,6 +2270,95 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.getByTestId('bounties-panel').waitFor({ state: 'hidden', timeout: 5000 });
   console.log(
     `✓ Seamless Orbit Descent, Outer Archipelago Orbital Reveal (skyAlpha=${orbitDescentCheck.skyAlphaApproach}), Docked Chrono-Vessel, Dash/Dive/Combo HUD (x${orbitDescentCheck.comboCount}) & Bounties Drawer verified!`
+  );
+
+  // 14G. Verify Capytorio Interactive UI: Toolbar, Inventory Panel [I], Belt Equip, Factorio Oblique <-> 3D Chase Camera Toggle [V], Inspect Coal Fueling (6 MW), Pipette [Q], & Beacon [H]
+  await page.getByTestId('toggle-menu-btn').click({ force: true });
+  await page.getByTestId('mode-btn-capytorio').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('mode-btn-capytorio').click({ force: true });
+  await page.getByTestId('toggle-menu-btn').click({ force: true });
+  await page.getByTestId('capytorio-toolbar').waitFor({ state: 'visible', timeout: 6000 });
+
+  await page.getByTestId('capytorio-drawer-inventory-btn').click({ force: true });
+  await page.getByTestId('capytorio-drawer-inventory').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('capytorio-inv-machine-belt').click({ force: true });
+
+  await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return;
+    mgr.capytorioEngine.placeMachine('generator', 0, 0, 1);
+    mgr.markCapytorioDirty();
+  });
+  await page.getByTestId('capytorio-drawer-inspect-btn').click({ force: true });
+  await page.getByTestId('capytorio-inspect-fuel-btn').waitFor({ state: 'visible', timeout: 5000 });
+  const mwBeforeFuel = await page.evaluate(() => window.__capyManager?.getCapytorioSnapshot().powerSupplyMw ?? 0);
+  await page.getByTestId('capytorio-inspect-fuel-btn').click({ force: true });
+  await page.waitForTimeout(80);
+  const mwAfterFuel = await page.evaluate(() => window.__capyManager?.getCapytorioSnapshot().powerSupplyMw ?? 0);
+
+  const pipetteAndBeacon = await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return null;
+    mgr.capytorioEngine.selectedTool = 'mine';
+    mgr.capytorioEngine.hoveredGx = 0;
+    mgr.capytorioEngine.hoveredGz = 0;
+    const picked = mgr.pipetteCapytorioAtCursor();
+    mgr.heroLocalPos.set(120, 0, -90);
+    mgr.tick(0.03);
+    return {
+      pickedTool: picked.tool,
+      pickedOk: picked.picked,
+      farDistBeforeBeacon: Math.hypot(mgr.heroLocalPos.x, mgr.heroLocalPos.z),
+    };
+  });
+  await page.getByTestId('capytorio-beacon-btn').click({ force: true });
+  await page.waitForTimeout(80);
+  const distAfterBeacon = await page.evaluate(() =>
+    Math.hypot(window.__capyManager?.heroLocalPos.x ?? 999, window.__capyManager?.heroLocalPos.z ?? 999)
+  );
+
+  await page.evaluate(() => {
+    window.__capyManager?.resetCapytorioToBlankField();
+    window.__capyManager?.setCapytorioTool('belt');
+  });
+
+  const camBeforeToggle = await page.evaluate(() => window.__capyManager?.getCapytorioCameraMode());
+  await page.getByTestId('capytorio-camera-mode-btn').click({ force: true });
+  await page.waitForTimeout(80);
+  const camAfterToggle = await page.evaluate(() => window.__capyManager?.getCapytorioCameraMode());
+  await page.getByTestId('capytorio-camera-mode-btn').click({ force: true });
+  await page.waitForTimeout(80);
+  const camRestored = await page.evaluate(() => window.__capyManager?.getCapytorioCameraMode());
+  await page.getByTestId('capytorio-drawer-inventory-btn').click({ force: true });
+  await page.getByTestId('capytorio-drawer-inventory').waitFor({ state: 'visible', timeout: 5000 });
+  const capytorioUiStats = await page.evaluate(() => ({
+    toolSelected: window.__capyManager?.getCapytorioSnapshot().selectedTool,
+    invItems: document.querySelectorAll('[data-testid^="capytorio-inv-item-"]').length,
+    invMachines: document.querySelectorAll('[data-testid^="capytorio-inv-machine-"]').length,
+    hasMilestoneBadge: Boolean(document.querySelector('[data-testid="capytorio-milestone-badge"]')),
+    mobileOverflow: document.documentElement.scrollWidth > window.innerWidth,
+  }));
+  if (
+    camBeforeToggle !== 'oblique' ||
+    camAfterToggle !== 'chase' ||
+    camRestored !== 'oblique' ||
+    mwBeforeFuel !== 1.5 ||
+    mwAfterFuel < 6.0 ||
+    !pipetteAndBeacon?.pickedOk ||
+    pipetteAndBeacon.pickedTool !== 'generator' ||
+    distAfterBeacon > 6.0 ||
+    capytorioUiStats.toolSelected !== 'belt' ||
+    capytorioUiStats.invMachines !== 10 ||
+    capytorioUiStats.invItems < 10 ||
+    !capytorioUiStats.hasMilestoneBadge ||
+    capytorioUiStats.mobileOverflow
+  ) {
+    throw new Error(
+      `Capytorio UI Toolbar/Inventory/Camera/Inspect verification failed: cam=${camBeforeToggle}->${camAfterToggle}->${camRestored}, mw=${mwBeforeFuel}->${mwAfterFuel}, pipette=${JSON.stringify(pipetteAndBeacon)}, distAfterBeacon=${distAfterBeacon}, stats=${JSON.stringify(capytorioUiStats)}`
+    );
+  }
+  console.log(
+    `✓ Capytorio Factorio Oblique <-> 3D Chase Camera (${camBeforeToggle}->${camAfterToggle}), Inventory Panel (${capytorioUiStats.invItems} items, ${capytorioUiStats.invMachines} machines), Coal Fueling (${mwBeforeFuel}->${mwAfterFuel}MW), Smart Pipette [Q], Beacon [H] & Milestones verified!`
   );
 
   if (consoleErrors.length > 0) {

@@ -52,22 +52,15 @@ function makeBridge(
 }
 
 /**
- * 4 Wide Stone-and-Turf Grand Promenade Causeways directly joining Sanctuary (0, 0)
- * to all 4 surrounding minigame islands across wide open ocean channels:
+ * 3 Wide Stone-and-Turf Grand Promenade Causeways directly joining Sanctuary (0, 0)
+ * to the 3 Archipelago minigame islands across wide open ocean channels:
  * - NW Causeway: Sanctuary (-20.5, -20.5) -> Spore Lagoon Beach (-79.0, -79.0)
- * - NE Causeway: Sanctuary (+20.5, -20.5) -> Yuzu Breakout South Plaza (+110.0, -94.5)
  * - SW Causeway: Sanctuary (-20.5, +20.5) -> Number Stampede North Plaza (-110.0, +141.5)
  * - SE Causeway: Sanctuary (+20.5, +20.5) -> Yuzu Mountain Base Plaza (+110.0, +142.0)
+ * Capytorio Frontier sits independently on the far hemisphere (wx >= 500, infinite plain).
  */
 export const CONTIGUOUS_BRIDGES: readonly PromenadeBridgeSpec[] = [
   makeBridge('spore', -20.5, -20.5, ZONE_LOCATIONS.spore.x + 31.0, ZONE_LOCATIONS.spore.z + 31.0),
-  makeBridge(
-    'breakout',
-    20.5,
-    -20.5,
-    ZONE_LOCATIONS.breakout.x,
-    ZONE_LOCATIONS.breakout.z + 15.5
-  ),
   makeBridge('runner', -20.5, 20.5, ZONE_LOCATIONS.runner.x, ZONE_LOCATIONS.runner.z + 6.5),
   makeBridge(
     'fallguys',
@@ -122,14 +115,15 @@ export function getArchipelagoDistrictFootprints(): DistrictBoundingBox2D[] {
       maxZ: ZONE_LOCATIONS.spore.z + 42.0,
     },
     {
-      mode: 'breakout',
-      shape: 'box',
-      cx: ZONE_LOCATIONS.breakout.x,
-      cz: ZONE_LOCATIONS.breakout.z + 4.0,
-      minX: ZONE_LOCATIONS.breakout.x - 9.2,
-      maxX: ZONE_LOCATIONS.breakout.x + 9.2,
-      minZ: ZONE_LOCATIONS.breakout.z - 12.0,
-      maxZ: ZONE_LOCATIONS.breakout.z + 20.0,
+      mode: 'capytorio',
+      shape: 'circle',
+      cx: ZONE_LOCATIONS.capytorio.x,
+      cz: ZONE_LOCATIONS.capytorio.z,
+      radius: 45.0,
+      minX: ZONE_LOCATIONS.capytorio.x - 45.0,
+      maxX: ZONE_LOCATIONS.capytorio.x + 45.0,
+      minZ: ZONE_LOCATIONS.capytorio.z - 45.0,
+      maxZ: ZONE_LOCATIONS.capytorio.z + 45.0,
     },
     {
       mode: 'runner',
@@ -231,10 +225,9 @@ export function evaluateContiguousWalkableSdf(wx: number, wz: number): number {
     Math.hypot(wx - ZONE_LOCATIONS.spore.x, wz - ZONE_LOCATIONS.spore.z) - 41.5;
   if (dSpore < minSdf) minSdf = dSpore;
 
-  const bx = Math.abs(wx - ZONE_LOCATIONS.breakout.x) - 9.2;
-  const bz = Math.abs(wz - (ZONE_LOCATIONS.breakout.z + 4.2)) - 15.2;
-  const dBreakout = Math.max(bx, bz);
-  if (dBreakout < minSdf) minSdf = dBreakout;
+  // Far-hemisphere Capytorio continental shelf starts at wx >= 500
+  const dCapytorio = 500.0 - wx;
+  if (dCapytorio < minSdf) minSdf = dCapytorio;
 
   const rx = Math.abs(wx - ZONE_LOCATIONS.runner.x) - 8.4;
   const rz = Math.abs(wz - (ZONE_LOCATIONS.runner.z - 42.25)) - 55.75;
@@ -293,15 +286,9 @@ export function classifyDistrictAtWorldPos(
     return 'spore';
   }
 
-  // Yuzu Breakout
-  const bLocalX = wx - ZONE_LOCATIONS.breakout.x;
-  const bLocalZ = wz - ZONE_LOCATIONS.breakout.z;
-  const inBreakout =
-    Math.abs(bLocalX) <= (currentDistrict === 'breakout' ? 9.2 : 8.4) &&
-    bLocalZ >= (currentDistrict === 'breakout' ? -12.0 : -11.0) &&
-    bLocalZ <= (currentDistrict === 'breakout' ? 15.8 : 14.0);
-  if (inBreakout) {
-    return 'breakout';
+  // Capytorio Far-Hemisphere Frontier (unbounded plain for wx >= 500)
+  if (wx >= 500.0) {
+    return 'capytorio';
   }
 
   // Number Stampede
@@ -386,11 +373,13 @@ export function sampleContiguousGroundY(
     return -0.18;
   }
 
-  // 5. Yuzu Breakout Stadium & South Forecourt Apron
-  const bx = wx - ZONE_LOCATIONS.breakout.x;
-  const bz = wz - ZONE_LOCATIONS.breakout.z;
-  if (Math.abs(bx) <= 9.2 && bz >= -12.0 && bz <= 20.0) {
+  // 5. Capytorio Far-Hemisphere Infinite Continental Terrain (wx >= 500 flat at y = 0, sandy shoreline 490..500)
+  if (wx >= 500.0) {
     return 0.0;
+  }
+  if (wx >= 490.0) {
+    const shoreT = (500.0 - wx) / 10.0;
+    return OPEN_OCEAN_SEABED_Y * shoreT;
   }
 
   // 6. Number Stampede Track, Forecourt, Boardwalks & Turnaround

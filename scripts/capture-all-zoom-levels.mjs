@@ -332,7 +332,7 @@ async function captureCdpPng(cdp) {
   await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return;
-    mgr.stats.unlockedModes = ['sanctuary', 'spore', 'breakout', 'runner', 'fallguys'];
+    mgr.stats.unlockedModes = ['sanctuary', 'spore', 'capytorio', 'runner', 'fallguys'];
     mgr.resumeSurfacePlayFromForest(true);
     mgr.switchMode('sanctuary', false);
     for (let k = 0; k < 4; k++) {
@@ -387,7 +387,7 @@ async function captureCdpPng(cdp) {
 
   const outerModes = [
     { id: 'spore', file: 'capygame_spore.png' },
-    { id: 'breakout', file: 'capygame_breakout.png' },
+    { id: 'capytorio', file: 'capygame_capytorio.png' },
     { id: 'runner', file: 'capygame_runner.png' },
     { id: 'fallguys', file: 'capygame_fallguys.png' },
   ];
@@ -395,7 +395,7 @@ async function captureCdpPng(cdp) {
     await page.evaluate((modeId) => {
       const mgr = window.__capyManager;
       if (!mgr) return;
-      mgr.stats.unlockedModes = ['sanctuary', 'spore', 'breakout', 'runner', 'fallguys'];
+      mgr.stats.unlockedModes = ['sanctuary', 'spore', 'capytorio', 'runner', 'fallguys'];
       mgr.setCosmicStage('playing');
       mgr.switchMode(modeId, false);
       for (let s = 0; s < 8; s++) mgr.tick(0.05);

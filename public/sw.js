@@ -11,6 +11,8 @@ const PRECACHE_RELATIVE_URLS = [
   './index.html',
   './manifest.webmanifest',
   './privacy.html',
+  './data/capytorio/recipe.lua',
+  './data/capytorio/technology.lua',
   './assets/capybara.webp',
   './assets/icon-192.png',
   './assets/icon-512.png',
@@ -186,7 +188,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 2. Vite dev virtual, source & dependency modules: Network-first online, Cache-fallback offline
+  // 2. Vite dev modules & hot-editable Capytorio .lua definitions: Network-first online, Cache-fallback offline
   const isDevModule =
     url.pathname.includes('/@vite/') ||
     url.pathname.includes('/@react-refresh') ||
@@ -194,6 +196,7 @@ self.addEventListener('fetch', (event) => {
     url.pathname.includes('/@id/') ||
     url.pathname.includes('/src/') ||
     url.pathname.includes('/node_modules/') ||
+    url.pathname.endsWith('.lua') ||
     url.search.includes('worker_file') ||
     url.search.includes('import');
 

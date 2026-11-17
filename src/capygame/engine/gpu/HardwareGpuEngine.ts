@@ -380,18 +380,18 @@ export class HardwareGpuEngine {
   private readonly districtCentersX = [
     ZONE_LOCATIONS.sanctuary.x,
     ZONE_LOCATIONS.spore.x,
-    ZONE_LOCATIONS.breakout.x,
+    ZONE_LOCATIONS.capytorio.x,
     ZONE_LOCATIONS.runner.x,
     ZONE_LOCATIONS.fallguys.x,
   ];
   private readonly districtCentersZ = [
     ZONE_LOCATIONS.sanctuary.z,
     ZONE_LOCATIONS.spore.z,
-    ZONE_LOCATIONS.breakout.z,
+    ZONE_LOCATIONS.capytorio.z,
     ZONE_LOCATIONS.runner.z - 43,
     ZONE_LOCATIONS.fallguys.z - 28,
   ];
-  private readonly districtRadii = [40, 44, 28, 64, 48];
+  private readonly districtRadii = [40, 44, 160, 64, 48];
   private readonly districtVisibilityFlags = new Uint8Array(5);
   private readonly indirectDrawWords = new Uint32Array(25);
   private readonly gpuWakeParams = new Float32Array(4);

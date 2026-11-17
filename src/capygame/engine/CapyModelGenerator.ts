@@ -94,7 +94,7 @@ const _furDummy = new THREE.Object3D();
 
 export class CapyModelGenerator {
   public static readonly skinColors: Record<string, number> = {
-    classic: 0x8d5b36,
+    classic: 0x9b643b,
     golden: 0xeab308,
     sakura: 0xf472b6,
     matcha: 0x4ade80,
@@ -125,26 +125,19 @@ export class CapyModelGenerator {
   };
 
   private static furAlbedoCache = new Map<number, THREE.CanvasTexture>();
-  private static sharedFurBumpMap: THREE.CanvasTexture | null = null;
   private static sharedCitrusBumpMap: THREE.CanvasTexture | null = null;
 
   // Shared anatomical sub-materials (varied roughness >= 0.25 for realistic PBR contrast)
-  private static snoutMaterial = new THREE.MeshStandardMaterial({
-    color: 0x462916,
-    roughness: 0.86,
-    metalness: 0.02,
-  });
-
   private static rhinariumMaterial = new THREE.MeshStandardMaterial({
-    color: 0x1c1009,
-    roughness: 0.28,
-    metalness: 0.08,
+    color: 0x26150e,
+    roughness: 0.24,
+    metalness: 0.06,
   });
 
   private static eyeMaterial = new THREE.MeshStandardMaterial({
-    color: 0x0b0908,
-    roughness: 0.08,
-    metalness: 0.14,
+    color: 0x120b07,
+    roughness: 0.06,
+    metalness: 0.12,
   });
 
   private static eyeCatchlightMaterial = new THREE.MeshBasicMaterial({
@@ -152,33 +145,39 @@ export class CapyModelGenerator {
   });
 
   private static innerEarMaterial = new THREE.MeshStandardMaterial({
-    color: 0x7c4a3a,
-    roughness: 0.72,
+    color: 0xa66b59,
+    roughness: 0.76,
     metalness: 0.02,
   });
 
-  private static incisorMaterial = new THREE.MeshStandardMaterial({
-    color: 0xfef3c7,
-    roughness: 0.24,
-    metalness: 0.05,
+  private static cheekBlushMaterial = new THREE.MeshStandardMaterial({
+    color: 0xc97b63,
+    roughness: 0.90,
+    metalness: 0.0,
   });
 
-  private static legMaterial = new THREE.MeshStandardMaterial({
-    color: 0x5c3419,
-    roughness: 0.84,
+  private static incisorMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfef9e7,
+    roughness: 0.22,
     metalness: 0.04,
   });
 
+  private static legMaterial = new THREE.MeshStandardMaterial({
+    color: 0x663a1e,
+    roughness: 0.82,
+    metalness: 0.03,
+  });
+
   private static webbingMaterial = new THREE.MeshStandardMaterial({
-    color: 0x3b2110,
-    roughness: 0.68,
+    color: 0x472814,
+    roughness: 0.66,
     metalness: 0.04,
   });
 
   private static clawMaterial = new THREE.MeshStandardMaterial({
-    color: 0x1f140d,
-    roughness: 0.32,
-    metalness: 0.18,
+    color: 0x291a10,
+    roughness: 0.30,
+    metalness: 0.16,
   });
 
   private static whiskerMaterial = new THREE.MeshStandardMaterial({
@@ -190,9 +189,9 @@ export class CapyModelGenerator {
   private static yuzuMaterial = new THREE.MeshStandardMaterial({
     color: 0xff8800,
     normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
-    normalScale: new THREE.Vector2(0.48, 0.48),
-    roughness: 0.26,
-    metalness: 0.08,
+    normalScale: new THREE.Vector2(0.24, 0.24),
+    roughness: 0.24,
+    metalness: 0.06,
   });
 
   private static leafMaterial = new THREE.MeshStandardMaterial({
@@ -207,17 +206,15 @@ export class CapyModelGenerator {
     metalness: 0.02,
   });
 
-  // Dachshund hybrid markings (dark mahogany dorsal saddle + warm tan-point brow/chest markings)
-  private static dachshundSaddleMaterial = new THREE.MeshStandardMaterial({
-    color: 0x3b2110,
-    roughness: 0.86,
-    metalness: 0.03,
-  });
+  // Soft golden-tan eyebrow accent material
 
-  private static dachshundTanPointMaterial = new THREE.MeshStandardMaterial({
-    color: 0xd99b52,
-    roughness: 0.84,
+  private static dachshundTanPointMaterial = new THREE.MeshPhysicalMaterial({
+    color: 0xdfa763,
+    roughness: 0.82,
     metalness: 0.02,
+    sheen: 0.62,
+    sheenRoughness: 0.60,
+    sheenColor: new THREE.Color(0xfef0d4),
   });
 
   // Cached geometries & materials so NPCs/critters/herd/segments reuse existing GPU buffers
@@ -250,39 +247,6 @@ export class CapyModelGenerator {
     return created;
   }
 
-  private static getFurBumpTexture(): THREE.CanvasTexture {
-    if (this.sharedFurBumpMap) return this.sharedFurBumpMap;
-    const texSize = this.leanTextureMode ? 128 : 256;
-    const scale = texSize / 256;
-    const canvas = document.createElement('canvas');
-    canvas.width = texSize;
-    canvas.height = texSize;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.fillStyle = '#808080';
-      ctx.fillRect(0, 0, texSize, texSize);
-      const count = this.leanTextureMode ? 1400 : 3200;
-      for (let i = 0; i < count; i++) {
-        const x = ((i * 73) % 256) * scale;
-        const y = ((i * 137) % 256) * scale;
-        const lum = 75 + ((i * 29) % 135);
-        ctx.strokeStyle = `rgb(${lum},${lum},${lum})`;
-        ctx.lineWidth = (1 + (i % 2) * 0.6) * scale;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + (((i % 5) - 2) * 1.4) * scale, y + (7 + (i % 6)) * scale);
-        ctx.stroke();
-      }
-    }
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(2, 2);
-    PbrTextureSynthesizer.registerManagedTexture(tex);
-    this.sharedFurBumpMap = tex;
-    return tex;
-  }
-
   private static getFurAlbedoTexture(baseHex: number): THREE.CanvasTexture {
     const cached = this.furAlbedoCache.get(baseHex);
     if (cached) return cached;
@@ -294,33 +258,60 @@ export class CapyModelGenerator {
     canvas.height = texSize;
     const ctx = canvas.getContext('2d');
     const baseCol = new THREE.Color(baseHex);
-    const darkCol = baseCol.clone().multiplyScalar(0.68);
-    const midCol = baseCol.clone().multiplyScalar(0.92);
-    const lightCol = baseCol.clone().lerp(new THREE.Color(0xfffbeb), 0.24);
+    const shadowCol = baseCol.clone().multiplyScalar(0.84);
+    const warmCol = baseCol.clone().lerp(new THREE.Color(0xffe8c2), 0.16);
+    const lightTipCol = baseCol.clone().lerp(new THREE.Color(0xfff5db), 0.28);
 
     if (ctx) {
+      // Uniform warm chestnut base with ZERO vertical gradient seams when tiled around limbs & body
       ctx.fillStyle = `#${baseCol.getHexString()}`;
       ctx.fillRect(0, 0, texSize, texSize);
 
+      // Wrap-safe gentle mottled undercoat softness across tile boundaries
+      for (let c = 0; c < 42; c++) {
+        const cx = ((c * 67 + 19) % 256) * scale;
+        const cy = ((c * 113 + 31) % 256) * scale;
+        const rad = (20 + (c % 4) * 6) * scale;
+        const col = c % 2 === 0 ? warmCol : shadowCol;
+        const rgba0 = `rgba(${Math.round(col.r * 255)},${Math.round(col.g * 255)},${Math.round(col.b * 255)},0.10)`;
+        const rgba1 = `rgba(${Math.round(col.r * 255)},${Math.round(col.g * 255)},${Math.round(col.b * 255)},0)`;
+        for (let ox = -1; ox <= 1; ox++) {
+          for (let oy = -1; oy <= 1; oy++) {
+            const tx = cx + ox * texSize;
+            const ty = cy + oy * texSize;
+            if (tx < -rad || tx > texSize + rad || ty < -rad || ty > texSize + rad) continue;
+            const grad = ctx.createRadialGradient(tx, ty, 1, tx, ty, rad);
+            grad.addColorStop(0, rgba0);
+            grad.addColorStop(1, rgba1);
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(tx, ty, rad, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
       const palette = [
-        `#${darkCol.getHexString()}`,
-        `#${midCol.getHexString()}`,
+        `#${shadowCol.getHexString()}`,
         `#${baseCol.getHexString()}`,
-        `#${lightCol.getHexString()}`,
+        `#${warmCol.getHexString()}`,
+        `#${lightTipCol.getHexString()}`,
       ];
 
-      // Paint coarse directional bristle hairs characteristic of capybara coats
-      const hairCount = this.leanTextureMode ? 1200 : 2800;
+      // Subtle short silky plush coat flecks (zero harsh scratch strokes or UV stripes)
+      const hairCount = this.leanTextureMode ? 1400 : 3600;
+      ctx.lineCap = 'round';
       for (let i = 0; i < hairCount; i++) {
-        const x = ((i * 97 + (i % 13) * 7) % 256) * scale;
-        const y = ((i * 53 + (i % 17) * 11) % 256) * scale;
+        const x = ((i * 97 + (i % 13) * 11) % 256) * scale;
+        const y = ((i * 53 + (i % 17) * 7) % 256) * scale;
         ctx.strokeStyle = palette[i % palette.length];
-        ctx.globalAlpha = 0.42 + (i % 4) * 0.12;
-        ctx.lineWidth = (1.1 + (i % 3) * 0.45) * scale;
+        ctx.globalAlpha = 0.045 + (i % 4) * 0.015;
+        ctx.lineWidth = (0.65 + (i % 3) * 0.16) * scale;
+        const dx = ((i % 5) - 2) * 0.26 * scale;
+        const len = (2.6 + (i % 3) * 0.85) * scale;
         ctx.beginPath();
         ctx.moveTo(x, y);
-        const sway = ((i % 7) - 3) * 1.1 * scale;
-        ctx.quadraticCurveTo(x + sway * 0.5, y + 4 * scale, x + sway, y + (8 + (i % 5)) * scale);
+        ctx.lineTo(x + dx, y + len);
         ctx.stroke();
       }
       ctx.globalAlpha = 1.0;
@@ -368,34 +359,64 @@ export class CapyModelGenerator {
   private static createFurMaterial(
     skin: string,
     share: boolean = true
-  ): THREE.MeshStandardMaterial {
+  ): THREE.MeshPhysicalMaterial {
     const makeMat = () => {
       const furColor = this.skinColors[skin] ?? this.skinColors.classic;
-      return new THREE.MeshStandardMaterial({
+      const sheenCol = new THREE.Color(furColor).lerp(new THREE.Color(0xfff1d6), 0.58);
+      return new THREE.MeshPhysicalMaterial({
         color: 0xffffff,
         map: this.getFurAlbedoTexture(furColor),
         normalMap: PbrTextureSynthesizer.getCapyFurNormalMap(),
-        normalScale: new THREE.Vector2(0.58, 0.58),
-        roughness: skin === 'golden' ? 0.45 : 0.84,
-        metalness: skin === 'golden' ? 0.38 : 0.04,
+        normalScale: new THREE.Vector2(0.18, 0.15),
+        roughness: skin === 'golden' ? 0.42 : 0.78,
+        metalness: skin === 'golden' ? 0.34 : 0.02,
+        sheen: 0.78,
+        sheenRoughness: 0.56,
+        sheenColor: sheenCol,
       });
     };
     return share ? this.getCachedMat(`fur:${skin}`, makeMat) : makeMat();
   }
 
+  private static createMuzzleMaterial(
+    skin: string,
+    share: boolean = true
+  ): THREE.MeshPhysicalMaterial {
+    const makeMat = () => {
+      const base = new THREE.Color(this.skinColors[skin] ?? this.skinColors.classic);
+      const cocoa = new THREE.Color(skin === 'classic' ? 0x673c22 : 0x523120);
+      const blended = base.clone().lerp(cocoa, skin === 'classic' ? 0.58 : 0.34);
+      const sheenCol = blended.clone().lerp(new THREE.Color(0xffe8cc), 0.42);
+      return new THREE.MeshPhysicalMaterial({
+        color: blended,
+        normalMap: PbrTextureSynthesizer.getCapyFurNormalMap(),
+        normalScale: new THREE.Vector2(0.14, 0.12),
+        roughness: 0.80,
+        metalness: 0.02,
+        sheen: 0.60,
+        sheenRoughness: 0.64,
+        sheenColor: sheenCol,
+      });
+    };
+    return share ? this.getCachedMat(`muzzle:${skin}`, makeMat) : makeMat();
+  }
+
   private static createUnderbellyMaterial(
     skin: string,
     share: boolean = true
-  ): THREE.MeshStandardMaterial {
+  ): THREE.MeshPhysicalMaterial {
     const makeMat = () => {
       const base = new THREE.Color(this.skinColors[skin] ?? this.skinColors.classic);
-      base.lerp(new THREE.Color(0xfef3c7), 0.38);
-      return new THREE.MeshStandardMaterial({
+      base.lerp(new THREE.Color(0xfef3d4), 0.44);
+      return new THREE.MeshPhysicalMaterial({
         color: base,
         normalMap: PbrTextureSynthesizer.getCapyFurNormalMap(),
-        normalScale: new THREE.Vector2(0.36, 0.36),
-        roughness: 0.9,
-        metalness: 0.02,
+        normalScale: new THREE.Vector2(0.14, 0.12),
+        roughness: 0.84,
+        metalness: 0.01,
+        sheen: 0.68,
+        sheenRoughness: 0.62,
+        sheenColor: new THREE.Color(0xfff8e7),
       });
     };
     return share ? this.getCachedMat(`belly:${skin}`, makeMat) : makeMat();
@@ -403,22 +424,22 @@ export class CapyModelGenerator {
 
   private static getTorsoGeometry(): THREE.BufferGeometry {
     if (this.sharedTorsoGeo) return this.sharedTorsoGeo;
-    // Anatomical capybara barrel profile revolved along spine, then rotated to Z
+    // Plump, cozy rounded-loaf capybara body profile revolved along spine
     const profile: THREE.Vector2[] = [
       new THREE.Vector2(0.001, -0.82),
-      new THREE.Vector2(0.28, -0.78),
-      new THREE.Vector2(0.49, -0.64),
-      new THREE.Vector2(0.58, -0.38), // plump capybara rump
-      new THREE.Vector2(0.60, -0.05), // deep barrel ribcage
-      new THREE.Vector2(0.57, 0.28),
-      new THREE.Vector2(0.52, 0.56), // muscular chest/shoulders
-      new THREE.Vector2(0.40, 0.76),
-      new THREE.Vector2(0.18, 0.86),
+      new THREE.Vector2(0.32, -0.76),
+      new THREE.Vector2(0.52, -0.60),
+      new THREE.Vector2(0.60, -0.34), // plump cozy rump
+      new THREE.Vector2(0.615, -0.02), // soft rounded barrel ribcage
+      new THREE.Vector2(0.585, 0.30),
+      new THREE.Vector2(0.535, 0.56), // rounded shoulders
+      new THREE.Vector2(0.41, 0.76),
+      new THREE.Vector2(0.19, 0.86),
       new THREE.Vector2(0.001, 0.89),
     ];
-    const geo = new THREE.LatheGeometry(profile, 24);
+    const geo = new THREE.LatheGeometry(profile, 28);
     geo.rotateX(Math.PI / 2);
-    geo.scale(0.94, 1.04, 1.0);
+    geo.scale(0.98, 1.03, 1.0);
     geo.computeVertexNormals();
     PbrTextureSynthesizer.prepareGeometryForPbr(geo);
     this.sharedTorsoGeo = geo;
@@ -427,30 +448,24 @@ export class CapyModelGenerator {
 
   private static getHeadGeometry(): THREE.BufferGeometry {
     if (this.sharedHeadGeo) return this.sharedHeadGeo;
-    // Iconic flat-topped, deep-jawed rectangular Capybara skull with smooth bevels
-    const shape = new THREE.Shape();
-    const w = 0.27;
-    const h = 0.24;
-    const r = 0.08;
-    shape.moveTo(-w + r, -h);
-    shape.lineTo(w - r, -h);
-    shape.quadraticCurveTo(w, -h, w, -h + r);
-    shape.lineTo(w * 0.92, h - r);
-    shape.quadraticCurveTo(w * 0.92, h, w * 0.92 - r, h);
-    shape.lineTo(-w * 0.92 + r, h);
-    shape.quadraticCurveTo(-w * 0.92, h, -w * 0.92, h - r);
-    shape.lineTo(-w, -h + r);
-    shape.quadraticCurveTo(-w, -h, -w + r, -h);
-
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      steps: 2,
-      depth: 0.56,
-      bevelEnabled: true,
-      bevelThickness: 0.11,
-      bevelSize: 0.09,
-      bevelSegments: 4,
-    });
-    geo.center();
+    // Soft, organic, super-smooth sculpted South American capybara head (zero flat bevel facets!)
+    const geo = new THREE.SphereGeometry(0.41, 28, 22);
+    const pos = geo.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      let x = pos.getX(i);
+      let y = pos.getY(i);
+      let z = pos.getZ(i);
+      // Taper gently upward toward gentle crown & slightly elongate depth forward-back
+      const crownPinch = y > 0 ? 1.0 - Math.pow(y / 0.41, 2) * 0.14 : 1.0 + Math.abs(y / 0.41) * 0.06;
+      x *= 0.94 * crownPinch;
+      y *= 0.88;
+      z *= 1.12;
+      // Softly flatten forehead nose bridge slightly for authentic calm capybara profile
+      if (z > 0.12 && y > 0.04) {
+        y -= (z - 0.12) * 0.08;
+      }
+      pos.setXYZ(i, x, y, z);
+    }
     geo.computeVertexNormals();
     PbrTextureSynthesizer.prepareGeometryForPbr(geo);
     this.sharedHeadGeo = geo;
@@ -459,40 +474,33 @@ export class CapyModelGenerator {
 
   private static getSnoutGeometry(): THREE.BufferGeometry {
     if (this.sharedSnoutGeo) return this.sharedSnoutGeo;
-    const shape = new THREE.Shape();
-    const w = 0.23;
-    const h = 0.20;
-    const r = 0.07;
-    shape.moveTo(-w + r, -h);
-    shape.lineTo(w - r, -h);
-    shape.quadraticCurveTo(w, -h, w, -h + r);
-    shape.lineTo(w * 0.95, h - r);
-    shape.quadraticCurveTo(w * 0.95, h, w * 0.95 - r, h);
-    shape.lineTo(-w * 0.95 + r, h);
-    shape.quadraticCurveTo(-w * 0.95, h, -w * 0.95, h - r);
-    shape.lineTo(-w, -h + r);
-    shape.quadraticCurveTo(-w, -h, -w + r, -h);
-
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      steps: 1,
-      depth: 0.38,
-      bevelEnabled: true,
-      bevelThickness: 0.09,
-      bevelSize: 0.08,
-      bevelSegments: 3,
-    });
-    geo.center();
+    // Soft plush rounded blunt muzzle cushion (no sharp boxy bevel corners)
+    const geo = new THREE.SphereGeometry(0.32, 24, 18);
+    const pos = geo.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      let x = pos.getX(i);
+      let y = pos.getY(i);
+      let z = pos.getZ(i);
+      x *= 0.96;
+      y *= 0.86;
+      z *= 0.96;
+      // Softly cushion/flatten only the very front tip where the adorable nose & smile sit
+      if (z > 0.18) {
+        z = 0.18 + (z - 0.18) * 0.56;
+      }
+      pos.setXYZ(i, x, y, z);
+    }
     geo.computeVertexNormals();
+    PbrTextureSynthesizer.prepareGeometryForPbr(geo);
     this.sharedSnoutGeo = geo;
     return geo;
   }
 
   private static getFurTuftGeometry(): THREE.BufferGeometry {
     if (this.sharedFurTuftGeo) return this.sharedFurTuftGeo;
-    const geo = new THREE.ConeGeometry(0.052, 0.21, 5);
-    geo.scale(0.68, 1.0, 1.25);
-    geo.translate(0, 0.08, 0);
-    geo.rotateX(-Math.PI * 0.34);
+    // Soft, gentle underside plush fleece cushion tucked cleanly along chest & belly contour
+    const geo = new THREE.SphereGeometry(0.036, 8, 6);
+    geo.scale(0.86, 0.36, 1.32);
     this.sharedFurTuftGeo = geo;
     return geo;
   }
@@ -529,25 +537,26 @@ export class CapyModelGenerator {
   ): THREE.Group {
     const limbRoot = new THREE.Group();
 
-    // Tier 0: Upper limb thigh/humerus column hinged at hip/shoulder (limbRoot origin)
+    // Tier 0: Soft furry upper thigh/shoulder limb sleeve matching coat seamlessly
     const upperGeo = this.getCachedGeo('limb_upper', () => {
-      const g = new THREE.CylinderGeometry(0.155, 0.13, 0.30, 12);
+      const g = new THREE.CylinderGeometry(0.175, 0.142, 0.30, 14);
       g.translate(0, -0.14, 0);
       return g;
     });
-    const upperMesh = new THREE.Mesh(upperGeo, this.legMaterial);
+    const upperMesh = new THREE.Mesh(upperGeo, furMat);
+    upperMesh.name = 'capyBody';
     upperMesh.castShadow = true;
     limbRoot.add(upperMesh);
 
-    // Tier 1: Muscular shoulder/thigh haunch on upper limb
+    // Tier 1: Smooth rounded shoulder/thigh haunch blending smoothly into torso
     const haunchGeo = this.getCachedGeo(isFront ? 'limb_haunch_f' : 'limb_haunch_b', () => {
-      const g = new THREE.SphereGeometry(isFront ? 0.21 : 0.25, 12, 10);
-      g.scale(0.82, 1.18, isFront ? 1.05 : 1.25);
+      const g = new THREE.SphereGeometry(isFront ? 0.215 : 0.255, 14, 12);
+      g.scale(0.86, 1.12, isFront ? 1.06 : 1.20);
       return g;
     });
     const haunch = new THREE.Mesh(haunchGeo, furMat);
     haunch.name = 'capyBody';
-    haunch.position.set(isLeft ? -0.03 : 0.03, -0.02, isFront ? -0.02 : -0.04);
+    haunch.position.set(isLeft ? 0.02 : -0.02, 0.02, isFront ? -0.02 : -0.02);
     limbRoot.add(haunch);
     tier1Bucket.push(haunch);
 
@@ -654,9 +663,9 @@ export class CapyModelGenerator {
         emissive: emissiveHex,
         emissiveIntensity: 0.0,
         normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
-        normalScale: new THREE.Vector2(0.52, 0.52),
+        normalScale: new THREE.Vector2(0.24, 0.24),
         bumpMap: this.getCitrusPeelBumpTexture(),
-        bumpScale: 0.025,
+        bumpScale: 0.008,
         roughness: 0.24,
         metalness: 0.04,
       });
@@ -780,6 +789,7 @@ export class CapyModelGenerator {
     const group = new THREE.Group() as CapyMeshGroup;
 
     const furMat = this.createFurMaterial(skin, shareMaterials);
+    const muzzleMat = this.createMuzzleMaterial(skin, shareMaterials);
     const bellyMat = this.createUnderbellyMaterial(skin, shareMaterials);
 
     const lodTier1Group = new THREE.Group();
@@ -791,7 +801,7 @@ export class CapyModelGenerator {
     const limbTier1Refs: THREE.Object3D[] = [];
     const limbTier2Refs: THREE.Object3D[] = [];
 
-    // --- 1. PRIMARY ORGANIC SCULPTED BARREL TORSO ---
+    // --- 1. PRIMARY ORGANIC SCULPTED COZY LOAF TORSO ---
     const bodyMesh = new THREE.Mesh(this.getTorsoGeometry(), furMat);
     bodyMesh.name = 'capyBody';
     bodyMesh.position.set(0, 0.74, 0.04);
@@ -799,46 +809,37 @@ export class CapyModelGenerator {
     bodyMesh.receiveShadow = true;
     group.add(bodyMesh);
 
-    // Tier 1: Soft contoured cream/fawn underbelly + pronounced low-slung Dachshund sternum keel chest
+    // Tier 1: Soft contoured warm cream/caramel underbelly + cozy chest fluff
     const bellyGeo = this.getCachedGeo('capy_belly', () => {
       const g = new THREE.SphereGeometry(0.49, 18, 12);
-      g.scale(0.84, 0.58, 1.42);
+      g.scale(0.86, 0.56, 1.38);
       return g;
     });
     const bellyMesh = new THREE.Mesh(bellyGeo, bellyMat);
-    bellyMesh.position.set(0, 0.49, 0.08);
+    bellyMesh.position.set(0, 0.49, 0.06);
     lodTier1Group.add(bellyMesh);
 
-    const keelGeo = this.getCachedGeo('capy_dachshund_keel', () => {
-      const g = new THREE.SphereGeometry(0.35, 16, 12);
-      g.scale(0.82, 0.72, 1.25);
+    const keelGeo = this.getCachedGeo('capy_chest_fluff', () => {
+      const g = new THREE.SphereGeometry(0.36, 16, 12);
+      g.scale(0.88, 0.74, 1.15);
       return g;
     });
-    const keelMesh = new THREE.Mesh(keelGeo, this.dachshundTanPointMaterial);
-    keelMesh.position.set(0, 0.45, 0.44);
+    const keelMesh = new THREE.Mesh(keelGeo, bellyMat);
+    keelMesh.position.set(0, 0.48, 0.44);
     lodTier1Group.add(keelMesh);
 
-    // Tier 2: Muscular neck dewlap + dark Dachshund dorsal saddle cape along spine
+    // Tier 2: Smooth neck-shoulder blend connecting torso and cute head seamlessly
     const neckDewlapGeo = this.getCachedGeo('capy_dewlap', () => {
-      const g = new THREE.SphereGeometry(0.42, 16, 12);
-      g.scale(0.92, 0.88, 0.85);
+      const g = new THREE.SphereGeometry(0.42, 18, 14);
+      g.scale(0.94, 0.84, 1.02);
       return g;
     });
     const neckDewlap = new THREE.Mesh(neckDewlapGeo, furMat);
     neckDewlap.name = 'capyBody';
-    neckDewlap.position.set(0, 0.84, 0.64);
+    neckDewlap.position.set(0, 0.82, 0.55);
     lodTier2Group.add(neckDewlap);
 
-    const torsoSaddleGeo = this.getCachedGeo('capy_dachshund_torso_saddle', () => {
-      const g = new THREE.SphereGeometry(0.48, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.46);
-      g.scale(0.84, 0.46, 1.44);
-      return g;
-    });
-    const torsoSaddle = new THREE.Mesh(torsoSaddleGeo, this.dachshundSaddleMaterial);
-    torsoSaddle.position.set(0, 1.07, -0.02);
-    lodTier2Group.add(torsoSaddle);
-
-    // --- 2. SCULPTED SOUTH AMERICAN CAPYBARA HEAD ---
+    // --- 2. SCULPTED CUTE SOUTH AMERICAN CAPYBARA HEAD ---
     const headGroup = new THREE.Group();
     headGroup.position.set(0, 1.02, 0.82);
 
@@ -849,172 +850,197 @@ export class CapyModelGenerator {
     headMesh.receiveShadow = true;
     headGroup.add(headMesh);
 
-    // Blunt dark chestnut muzzle
-    const snoutMesh = new THREE.Mesh(this.getSnoutGeometry(), this.snoutMaterial);
-    snoutMesh.position.set(0, 0.06, 0.44);
+    // Soft blended muzzle fur nose-bridge transitioning naturally out of head
+    const snoutMesh = new THREE.Mesh(this.getSnoutGeometry(), muzzleMat);
+    snoutMesh.name = 'capyMuzzle';
+    snoutMesh.position.set(0, 0.045, 0.40);
     snoutMesh.castShadow = true;
     headGroup.add(snoutMesh);
 
-    // Tier 1: Lower mandible jaw, moist rhinarium nose pad, recessed nostrils & philtrum cleft
+    // Tier 1: Soft tucked chin, velvety dark rhinarium nose pad, nostrils & gentle philtrum
     const headTier1 = new THREE.Group();
     const jawGeo = this.getCachedGeo('capy_jaw', () => {
-      const g = new THREE.SphereGeometry(0.24, 12, 10);
-      g.scale(0.95, 0.52, 1.35);
+      const g = new THREE.SphereGeometry(0.22, 14, 10);
+      g.scale(0.92, 0.44, 1.24);
       return g;
     });
     const jawMesh = new THREE.Mesh(jawGeo, bellyMat);
-    jawMesh.position.set(0, -0.17, 0.30);
+    jawMesh.position.set(0, -0.145, 0.27);
     headTier1.add(jawMesh);
 
     const rhinariumGeo = this.getCachedGeo('capy_rhinarium', () => {
-      const g = new THREE.SphereGeometry(0.20, 14, 10);
-      g.scale(1.12, 0.76, 0.52);
+      const g = new THREE.SphereGeometry(0.155, 16, 12);
+      g.scale(1.16, 0.70, 0.48);
       return g;
     });
     const rhinarium = new THREE.Mesh(rhinariumGeo, this.rhinariumMaterial);
-    rhinarium.position.set(0, 0.14, 0.68);
+    rhinarium.position.set(0, 0.125, 0.635);
     headTier1.add(rhinarium);
 
     const philtrum = new THREE.Mesh(
-      this.getCachedGeo('capy_philtrum', () => new THREE.BoxGeometry(0.026, 0.22, 0.05)),
+      this.getCachedGeo('capy_philtrum', () => new THREE.BoxGeometry(0.018, 0.165, 0.032)),
       this.rhinariumMaterial
     );
-    philtrum.position.set(0, 0.0, 0.72);
+    philtrum.position.set(0, 0.015, 0.648);
     headTier1.add(philtrum);
+
+    // Cute subtle "-w-" capybara smile curves
+    const smileGeo = this.getCachedGeo('capy_smile_arc', () => {
+      const g = new THREE.TorusGeometry(0.052, 0.010, 6, 12, Math.PI * 0.78);
+      return g;
+    });
+    const smileL = new THREE.Mesh(smileGeo, this.rhinariumMaterial);
+    smileL.position.set(-0.046, -0.048, 0.645);
+    smileL.rotation.set(0.18, -0.12, Math.PI * 1.11);
+    const smileR = new THREE.Mesh(smileGeo, this.rhinariumMaterial);
+    smileR.position.set(0.046, -0.048, 0.645);
+    smileR.rotation.set(0.18, 0.12, Math.PI * 1.11);
+    headTier1.add(smileL, smileR);
+
     headGroup.add(headTier1);
     limbTier1Refs.push(headTier1);
 
-    // Slanted capybara nostrils
+    // Cute slanted capybara nostrils
     const nostrilGeo = this.getCachedGeo('capy_nostril', () => {
-      const g = new THREE.SphereGeometry(0.048, 8, 8);
-      g.scale(1.25, 0.68, 0.65);
+      const g = new THREE.SphereGeometry(0.036, 10, 8);
+      g.scale(1.22, 0.66, 0.60);
       return g;
     });
     const nostrilL = new THREE.Mesh(nostrilGeo, this.rhinariumMaterial);
-    nostrilL.position.set(-0.12, 0.17, 0.74);
+    nostrilL.position.set(-0.098, 0.142, 0.678);
     nostrilL.rotation.z = 0.38;
     const nostrilR = nostrilL.clone();
-    nostrilR.position.x = 0.12;
+    nostrilR.position.x = 0.098;
     nostrilR.rotation.z = -0.38;
     headGroup.add(nostrilL, nostrilR);
 
-    // Expressive high-set capybara eyes (positioned near upper-back of skull like semi-aquatic mammals!)
-    const eyeGeo = this.getCachedGeo('capy_eye', () => new THREE.SphereGeometry(0.076, 14, 12));
+    // Soulful, gentle high-set capybara eyes with dual glossy catchlights
+    const eyeGeo = this.getCachedGeo('capy_eye', () => {
+      const g = new THREE.SphereGeometry(0.088, 18, 14);
+      g.scale(0.88, 1.02, 1.06);
+      return g;
+    });
     const eyeL = new THREE.Mesh(eyeGeo, this.eyeMaterial);
-    eyeL.position.set(-0.33, 0.29, 0.16);
+    eyeL.position.set(-0.320, 0.255, 0.17);
     const eyeR = eyeL.clone();
-    eyeR.position.x = 0.33;
+    eyeR.position.x = 0.320;
     headGroup.add(eyeL, eyeR);
 
-    // Tier 1: Glossy corneal catchlight reflections
-    const catchGeo = this.getCachedGeo('capy_catch', () => new THREE.SphereGeometry(0.024, 8, 8));
+    // Tier 1: Primary & secondary glossy catchlights
+    const catchGeo = this.getCachedGeo('capy_catch', () => new THREE.SphereGeometry(0.028, 8, 8));
     const catchL = new THREE.Mesh(catchGeo, this.eyeCatchlightMaterial);
-    catchL.position.set(-0.375, 0.315, 0.205);
+    catchL.position.set(-0.368, 0.285, 0.212);
     const catchR = catchL.clone();
-    catchR.position.x = 0.375;
-    headGroup.add(catchL, catchR);
-    limbTier1Refs.push(catchL, catchR);
+    catchR.position.x = 0.368;
 
-    // Tier 2: Cheek jowls, supraorbital brow ridges, blinking eyelids & tiny incisor peek
+    const catchSubGeo = this.getCachedGeo('capy_catch_sub', () => new THREE.SphereGeometry(0.013, 6, 6));
+    const catchSubL = new THREE.Mesh(catchSubGeo, this.eyeCatchlightMaterial);
+    catchSubL.position.set(-0.370, 0.236, 0.145);
+    const catchSubR = catchSubL.clone();
+    catchSubR.position.x = 0.370;
+
+    headGroup.add(catchL, catchR, catchSubL, catchSubR);
+    limbTier1Refs.push(catchL, catchR, catchSubL, catchSubR);
+
+    // Tier 2: Soft chubby fur cheeks, flush cheek blush tint & smooth blinking upper eyelids
     const headTier2 = new THREE.Group();
 
     const jowlGeo = this.getCachedGeo('capy_jowl', () => {
-      const g = new THREE.SphereGeometry(0.19, 12, 10);
-      g.scale(0.85, 0.78, 1.15);
+      const g = new THREE.SphereGeometry(0.225, 16, 12);
+      g.scale(0.92, 0.84, 1.24);
       return g;
     });
     const jowlL = new THREE.Mesh(jowlGeo, furMat);
     jowlL.name = 'capyHead';
-    jowlL.position.set(-0.26, -0.04, 0.24);
+    jowlL.position.set(-0.22, -0.04, 0.20);
     const jowlR = jowlL.clone();
-    jowlR.position.x = 0.26;
+    jowlR.position.x = 0.22;
     headTier2.add(jowlL, jowlR);
 
-    const browGeo = this.getCachedGeo('capy_brow', () => {
-      const g = new THREE.CapsuleGeometry(0.036, 0.15, 4, 8);
-      g.rotateX(Math.PI / 2);
+    const blushGeo = this.getCachedGeo('capy_cheek_blush', () => {
+      const g = new THREE.SphereGeometry(0.078, 12, 10);
+      g.scale(0.22, 0.56, 0.92);
       return g;
     });
-    const browL = new THREE.Mesh(browGeo, this.snoutMaterial);
-    browL.position.set(-0.33, 0.365, 0.16);
-    browL.rotation.z = 0.14;
+    const blushL = new THREE.Mesh(blushGeo, this.cheekBlushMaterial);
+    blushL.position.set(-0.352, 0.088, 0.19);
+    const blushR = blushL.clone();
+    blushR.position.x = 0.352;
+    headTier2.add(blushL, blushR);
+
+    const browGeo = this.getCachedGeo('capy_brow_soft', () => {
+      const g = new THREE.SphereGeometry(0.040, 10, 8);
+      g.scale(0.58, 0.42, 1.45);
+      return g;
+    });
+    const browL = new THREE.Mesh(browGeo, this.dachshundTanPointMaterial);
+    browL.position.set(-0.285, 0.358, 0.18);
     const browR = browL.clone();
-    browR.position.x = 0.33;
-    browR.rotation.z = -0.14;
+    browR.position.x = 0.285;
     headTier2.add(browL, browR);
 
-    // Dachshund tan-point eyebrow pips & cheek blazes (Capybara x Dachshund hallmark)
-    const tanPipGeo = this.getCachedGeo('dachshund_tan_pip', () => {
-      const g = new THREE.SphereGeometry(0.052, 8, 8);
-      g.scale(0.9, 0.65, 1.35);
-      return g;
-    });
-    const tanPipL = new THREE.Mesh(tanPipGeo, this.dachshundTanPointMaterial);
-    tanPipL.position.set(-0.27, 0.39, 0.25);
-    const tanPipR = tanPipL.clone();
-    tanPipR.position.x = 0.27;
-    headTier2.add(tanPipL, tanPipR);
-
-    const incisorGeo = this.getCachedGeo('capy_incisor', () => new THREE.BoxGeometry(0.055, 0.055, 0.025));
+    const incisorGeo = this.getCachedGeo('capy_incisor', () => new THREE.BoxGeometry(0.044, 0.040, 0.020));
     const incisorL = new THREE.Mesh(incisorGeo, this.incisorMaterial);
-    incisorL.position.set(-0.032, -0.115, 0.69);
+    incisorL.position.set(-0.025, -0.092, 0.618);
     const incisorR = incisorL.clone();
-    incisorR.position.x = 0.032;
+    incisorR.position.x = 0.025;
     headTier2.add(incisorL, incisorR);
 
     headGroup.add(headTier2);
     limbTier2Refs.push(headTier2);
 
-    // Blinking upper eyelids
+    // Gentle soft-curved upper eyelids matching coat (clean resting arch, closes cleanly on blink)
     const eyelidGeo = this.getCachedGeo(
       'capy_eyelid',
-      () => new THREE.SphereGeometry(0.082, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.52)
+      () => new THREE.SphereGeometry(0.092, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.52)
     );
-    const eyelidL = new THREE.Mesh(eyelidGeo, this.snoutMaterial);
-    eyelidL.position.set(-0.33, 0.295, 0.16);
-    eyelidL.rotation.z = 0.22;
-    eyelidL.scale.y = 0.15; // open by default, scales to 1.0 during blink
+    const eyelidL = new THREE.Mesh(eyelidGeo, furMat);
+    eyelidL.name = 'capyHead';
+    eyelidL.position.set(-0.320, 0.268, 0.17);
+    eyelidL.rotation.z = 0.12;
+    eyelidL.scale.y = 0.09; // open by default, scales to 1.0 during blink
     const eyelidR = eyelidL.clone();
-    eyelidR.position.x = 0.33;
-    eyelidR.rotation.z = -0.22;
+    eyelidR.position.x = 0.320;
+    eyelidR.rotation.z = -0.12;
     headGroup.add(eyelidL, eyelidR);
     limbTier2Refs.push(eyelidL, eyelidR);
 
-    // Hybrid Semi-Flopped Capybara–Dachshund Ears (cupped pinna crown + soft pendulous hound ear flap)
+    // Adorable Compact Cupped Velvet Capybara Ears framing the crown cleanly
     const outerEarGeo = this.getCachedGeo('capy_outer_ear', () => {
-      const g = new THREE.SphereGeometry(0.12, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.64);
-      g.scale(0.75, 1.25, 0.9);
+      const g = new THREE.SphereGeometry(0.132, 14, 12);
+      g.scale(0.56, 1.04, 0.92);
       return g;
     });
-    const houndFlapGeo = this.getCachedGeo('dachshund_ear_flap', () => {
-      const g = new THREE.SphereGeometry(0.135, 12, 10);
-      g.scale(0.46, 1.65, 1.08);
+    const houndFlapGeo = this.getCachedGeo('capy_ear_rim', () => {
+      const g = new THREE.SphereGeometry(0.095, 10, 8);
+      g.scale(0.42, 0.72, 0.78);
       return g;
     });
     const innerEarGeo = this.getCachedGeo('capy_inner_ear', () => {
-      const g = new THREE.SphereGeometry(0.082, 10, 8);
-      g.scale(0.6, 0.95, 0.35);
+      const g = new THREE.SphereGeometry(0.088, 10, 8);
+      g.scale(0.48, 0.88, 0.62);
       return g;
     });
     const buildEar = (isLeft: boolean) => {
       const earRoot = new THREE.Group();
       const s = isLeft ? -1 : 1;
-      earRoot.position.set(s * 0.33, 0.38, -0.09);
-      earRoot.rotation.set(0.18, s * -0.25, s * 0.32);
+      earRoot.position.set(s * 0.31, 0.365, -0.095);
+      earRoot.rotation.set(0.16, s * -0.28, s * 0.28);
 
-      const outerEar = new THREE.Mesh(outerEarGeo, this.dachshundSaddleMaterial);
-      outerEar.rotation.x = -Math.PI * 0.35;
+      const outerEar = new THREE.Mesh(outerEarGeo, muzzleMat);
+      outerEar.name = 'capyMuzzle';
+      outerEar.rotation.x = -Math.PI * 0.18;
+      outerEar.castShadow = true;
       earRoot.add(outerEar);
 
-      // Pendulous rounded Dachshund velvet ear flap framing temples
-      const houndFlap = new THREE.Mesh(houndFlapGeo, this.dachshundSaddleMaterial);
-      houndFlap.position.set(s * 0.06, -0.17, 0.04);
-      houndFlap.rotation.set(0.14, 0, s * -0.18);
-      houndFlap.castShadow = true;
-      earRoot.add(houndFlap);
+      const earLobe = new THREE.Mesh(houndFlapGeo, muzzleMat);
+      earLobe.name = 'capyMuzzle';
+      earLobe.position.set(s * 0.028, -0.068, 0.015);
+      earLobe.rotation.set(0.08, 0, s * -0.12);
+      earRoot.add(earLobe);
 
       const innerEar = new THREE.Mesh(innerEarGeo, this.innerEarMaterial);
-      innerEar.position.set(0, 0.0, 0.04);
+      innerEar.position.set(s * 0.012, -0.01, 0.042);
       earRoot.add(innerEar);
       limbTier1Refs.push(innerEar);
 
@@ -1120,57 +1146,60 @@ export class CapyModelGenerator {
       g.scale(0.9, 0.85, 1.15);
       return g;
     });
-    const tail = new THREE.Mesh(tailGeo, this.snoutMaterial);
+    const tail = new THREE.Mesh(tailGeo, muzzleMat);
+    tail.name = 'capyMuzzle';
     tail.position.set(0, 0.68, -0.86);
 
     rearAssemblyGroup.add(legBL, legBR, tail);
     group.add(rearAssemblyGroup);
 
-    // --- 6. TIER 3: 3D LAYERED BRISTLE FUR TUFTS (INSTANCED FOR ZERO DRAW-CALL OVERHEAD) ---
+    // --- 6. TIER 3: SOFT UNDERSIDE CHEST & BELLY PLUSH FLEECE (SILKY CONTINUOUS VELVET TOP/BACK) ---
     const tuftGeo = this.getFurTuftGeometry();
     const frontTuftCount = 72;
     const furInstancedMesh = new THREE.InstancedMesh(tuftGeo, furMat, frontTuftCount);
     furInstancedMesh.name = 'capyBody';
+    furInstancedMesh.receiveShadow = true;
     furInstancedMesh.frustumCulled = false;
 
     for (let i = 0; i < frontTuftCount; i++) {
-      const u = i / frontTuftCount;
-      // Distribute tufts along dorsal crest, neck ruff, chest, and flanks
-      const z = -0.35 + u * 1.12;
-      const band = (i % 7) - 3; // -3..+3 across top & upper flanks
-      const theta = band * 0.34 + ((i % 3) - 1) * 0.08;
-      const rx = 0.50 * (1 - Math.abs(z - 0.1) * 0.22);
-      const ry = 0.56 * (1 - Math.abs(z - 0.1) * 0.18);
-
-      const px = Math.sin(theta) * rx;
-      const py = 0.74 + Math.cos(theta) * ry;
+      // Cluster along underside throat/chest & belly (theta centered around Math.PI = bottom)
+      const ring = Math.floor(i / 18); // 0..3
+      const slot = i % 18;
+      const z = -0.10 + ring * 0.22;
+      const theta = Math.PI + ((slot / 17) - 0.5) * Math.PI * 0.62;
+      const profileR = 0.51 - ring * 0.025;
+      const px = Math.sin(theta) * profileR * 0.86;
+      const py = 0.72 + Math.cos(theta) * profileR * 0.84;
       _furDummy.position.set(px, py, z);
-      _furDummy.rotation.set(-0.22 + (i % 4) * 0.06, theta * 0.55, -theta * 0.85);
-      const s = 0.82 + (i % 5) * 0.11;
-      _furDummy.scale.set(s, s * (1.0 + (z > 0.45 ? 0.25 : 0)), s);
+      _furDummy.rotation.set(0.14, theta * 0.12, -theta * 0.94);
+      const s = 0.96 + (i % 3) * 0.10;
+      _furDummy.scale.set(s, s * 0.72, s * 1.15);
       _furDummy.updateMatrix();
       furInstancedMesh.setMatrixAt(i, _furDummy.matrix);
     }
     furInstancedMesh.instanceMatrix.needsUpdate = true;
     lodTier3Group.add(furInstancedMesh);
 
-    // Rear rump fur tufts (inside rearAssemblyGroup so they hide cleanly when Dachshund Caboose takes over)
+    // Rear underside plush fleece (inside rearAssemblyGroup, hidden from top/back rings)
     const rearTuftCount = 24;
     const rearFurInstancedMesh = new THREE.InstancedMesh(tuftGeo, furMat, rearTuftCount);
     rearFurInstancedMesh.name = 'capyBody';
+    rearFurInstancedMesh.receiveShadow = true;
     rearFurInstancedMesh.frustumCulled = false;
     for (let i = 0; i < rearTuftCount; i++) {
-      const z = -0.78 + (i / rearTuftCount) * 0.44;
-      const band = (i % 5) - 2;
-      const theta = band * 0.42;
-      const radiusScale = 1 - Math.max(0, (-z - 0.45) * 0.85);
+      const ring = Math.floor(i / 12);
+      const slot = i % 12;
+      const z = -0.44 - ring * 0.16;
+      const theta = Math.PI + ((slot / 11) - 0.5) * Math.PI * 0.52;
+      const r = 0.44 - ring * 0.05;
       _furDummy.position.set(
-        Math.sin(theta) * 0.48 * radiusScale,
-        0.72 + Math.cos(theta) * 0.52 * radiusScale,
+        Math.sin(theta) * r * 0.84,
+        0.70 + Math.cos(theta) * r * 0.82,
         z
       );
-      _furDummy.rotation.set(-0.35, theta * 0.5, -theta * 0.85);
-      _furDummy.scale.setScalar(0.85 + (i % 3) * 0.12);
+      _furDummy.rotation.set(0.14, theta * 0.12, -theta * 0.94);
+      const s = 0.92 + (i % 3) * 0.08;
+      _furDummy.scale.set(s, s * 0.7, s);
       _furDummy.updateMatrix();
       rearFurInstancedMesh.setMatrixAt(i, _furDummy.matrix);
     }
@@ -1288,25 +1317,15 @@ export class CapyModelGenerator {
     const lodTier3Group = new THREE.Group();
     group.add(lodTier1Group, lodTier2Group, lodTier3Group);
 
-    // Tier 1: Seamless longer Dachshund cream/tan underbelly along Z
+    // Tier 1: Seamless cozy warm underbelly along Z (continuous velvet back on top — zero harsh stripe cap)
     const bellyGeo = this.getCachedGeo('dac_belly_long', () => {
       const g = new THREE.SphereGeometry(0.45, 16, 10);
-      g.scale(0.84, 0.56, 1.54);
+      g.scale(0.82, 0.50, 1.50);
       return g;
     });
     const belly = new THREE.Mesh(bellyGeo, bellyMat);
-    belly.position.set(0, 0.48, 0);
+    belly.position.set(0, 0.45, 0);
     lodTier1Group.add(belly);
-
-    // Tier 1/2: Dark Dachshund dorsal saddle stripe running cleanly along every long back segment
-    const saddleGeo = this.getCachedGeo('dac_dorsal_saddle_long', () => {
-      const g = new THREE.SphereGeometry(0.45, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.45);
-      g.scale(0.8, 0.44, 1.56);
-      return g;
-    });
-    const dorsalSaddle = new THREE.Mesh(saddleGeo, this.dachshundSaddleMaterial);
-    dorsalSaddle.position.set(0, 1.04, 0);
-    lodTier1Group.add(dorsalSaddle);
 
     // Mounted Back-Counter Fruit Slot on EVERY Dachshund segment (1 fruit per added segment!)
     // Kept directly inside segment group so it stays visible across all LOD tiers whenever active.
@@ -1364,21 +1383,25 @@ export class CapyModelGenerator {
     lodTier1Group.userData.linkedNodes = segT1Refs;
     lodTier2Group.userData.linkedNodes = segT2Refs;
 
-    // Tier 3: 24-tuft 3D bristle fur distributed across the longer [-0.62 .. +0.62] back segment
+    // Tier 3: Flush soft plush fleece along lower flank-belly joints (smooth velvet back on top!)
     const segTuftCount = 24;
     const furInstancedMesh = new THREE.InstancedMesh(
       this.getFurTuftGeometry(),
       furMat,
       segTuftCount
     );
+    furInstancedMesh.name = 'capyBody';
+    furInstancedMesh.receiveShadow = true;
     furInstancedMesh.frustumCulled = false;
     for (let i = 0; i < segTuftCount; i++) {
-      const z = -0.62 + (i / Math.max(1, segTuftCount - 1)) * 1.24;
-      const band = (i % 5) - 2;
-      const theta = band * 0.38;
-      _furDummy.position.set(Math.sin(theta) * 0.46, 0.72 + Math.cos(theta) * 0.49, z);
-      _furDummy.rotation.set(-0.24, theta * 0.5, -theta * 0.85);
-      _furDummy.scale.setScalar(0.84 + (i % 4) * 0.1);
+      const side = i % 2 === 0 ? -1 : 1;
+      const idx = Math.floor(i / 2); // 0..11
+      const z = -0.58 + (idx / 11) * 1.16;
+      const theta = Math.PI + side * (0.28 + (i % 3) * 0.14);
+      _furDummy.position.set(Math.sin(theta) * 0.42, 0.72 + Math.cos(theta) * 0.44, z);
+      _furDummy.rotation.set(0.08, theta * 0.12, -theta * 0.94);
+      const s = 0.92 + (i % 3) * 0.08;
+      _furDummy.scale.set(s, s * 0.68, s * 1.15);
       _furDummy.updateMatrix();
       furInstancedMesh.setMatrixAt(i, _furDummy.matrix);
     }
@@ -1454,15 +1477,6 @@ export class CapyModelGenerator {
     rumpMesh.receiveShadow = true;
     group.add(rumpMesh);
 
-    const rumpSaddleGeo = this.getCachedGeo('dac_rump_saddle', () => {
-      const g = new THREE.SphereGeometry(0.46, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.45);
-      g.scale(0.84, 0.46, 1.18);
-      return g;
-    });
-    const rumpSaddle = new THREE.Mesh(rumpSaddleGeo, this.dachshundSaddleMaterial);
-    rumpSaddle.position.set(0, 1.05, 0.06);
-    lodTier1Group.add(rumpSaddle);
-
     const legBL = this.buildDetailedLimb(false, true, furMat, t1Refs, t2Refs);
     legBL.position.set(-0.37, 0.53, -0.06);
 
@@ -1470,48 +1484,52 @@ export class CapyModelGenerator {
     legBR.position.set(0.37, 0.53, -0.06);
     group.add(legBL, legBR);
 
-    // Sculpted, gracefully upturned tapered Dachshund whip tail!
+    // Cute plump vestigial capybara tail nub matching coat seamlessly (still wags inside tailGroup!)
     const tailGroup = new THREE.Group();
-    tailGroup.position.set(0, 0.72, -0.58);
-    const tailBaseGeo = this.getCachedGeo('dac_whip_tail_base', () => {
-      const g = new THREE.CylinderGeometry(0.058, 0.095, 0.34, 10);
-      g.translate(0, 0.16, 0);
+    tailGroup.position.set(0, 0.68, -0.58);
+    const tailBaseGeo = this.getCachedGeo('dac_capy_tail_nub', () => {
+      const g = new THREE.SphereGeometry(0.115, 12, 10);
+      g.scale(0.92, 0.86, 1.22);
       return g;
     });
     const tailBase = new THREE.Mesh(tailBaseGeo, furMat);
-    tailBase.rotation.x = -Math.PI * 0.36;
+    tailBase.name = 'capyBody';
+    tailBase.position.set(0, 0.0, -0.04);
     tailBase.castShadow = true;
 
-    const tailTipGeo = this.getCachedGeo('dac_whip_tail_tip', () => {
-      const g = new THREE.ConeGeometry(0.056, 0.34, 8);
-      g.translate(0, 0.16, 0);
+    const tailTipGeo = this.getCachedGeo('dac_capy_tail_tip', () => {
+      const g = new THREE.SphereGeometry(0.068, 10, 8);
+      g.scale(0.9, 0.85, 1.15);
       return g;
     });
-    const tailTip = new THREE.Mesh(tailTipGeo, this.dachshundSaddleMaterial);
-    tailTip.position.set(0, 0.28, 0);
-    tailTip.rotation.x = 0.28;
+    const tailTip = new THREE.Mesh(tailTipGeo, this.createMuzzleMaterial(skin));
+    tailTip.position.set(0, -0.01, -0.09);
     tailTip.castShadow = true;
     tailBase.add(tailTip);
 
     tailGroup.add(tailBase);
     group.add(tailGroup);
 
-    // Tier 3 rump bristle fur tufts
+    // Tier 3 plush fleece clustered cleanly around tail base & lower haunch transition (smooth butt top!)
     const furCount = 28;
     const furInstancedMesh = new THREE.InstancedMesh(this.getFurTuftGeometry(), furMat, furCount);
+    furInstancedMesh.name = 'capyBody';
+    furInstancedMesh.receiveShadow = true;
     furInstancedMesh.frustumCulled = false;
     for (let i = 0; i < furCount; i++) {
-      const z = -0.44 + (i / furCount) * 0.72;
-      const band = (i % 5) - 2;
-      const theta = band * 0.42;
-      const rScale = 1 - Math.max(0, (-z - 0.15) * 0.65);
+      const ring = Math.floor(i / 14);
+      const slot = i % 14;
+      const z = -0.18 - ring * 0.18;
+      const theta = Math.PI + ((slot / 13) - 0.5) * Math.PI * 0.54;
+      const rScale = 0.43 - ring * 0.04;
       _furDummy.position.set(
-        Math.sin(theta) * 0.48 * rScale,
-        0.72 + Math.cos(theta) * 0.52 * rScale,
+        Math.sin(theta) * rScale * 0.84,
+        0.70 + Math.cos(theta) * rScale * 0.82,
         z
       );
-      _furDummy.rotation.set(-0.32, theta * 0.5, -theta * 0.85);
-      _furDummy.scale.setScalar(0.86 + (i % 3) * 0.1);
+      _furDummy.rotation.set(0.14, theta * 0.12, -theta * 0.94);
+      const s = 0.92 + (i % 3) * 0.08;
+      _furDummy.scale.set(s, s * 0.68, s);
       _furDummy.updateMatrix();
       furInstancedMesh.setMatrixAt(i, _furDummy.matrix);
     }
@@ -1708,22 +1726,51 @@ export class CapyModelGenerator {
         ? overrideFurHex
         : (this.skinColors[skin] ?? this.skinColors.classic);
     const furTex = this.getFurAlbedoTexture(furColor);
+    const sheenColor = new THREE.Color(furColor).lerp(new THREE.Color(0xfff1d6), 0.58);
+    const muzzleColor = new THREE.Color(furColor).lerp(
+      new THREE.Color(skin === 'classic' ? 0x673c22 : 0x523120),
+      skin === 'classic' ? 0.58 : 0.34
+    );
+    const muzzleSheenColor = muzzleColor.clone().lerp(new THREE.Color(0xffe8cc), 0.42);
 
     capy.traverse((obj) => {
       if (obj instanceof THREE.Mesh && (obj.name === 'capyBody' || obj.name === 'capyHead')) {
-        const mat = obj.material as THREE.MeshStandardMaterial;
+        const mat = obj.material as THREE.MeshPhysicalMaterial;
         mat.color.setHex(0xffffff);
         mat.map = furTex;
-        mat.roughness = skin === 'golden' ? 0.45 : 0.84;
-        mat.metalness = skin === 'golden' ? 0.38 : 0.04;
+        mat.roughness = skin === 'golden' ? 0.42 : 0.78;
+        mat.metalness = skin === 'golden' ? 0.34 : 0.02;
+        if (mat.sheenColor) {
+          mat.sheen = 0.78;
+          mat.sheenRoughness = 0.56;
+          mat.sheenColor.copy(sheenColor);
+        }
+        mat.needsUpdate = true;
+      } else if (obj instanceof THREE.Mesh && obj.name === 'capyMuzzle') {
+        const mat = obj.material as THREE.MeshPhysicalMaterial;
+        mat.color.copy(muzzleColor);
+        if (mat.sheenColor) {
+          mat.sheenColor.copy(muzzleSheenColor);
+        }
         mat.needsUpdate = true;
       }
     });
 
     if (capy.userData.furInstancedMesh) {
-      const fMat = capy.userData.furInstancedMesh.material as THREE.MeshStandardMaterial;
+      const fMat = capy.userData.furInstancedMesh.material as THREE.MeshPhysicalMaterial;
       fMat.map = furTex;
+      if (fMat.sheenColor) {
+        fMat.sheenColor.copy(sheenColor);
+      }
       fMat.needsUpdate = true;
+    }
+    if (capy.userData.rearFurInstancedMesh) {
+      const rfMat = capy.userData.rearFurInstancedMesh.material as THREE.MeshPhysicalMaterial;
+      rfMat.map = furTex;
+      if (rfMat.sheenColor) {
+        rfMat.sheenColor.copy(sheenColor);
+      }
+      rfMat.needsUpdate = true;
     }
 
     const variety =

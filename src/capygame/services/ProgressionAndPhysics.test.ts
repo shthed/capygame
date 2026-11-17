@@ -1315,6 +1315,10 @@ test('Open-World Non-Overlapping Archipelago: zero island intersections and unre
   const openGroundY = sampleContiguousGroundY(65, 0, null, 0);
   assert.equal(openGroundY, OPEN_OCEAN_SEABED_Y);
 
+  // 5. Far-hemisphere Capytorio endless continental terrain (wx >= 500) is flat at y = 0.0 with no bounds
+  assert.equal(sampleContiguousGroundY(1200, 0, null, 0), 0.0);
+  assert.equal(sampleContiguousGroundY(4200, -1850, null, 0), 0.0);
+
   const fluid = new ShallowWaterFluidSolver();
   const sample = fluid.sampleFluid(65, OPEN_OCEAN_SURFACE_Y - 0.1, 0, 0.68, null);
   assert.equal(sample.inFluid, true);
@@ -1459,6 +1463,21 @@ test('QuadrupedGaitSolver: linear Dachshund growth, displacement-locked gait, 2-
   }
   assert.ok(jy[jNodes - 2] > 0.55, `Reverse jump lifts trailing middle segment (${jy[jNodes - 2].toFixed(2)}m)`);
 });
+
+test('Capytorio Camera Mode: defaults to Factorio top-down oblique and sanitizes chase/oblique cleanly', () => {
+  assert.equal(DEFAULT_CAPY_SETTINGS.capytorioCameraMode, 'oblique');
+  assert.equal(ProgressionService.sanitizeGameSettings({}).capytorioCameraMode, 'oblique');
+  assert.equal(
+    ProgressionService.sanitizeGameSettings({ capytorioCameraMode: 'chase' }).capytorioCameraMode,
+    'chase'
+  );
+  assert.equal(
+    ProgressionService.sanitizeGameSettings({ capytorioCameraMode: 'invalid' as unknown as 'oblique' })
+      .capytorioCameraMode,
+    'oblique'
+  );
+});
+
 
 
 

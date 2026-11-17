@@ -33,7 +33,6 @@ let sabInt32: Int32Array | null = null;
 let sabFloat32: Float32Array | null = null;
 
 let staticHandles: number[] = [];
-let paddleBody: RAPIER.RigidBody | null = null;
 let hammerBodies: RAPIER.RigidBody[] = [];
 let seeSawBody: RAPIER.RigidBody | null = null;
 
@@ -59,10 +58,11 @@ function buildStaticColliders(
     .setFriction(0.65);
   staticHandles.push(w.createCollider(sanctuarySlab).handle);
 
-  const breakoutSlab = RAPIER.ColliderDesc.cuboid(9.2, 0.5, 16.0)
-    .setTranslation(ZONE_LOCATIONS.breakout.x, -0.5, ZONE_LOCATIONS.breakout.z + 4.0)
+  // Unbounded far-hemisphere continental floor slab for Capytorio (wx >= 500..100500, |wz| <= 50000)
+  const capytorioContinentalSlab = RAPIER.ColliderDesc.cuboid(50000, 0.5, 50000)
+    .setTranslation(50500, -0.5, 0)
     .setFriction(0.65);
-  staticHandles.push(w.createCollider(breakoutSlab).handle);
+  staticHandles.push(w.createCollider(capytorioContinentalSlab).handle);
 
   const runnerSlab = RAPIER.ColliderDesc.cuboid(8.4, 0.5, 55.75)
     .setTranslation(ZONE_LOCATIONS.runner.x, -0.5, ZONE_LOCATIONS.runner.z - 42.25)
@@ -107,20 +107,7 @@ function buildStaticColliders(
 }
 
 function initDynamicArenaBodies(w: RAPIER.World): void {
-  // 1. Breakout Kinematic Deflector Paddle (+75, -75)
-  const bz = ZONE_LOCATIONS.breakout;
-  const paddleDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-    bz.x,
-    0.5,
-    bz.z + 9.2
-  );
-  paddleBody = w.createRigidBody(paddleDesc);
-  w.createCollider(
-    RAPIER.ColliderDesc.cuboid(1.9, 0.4, 0.45).setRestitution(1.02).setFriction(0.05),
-    paddleBody
-  );
-
-  // 2. Yuzu Mountain Kinematic Sweeper Hammers (+75, +75)
+  // 1. Yuzu Mountain Kinematic Sweeper Hammers (+110, +135)
   const fz = ZONE_LOCATIONS.fallguys;
   hammerBodies = [];
   for (const zOff of [-12, -20]) {
@@ -225,14 +212,7 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
     const subDt = clampedDt / substeps;
     world.timestep = subDt;
 
-    // Update kinematic paddle & rotating hammers
-    if (paddleBody) {
-      paddleBody.setNextKinematicTranslation({
-        x: ZONE_LOCATIONS.breakout.x + msg.paddleLocalX,
-        y: 0.5,
-        z: ZONE_LOCATIONS.breakout.z + 9.2,
-      });
-    }
+    // Update rotating hammers
     for (let h = 0; h < hammerBodies.length; h++) {
       const halfAngle = (msg.hammerAngles[h] ?? 0) * 0.5;
       hammerBodies[h].setNextKinematicRotation({

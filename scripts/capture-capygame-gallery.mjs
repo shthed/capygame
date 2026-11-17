@@ -71,7 +71,7 @@ async function captureGallery() {
   await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return;
-    mgr.stats.unlockedModes = ['sanctuary', 'spore', 'breakout', 'runner', 'fallguys'];
+    mgr.stats.unlockedModes = ['sanctuary', 'spore', 'capytorio', 'runner', 'fallguys'];
     mgr.resumeSurfacePlayFromForest(true);
     mgr.switchMode('sanctuary', false);
     for (let k = 0; k < 4; k++) {
@@ -123,10 +123,10 @@ async function captureGallery() {
   saveToAllDirs('capygame_contiguous_promenade.png', await captureCdpPng(cdp));
   await page.getByTestId('close-infographic-btn').click({ force: true });
 
-  // 4. Capture All 4 Outer Contiguous Districts (Spore Lagoon, Yuzu Breakout, Number Stampede, Yuzu Mountain)
+  // 4. Capture All 4 Outer Contiguous Districts (Spore Lagoon, Capytorio Frontier, Number Stampede, Yuzu Mountain)
   const outerDistricts = [
     { id: 'spore', file: 'capygame_spore.png' },
-    { id: 'breakout', file: 'capygame_breakout.png' },
+    { id: 'capytorio', file: 'capygame_capytorio.png' },
     { id: 'runner', file: 'capygame_runner.png' },
     { id: 'fallguys', file: 'capygame_fallguys.png' },
   ];
@@ -134,7 +134,7 @@ async function captureGallery() {
     await page.evaluate((modeId) => {
       const mgr = window.__capyManager;
       if (!mgr) return;
-      mgr.stats.unlockedModes = ['sanctuary', 'spore', 'breakout', 'runner', 'fallguys'];
+      mgr.stats.unlockedModes = ['sanctuary', 'spore', 'capytorio', 'runner', 'fallguys'];
       mgr.setCosmicStage('playing');
       mgr.switchMode(modeId, false);
       for (let s = 0; s < 10; s++) mgr.tick(0.05);

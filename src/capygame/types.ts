@@ -18,7 +18,8 @@ export {
   type BountyProgressItem,
 };
 
-export type PlayStyle = 'sanctuary' | 'spore' | 'breakout' | 'runner' | 'fallguys';
+import type { CapytorioSerializedState } from './engine/CapytorioFactoryEngine';
+export type PlayStyle = 'sanctuary' | 'spore' | 'capytorio' | 'runner' | 'fallguys';
 
 export type MutationId = 'flippers' | 'wings' | 'tusks' | 'horn' | 'shell' | 'glow_tail';
 
@@ -289,6 +290,7 @@ import type {
 export interface CapyGameSettings {
   advancedMode: boolean;
   cameraFollowBehind: boolean;
+  capytorioCameraMode: 'oblique' | 'chase';
   mouselookEnabled: boolean;
   mouselookSensitivity: number;
   invertMouseY: boolean;
@@ -333,6 +335,7 @@ export interface CapyGameSettings {
 export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   advancedMode: false,
   cameraFollowBehind: true,
+  capytorioCameraMode: 'oblique',
   mouselookEnabled: true,
   mouselookSensitivity: 1.0,
   invertMouseY: false,
@@ -375,7 +378,7 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
 };
 
 export interface ProgressiveUnlockMilestone {
-  id: 'sanctuary_build' | 'spore_world' | 'breakout_world' | 'runner_world' | 'fallguys_world';
+  id: 'sanctuary_build' | 'spore_world' | 'capytorio_world' | 'runner_world' | 'fallguys_world';
   title: string;
   subtitle: string;
   requiredDna: number;
@@ -398,11 +401,11 @@ export const PROGRESSIVE_UNLOCKS: ProgressiveUnlockMilestone[] = [
     targetMode: 'spore',
   },
   {
-    id: 'breakout_world',
-    title: 'Yuzu Breakout & Abilities',
-    subtitle: 'Smash crystal waves & upgrade stats',
-    requiredDna: 12,
-    targetMode: 'breakout',
+    id: 'capytorio_world',
+    title: 'Capytorio Factory & Abilities',
+    subtitle: 'Automate drills, belts, smelters & Space Age science',
+    requiredDna: 0,
+    targetMode: 'capytorio',
   },
   {
     id: 'runner_world',
@@ -436,11 +439,11 @@ export const ZONE_LOCATIONS: Record<
     title: 'Spore Lagoon',
     subtitle: 'North-West Evolution Atoll (-110, -110)',
   },
-  breakout: {
-    x: 110,
-    z: -110,
-    title: 'Yuzu Breakout',
-    subtitle: 'North-East Arcade Stadium (+110, -110)',
+  capytorio: {
+    x: 1200,
+    z: 0,
+    title: 'Capytorio Frontier',
+    subtitle: 'Far-Hemisphere Endless Ore Plain (+1200, 0)',
   },
   runner: {
     x: -110,
@@ -468,9 +471,10 @@ export interface PlayerStats {
   evolutionStage: number;
 
   highScoreSpore: number;
-  highScoreBreakout: number;
+  highScoreCapytorio: number;
   highScoreRunner: number;
   highScoreFallGuys: number;
+  capytorioFactory?: CapytorioSerializedState;
 
   upgrades: {
     herdSize: number;
@@ -505,7 +509,7 @@ export const INITIAL_PLAYER_STATS: PlayerStats = {
   unlockedMutations: [],
   evolutionStage: 1,
   highScoreSpore: 0,
-  highScoreBreakout: 0,
+  highScoreCapytorio: 0,
   highScoreRunner: 0,
   highScoreFallGuys: 0,
   upgrades: {
@@ -583,6 +587,7 @@ export interface CosmicLandingSpot {
   subtitle: string;
   lat: number;
   lon: number;
+  targetPlayStyle?: PlayStyle;
   biome: PlanetaryBiomeConfig;
 }
 
@@ -985,6 +990,24 @@ function createStarSystemsForGalaxy(
                 beachSandHex: 0xc7d2fe,
                 floraPaletteHexes: [0x38bdf8, 0xc084fc, 0xf472b6, 0xfacc15, 0x5eead4],
                 gravityMultiplier: 0.78,
+              },
+            },
+            {
+              id: `${galaxyPrefix}_land_capytorio`,
+              name: 'Capytorio Frontier (Far Hemisphere)',
+              subtitle: 'Untouched endless mineral plains on the other side of the planet',
+              lat: -18,
+              lon: -155,
+              targetPlayStyle: 'capytorio',
+              biome: {
+                biomeName: 'Capytorio Frontier',
+                skyHex: baseSkyHex,
+                fogHex: baseSkyHex,
+                oceanHex: baseOceanHex,
+                islandGrassHex: 0x94a3b8,
+                beachSandHex: 0xfde68a,
+                floraPaletteHexes: [0x60a5fa, 0xf97316, 0xfacc15, 0x22c55e, 0xe2e8f0],
+                gravityMultiplier: 1.0,
               },
             },
           ],
