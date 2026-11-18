@@ -475,6 +475,7 @@ test('Capytorio pocket crafting shared base machine IDs (inserter/splitter/lab) 
   const engine = new CapytorioFactoryEngine();
   const prevInserters = engine.getPlaceableToolCount('inserter');
   assert.equal(prevInserters, 8);
+  engine.addPocketItem('electronic_circuit', 2);
   assert.equal(engine.pocketCraftRecipe('inserter', 1), true);
   assert.equal(engine.getPocketMachineCount('inserter'), prevInserters + 1);
   assert.equal(engine.getPlaceableToolCount('inserter'), prevInserters + 1);

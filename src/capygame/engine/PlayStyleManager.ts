@@ -147,7 +147,9 @@ import {
   MEDIA_SPEED_GEARS,
   MediaSpeedAction,
   clampForwardFlightSpeed,
+  computeOrbitalZoomThrottleStep,
   computeSpiralOrbitAngleRadians,
+  computeSurfaceZoomStep,
   stepFlightSpeedGear,
   stepMediaSpeedControl,
   stepSteadyLogScaleTowardTarget,
@@ -2962,24 +2964,20 @@ export class PlayStyleManager {
     return this.seamlessZoomActive || this.vesselMode !== 'landed' || this.cosmicStage !== 'playing';
   }
 
-  public adjustVesselThrottle(wheelDelta: number): number {
+  public adjustVesselThrottle(wheelDelta: number, justLaunched: boolean = false): number {
     if (!this.seamlessZoomActive) {
       this.launchIntoCosmos(this.currentLogScaleMeters);
     }
-    // wheelDelta > 0 is forward mouse wheel roll -> gently glide inward into the universe
-    // wheelDelta < 0 is backward mouse wheel roll -> gently glide outward / brake
-    const impulse = -wheelDelta * 0.16;
-    let nextTarget = this.targetCruiseVelocityLogPerSec + impulse;
-
-    // Gentle bounded cruise between -2.0 (inward) and +2.0 (outward)
-    nextTarget = THREE.MathUtils.clamp(nextTarget, -2.0, 2.0);
-
-    // Clean deadband around 0 for zero-G station keeping
-    if (Math.abs(nextTarget) < 0.04) {
-      nextTarget = 0;
-    }
+    const nextTarget = computeOrbitalZoomThrottleStep(
+      this.targetCruiseVelocityLogPerSec,
+      wheelDelta,
+      justLaunched
+    );
 
     this.targetCruiseVelocityLogPerSec = nextTarget;
+    if (justLaunched && wheelDelta < 0) {
+      this.cruiseVelocityLogPerSec = Math.max(0.45, nextTarget * 0.7);
+    }
     if (Math.abs(nextTarget) < 0.03) {
       this.autoZoomDirection = 0;
     } else if (nextTarget < 0) {
@@ -3001,14 +2999,14 @@ export class PlayStyleManager {
       this.targetLogScaleMeters = this.currentLogScaleMeters;
     } else if (velLogPerSec < 0) {
       this.autoZoomDirection = -1;
-      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -2.0, -0.05);
+      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, -2.5, -0.05);
       this.targetLogScaleMeters = this.currentLogScaleMeters;
       if (this.cruiseVelocityLogPerSec >= -0.02) {
         this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.45;
       }
     } else {
       this.autoZoomDirection = 1;
-      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.05, 2.0);
+      this.targetCruiseVelocityLogPerSec = THREE.MathUtils.clamp(velLogPerSec, 0.05, 2.5);
       this.targetLogScaleMeters = this.currentLogScaleMeters;
       if (this.cruiseVelocityLogPerSec <= 0.02) {
         this.cruiseVelocityLogPerSec = this.targetCruiseVelocityLogPerSec * 0.45;
@@ -11146,6 +11144,8 @@ export class PlayStyleManager {
 
   public resumeSurfacePlayFromForest(snapCamera: boolean = true) {
     this.autoZoomDirection = 0;
+    this.cruiseVelocityLogPerSec = 0;
+    this.targetCruiseVelocityLogPerSec = 0;
     this.autoLandAtForestPending = false;
     this.vesselMode = 'landed';
     this.descentRingsGroup.visible = false;
@@ -11262,28 +11262,15 @@ export class PlayStyleManager {
 
   public adjustZoom(delta: number): number {
     if (this.isVesselFlying()) {
-      return this.adjustVesselThrottle(delta);
+      return this.adjustVesselThrottle(delta, false);
     }
     const curDist = this.settings.cameraDistance ?? 1.0;
-    const rawDist = curDist - delta * 0.35;
-    // In Capytorio 68-degree overhead Factorio view, clamp scroll zoom cleanly without launching to orbit
-    if (this.currentMode === 'capytorio' && this.getCapytorioCameraMode() === 'oblique') {
-      const nextDist = THREE.MathUtils.clamp(rawDist, 0.55, 2.2);
-      this.settings.cameraDistance = Math.round(nextDist * 100) / 100;
-      this.updateSettings(this.settings);
-      return this.settings.cameraDistance;
+    const step = computeSurfaceZoomStep(curDist, delta, this.cosmicStage === 'playing');
+    if (step.launchToOrbit) {
+      this.launchIntoCosmos(step.launchTargetLogMeters);
+      return this.adjustVesselThrottle(delta, true);
     }
-    // On the ground in sanctuary, mouse wheel gently adjusts chase camera follow distance;
-    // zooming past maximum pull-back (2.0) or a deliberate strong zoom-out gesture lifts back into the Chrono-Vessel
-    if (
-      delta < 0 &&
-      (rawDist >= 2.0 || (delta <= -0.3 && this.cosmicStage === 'playing'))
-    ) {
-      this.launchIntoCosmos(CAPYBARA_FOREST_LOG_METERS + Math.abs(delta) * 0.6);
-      return this.adjustVesselThrottle(delta);
-    }
-    const nextDist = THREE.MathUtils.clamp(rawDist, 0.5, 2.0);
-    this.settings.cameraDistance = Math.round(nextDist * 100) / 100;
+    this.settings.cameraDistance = step.nextDistance;
     this.updateSettings(this.settings);
     return this.settings.cameraDistance;
   }

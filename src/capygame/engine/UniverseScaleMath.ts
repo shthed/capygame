@@ -167,6 +167,71 @@ export function stepMediaSpeedControl(
   return MEDIA_SPEED_GEARS[MEDIA_SPEED_GEARS.length - 1];
 }
 
+export const SURFACE_ZOOM_MIN_DIST = 0.45;
+export const SURFACE_ZOOM_ORBIT_THRESHOLD = 2.2;
+export const CAPYBARA_FOREST_LAUNCH_BASE_LOG = 0.8;
+
+export interface SurfaceZoomStepResult {
+  nextDistance: number;
+  launchToOrbit: boolean;
+  launchTargetLogMeters: number;
+}
+
+/**
+ * Computes surface camera zoom distance step across Sanctuary and Capytorio.
+ * Zooming out past SURFACE_ZOOM_ORBIT_THRESHOLD (or with a strong zoom-out gesture)
+ * lifts smoothly into Chrono-Vessel orbit with zero hard max zoom limit.
+ */
+export function computeSurfaceZoomStep(
+  currentDist: number,
+  delta: number,
+  inPlayingStage: boolean
+): SurfaceZoomStepResult {
+  const safeCur = Number.isFinite(currentDist) ? currentDist : 1.0;
+  const rawDist = safeCur - delta * 1.15;
+  if (
+    delta < 0 &&
+    (rawDist >= SURFACE_ZOOM_ORBIT_THRESHOLD || (delta <= -0.3 && inPlayingStage))
+  ) {
+    return {
+      nextDistance: SURFACE_ZOOM_ORBIT_THRESHOLD,
+      launchToOrbit: true,
+      launchTargetLogMeters:
+        CAPYBARA_FOREST_LAUNCH_BASE_LOG + Math.max(0.55, Math.abs(delta) * 1.45),
+    };
+  }
+  const clamped = Math.max(
+    SURFACE_ZOOM_MIN_DIST,
+    Math.min(SURFACE_ZOOM_ORBIT_THRESHOLD, rawDist)
+  );
+  return {
+    nextDistance: Math.round(clamped * 100) / 100,
+    launchToOrbit: false,
+    launchTargetLogMeters: CAPYBARA_FOREST_LAUNCH_BASE_LOG,
+  };
+}
+
+/**
+ * Adjusts orbital/cosmic log-scale cruise velocity smoothly in response to zoom +/-
+ * gestures, wheels, or mobile zoom buttons without artificial ceiling stalls.
+ */
+export function computeOrbitalZoomThrottleStep(
+  currentTargetVelLogPerSec: number,
+  wheelDelta: number,
+  justLaunched: boolean = false
+): number {
+  const safeCur = Number.isFinite(currentTargetVelLogPerSec) ? currentTargetVelLogPerSec : 0;
+  if (justLaunched && wheelDelta < 0) {
+    return Math.max(0.55, Math.min(2.5, Math.abs(wheelDelta) * 1.6));
+  }
+  const impulse = -wheelDelta * 1.35;
+  let nextTarget = Math.max(-2.5, Math.min(2.5, safeCur + impulse));
+  if (Math.abs(nextTarget) < 0.04) {
+    nextTarget = 0;
+  }
+  return Math.round(nextTarget * 1000) / 1000;
+}
+
 /**
  * Computes cumulative orbital spiral angle in radians across `UNIVERSE_SCALE_BANDS`
  * so flying smoothly through any zoom band completes an exact full 360° (2π rad) circle.

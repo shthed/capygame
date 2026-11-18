@@ -668,6 +668,35 @@ export const CapyGameView: React.FC = () => {
     currentY: 0,
   });
 
+  const mobileZoomHoldTimerRef = useRef<number | null>(null);
+  const mobileZoomRepeatRef = useRef<number | null>(null);
+  const stopMobileZoomHold = () => {
+    if (mobileZoomHoldTimerRef.current !== null) {
+      window.clearTimeout(mobileZoomHoldTimerRef.current);
+      mobileZoomHoldTimerRef.current = null;
+    }
+    if (mobileZoomRepeatRef.current !== null) {
+      window.clearInterval(mobileZoomRepeatRef.current);
+      mobileZoomRepeatRef.current = null;
+    }
+  };
+  const stepMobileZoom = (delta: number) => {
+    const mgr = managerRef.current;
+    if (!mgr) return;
+    mgr.adjustZoom(delta);
+    setUniverseScale(mgr.getUniverseScaleTelemetry());
+  };
+  const startMobileZoomHold = (delta: number) => {
+    stopMobileZoomHold();
+    mobileZoomHoldTimerRef.current = window.setTimeout(() => {
+      stepMobileZoom(delta);
+      mobileZoomRepeatRef.current = window.setInterval(() => {
+        stepMobileZoom(delta);
+      }, 120);
+    }, 260);
+  };
+  useEffect(() => stopMobileZoomHold, []);
+
   const pointerGestureRef = useRef<{
     pointerId: number | null;
     pointerType: 'mouse' | 'touch' | 'pen';
@@ -6064,6 +6093,74 @@ export const CapyGameView: React.FC = () => {
           );
         })()}
 
+      {/* Mobile Bottom-Right Zoom In / Zoom Out Controls (Continuous Ground -> Orbit -> Cosmos) */}
+      {!isFirstRunSetupOpen &&
+        !webglError &&
+        !isJsonEditorOpen &&
+        !isSettingsOpen &&
+        !isAboutOpen &&
+        !isDebugReportOpen &&
+        !isMenuOpen &&
+        !isOpticsOpen &&
+        !isScaleAtlasOpen &&
+        !(
+          cosmicStage === 'playing' &&
+          !universeScale.active &&
+          activeMode === 'capytorio' &&
+          capytorioDrawerTab !== 'none'
+        ) && (() => {
+          let positionClass = 'bottom-3 right-3';
+          if (universeScale.active) {
+            positionClass = isAdvancedMode
+              ? 'bottom-44 sm:bottom-[88px] right-2'
+              : 'bottom-[88px] right-2';
+          } else if (activeMode === 'capytorio') {
+            positionClass = isCapytorioDockCollapsed
+              ? 'bottom-[98px] right-2.5'
+              : 'bottom-[142px] right-2.5';
+          } else if (showTouchDpad) {
+            positionClass = 'bottom-[104px] right-3';
+          } else if (gameSettings.touchControlsMode !== 'hidden') {
+            positionClass = 'bottom-[68px] right-3';
+          }
+          return (
+            <div
+              data-testid="mobile-zoom-controls"
+              aria-label="Mobile Camera Zoom Controls"
+              className={`lg:hidden fixed ${positionClass} z-30 pointer-events-auto flex flex-col gap-1 p-1 rounded-xl bg-zinc-950/92 border border-white/15 shadow-xl select-none`}
+            >
+              <button
+                type="button"
+                data-testid="mobile-zoom-in-btn"
+                aria-label="Zoom In"
+                title="Zoom In"
+                onClick={() => stepMobileZoom(0.28)}
+                onPointerDown={() => startMobileZoomHold(0.28)}
+                onPointerUp={stopMobileZoomHold}
+                onPointerLeave={stopMobileZoomHold}
+                onPointerCancel={stopMobileZoomHold}
+                className="w-11 h-11 rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-sky-500/30 border border-white/12 text-zinc-100 flex items-center justify-center cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                data-testid="mobile-zoom-out-btn"
+                aria-label="Zoom Out to Orbit"
+                title="Zoom Out (pull all the way to Orbit)"
+                onClick={() => stepMobileZoom(-0.28)}
+                onPointerDown={() => startMobileZoomHold(-0.28)}
+                onPointerUp={stopMobileZoomHold}
+                onPointerLeave={stopMobileZoomHold}
+                onPointerCancel={stopMobileZoomHold}
+                className="w-11 h-11 rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-sky-500/30 border border-white/12 text-zinc-100 flex items-center justify-center cursor-pointer"
+              >
+                <Minus className="w-4 h-4" />
+              </button>
+            </div>
+          );
+        })()}
+
       {/* Capytorio 3D Factory Dock (Collapsible Solid Bottom Strip, Zero Overlap) */}
       {cosmicStage === 'playing' &&
         !universeScale.active &&
@@ -8617,8 +8714,8 @@ export const CapyGameView: React.FC = () => {
                 </div>
                 <input
                   type="range"
-                  min={0.6}
-                  max={1.5}
+                  min={0.45}
+                  max={2.2}
                   step={0.05}
                   value={gameSettings.cameraDistance}
                   onChange={(e) =>
@@ -9709,19 +9806,19 @@ export const CapyGameView: React.FC = () => {
       {universeScale.active && !isFirstRunSetupOpen && !webglError && !isJsonEditorOpen && !isSettingsOpen && (
         <div
           data-testid="chrono-vessel-flight-strip"
-          className={`fixed bottom-2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2 py-1.5 text-zinc-100 ${
+          className={`fixed bottom-2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-1.5 sm:px-2 py-1.5 text-zinc-100 overflow-x-auto ${
             isAdvancedMode
               ? 'left-1/2 -translate-x-1/2 w-[calc(100vw-16px)] max-w-[700px]'
-              : 'left-2 sm:left-1/2 sm:-translate-x-1/2 w-auto max-w-[calc(100vw-156px)]'
+              : 'left-2 sm:left-1/2 sm:-translate-x-1/2 w-auto max-w-[calc(100vw-148px)]'
           }`}
         >
           {!isAdvancedMode ? (
-            <div className="flex flex-nowrap items-center justify-center gap-1.5 whitespace-nowrap">
+            <div className="flex flex-nowrap items-center justify-start sm:justify-center gap-1 sm:gap-1.5 whitespace-nowrap">
               <button
                 type="button"
                 data-testid="chrono-land-pad-btn"
                 onClick={() => managerRef.current?.engageAutoLanding()}
-                className="min-h-11 px-2.5 sm:px-3.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-[11px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                className="min-h-10 sm:min-h-11 px-2 sm:px-3.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-[10px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
               >
                 Play on Island!
               </button>
@@ -9729,14 +9826,14 @@ export const CapyGameView: React.FC = () => {
                 type="button"
                 data-testid="chrono-land-capytorio-btn"
                 onClick={() => managerRef.current?.engageCapytorioLanding()}
-                className="min-h-11 px-2.5 sm:px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[11px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                className="min-h-10 sm:min-h-11 px-2 sm:px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[10px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
               >
                 Play Capytorio
               </button>
               {universeScale.logScaleMeters <= 5.4 && universeScale.logScaleMeters >= 0.9 && (
                 <span
                   data-testid="descent-rings-hud"
-                  className="px-2 py-1.5 rounded-lg bg-sky-500/20 border border-sky-400/45 text-[11px] font-mono tabular-nums text-sky-200 shrink-0"
+                  className="px-1.5 sm:px-2 py-1 sm:py-1.5 rounded-lg bg-sky-500/20 border border-sky-400/45 text-[10px] sm:text-[11px] font-mono tabular-nums text-sky-200 shrink-0"
                 >
                   Rings {universeScale.descentRingsHit ?? 0}/{universeScale.descentRingsTotal ?? 6}
                 </span>

@@ -264,7 +264,7 @@ export class ProgressionService {
       flightTrajectoryUserSelected: Boolean(parsed.flightTrajectoryUserSelected),
       cameraDistance:
         typeof parsed.cameraDistance === 'number' && Number.isFinite(parsed.cameraDistance)
-          ? Math.max(0.6, Math.min(1.5, parsed.cameraDistance))
+          ? Math.max(0.45, Math.min(2.2, parsed.cameraDistance))
           : DEFAULT_CAPY_SETTINGS.cameraDistance,
       turnSensitivity:
         typeof parsed.turnSensitivity === 'number' && Number.isFinite(parsed.turnSensitivity)

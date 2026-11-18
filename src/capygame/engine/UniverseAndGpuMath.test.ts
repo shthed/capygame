@@ -6,8 +6,11 @@ import { ProgressionService } from '../services/ProgressionService';
 import { ShallowWaterFluidSolver } from './physics/ContiguousWorldTopology';
 import {
   FLIGHT_SPEED_GEARS,
+  SURFACE_ZOOM_ORBIT_THRESHOLD,
   clampForwardFlightSpeed,
+  computeOrbitalZoomThrottleStep,
   computeSpiralOrbitAngleRadians,
+  computeSurfaceZoomStep,
   formatFlightSpeedReadout,
   formatRealisticScaleMeters,
   mergeDiscoveredSpecimen,
@@ -338,3 +341,46 @@ test('Arcade Combo Multiplier, Yuzu Fever state & Rotating 3-Slot Bounties persi
   const gpSlot = applied.nextItems.find((b) => b.id === 'ground_pound_splash');
   assert.equal(gpSlot?.progress, 1);
 });
+
+test('Surface zoom pulls back smoothly and launches straight into Orbit & Deep Cosmos with no max ceiling', () => {
+  // Small in/out tweak stays on surface (e.g. Capytorio zoom + then -)
+  const zoomIn = computeSurfaceZoomStep(1.0, 0.24, true);
+  assert.equal(zoomIn.launchToOrbit, false);
+  assert.ok(zoomIn.nextDistance < 1.0);
+  const zoomBack = computeSurfaceZoomStep(zoomIn.nextDistance, -0.24, true);
+  assert.equal(zoomBack.launchToOrbit, false);
+  assert.ok(zoomBack.nextDistance < SURFACE_ZOOM_ORBIT_THRESHOLD);
+
+  // Repeated zoom-out taps reach and cross threshold into Orbit
+  let dist = 1.0;
+  let launched = false;
+  for (let i = 0; i < 6; i++) {
+    const step = computeSurfaceZoomStep(dist, -0.28, true);
+    dist = step.nextDistance;
+    if (step.launchToOrbit) {
+      launched = true;
+      assert.ok(step.launchTargetLogMeters > 0.8);
+      break;
+    }
+  }
+  assert.equal(launched, true);
+
+  // Strong zoom-out gesture launches immediately
+  const quickLaunch = computeSurfaceZoomStep(1.0, -0.35, true);
+  assert.equal(quickLaunch.launchToOrbit, true);
+
+  // Orbital zoom steps accelerate cleanly outward up to 2.5 log/s and reverse smoothly inward
+  let vel = computeOrbitalZoomThrottleStep(0, -0.28, true);
+  assert.ok(vel >= 0.55);
+  for (let i = 0; i < 6; i++) {
+    vel = computeOrbitalZoomThrottleStep(vel, -0.28, false);
+  }
+  assert.equal(vel, 2.5);
+
+  // Zooming in brakes outward velocity and smoothly flips negative (inward descent)
+  for (let i = 0; i < 8; i++) {
+    vel = computeOrbitalZoomThrottleStep(vel, 0.28, false);
+  }
+  assert.ok(vel < 0, `Expected negative inward velocity after zooming in, got ${vel}`);
+});
+
