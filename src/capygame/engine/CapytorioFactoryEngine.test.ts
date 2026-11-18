@@ -4,15 +4,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CapytorioFactoryEngine,
+  MAX_RECENT_CAPYTORIO_TOOLS,
   capytorioGridToWorldX,
   capytorioGridToWorldZ,
+  resolveCapytorioPlaceableSpec,
   sampleCapytorioBaseResource,
+  sampleCapytorioTreeAt,
   sanitizeCapytorioState,
   tileKey,
   worldToCapytorioGridX,
   worldToCapytorioGridZ,
 } from './CapytorioFactoryEngine';
 import {
+  CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   CAPYTORIO_TECHS,
   CAPYTORIO_TILE_SIZE,
@@ -27,8 +31,9 @@ import {
 import { parseCapytorioLuaCatalog } from './CapytorioLuaParser';
 
 test('Capytorio loads canonical recipe.lua and technology.lua directly with zero duplication', () => {
-  assert.equal(CAPYTORIO_RECIPES.length, 19);
-  assert.equal(CAPYTORIO_TECHS.length, 6);
+  assert.ok(CAPYTORIO_RECIPES.length >= 75, `expected >= 75 Factorio recipes, got ${CAPYTORIO_RECIPES.length}`);
+  assert.ok(CAPYTORIO_TECHS.length >= 25, `expected >= 25 Factorio technologies, got ${CAPYTORIO_TECHS.length}`);
+  assert.ok(Object.keys(CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE).length >= 40);
   assert.equal(RECIPE_BY_ID.get('smelt_iron')?.station, 'furnace');
   assert.equal(RECIPE_BY_ID.get('metallurgic_science')?.requiredTechId, 'automation_1');
   assert.equal(RECIPE_BY_ID.get('metallurgic_science')?.unlockedByDefault, false);
@@ -223,7 +228,7 @@ test('Capytorio hand-mining, full Drill -> Belt -> Furnace -> Chest automation, 
 
 test('Capytorio Splitters, Underground Tunnels, Smart Inserters, Labs & Tech Unlock', () => {
   const engine = new CapytorioFactoryEngine();
-  let completedTech: string | null = null;
+  const completedTechs: string[] = [];
 
   // Test Splitter round-robin & Tunnel jump across 3 tiles
   assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
@@ -264,7 +269,7 @@ test('Capytorio Splitters, Underground Tunnels, Smart Inserters, Labs & Tech Unl
 
   const callbacks = {
     onTechCompleted: (techId: string) => {
-      completedTech = techId;
+      completedTechs.push(techId);
     },
   };
 
@@ -273,7 +278,7 @@ test('Capytorio Splitters, Underground Tunnels, Smart Inserters, Labs & Tech Unl
   }
 
   assert.ok(engine.powerSupplyMw >= 6.0, 'coal generator boosts supply to 6 MW');
-  assert.equal(completedTech, 'automation_1');
+  assert.equal(completedTechs.includes('automation_1'), true);
   assert.equal(engine.isRecipeUnlocked('metallurgic_science'), true);
 
   // Serialization & Hydration round trip
@@ -363,3 +368,106 @@ test('Capytorio drag belt-painting aligns corners, pipette samples recipes, manu
     true
   );
 });
+
+test('Capytorio citrus trees yield Fresh Oranges, fuel generators, and milestone/tech callbacks grant zero CapyCoins', () => {
+  const engine = new CapytorioFactoryEngine();
+
+  // Locate a deterministic citrus tree around the meadow
+  let treeGx = 0;
+  let treeGz = 0;
+  let found = false;
+  for (let gx = -24; gx <= 24 && !found; gx++) {
+    for (let gz = -24; gz <= 24 && !found; gz++) {
+      if (sampleCapytorioTreeAt(gx, gz)) {
+        treeGx = gx;
+        treeGz = gz;
+        found = true;
+      }
+    }
+  }
+  assert.equal(found, true, 'expected deterministic citrus trees in meadow');
+  assert.equal(engine.hasTreeAt(treeGx, treeGz), true);
+  assert.equal(engine.getPocketItemCount('orange'), 0);
+
+  // Hand-mining tree awards +3 Fresh Oranges and removes tree
+  const mined = engine.handMineAt(treeGx, treeGz, 2);
+  assert.equal(mined, 'orange');
+  assert.equal(engine.getPocketItemCount('orange'), 3);
+  assert.equal(engine.hasTreeAt(treeGx, treeGz), false);
+
+  // Fuel generator cleanly including oranges after starter coal
+  assert.equal(engine.placeMachine('generator', 0, 0, 1).ok, true);
+  const loadedFuel = engine.insertPocketFuelToGenerator(0, 0, 20);
+  assert.ok(loadedFuel >= 17, `expected coal + oranges loaded into generator, got ${loadedFuel}`);
+  assert.equal(engine.getPocketItemCount('orange'), 0);
+
+  // Place a drill on starter iron (-5,-5) & test tree auto-harvest on building placement + zero-coin milestone callback
+  assert.equal(engine.placeMachine('drill', -5, -5, 1).ok, true);
+  let treeGx2 = 0;
+  let treeGz2 = 0;
+  let found2 = false;
+  for (let gx = -24; gx <= 24 && !found2; gx++) {
+    for (let gz = -24; gz <= 24 && !found2; gz++) {
+      if ((gx !== treeGx || gz !== treeGz) && sampleCapytorioTreeAt(gx, gz)) {
+        treeGx2 = gx;
+        treeGz2 = gz;
+        found2 = true;
+      }
+    }
+  }
+  assert.equal(found2, true);
+  assert.equal(engine.placeMachine('belt', treeGx2, treeGz2, 1).ok, true);
+  assert.equal(engine.hasTreeAt(treeGx2, treeGz2), false);
+  assert.equal(engine.getPocketItemCount('orange'), 3);
+
+  const milestoneCoins: number[] = [];
+  engine.evaluateMilestones({
+    onMilestoneCompleted: (_id, _label, rewardCoins) => {
+      milestoneCoins.push(rewardCoins);
+    },
+  });
+  assert.ok(milestoneCoins.length >= 2, `expected at least 2 milestones completed, got ${milestoneCoins.length}`);
+  assert.ok(
+    milestoneCoins.every((c) => c === 0),
+    `expected zero CapyCoins in Capytorio milestone callbacks, got ${JSON.stringify(milestoneCoins)}`
+  );
+});
+
+test('Capytorio supports 10-slot Recent-Items Quickbar & Factorio placeable entities with 100% demolish refund', () => {
+  const engine = new CapytorioFactoryEngine();
+  assert.equal(engine.getRecentTools().length, MAX_RECENT_CAPYTORIO_TOOLS);
+  assert.equal(MAX_RECENT_CAPYTORIO_TOOLS, 10);
+
+  // Resolve expanded Factorio entities
+  const fastBeltSpec = resolveCapytorioPlaceableSpec('fast_transport_belt');
+  assert.ok(fastBeltSpec);
+  assert.equal(fastBeltSpec.baseType, 'belt');
+  assert.equal(fastBeltSpec.tierMult, 2.0);
+
+  // Unlock logistic_science to craft & place fast_transport_belt
+  engine.addPocketItem('iron_plate', 20);
+  engine.addPocketItem('iron_gear', 20);
+  // Equip directly after adding item to pocket
+  engine.addPocketItem('fast_transport_belt', 2);
+  assert.equal(engine.equipPlaceableTool('fast_transport_belt', true), true);
+  assert.equal(engine.getRecentTools()[0], 'fast_transport_belt');
+  assert.equal(engine.getRecentTools().length, 10);
+
+  const placedFast = engine.placeMachine('fast_transport_belt', 1, 0, 1);
+  assert.equal(placedFast.ok, true);
+  assert.equal(placedFast.machine?.variantItemId, 'fast_transport_belt');
+  assert.equal(placedFast.machine?.tierMult, 2.0);
+  assert.equal(engine.getPocketItemCount('fast_transport_belt'), 1);
+
+  // Demolish refunds exact variant item to pocket
+  assert.equal(engine.demolishAt(1, 0), 'belt');
+  assert.equal(engine.getPocketItemCount('fast_transport_belt'), 2);
+
+  // Serialization preserves recentTools & variantItemId
+  assert.equal(engine.placeMachine('fast_transport_belt', 2, 0, 1).ok, true);
+  const roundTrip = new CapytorioFactoryEngine(engine.serialize());
+  assert.equal(roundTrip.getRecentTools().length, 10);
+  assert.equal(roundTrip.getRecentTools()[0], 'fast_transport_belt');
+  assert.equal(roundTrip.machines.get(tileKey(2, 0))?.variantItemId, 'fast_transport_belt');
+});
+

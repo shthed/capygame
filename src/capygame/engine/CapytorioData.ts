@@ -40,10 +40,72 @@ export interface CapytorioItemMeta {
   id: CapytorioItemId;
   name: string;
   shortName: string;
-  category: 'ore' | 'plate' | 'intermediate' | 'science' | 'rocket';
+  category:
+    | 'ore'
+    | 'plate'
+    | 'logistics'
+    | 'production'
+    | 'intermediate'
+    | 'combat'
+    | 'science'
+    | 'rocket';
   colorHex: number;
   cssColor: string;
 }
+
+export interface CapytorioPlaceableMapping {
+  baseType: CapytorioMachineType;
+  tierMult: number;
+  tintHex?: number;
+}
+
+export const CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE: Record<string, CapytorioPlaceableMapping> = {
+  burner_mining_drill: { baseType: 'drill', tierMult: 0.75, tintHex: 0x78716c },
+  electric_mining_drill: { baseType: 'drill', tierMult: 1.25, tintHex: 0x0ea5e9 },
+  transport_belt: { baseType: 'belt', tierMult: 1.0, tintHex: 0xfacc15 },
+  fast_transport_belt: { baseType: 'belt', tierMult: 2.0, tintHex: 0xef4444 },
+  express_transport_belt: { baseType: 'belt', tierMult: 3.0, tintHex: 0x06b6d4 },
+  underground_belt: { baseType: 'tunnel', tierMult: 1.0, tintHex: 0xeab308 },
+  fast_underground_belt: { baseType: 'tunnel', tierMult: 2.0, tintHex: 0xef4444 },
+  express_underground_belt: { baseType: 'tunnel', tierMult: 3.0, tintHex: 0x06b6d4 },
+  splitter: { baseType: 'splitter', tierMult: 1.0, tintHex: 0xeab308 },
+  fast_splitter: { baseType: 'splitter', tierMult: 2.0, tintHex: 0xef4444 },
+  express_splitter: { baseType: 'splitter', tierMult: 3.0, tintHex: 0x06b6d4 },
+  burner_inserter: { baseType: 'inserter', tierMult: 0.75, tintHex: 0x78716c },
+  inserter: { baseType: 'inserter', tierMult: 1.0, tintHex: 0xf59e0b },
+  long_handed_inserter: { baseType: 'inserter', tierMult: 1.25, tintHex: 0xef4444 },
+  fast_inserter: { baseType: 'inserter', tierMult: 2.0, tintHex: 0x3b82f6 },
+  bulk_inserter: { baseType: 'inserter', tierMult: 3.0, tintHex: 0x22c55e },
+  wooden_chest: { baseType: 'chest', tierMult: 1.0, tintHex: 0xb45309 },
+  iron_chest: { baseType: 'chest', tierMult: 1.5, tintHex: 0x94a3b8 },
+  steel_chest: { baseType: 'chest', tierMult: 2.0, tintHex: 0x475569 },
+  passive_provider_chest: { baseType: 'chest', tierMult: 2.5, tintHex: 0xef4444 },
+  requester_chest: { baseType: 'chest', tierMult: 2.5, tintHex: 0x3b82f6 },
+  stone_furnace: { baseType: 'furnace', tierMult: 0.85, tintHex: 0x78716c },
+  steel_furnace: { baseType: 'furnace', tierMult: 1.5, tintHex: 0x64748b },
+  electric_furnace: { baseType: 'furnace', tierMult: 2.0, tintHex: 0xf97316 },
+  assembling_machine_1: { baseType: 'assembler', tierMult: 1.0, tintHex: 0x60a5fa },
+  assembling_machine_2: { baseType: 'assembler', tierMult: 1.5, tintHex: 0x3b82f6 },
+  assembling_machine_3: { baseType: 'assembler', tierMult: 2.5, tintHex: 0xeab308 },
+  boiler: { baseType: 'generator', tierMult: 0.8, tintHex: 0x64748b },
+  steam_engine: { baseType: 'generator', tierMult: 1.0, tintHex: 0xef4444 },
+  steam_turbine: { baseType: 'generator', tierMult: 2.0, tintHex: 0xf59e0b },
+  solar_panel: { baseType: 'generator', tierMult: 1.25, tintHex: 0x1d4ed8 },
+  accumulator: { baseType: 'generator', tierMult: 1.0, tintHex: 0x0ea5e9 },
+  nuclear_reactor: { baseType: 'generator', tierMult: 4.0, tintHex: 0x22c55e },
+  lab: { baseType: 'lab', tierMult: 1.0, tintHex: 0xa855f7 },
+  beacon: { baseType: 'lab', tierMult: 1.5, tintHex: 0x38bdf8 },
+  radar: { baseType: 'lab', tierMult: 1.0, tintHex: 0x64748b },
+  small_electric_pole: { baseType: 'chest', tierMult: 1.0, tintHex: 0x92400e },
+  medium_electric_pole: { baseType: 'chest', tierMult: 1.2, tintHex: 0x64748b },
+  big_electric_pole: { baseType: 'chest', tierMult: 1.4, tintHex: 0x475569 },
+  substation: { baseType: 'chest', tierMult: 1.8, tintHex: 0x0ea5e9 },
+  stone_wall: { baseType: 'chest', tierMult: 1.0, tintHex: 0xa8a29e },
+  gate: { baseType: 'chest', tierMult: 1.0, tintHex: 0x94a3b8 },
+  gun_turret: { baseType: 'inserter', tierMult: 1.5, tintHex: 0xf97316 },
+  laser_turret: { baseType: 'inserter', tierMult: 2.0, tintHex: 0xef4444 },
+  rocket_silo: { baseType: 'assembler', tierMult: 2.0, tintHex: 0xf59e0b },
+};
 
 export interface CapytorioMachineSpec {
   type: CapytorioMachineType;
@@ -197,10 +259,18 @@ export const CAPYTORIO_HOTBAR_ORDER: CapytorioMachineType[] = [
 export type CapytorioRecipeId = string;
 export type CapytorioTechId = string;
 
+export type CapytorioRecipeGroup =
+  | 'logistics'
+  | 'production'
+  | 'intermediate'
+  | 'combat'
+  | 'science';
+
 export interface CapytorioRecipeSpec {
   id: CapytorioRecipeId;
   name: string;
   station: 'furnace' | 'assembler';
+  group: CapytorioRecipeGroup;
   ingredients: Array<{ item: CapytorioItemId; count: number }>;
   result: CapytorioItemId;
   resultCount: number;

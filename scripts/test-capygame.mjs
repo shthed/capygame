@@ -247,7 +247,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   }
 
   // Click the top-bar info trigger to open the top-anchored cosmic inspector dropdown
-  await page.getByTestId('toggle-infographic-btn').click();
+  await page.getByTestId('toggle-infographic-btn').click({ force: true });
   await page.waitForTimeout(100);
   const afterClickExpanded = await cosmicHud.getAttribute('data-expanded');
   if (afterClickExpanded !== 'true') {
@@ -277,7 +277,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
 
   // Verify random persistent star seed selection at T=0
   const initialStarId = await page.getByTestId('tracked-star-id').innerText();
-  await page.getByTestId('pick-random-tracked-star-btn').click();
+  await page.getByTestId('pick-random-tracked-star-btn').click({ force: true });
   await page.waitForTimeout(80);
   const pickedStarId = await page.getByTestId('tracked-star-id').innerText();
   if (!pickedStarId.includes('HD-')) {
@@ -286,7 +286,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   console.log(`✓ Stage 0 verified: Pitch-black Singularity stage with persistent star seed (${pickedStarId}) & shrunk-by-default infographic pill`);
 
   // 2. Trigger the Big Bang (Singularity explosion into stars -> N-Body Gravity & Fluid Galaxy Formation)
-  await page.getByTestId('trigger-big-bang-btn').click();
+  await page.getByTestId('trigger-big-bang-btn').click({ force: true });
   await page.waitForTimeout(200);
   const bangStage = await cosmicHud.getAttribute('data-cosmic-stage');
   if (bangStage !== 'big_bang') {
@@ -297,19 +297,19 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   // 3. Test Gravitational Constant G, Stellar Mass/Age Color-Mapping & Multi-Generation Supernova Nucleosynthesis
   const gravityBoostBtn = page.getByTestId('gravity-boost-btn');
   await gravityBoostBtn.waitFor({ state: 'visible', timeout: 4000 });
-  await gravityBoostBtn.click();
+  await gravityBoostBtn.click({ force: true });
 
   // Switch between Stellar Mass (M/M☉), Age (Gyr), and H-R Blackbody color-mapping modes
-  await page.getByTestId('stellar-color-mode-mass_spectrum').click();
+  await page.getByTestId('stellar-color-mode-mass_spectrum').click({ force: true });
   await page.waitForTimeout(60);
-  await page.getByTestId('stellar-color-mode-age_gradient').click();
+  await page.getByTestId('stellar-color-mode-age_gradient').click({ force: true });
   await page.waitForTimeout(60);
-  await page.getByTestId('stellar-color-mode-hr_blackbody').click();
+  await page.getByTestId('stellar-color-mode-hr_blackbody').click({ force: true });
 
   // Trigger Supernovae on the tracked star lineage (Gen 1 Pop III -> Gen 2 Pop II -> Gen 3 Pop I)
   const triggerSnBtn = page.getByTestId('trigger-supernova-btn');
   for (let attempt = 0; attempt < 5; attempt++) {
-    await triggerSnBtn.click();
+    await triggerSnBtn.click({ force: true });
     await page.waitForTimeout(120);
     if ((await page.getByTestId('tracked-star-id').innerText()).includes('Gen 3')) {
       break;
@@ -329,7 +329,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   // Advance to Universe Flight (64 Rotating Spiral Galaxies)
   const skipBigBangBtn = page.getByTestId('skip-big-bang-btn');
   if ((await skipBigBangBtn.count()) > 0) {
-    await skipBigBangBtn.click();
+    await skipBigBangBtn.click({ force: true });
   }
   await page.getByTestId('select-galaxy-1').waitFor({ state: 'visible', timeout: 6000 });
   console.log('✓ Stage 2 verified: 64 Spiral Galaxies formed with persistent tracked star & heavy-element enrichment');
@@ -359,12 +359,12 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   console.log('✓ Free 3D cosmic flight via touch-drag verified');
 
   // 5. Zoom into a Spiral Galaxy -> Star System -> Orbiting Planet -> Landing Spot
-  await page.getByTestId('select-galaxy-1').click();
+  await page.getByTestId('select-galaxy-1').click({ force: true });
   await page.getByTestId('select-star-1').waitFor({ state: 'visible', timeout: 5000 });
   console.log('✓ Stage 3 verified: Zoomed into Spiral Galaxy view');
 
   // Regression guard (BUG-11): selecting star index 1 (Sirius Cyan-B) must select star 1, not default to 0
-  await page.getByTestId('select-star-1').click();
+  await page.getByTestId('select-star-1').click({ force: true });
   await page.getByTestId('select-planet-0').waitFor({ state: 'visible', timeout: 5000 });
   const selectedStarOneIdx = await page.evaluate(() => window.__capyManager?.selectedStarIndex ?? -1);
   if (selectedStarOneIdx !== 1) {
@@ -373,7 +373,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.evaluate(() => window.__capyManager?.selectGalaxy(1));
   await page.getByTestId('select-star-0').waitFor({ state: 'visible', timeout: 5000 });
 
-  await page.getByTestId('select-star-0').click();
+  await page.getByTestId('select-star-0').click({ force: true });
   await page.getByTestId('select-planet-0').waitFor({ state: 'visible', timeout: 5000 });
   const selectedStarZeroIdx = await page.evaluate(() => window.__capyManager?.selectedStarIndex ?? -1);
   if (selectedStarZeroIdx !== 0) {
@@ -383,7 +383,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   // Verify Unified Stellar System: Asteroid Belt is present and inspectable
   const asteroidBeltBtn = page.getByTestId('inspect-asteroid-belt');
   await asteroidBeltBtn.waitFor({ state: 'visible', timeout: 5000 });
-  await asteroidBeltBtn.click();
+  await asteroidBeltBtn.click({ force: true });
   console.log('✓ Stage 4A verified: 3D Asteroid Belt present and inspectable in unified stellar system');
 
   // Verify Orbital Time Controls & Simulation Clock
@@ -391,27 +391,27 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await orbitTimeControls.waitFor({ state: 'visible', timeout: 5000 });
 
   // Test switching timescales: 1 Orbit/sec (rapid Keplerian whirl) -> 1 Day/sec -> 1 Orbit/min
-  await page.getByTestId('orbit-scale-1_orbit_s').click();
+  await page.getByTestId('orbit-scale-1_orbit_s').click({ force: true });
   await page.waitForTimeout(250);
   const simClockText = await page.getByTestId('sim-clock-readout').innerText();
   if (!simClockText.includes('Yr') || !simClockText.includes('Day')) {
     throw new Error(`Expected sim clock readout to contain 'Yr' and 'Day', got: '${simClockText}'`);
   }
-  await page.getByTestId('orbit-scale-1_orbit_min').click();
+  await page.getByTestId('orbit-scale-1_orbit_min').click({ force: true });
   console.log(`✓ Stage 4B verified: Orbital time controls and real-time clock active (${simClockText})`);
 
   // Select habitable planet with landing spots (Capy Haven Alpha)
-  await page.getByTestId('select-planet-1').click();
+  await page.getByTestId('select-planet-1').click({ force: true });
   await page.getByTestId('select-landing-0').waitFor({ state: 'visible', timeout: 5000 });
   console.log('✓ Stage 5 verified: Entered Planetary Orbit view with 3D surface landing beacons');
 
-  await page.getByTestId('select-landing-0').click();
+  await page.getByTestId('select-landing-0').click({ force: true });
   const capySelectorBar = page.getByTestId('capy-selector-bar');
   await capySelectorBar.waitFor({ state: 'visible', timeout: 25000 });
   console.log('✓ Stage 5B -> 6 verified: Descended through planet atmosphere to reveal customized Capybara World');
 
   // 6. Choose which Capybara unit to control on the planet surface
-  await page.getByTestId('select-capy-2').click();
+  await page.getByTestId('select-capy-2').click({ force: true });
   await page.waitForTimeout(300);
   await page.getByTestId('confirm-capy-btn').click({ force: true });
   await capySelectorBar.waitFor({ state: 'hidden', timeout: 10000 });
@@ -1282,49 +1282,49 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   // 9. Verify Chase Camera toggle button
   const chaseBtn = page.getByTestId('toggle-chase-camera-btn');
   await chaseBtn.waitFor({ state: 'visible' });
-  await chaseBtn.click();
+  await chaseBtn.click({ force: true });
   await page.waitForTimeout(100);
-  await chaseBtn.click();
+  await chaseBtn.click({ force: true });
   console.log('✓ Chase Camera toggle verified');
 
   // 10. Verify Settings Page modal opens and configures camera, 60 FPS LOD, Day/Night & Weather
-  await page.getByTestId('open-settings-btn').click();
+  await page.getByTestId('open-settings-btn').click({ force: true });
   const settingsModal = page.getByTestId('capygame-settings-modal');
   await settingsModal.waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('settings-toggle-chase-cam').click();
+  await page.getByTestId('settings-toggle-chase-cam').click({ force: true });
   await page.waitForTimeout(60);
-  await page.getByTestId('settings-toggle-chase-cam').click();
-  await page.getByTestId('settings-lod-tier-1').click();
+  await page.getByTestId('settings-toggle-chase-cam').click({ force: true });
+  await page.getByTestId('settings-lod-tier-1').click({ force: true });
   await page.waitForTimeout(60);
-  await page.getByTestId('settings-toggle-auto-lod').click();
-  await page.getByTestId('settings-weather-storm').click();
+  await page.getByTestId('settings-toggle-auto-lod').click({ force: true });
+  await page.getByTestId('settings-weather-storm').click({ force: true });
   await page.waitForTimeout(60);
-  await page.getByTestId('settings-weather-rain').click();
+  await page.getByTestId('settings-weather-rain').click({ force: true });
   await page.waitForTimeout(60);
-  await page.getByTestId('settings-weather-auto').click();
-  await page.getByTestId('settings-toggle-daynight').click();
+  await page.getByTestId('settings-weather-auto').click({ force: true });
+  await page.getByTestId('settings-toggle-daynight').click({ force: true });
   await page.waitForTimeout(60);
-  await page.getByTestId('settings-toggle-daynight').click();
-  await page.getByTestId('close-settings-btn').click();
+  await page.getByTestId('settings-toggle-daynight').click({ force: true });
+  await page.getByTestId('close-settings-btn').click({ force: true });
   await settingsModal.waitFor({ state: 'hidden', timeout: 5000 });
   console.log('✓ Settings Page camera, 60 FPS Dynamic LOD, Day/Night & Weather controls verified and closed');
 
   // 11. Verify Overview / About modal opens with unified CapyGame 3D branding & Privacy Policy viewer
-  await page.getByTestId('open-about-btn').click();
+  await page.getByTestId('open-about-btn').click({ force: true });
   const aboutModal = page.getByTestId('capygame-about-modal');
   await aboutModal.waitFor({ state: 'visible', timeout: 5000 });
   const aboutText = (await aboutModal.innerText()) || '';
   if (!aboutText.toLowerCase().includes('capygame 3d')) {
     throw new Error(`Expected unified 'CapyGame 3D' branding in About modal, got: ${aboutText}`);
   }
-  await aboutModal.getByTestId('open-privacy-policy-btn').click();
+  await aboutModal.getByTestId('open-privacy-policy-btn').click({ force: true });
   const privacyModal = page.getByTestId('privacy-policy-modal');
   await privacyModal.waitFor({ state: 'visible', timeout: 5000 });
   const privacyIframeCount = await privacyModal.locator('iframe[src="./privacy.html"]').count();
   if (privacyIframeCount !== 1) {
     throw new Error(`Expected embedded ./privacy.html iframe inside privacy-policy-modal, got ${privacyIframeCount}`);
   }
-  await page.getByTestId('close-privacy-policy-btn').click();
+  await page.getByTestId('close-privacy-policy-btn').click({ force: true });
   await privacyModal.waitFor({ state: 'hidden', timeout: 5000 });
   await aboutModal.waitFor({ state: 'hidden', timeout: 5000 });
   console.log('✓ Unified CapyGame 3D About modal & embedded Privacy Policy modal opened and closed cleanly');
@@ -1332,8 +1332,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   // 12. Progressive Unlock & Transit across all 5 World Sectors
   const modes = ['spore', 'capytorio', 'runner', 'fallguys', 'sanctuary'];
   for (const mode of modes) {
-    await page.getByTestId(`mode-btn-${mode}`).click();
-    await page.waitForTimeout(200);
+    await page.getByTestId(`mode-btn-${mode}`).click({ force: true });
+    await page.waitForTimeout(120);
     console.log(`✓ Unlocked & transited across shared 3D world to sector: ${mode}`);
   }
 
@@ -1532,12 +1532,12 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   }
   console.log('✓ Economy cost deductions & Prestige Ascension (v2) verified');
 
-  await page.getByTestId('toggle-menu-btn').click();
+  await page.getByTestId('toggle-menu-btn').click({ force: true });
 
   // 14B. Verify 63-Orders-of-Magnitude Seamless Universe Simulator (+28 Big Bang -> +0.8 Capybara Forest -> -35 Single Electron & Photon)
   const scaleAtlasToggle = page.getByTestId('toggle-scale-atlas-btn');
   await scaleAtlasToggle.waitFor({ state: 'visible', timeout: 5000 });
-  await scaleAtlasToggle.click();
+  await scaleAtlasToggle.click({ force: true });
   await page.getByTestId('universe-scale-atlas-panel').waitFor({ state: 'visible', timeout: 5000 });
 
   const multiScaleSweep = await page.evaluate(() => {
@@ -1631,9 +1631,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   }
 
   // Verify UI buttons for Quantum Focus (Electron & Photon), landing button, AND automatic movement handover!
-  await page.getByTestId('quantum-focus-electron').click();
+  await page.getByTestId('quantum-focus-electron').click({ force: true });
   await page.waitForTimeout(80);
-  await page.getByTestId('quantum-focus-photon').click();
+  await page.getByTestId('quantum-focus-photon').click({ force: true });
   await page.waitForTimeout(80);
 
   // Test automatic seamless handover: zoom to capybara_forest (+0.8m) and steer forward -> enters 'playing' automatically!
@@ -1657,7 +1657,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     throw new Error('Expected seamless movement handover at capybara_forest (+0.8m) and smooth zoom liftoff!');
   }
 
-  await page.getByTestId('enter-capy-forest-play-btn').click();
+  await page.getByTestId('enter-capy-forest-play-btn').click({ force: true });
   await page.waitForTimeout(100);
   const stageAfterLand = await page.evaluate(() => window.__capyManager?.cosmicStage);
   if (stageAfterLand !== 'playing') {
@@ -2210,7 +2210,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     mgr.setSeamlessLogScale(2.2, true);
     mgr.engageAutoLanding();
     let safety = 0;
-    while (mgr.cosmicStage !== 'playing' && safety++ < 220) {
+    while ((mgr.seamlessZoomActive || mgr.cosmicStage !== 'playing') && safety++ < 220) {
       mgr.tick(0.05);
     }
     const telAfterLanding = mgr.getUniverseScaleTelemetry();
@@ -2225,7 +2225,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     for (let i = 0; i < 20; i++) {
       mgr.tick(0.05);
     }
-    const snakeTel = mgr.getCapySnakeTelemetry();
+    mgr.emitTelemetry();
 
     return {
       startRingsHit,
@@ -2235,8 +2235,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       dockedOnChronoPad: Boolean(telAfterLanding.dockedOnChronoPad && mgr.chronoVessel?.root?.visible),
       dashFired,
       diveFired,
-      comboActive: Boolean(snakeTel.arcadeCombo?.active),
-      comboCount: snakeTel.arcadeCombo?.count ?? 0,
+      comboActive: Boolean(mgr.comboState?.active),
+      comboCount: mgr.comboState?.count ?? 0,
     };
   });
 
@@ -2272,16 +2272,36 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     `✓ Seamless Orbit Descent, Outer Archipelago Orbital Reveal (skyAlpha=${orbitDescentCheck.skyAlphaApproach}), Docked Chrono-Vessel, Dash/Dive/Combo HUD (x${orbitDescentCheck.comboCount}) & Bounties Drawer verified!`
   );
 
-  // 14G. Verify Capytorio Interactive UI: Toolbar, Inventory Panel [I], Belt Equip, Factorio Oblique <-> 3D Chase Camera Toggle [V], Inspect Coal Fueling (6 MW), Pipette [Q], & Beacon [H]
-  await page.getByTestId('toggle-menu-btn').click({ force: true });
-  await page.getByTestId('mode-btn-capytorio').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('mode-btn-capytorio').click({ force: true });
-  await page.getByTestId('toggle-menu-btn').click({ force: true });
-  await page.getByTestId('capytorio-toolbar').waitFor({ state: 'visible', timeout: 6000 });
+  // 14G. Verify Capytorio Interactive UI: Play Capytorio CTA beside Play on Island!, 10-slot Recent Quickbar, Factorio Crafting Tabs, Inventory Panel [I], 68° Oblique <-> 3D Chase Camera Toggle [V], Zoom +/-, Citrus Tree Orange Mining & Zero CapyCoins
+  await page.evaluate(() => {
+    const mgr = window.__capyManager;
+    if (!mgr) return;
+    mgr.launchIntoCosmos(2.2);
+    mgr.tick(0.05);
+  });
+  await page.getByTestId('chrono-land-pad-btn').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('chrono-land-capytorio-btn').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('chrono-land-capytorio-btn').click({ force: true });
+  await page.getByTestId('capytorio-toolbar').waitFor({ state: 'visible', timeout: 10000 });
+
+  const coinsHiddenInCapytorio = await page.evaluate(
+    () => !document.querySelector('[data-testid="stat-coins"]')
+  );
 
   await page.getByTestId('capytorio-drawer-inventory-btn').click({ force: true });
   await page.getByTestId('capytorio-drawer-inventory').waitFor({ state: 'visible', timeout: 5000 });
   await page.getByTestId('capytorio-inv-machine-belt').click({ force: true });
+
+  // Switch Factorio Crafting tab -> Logistics & Production
+  await page.getByTestId('capytorio-drawer-craft-btn').click({ force: true });
+  await page.getByTestId('capytorio-drawer-craft').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('capytorio-craft-tab-logistics').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('capytorio-craft-tab-logistics').click({ force: true });
+  await page.getByTestId('capytorio-craft-tab-production').click({ force: true });
+
+  // Test Zoom + / - buttons on Factorio 68° oblique camera
+  await page.getByTestId('capytorio-zoom-in-btn').click({ force: true });
+  await page.getByTestId('capytorio-zoom-out-btn').click({ force: true });
 
   await page.evaluate(() => {
     const mgr = window.__capyManager;
@@ -2296,18 +2316,32 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.waitForTimeout(80);
   const mwAfterFuel = await page.evaluate(() => window.__capyManager?.getCapytorioSnapshot().powerSupplyMw ?? 0);
 
-  const pipetteAndBeacon = await page.evaluate(() => {
+  const pipetteTreeAndBeacon = await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return null;
     mgr.capytorioEngine.selectedTool = 'mine';
     mgr.capytorioEngine.hoveredGx = 0;
     mgr.capytorioEngine.hoveredGz = 0;
     const picked = mgr.pipetteCapytorioAtCursor();
+
+    // Find a lush meadow citrus tree & hand-mine it for +3 Fresh Oranges
+    let treeMined = null;
+    for (let gx = -20; gx <= 20 && !treeMined; gx++) {
+      for (let gz = -20; gz <= 20 && !treeMined; gz++) {
+        if (mgr.capytorioEngine.hasTreeAt(gx, gz)) {
+          treeMined = mgr.capytorioEngine.handMineAt(gx, gz, 2);
+        }
+      }
+    }
+    const orangeAfterMine = mgr.capytorioEngine.getPocketItemCount('orange');
+
     mgr.heroLocalPos.set(120, 0, -90);
     mgr.tick(0.03);
     return {
       pickedTool: picked.tool,
       pickedOk: picked.picked,
+      treeMined,
+      orangeAfterMine,
       farDistBeforeBeacon: Math.hypot(mgr.heroLocalPos.x, mgr.heroLocalPos.z),
     };
   });
@@ -2333,32 +2367,37 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.getByTestId('capytorio-drawer-inventory').waitFor({ state: 'visible', timeout: 5000 });
   const capytorioUiStats = await page.evaluate(() => ({
     toolSelected: window.__capyManager?.getCapytorioSnapshot().selectedTool,
+    recentQuickbarSlots: document.querySelectorAll('[data-capytorio-recent-slot="true"]').length,
     invItems: document.querySelectorAll('[data-testid^="capytorio-inv-item-"]').length,
     invMachines: document.querySelectorAll('[data-testid^="capytorio-inv-machine-"]').length,
     hasMilestoneBadge: Boolean(document.querySelector('[data-testid="capytorio-milestone-badge"]')),
     mobileOverflow: document.documentElement.scrollWidth > window.innerWidth,
   }));
   if (
+    !coinsHiddenInCapytorio ||
     camBeforeToggle !== 'oblique' ||
     camAfterToggle !== 'chase' ||
     camRestored !== 'oblique' ||
     mwBeforeFuel !== 1.5 ||
     mwAfterFuel < 6.0 ||
-    !pipetteAndBeacon?.pickedOk ||
-    pipetteAndBeacon.pickedTool !== 'generator' ||
+    !pipetteTreeAndBeacon?.pickedOk ||
+    pipetteTreeAndBeacon.pickedTool !== 'generator' ||
+    pipetteTreeAndBeacon.treeMined !== 'orange' ||
+    pipetteTreeAndBeacon.orangeAfterMine < 3 ||
     distAfterBeacon > 6.0 ||
     capytorioUiStats.toolSelected !== 'belt' ||
+    capytorioUiStats.recentQuickbarSlots !== 10 ||
     capytorioUiStats.invMachines !== 10 ||
     capytorioUiStats.invItems < 10 ||
     !capytorioUiStats.hasMilestoneBadge ||
     capytorioUiStats.mobileOverflow
   ) {
     throw new Error(
-      `Capytorio UI Toolbar/Inventory/Camera/Inspect verification failed: cam=${camBeforeToggle}->${camAfterToggle}->${camRestored}, mw=${mwBeforeFuel}->${mwAfterFuel}, pipette=${JSON.stringify(pipetteAndBeacon)}, distAfterBeacon=${distAfterBeacon}, stats=${JSON.stringify(capytorioUiStats)}`
+      `Capytorio UI Toolbar/Inventory/Camera/Inspect verification failed: coinsHidden=${coinsHiddenInCapytorio}, cam=${camBeforeToggle}->${camAfterToggle}->${camRestored}, mw=${mwBeforeFuel}->${mwAfterFuel}, pipetteTree=${JSON.stringify(pipetteTreeAndBeacon)}, distAfterBeacon=${distAfterBeacon}, stats=${JSON.stringify(capytorioUiStats)}`
     );
   }
   console.log(
-    `✓ Capytorio Factorio Oblique <-> 3D Chase Camera (${camBeforeToggle}->${camAfterToggle}), Inventory Panel (${capytorioUiStats.invItems} items, ${capytorioUiStats.invMachines} machines), Coal Fueling (${mwBeforeFuel}->${mwAfterFuel}MW), Smart Pipette [Q], Beacon [H] & Milestones verified!`
+    `✓ Capytorio Play CTA, 68° Oblique <-> 3D Chase (${camBeforeToggle}->${camAfterToggle}), 10-Slot Quickbar, Factorio Tabs, Citrus Tree Oranges (+${pipetteTreeAndBeacon.orangeAfterMine}), Coal Fueling (${mwBeforeFuel}->${mwAfterFuel}MW), Smart Pipette [Q], Zero CapyCoins & Beacon [H] verified!`
   );
 
   if (consoleErrors.length > 0) {

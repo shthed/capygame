@@ -181,6 +181,7 @@ import {
   CapytorioFactoryEngine,
   capytorioGridToWorldX,
   capytorioGridToWorldZ,
+  resolveCapytorioPlaceableSpec,
   tileKey as capytorioTileKey,
   worldToCapytorioGridX,
   worldToCapytorioGridZ,
@@ -189,6 +190,13 @@ import {
   type CapytorioUiSnapshot,
 } from './CapytorioFactoryEngine';
 import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
+
+const CAPYTORIO_OBLIQUE_PITCH_RAD = (68 * Math.PI) / 180;
+const CAPYTORIO_OBLIQUE_BASE_RADIUS = 26.0;
+const CAPYTORIO_OBLIQUE_DY_FACTOR =
+  Math.sin(CAPYTORIO_OBLIQUE_PITCH_RAD) * CAPYTORIO_OBLIQUE_BASE_RADIUS;
+const CAPYTORIO_OBLIQUE_DZ_FACTOR =
+  Math.cos(CAPYTORIO_OBLIQUE_PITCH_RAD) * CAPYTORIO_OBLIQUE_BASE_RADIUS;
 
 // Pre-allocated math helpers for zero per-frame garbage collection
 const _tempVec3 = new THREE.Vector3();
@@ -425,6 +433,7 @@ export class PlayStyleManager {
   private currentLogScaleMeters: number = MAX_UNIVERSE_LOG_METERS;
   private targetLogScaleMeters: number = MAX_UNIVERSE_LOG_METERS;
   private autoLandAtForestPending: boolean = false;
+  private autoLandTargetMode: 'sanctuary' | 'capytorio' = 'sanctuary';
   private quantumFocusMode: QuantumFocusMode = 'auto';
   private autoZoomDirection: -1 | 0 | 1 = 0;
   public flightTrajectory: FlightTrajectoryMode = 'spiral';
@@ -792,12 +801,9 @@ export class PlayStyleManager {
     this.capytorioEngine = new CapytorioFactoryEngine(initialStats.capytorioFactory ?? null);
     this.capytorioRenderer = new Capytorio3DRenderer();
     this.capytorioStepCallbacks = {
-      onTechCompleted: (_techId, techName, rewardDna, rewardCoins, isRocketLaunch) => {
+      onTechCompleted: (_techId, techName, rewardDna, _rewardCoins, isRocketLaunch) => {
         const snap = this.capytorioEngine.getUiSnapshot();
         this.awardProgress(rewardDna, 'capytorio', snap.score);
-        if (rewardCoins > 0) {
-          this.stats.coins = (this.stats.coins || 0) + rewardCoins;
-        }
         AudioService.playPrestigeFanfare();
         this.addCameraTrauma(isRocketLaunch ? 0.45 : 0.24);
         NativeBridge.haptic('success');
@@ -815,15 +821,10 @@ export class PlayStyleManager {
           this.callbacks.onBountyEvent?.('capytorio_pack', count);
         }
       },
-      onMilestoneCompleted: (_id, label, rewardCoins) => {
-        if (rewardCoins > 0) {
-          this.stats.coins = (this.stats.coins || 0) + rewardCoins;
-        }
+      onMilestoneCompleted: (_id, label) => {
         AudioService.playCoin();
         NativeBridge.haptic('success');
-        this.callbacks.onModeNotification?.(
-          `Factory Milestone: ${label}! +${rewardCoins}c`
-        );
+        this.callbacks.onModeNotification?.(`Factory Milestone: ${label}!`);
         this.markCapytorioDirty();
       },
       onScoreChanged: (score) => {
@@ -2266,9 +2267,13 @@ export class PlayStyleManager {
     if (this.currentMode === 'capytorio') {
       if (this.getCapytorioCameraMode() === 'oblique') {
         this.surfaceCamYaw = Math.PI;
-        this.surfaceCamPitch = 0.94;
-        this.camera.position.set(wx, wy + 18.5 * distScale, wz + 13.5 * distScale);
-        this.camera.lookAt(wx, wy + 0.35, wz - 0.8);
+        this.surfaceCamPitch = CAPYTORIO_OBLIQUE_PITCH_RAD;
+        this.camera.position.set(
+          wx,
+          wy + CAPYTORIO_OBLIQUE_DY_FACTOR * distScale,
+          wz + CAPYTORIO_OBLIQUE_DZ_FACTOR * distScale
+        );
+        this.camera.lookAt(wx, wy + 0.15, wz);
       } else {
         this.surfaceCamYaw = Math.PI;
         this.surfaceCamPitch = 0.66;
@@ -3059,16 +3064,34 @@ export class PlayStyleManager {
   }
 
   public engageAutoLanding(): void {
+    this.autoLandTargetMode = 'sanctuary';
+    this.engageForestLandingDescent();
+  }
+
+  public engageCapytorioLanding(): void {
+    this.autoLandTargetMode = 'capytorio';
+    this.engageForestLandingDescent();
+  }
+
+  private engageForestLandingDescent(): void {
     this.seamlessZoomActive = true;
     this.autoLandAtForestPending = true;
     this.vesselMode = 'chase_pod';
     this.chronoVessel?.setMode('chase_pod');
+    // Hyper-warp cleanly into orbital island-approach altitude when descending from deep cosmos (> log 3.6) or sub-quantum (< log -1.2)
+    // so Play CTA triggers a crisp ~1.2s orbital dive onto the pad without deep-void or upper-planet shader stalls.
+    if (this.currentLogScaleMeters > 3.6) {
+      this.currentLogScaleMeters = 2.75;
+    } else if (this.currentLogScaleMeters < -1.2) {
+      this.currentLogScaleMeters = -0.4;
+    }
     const delta = CAPYBARA_FOREST_LOG_METERS - this.currentLogScaleMeters;
     const dir: -1 | 1 = delta >= 0 ? 1 : -1;
-    const landingSpeed = THREE.MathUtils.clamp(Math.abs(delta) * 0.22, 0.85, 2.0);
+    const landingSpeed = THREE.MathUtils.clamp(Math.abs(delta) * 0.95, 1.35, 2.6);
     this.autoZoomDirection = dir;
     this.targetCruiseVelocityLogPerSec = dir * landingSpeed;
-    this.cruiseVelocityLogPerSec = dir * Math.max(0.55, Math.min(landingSpeed, Math.abs(this.cruiseVelocityLogPerSec) || 0.75));
+    this.cruiseVelocityLogPerSec =
+      dir * Math.max(0.95, Math.min(landingSpeed, Math.abs(this.cruiseVelocityLogPerSec) || 1.1));
     this.targetLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
     AudioService.playCosmicWarp(1.35);
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
@@ -3094,6 +3117,7 @@ export class PlayStyleManager {
     }
     this.resetDescentRings();
     this.autoLandAtForestPending = false;
+    this.autoLandTargetMode = 'sanctuary';
     this.vesselMode = 'chase_pod';
     this.chronoVessel?.setMode('chase_pod');
     this.targetLogScaleMeters = clampedTarget;
@@ -4481,11 +4505,18 @@ export class PlayStyleManager {
       if (existing) {
         this.capytorioEngine.inspectedKey = key;
         this.emitCapytorioSnapshot();
-        return { ok: true, message: `Inspecting ${CAPYTORIO_MACHINE_SPECS[existing.type].name}` };
+        const existingSpec = resolveCapytorioPlaceableSpec(
+          existing.variantItemId ?? existing.type
+        );
+        return {
+          ok: true,
+          message: `Inspecting ${existingSpec?.name ?? CAPYTORIO_MACHINE_SPECS[existing.type].name}`,
+        };
       }
       const mined = this.capytorioEngine.handMineAt(gx, gz, 2);
       if (mined) {
         const meta = getCapytorioItemMeta(mined);
+        const amt = mined === 'orange' ? 3 : 2;
         AudioService.playCoin();
         this.vfxEngine?.emitBurst(
           capytorioGridToWorldX(gx),
@@ -4496,18 +4527,29 @@ export class PlayStyleManager {
           meta.colorHex
         );
         this.markCapytorioDirty();
-        return { ok: true, message: `Mined +2 ${meta.name}` };
+        return {
+          ok: true,
+          message:
+            mined === 'orange'
+              ? `Harvested +${amt} ${meta.name} from Citrus Tree`
+              : `Mined +${amt} ${meta.name}`,
+        };
       }
-      return { ok: false, message: 'Stand or point over ore to mine' };
+      return { ok: false, message: 'Point over an ore seam or orange tree to mine' };
     }
 
-    if (existing && existing.type !== tool) {
-      this.capytorioEngine.inspectedKey = key;
-      this.emitCapytorioSnapshot();
-      return {
-        ok: true,
-        message: `Inspecting ${CAPYTORIO_MACHINE_SPECS[existing.type].name}`,
-      };
+    const resolvedTool = resolveCapytorioPlaceableSpec(tool);
+    if (existing) {
+      const existingToolId = existing.variantItemId ?? existing.type;
+      if (existingToolId !== tool) {
+        this.capytorioEngine.inspectedKey = key;
+        this.emitCapytorioSnapshot();
+        const existingSpec = resolveCapytorioPlaceableSpec(existingToolId);
+        return {
+          ok: true,
+          message: `Inspecting ${existingSpec?.name ?? CAPYTORIO_MACHINE_SPECS[existing.type].name}`,
+        };
+      }
     }
 
     const res = this.capytorioEngine.placeMachine(tool, gx, gz, this.capytorioEngine.selectedDir);
@@ -4519,15 +4561,15 @@ export class PlayStyleManager {
         capytorioGridToWorldZ(gz),
         'citrus_burst',
         5,
-        CAPYTORIO_MACHINE_SPECS[tool].colorHex
+        resolvedTool?.tintHex ?? 0xfacc15
       );
       this.markCapytorioDirty();
       this.emitTelemetry();
       return {
         ok: true,
         message: existing
-          ? `Rotated ${CAPYTORIO_MACHINE_SPECS[tool].shortName}`
-          : `Placed ${CAPYTORIO_MACHINE_SPECS[tool].name}`,
+          ? `Rotated ${resolvedTool?.shortName ?? tool}`
+          : `Placed ${resolvedTool?.name ?? tool}`,
       };
     }
     if (res.reason) {
@@ -4552,8 +4594,8 @@ export class PlayStyleManager {
     return false;
   }
 
-  public setCapytorioTool(tool: CapytorioMachineType | 'demolish' | 'mine'): void {
-    this.capytorioEngine.selectedTool = tool;
+  public setCapytorioTool(tool: string, promoteToRecent: boolean = false): void {
+    this.capytorioEngine.equipPlaceableTool(tool, promoteToRecent);
     AudioService.playCoin();
     this.emitCapytorioSnapshot();
   }
@@ -4587,7 +4629,7 @@ export class PlayStyleManager {
     this.settings.capytorioCameraMode = mode;
     if (this.currentMode === 'capytorio') {
       this.surfaceCamYaw = Math.PI;
-      this.surfaceCamPitch = mode === 'oblique' ? 0.94 : 0.66;
+      this.surfaceCamPitch = mode === 'oblique' ? CAPYTORIO_OBLIQUE_PITCH_RAD : 0.66;
       if (mode === 'oblique') {
         this.mouselookLastActiveTimeMs = -100000;
       }
@@ -4661,8 +4703,11 @@ export class PlayStyleManager {
     return null;
   }
 
-  public pocketCraftCapytorioRecipe(recipeId: CapytorioRecipeId): boolean {
-    const ok = this.capytorioEngine.pocketCraftRecipe(recipeId);
+  public pocketCraftCapytorioRecipe(
+    recipeId: CapytorioRecipeId,
+    batches: number = 1
+  ): boolean {
+    const ok = this.capytorioEngine.pocketCraftRecipe(recipeId, batches);
     if (ok) {
       AudioService.playCoin();
       this.markCapytorioDirty();
@@ -4711,7 +4756,7 @@ export class PlayStyleManager {
     placed: boolean;
     gx: number;
     gz: number;
-    tool: CapytorioMachineType | 'demolish' | 'mine';
+    tool: string;
   } {
     if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
       return { placed: false, gx: 0, gz: 0, tool: this.capytorioEngine.selectedTool };
@@ -4745,6 +4790,7 @@ export class PlayStyleManager {
       alignPrevTile
     );
     if (res.ok) {
+      const resolvedTool = resolveCapytorioPlaceableSpec(tool);
       AudioService.playBrickHit(1.22);
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
@@ -4752,7 +4798,7 @@ export class PlayStyleManager {
         capytorioGridToWorldZ(gz),
         'citrus_burst',
         4,
-        CAPYTORIO_MACHINE_SPECS[tool].colorHex
+        resolvedTool?.tintHex ?? 0xfacc15
       );
       this.markCapytorioDirty();
       this.emitTelemetry();
@@ -4766,7 +4812,7 @@ export class PlayStyleManager {
   }
 
   public pipetteCapytorioAtCursor(): {
-    tool: CapytorioMachineType | 'mine';
+    tool: string;
     picked: boolean;
     label: string;
   } {
@@ -4776,8 +4822,9 @@ export class PlayStyleManager {
     );
     AudioService.playCoin();
     this.emitCapytorioSnapshot();
+    const spec = resolveCapytorioPlaceableSpec(res.tool);
     const label = res.picked
-      ? `Picked ${CAPYTORIO_MACHINE_SPECS[res.tool as CapytorioMachineType].name}`
+      ? `Picked ${spec?.name ?? res.tool}`
       : 'Cursor cleared -> Mine / Inspect [E]';
     return { tool: res.tool, picked: res.picked, label };
   }
@@ -7999,10 +8046,14 @@ export class PlayStyleManager {
 
     if (this.currentMode === 'capytorio' && this.getCapytorioCameraMode() === 'oblique') {
       this.surfaceCamYaw = Math.PI;
-      this.surfaceCamPitch = 0.94;
-      _camTarget.set(wx, wy + 18.5 * distScale, wz + 13.5 * distScale);
+      this.surfaceCamPitch = CAPYTORIO_OBLIQUE_PITCH_RAD;
+      _camTarget.set(
+        wx,
+        wy + CAPYTORIO_OBLIQUE_DY_FACTOR * distScale,
+        wz + CAPYTORIO_OBLIQUE_DZ_FACTOR * distScale
+      );
       this.camera.position.lerp(_camTarget, 1 - Math.exp(-10.0 * dt));
-      _lookTarget.set(wx, wy + 0.35, wz - 0.8);
+      _lookTarget.set(wx, wy + 0.15, wz);
       this.camera.lookAt(_lookTarget);
       return;
     }
@@ -8776,7 +8827,9 @@ export class PlayStyleManager {
       this.heroLocalPos.x - pool.centerX,
       this.heroLocalPos.z - pool.centerZ
     );
-    const inHomePool = dPool < pool.basinRadius - 0.32;
+    const inHomePool =
+      dPool < pool.basinRadius - 0.32 &&
+      this.heroLocalPos.y <= pool.waterMesh.position.y - 0.18;
     if (inHomePool) {
       this.isSwimmingInPool = true;
     }
@@ -9146,7 +9199,10 @@ export class PlayStyleManager {
     const dPoolCenter = pool
       ? Math.hypot(this.heroLocalPos.x - pool.centerX, this.heroLocalPos.z - pool.centerZ)
       : 999;
-    const inPoolBasin = pool ? dPoolCenter < pool.basinRadius - 0.32 : false;
+    const inPoolBasin = pool
+      ? dPoolCenter < pool.basinRadius - 0.32 &&
+        this.heroLocalPos.y <= pool.waterMesh.position.y - 0.18
+      : false;
     this.isSwimmingInPool = inPoolBasin || this.lastOceanFluidActive;
 
     // 1. Evaluate 3D foot sole ground contact BEFORE applying walking propulsion!
@@ -9295,7 +9351,10 @@ export class PlayStyleManager {
         ? Math.hypot(activeLeaderX - pool.centerX, activeLeaderZ - pool.centerZ)
         : 999;
       const leaderInPool = pool ? leaderPoolDist < pool.basinRadius - 0.32 : false;
-      this.isSwimmingInPool = inPoolBasin || leaderInPool || physStep.inFluid;
+      this.isSwimmingInPool =
+        inPoolBasin ||
+        (leaderInPool && Boolean(pool && activeLeaderY <= pool.waterMesh.position.y - 0.18)) ||
+        (!leaderInPool && physStep.inFluid);
 
       if (leaderInPool && pool) {
         const targetPoolY =
@@ -9317,6 +9376,7 @@ export class PlayStyleManager {
             this.heroVelocity.z *= dDecay;
           }
           this.isGrounded = true;
+          this.isSwimmingInPool = true;
           this.coyoteGroundedTimer = 0.14;
           if (this.isGroundPounding) {
             this.handleGroundPoundImpact(activeLeaderX, targetPoolY, activeLeaderZ, true);
@@ -9324,6 +9384,8 @@ export class PlayStyleManager {
         } else {
           this.spineY[leaderIdx] = nextY;
           if (!this.isWalkingBackward) this.heroLocalPos.y = nextY;
+          this.isGrounded = false;
+          this.isSwimmingInPool = nextY <= pool.waterMesh.position.y - 0.18;
           this.coyoteGroundedTimer = Math.max(0, this.coyoteGroundedTimer - dt);
         }
       } else {
@@ -10264,31 +10326,47 @@ export class PlayStyleManager {
       this.resetDescentRings();
     }
 
-    // Auto-touchdown onto Sanctuary Chrono-Pad once vessel settles into Capybara Forest window
+    // Auto-touchdown onto Sanctuary Chrono-Pad or Capytorio Frontier once vessel settles into Capybara Forest window
     if (
       this.autoLandAtForestPending &&
       Math.abs(logVal - CAPYBARA_FOREST_LOG_METERS) <= 0.16 &&
       Math.abs(this.targetLogScaleMeters - CAPYBARA_FOREST_LOG_METERS) <= 0.16
     ) {
+      const targetMode = this.autoLandTargetMode;
       this.autoLandAtForestPending = false;
-      this.currentMode = 'sanctuary';
-      this.physicsBridge?.setActiveDistrict('sanctuary');
-      this.heroLocalPos.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
-      this.heroCapy.position.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
-      this.resetDachshundTrail();
-      this.updateDachshundTransforms(0);
-      this.resumeSurfacePlayFromForest(false);
-      this.callbacks.onModeNotification?.(
-        'Chrono-Vessel docked on Sanctuary Chrono-Pad! Explore the 5 districts or launch back to cosmos anytime.'
-      );
+      this.autoLandTargetMode = 'sanctuary';
+      if (targetMode === 'capytorio') {
+        this.settings.capytorioCameraMode = 'oblique';
+        this.resumeSurfacePlayFromForest(true);
+        this.switchMode('capytorio', true);
+        this.callbacks.onModeNotification?.(
+          'Landed at Capytorio Frontier! Harvest citrus trees & ore [E] or craft & place belts [I]!'
+        );
+      } else {
+        this.resumeSurfacePlayFromForest(false);
+        this.switchMode('sanctuary', true);
+        this.heroLocalPos.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+        this.heroCapy.position.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+        this.resetDachshundTrail();
+        this.updateDachshundTransforms(0);
+        this.callbacks.onModeNotification?.(
+          'Chrono-Vessel docked on Sanctuary Chrono-Pad! Explore the 5 districts or launch back to cosmos anytime.'
+        );
+      }
       return;
     }
 
-    // Keep Chrono-Pad hero alignment converged before touchdown so focal target slides onto the Pad with zero jump
+    // Keep Chrono-Pad / Capytorio hero alignment converged before touchdown so focal target slides onto target cleanly
     if (this.autoLandAtForestPending && logVal <= 2.5) {
-      this.currentMode = 'sanctuary';
-      this.heroLocalPos.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
-      this.heroCapy.position.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+      if (this.autoLandTargetMode === 'capytorio') {
+        this.currentMode = 'capytorio';
+        this.heroLocalPos.set(0, 0, 3.0);
+        this.heroCapy.position.set(CAPYTORIO_WORLD_ORIGIN_X, 0, CAPYTORIO_WORLD_ORIGIN_Z + 3.0);
+      } else {
+        this.currentMode = 'sanctuary';
+        this.heroLocalPos.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+        this.heroCapy.position.set(CHRONO_PAD_X, 0.3, CHRONO_PAD_Z);
+      }
     }
 
     // Seamless automatic handover into live surface gameplay when steering/jumping inside Capybara Forest!
@@ -11178,10 +11256,17 @@ export class PlayStyleManager {
     if (this.isVesselFlying()) {
       return this.adjustVesselThrottle(delta);
     }
-    // On the ground in sanctuary, mouse wheel gently adjusts chase camera follow distance;
-    // zooming past maximum pull-back (2.0) or a deliberate strong zoom-out gesture lifts back into the Chrono-Vessel
     const curDist = this.settings.cameraDistance ?? 1.0;
     const rawDist = curDist - delta * 0.35;
+    // In Capytorio 68-degree overhead Factorio view, clamp scroll zoom cleanly without launching to orbit
+    if (this.currentMode === 'capytorio' && this.getCapytorioCameraMode() === 'oblique') {
+      const nextDist = THREE.MathUtils.clamp(rawDist, 0.55, 2.2);
+      this.settings.cameraDistance = Math.round(nextDist * 100) / 100;
+      this.updateSettings(this.settings);
+      return this.settings.cameraDistance;
+    }
+    // On the ground in sanctuary, mouse wheel gently adjusts chase camera follow distance;
+    // zooming past maximum pull-back (2.0) or a deliberate strong zoom-out gesture lifts back into the Chrono-Vessel
     if (
       delta < 0 &&
       (rawDist >= 2.0 || (delta <= -0.3 && this.cosmicStage === 'playing'))

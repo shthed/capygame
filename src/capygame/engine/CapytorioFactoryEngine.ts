@@ -2,6 +2,7 @@ import {
   CAPYTORIO_CHUNK_SIZE,
   CAPYTORIO_HOTBAR_ORDER,
   CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   CAPYTORIO_TECHS,
   CAPYTORIO_TILE_SIZE,
@@ -18,6 +19,54 @@ import {
   type CapytorioTechId,
 } from './CapytorioData';
 
+export const MAX_RECENT_CAPYTORIO_TOOLS = 10;
+
+export type CapytorioPlaceableToolId = CapytorioMachineType | CapytorioItemId;
+
+export interface CapytorioPlaceableSpec {
+  id: string;
+  baseType: CapytorioMachineType;
+  isBaseMachine: boolean;
+  name: string;
+  shortName: string;
+  description: string;
+  tierMult: number;
+  tintHex: number;
+}
+
+export function resolveCapytorioPlaceableSpec(toolId: string): CapytorioPlaceableSpec | null {
+  if (Object.prototype.hasOwnProperty.call(CAPYTORIO_MACHINE_SPECS, toolId)) {
+    const mType = toolId as CapytorioMachineType;
+    const spec = CAPYTORIO_MACHINE_SPECS[mType];
+    return {
+      id: mType,
+      baseType: mType,
+      isBaseMachine: true,
+      name: spec.name,
+      shortName: spec.shortName,
+      description: spec.description,
+      tierMult: 1.0,
+      tintHex: spec.colorHex,
+    };
+  }
+  const mapping = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[toolId];
+  if (mapping) {
+    const baseSpec = CAPYTORIO_MACHINE_SPECS[mapping.baseType];
+    const meta = getCapytorioItemMeta(toolId);
+    return {
+      id: toolId,
+      baseType: mapping.baseType,
+      isBaseMachine: false,
+      name: meta.name,
+      shortName: meta.shortName,
+      description: `${meta.name} (${baseSpec.shortName} · ${mapping.tierMult.toFixed(1)}x speed)`,
+      tierMult: mapping.tierMult,
+      tintHex: mapping.tintHex ?? meta.colorHex,
+    };
+  }
+  return null;
+}
+
 export interface CapytorioBeltItem {
   item: CapytorioItemId;
   progress: number; // 0..1 along tile direction
@@ -26,6 +75,8 @@ export interface CapytorioBeltItem {
 export interface CapytorioMachine {
   id: number;
   type: CapytorioMachineType;
+  variantItemId?: CapytorioItemId;
+  tierMult?: number;
   gx: number;
   gz: number;
   dir: CapytorioDirection;
@@ -59,6 +110,8 @@ export interface CapytorioSerializedState {
   version: 1;
   machines: Array<{
     type: CapytorioMachineType;
+    variantItemId?: CapytorioItemId;
+    tierMult?: number;
     gx: number;
     gz: number;
     dir: CapytorioDirection;
@@ -68,6 +121,8 @@ export interface CapytorioSerializedState {
     beltItems?: Array<{ item: CapytorioItemId; progress: number }>;
   }>;
   depletions: Array<[string, number]>;
+  harvestedTrees?: string[];
+  recentTools?: string[];
   pocketItems: Partial<Record<CapytorioItemId, number>>;
   pocketMachines: Partial<Record<CapytorioMachineType, number>>;
   unlockedTechs: CapytorioTechId[];
@@ -84,13 +139,16 @@ export interface CapytorioUiSnapshot {
   powerSupplyMw: number;
   powerDemandMw: number;
   powerEfficiency: number;
-  selectedTool: CapytorioMachineType | 'demolish' | 'mine';
+  selectedTool: string;
   selectedDir: CapytorioDirection;
   selectedRecipeId: CapytorioRecipeId;
+  recentTools: string[];
+  harvestedTreeCount: number;
   inspectedMachine: {
     gx: number;
     gz: number;
     type: CapytorioMachineType;
+    variantItemId?: CapytorioItemId;
     dir: CapytorioDirection;
     recipeId?: CapytorioRecipeId;
     craftProgress: number;
@@ -107,7 +165,9 @@ export interface CapytorioUiSnapshot {
     gz: number;
     resource: CapytorioItemId | null;
     resourceAmount: number;
+    hasTree: boolean;
     machineType: CapytorioMachineType | null;
+    variantItemId?: CapytorioItemId;
   };
   pocketItems: Partial<Record<CapytorioItemId, number>>;
   pocketMachines: Partial<Record<CapytorioMachineType, number>>;
@@ -251,6 +311,20 @@ export function sampleCapytorioBaseResource(
   return null;
 }
 
+/**
+ * Deterministic tropical citrus trees across the lush Capytorio meadow.
+ * Keeps the central landing pad (|gx|<=3, |gz|<=3) and mineral ore patches completely clear
+ * while forming natural groves across the infinite plain.
+ */
+export function sampleCapytorioTreeAt(gx: number, gz: number): boolean {
+  if (Math.abs(gx) <= 3 && Math.abs(gz) <= 3) return false;
+  if (sampleCapytorioBaseResource(gx, gz) !== null) return false;
+  const groveNoise = Math.sin(gx * 0.23 + 0.5) * Math.cos(gz * 0.21 - 0.3);
+  if (groveNoise < -0.35) return false;
+  const h = hashInt2D(gx, gz, 7719);
+  return h < 0.125;
+}
+
 function getDefaultTechId(): CapytorioTechId | null {
   return CAPYTORIO_TECHS[0]?.id ?? null;
 }
@@ -266,12 +340,14 @@ function getDefaultAssemblerRecipeId(): CapytorioRecipeId {
 export class CapytorioFactoryEngine {
   public readonly machines = new Map<string, CapytorioMachine>();
   private readonly oreRemainingOverrides = new Map<string, number>();
+  private readonly harvestedTrees = new Set<string>();
   private readonly pocketItems: Partial<Record<CapytorioItemId, number>> = {};
   private readonly pocketMachines: Partial<Record<CapytorioMachineType, number>> = {};
   private readonly unlockedTechs = new Set<CapytorioTechId>();
   private readonly completedMilestones = new Set<string>();
   private activeTechId: CapytorioTechId | null = getDefaultTechId();
   private techDelivered: Partial<Record<CapytorioItemId, number>> = {};
+  private recentTools: string[] = [...CAPYTORIO_HOTBAR_ORDER];
 
   private nextMachineId = 1;
   private rocketLaunches = 0;
@@ -280,7 +356,7 @@ export class CapytorioFactoryEngine {
   private lastReportedScore = 0;
 
   // Player build tool state
-  public selectedTool: CapytorioMachineType | 'demolish' | 'mine' = 'drill';
+  public selectedTool: string = 'drill';
   public selectedDir: CapytorioDirection = 1; // East (+X) by default
   public selectedRecipeId: CapytorioRecipeId = getDefaultAssemblerRecipeId();
   public hoveredGx = 0;
@@ -312,6 +388,7 @@ export class CapytorioFactoryEngine {
   public resetToBlankStarterField(): void {
     this.machines.clear();
     this.oreRemainingOverrides.clear();
+    this.harvestedTrees.clear();
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
       delete this.pocketItems[k];
     }
@@ -328,6 +405,7 @@ export class CapytorioFactoryEngine {
     this.completedMilestones.clear();
     this.activeTechId = getDefaultTechId();
     this.techDelivered = {};
+    this.recentTools = [...CAPYTORIO_HOTBAR_ORDER];
     this.rocketLaunches = 0;
     this.totalProduced = 0;
     this.score = 0;
@@ -338,6 +416,59 @@ export class CapytorioFactoryEngine {
     this.selectedRecipeId = getDefaultAssemblerRecipeId();
     this.machineListDirty = true;
     this.recomputePowerMetrics();
+  }
+
+  public getRecentTools(): string[] {
+    return this.recentTools.slice(0, MAX_RECENT_CAPYTORIO_TOOLS);
+  }
+
+  public recordRecentTool(toolId: string): void {
+    if (!resolveCapytorioPlaceableSpec(toolId)) return;
+    if (this.recentTools[0] === toolId && this.recentTools.length === MAX_RECENT_CAPYTORIO_TOOLS) {
+      return;
+    }
+    const next: string[] = [toolId];
+    for (let i = 0; i < this.recentTools.length && next.length < MAX_RECENT_CAPYTORIO_TOOLS; i++) {
+      const existing = this.recentTools[i];
+      if (existing !== toolId && resolveCapytorioPlaceableSpec(existing)) {
+        next.push(existing);
+      }
+    }
+    for (let i = 0; i < CAPYTORIO_HOTBAR_ORDER.length && next.length < MAX_RECENT_CAPYTORIO_TOOLS; i++) {
+      const fallback = CAPYTORIO_HOTBAR_ORDER[i];
+      if (!next.includes(fallback)) {
+        next.push(fallback);
+      }
+    }
+    this.recentTools = next;
+  }
+
+  public equipPlaceableTool(toolId: string, promoteToRecent: boolean = false): boolean {
+    if (toolId === 'mine' || toolId === 'demolish') {
+      this.selectedTool = toolId;
+      return true;
+    }
+    if (!resolveCapytorioPlaceableSpec(toolId)) return false;
+    this.selectedTool = toolId;
+    if (promoteToRecent) {
+      this.recordRecentTool(toolId);
+    }
+    return true;
+  }
+
+  public hasTreeAt(gx: number, gz: number): boolean {
+    const key = tileKey(gx, gz);
+    if (this.harvestedTrees.has(key)) return false;
+    if (this.machines.has(key)) return false;
+    return sampleCapytorioTreeAt(gx, gz);
+  }
+
+  public harvestTreeAt(gx: number, gz: number): boolean {
+    if (!this.hasTreeAt(gx, gz)) return false;
+    this.harvestedTrees.add(tileKey(gx, gz));
+    this.addPocketItem('orange', 3);
+    this.score += 6;
+    return true;
   }
 
   public getResourceAt(gx: number, gz: number): CapytorioResourceTile | null {
@@ -401,7 +532,15 @@ export class CapytorioFactoryEngine {
       this.consumePocketItem(itemId, amt);
     }
     this.pocketMachines[type] = (this.pocketMachines[type] ?? 0) + 1;
+    this.recordRecentTool(type);
     return true;
+  }
+
+  public getPlaceableToolCount(toolId: string): number {
+    if (Object.prototype.hasOwnProperty.call(CAPYTORIO_MACHINE_SPECS, toolId)) {
+      return this.getPocketMachineCount(toolId as CapytorioMachineType);
+    }
+    return this.getPocketItemCount(toolId);
   }
 
   public isRecipeUnlocked(recipeId: CapytorioRecipeId): boolean {
@@ -466,68 +605,119 @@ export class CapytorioFactoryEngine {
     return true;
   }
 
-  public pocketCraftRecipe(recipeId: CapytorioRecipeId): boolean {
+  public pocketCraftRecipe(recipeId: CapytorioRecipeId, batches: number = 1): boolean {
     const rec = RECIPE_BY_ID.get(recipeId);
-    if (!rec || !this.canAffordPocketRecipe(recipeId)) return false;
-    for (let i = 0; i < rec.ingredients.length; i++) {
-      this.consumePocketItem(rec.ingredients[i].item, rec.ingredients[i].count);
+    if (!rec || batches < 1) return false;
+    let craftedAny = false;
+    for (let b = 0; b < batches; b++) {
+      if (!this.canAffordPocketRecipe(recipeId)) break;
+      for (let i = 0; i < rec.ingredients.length; i++) {
+        this.consumePocketItem(rec.ingredients[i].item, rec.ingredients[i].count);
+      }
+      this.addPocketItem(rec.result, rec.resultCount);
+      this.totalProduced += rec.resultCount;
+      this.score += 5 * rec.resultCount;
+      craftedAny = true;
     }
-    this.addPocketItem(rec.result, rec.resultCount);
-    this.totalProduced += rec.resultCount;
-    this.score += 5 * rec.resultCount;
-    return true;
+    if (craftedAny && CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result]) {
+      this.recordRecentTool(rec.result);
+    }
+    return craftedAny;
   }
 
   public handMineAt(gx: number, gz: number, yieldCount: number = 2): CapytorioItemId | null {
     const res = this.depleteOreAt(gx, gz, yieldCount);
-    if (!res) return null;
-    this.addPocketItem(res, yieldCount);
-    this.score += 2 * yieldCount;
-    return res;
+    if (res) {
+      this.addPocketItem(res, yieldCount);
+      this.score += 2 * yieldCount;
+      return res;
+    }
+    if (this.harvestTreeAt(gx, gz)) {
+      return 'orange';
+    }
+    return null;
   }
 
   public placeMachine(
-    type: CapytorioMachineType,
+    toolOrType: string,
     gx: number,
     gz: number,
     dir: CapytorioDirection = this.selectedDir,
     recipeId?: CapytorioRecipeId
   ): { ok: boolean; reason?: string; machine?: CapytorioMachine } {
+    const resolved = resolveCapytorioPlaceableSpec(toolOrType);
+    if (!resolved) {
+      return { ok: false, reason: `Unknown building: ${toolOrType}` };
+    }
+    const baseType = resolved.baseType;
+    const variantItemId = resolved.isBaseMachine ? undefined : resolved.id;
+
     const key = tileKey(gx, gz);
     const existing = this.machines.get(key);
     if (existing) {
+      const sameTool =
+        existing.type === baseType &&
+        (existing.variantItemId ?? existing.type) === (variantItemId ?? baseType);
       // Clicking an existing belt/inserter with same tool rotates it cleanly instead of failing!
-      if (existing.type === type) {
+      if (sameTool) {
         existing.dir = ((existing.dir + 1) & 3) as CapytorioDirection;
         return { ok: true, machine: existing };
       }
       return { ok: false, reason: 'Tile already occupied — Right-click or press X to demolish first' };
     }
 
-    if (type === 'drill') {
+    if (baseType === 'drill') {
       const ore = this.getResourceAt(gx, gz);
       if (!ore) {
         return { ok: false, reason: 'Mining Drills must be placed on glowing ore tiles' };
       }
     }
 
-    const inPocket = this.getPocketMachineCount(type);
-    if (inPocket > 0) {
-      this.pocketMachines[type] = inPocket - 1;
-    } else if (!this.craftMachineIntoPocket(type)) {
-      return { ok: false, reason: `Need materials to craft ${CAPYTORIO_MACHINE_SPECS[type].name}` };
+    if (resolved.isBaseMachine) {
+      const inPocket = this.getPocketMachineCount(baseType);
+      if (inPocket > 0) {
+        this.pocketMachines[baseType] = inPocket - 1;
+      } else if (!this.craftMachineIntoPocket(baseType)) {
+        return { ok: false, reason: `Need materials to craft ${resolved.name}` };
+      } else {
+        // Use the one just crafted
+        this.pocketMachines[baseType] = Math.max(0, (this.pocketMachines[baseType] ?? 1) - 1);
+      }
     } else {
-      // Use the one just crafted
-      this.pocketMachines[type] = Math.max(0, (this.pocketMachines[type] ?? 1) - 1);
+      const itemQty = this.getPocketItemCount(resolved.id);
+      if (itemQty > 0) {
+        this.consumePocketItem(resolved.id, 1);
+      } else {
+        // Auto-craft matching Factorio recipe if affordable in pocket
+        let autoCrafted = false;
+        for (let i = 0; i < CAPYTORIO_RECIPES.length; i++) {
+          const rec = CAPYTORIO_RECIPES[i];
+          if (rec.result === resolved.id && this.canAffordPocketRecipe(rec.id)) {
+            autoCrafted = this.pocketCraftRecipe(rec.id, 1);
+            if (autoCrafted) {
+              this.consumePocketItem(resolved.id, 1);
+            }
+            break;
+          }
+        }
+        if (!autoCrafted) {
+          return { ok: false, reason: `Craft ${resolved.name} in the Craft menu first` };
+        }
+      }
     }
+
+    // Clear any citrus tree on this tile cleanly and award oranges!
+    this.harvestTreeAt(gx, gz);
 
     const machine: CapytorioMachine = {
       id: this.nextMachineId++,
-      type,
+      type: baseType,
+      variantItemId,
+      tierMult: resolved.tierMult,
       gx,
       gz,
       dir,
-      recipeId: type === 'assembler' ? recipeId ?? this.selectedRecipeId : undefined,
+      recipeId: baseType === 'assembler' ? recipeId ?? this.selectedRecipeId : undefined,
       craftProgress: 0,
       productivityProgress: 0,
       fuelTimer: 0,
@@ -542,6 +732,7 @@ export class CapytorioFactoryEngine {
     this.machineListDirty = true;
     this.inspectedKey = key;
     this.score += 10;
+    this.recordRecentTool(resolved.id);
     this.recomputePowerMetrics();
     return { ok: true, machine };
   }
@@ -578,8 +769,12 @@ export class CapytorioFactoryEngine {
     const key = tileKey(gx, gz);
     const m = this.machines.get(key);
     if (!m) return null;
-    // 100% friendly refund of machine + buffered items + belt items
-    this.pocketMachines[m.type] = (this.pocketMachines[m.type] ?? 0) + 1;
+    // 100% friendly refund of machine/variant item + buffered items + belt items
+    if (m.variantItemId) {
+      this.addPocketItem(m.variantItemId, 1);
+    } else {
+      this.pocketMachines[m.type] = (this.pocketMachines[m.type] ?? 0) + 1;
+    }
     for (const [k, v] of Object.entries(m.inputBuffer) as Array<[CapytorioItemId, number]>) {
       if (v > 0) this.addPocketItem(k, v);
     }
@@ -605,7 +800,7 @@ export class CapytorioFactoryEngine {
    * drag tile so multi-tile belt runs and corners connect seamlessly).
    */
   public placeMachineDuringDrag(
-    type: CapytorioMachineType,
+    toolOrType: string,
     gx: number,
     gz: number,
     prevPlacedGx: number | null,
@@ -634,7 +829,7 @@ export class CapytorioFactoryEngine {
     if (existing) {
       return { ok: false, appliedDir: targetDir };
     }
-    const res = this.placeMachine(type, gx, gz, targetDir);
+    const res = this.placeMachine(toolOrType, gx, gz, targetDir);
     return {
       ok: res.ok,
       machine: res.machine,
@@ -647,21 +842,23 @@ export class CapytorioFactoryEngine {
    * or clears the active build tool back to Inspect/Hand-Mine if the tile is empty.
    */
   public pipetteAt(gx: number, gz: number): {
-    tool: CapytorioMachineType | 'mine';
+    tool: string;
     picked: boolean;
     copiedRecipeId?: CapytorioRecipeId;
   } {
     const key = tileKey(gx, gz);
     const existing = this.machines.get(key);
     if (existing) {
-      this.selectedTool = existing.type;
+      const toolId = existing.variantItemId ?? existing.type;
+      this.selectedTool = toolId;
       this.selectedDir = existing.dir;
       this.inspectedKey = key;
       if (existing.type === 'assembler' && existing.recipeId) {
         this.selectedRecipeId = existing.recipeId;
       }
+      this.recordRecentTool(toolId);
       return {
-        tool: existing.type,
+        tool: toolId,
         picked: true,
         copiedRecipeId: existing.recipeId,
       };
@@ -671,7 +868,7 @@ export class CapytorioFactoryEngine {
   }
 
   /**
-   * Manually loads coal or yuzu_sap from pocket into a Coal Steam Generator,
+   * Manually loads coal, yuzu_sap, or orange bio-fuel from pocket into a Steam Generator,
    * igniting immediately if idle so power output surges from 1.5 MW -> 6.0 MW.
    */
   public insertPocketFuelToGenerator(gx: number, gz: number, maxAmount: number = 5): number {
@@ -679,7 +876,7 @@ export class CapytorioFactoryEngine {
     if (!m || m.type !== 'generator') return 0;
 
     let loaded = 0;
-    const fuels: readonly CapytorioItemId[] = ['coal', 'yuzu_sap'];
+    const fuels: readonly CapytorioItemId[] = ['coal', 'yuzu_sap', 'orange'];
     for (let f = 0; f < fuels.length && loaded < maxAmount; f++) {
       const fuelId = fuels[f];
       const curBuf = m.inputBuffer[fuelId] ?? 0;
@@ -700,6 +897,10 @@ export class CapytorioFactoryEngine {
         m.inputBuffer.yuzu_sap = (m.inputBuffer.yuzu_sap ?? 1) - 1;
         if (m.inputBuffer.yuzu_sap <= 0) delete m.inputBuffer.yuzu_sap;
         m.fuelTimer = 6.5;
+      } else if ((m.inputBuffer.orange ?? 0) > 0) {
+        m.inputBuffer.orange = (m.inputBuffer.orange ?? 1) - 1;
+        if (m.inputBuffer.orange <= 0) delete m.inputBuffer.orange;
+        m.fuelTimer = 5.0;
       }
     }
     if (loaded > 0) {
@@ -841,7 +1042,7 @@ export class CapytorioFactoryEngine {
       'rocket_silo_prod',
       'Orbital Yuzu Rocket Launch',
       15,
-      50,
+      0,
       true
     );
     return {
@@ -877,27 +1078,24 @@ export class CapytorioFactoryEngine {
       (this.pocketItems.calcite ?? 0) +
       (this.pocketItems.yuzu_sap ?? 0);
 
-    const defs: Array<{ id: string; label: string; hint: string; met: boolean; coins: number }> = [
+    const defs: Array<{ id: string; label: string; hint: string; met: boolean }> = [
       {
         id: 'mine_ore',
         label: 'Mine Starter Ore',
         hint: 'Press [E] over a glowing ore seam or drill it',
         met: this.completedMilestones.has('mine_ore') || totalOreMined >= 2 || drillCount >= 1,
-        coins: 5,
       },
       {
         id: 'place_drill',
         label: 'Place Mining Drill',
         hint: 'Equip Drill [1] and click on NW Iron or NE Copper',
         met: this.completedMilestones.has('place_drill') || drillCount >= 1,
-        coins: 8,
       },
       {
         id: 'lay_belts',
         label: 'Run Conveyor Line',
         hint: 'Select Belt [2] & drag across 3 tiles from a drill',
         met: this.completedMilestones.has('lay_belts') || beltCount >= 3,
-        coins: 10,
       },
       {
         id: 'smelt_power',
@@ -906,7 +1104,6 @@ export class CapytorioFactoryEngine {
         met:
           this.completedMilestones.has('smelt_power') ||
           (furnaceOrGenActive && this.totalProduced >= 2),
-        coins: 12,
       },
       {
         id: 'research_lab',
@@ -916,14 +1113,12 @@ export class CapytorioFactoryEngine {
           this.completedMilestones.has('research_lab') ||
           this.unlockedTechs.size >= 1 ||
           (labCount >= 1 && (totalSci >= 1 || Object.keys(this.techDelivered).length > 0)),
-        coins: 15,
       },
       {
         id: 'launch_rocket',
         label: 'Launch Yuzu Rocket',
         hint: 'Reach Rocket Productivity & launch into orbit',
         met: this.completedMilestones.has('launch_rocket') || this.rocketLaunches >= 1,
-        coins: 30,
       },
     ];
 
@@ -932,8 +1127,8 @@ export class CapytorioFactoryEngine {
       const d = defs[i];
       if (d.met && !this.completedMilestones.has(d.id)) {
         this.completedMilestones.add(d.id);
-        this.score += d.coins * 5;
-        callbacks?.onMilestoneCompleted?.(d.id, d.label, d.coins);
+        this.score += 40;
+        callbacks?.onMilestoneCompleted?.(d.id, d.label, 0);
       }
       out.push({
         id: d.id,
@@ -1042,9 +1237,10 @@ export class CapytorioFactoryEngine {
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
       const spec = CAPYTORIO_MACHINE_SPECS[m.type];
+      const tierMult = m.tierMult ?? 1.0;
       demand += spec.powerDemandMw;
       if (m.type === 'generator') {
-        supply += (m.fuelTimer > 0 ? spec.powerSupplyMw : 1.5) * genBonus;
+        supply += (m.fuelTimer > 0 ? spec.powerSupplyMw : 1.5) * tierMult * genBonus;
       }
     }
 
@@ -1113,7 +1309,7 @@ export class CapytorioFactoryEngine {
     }
 
     if (target.type === 'generator') {
-      if (item !== 'coal' && item !== 'yuzu_sap') return false;
+      if (item !== 'coal' && item !== 'yuzu_sap' && item !== 'orange') return false;
       const cur = target.inputBuffer[item] ?? 0;
       if (cur >= 16) return false;
       target.inputBuffer[item] = cur + 1;
@@ -1224,6 +1420,11 @@ export class CapytorioFactoryEngine {
           if (m.inputBuffer.yuzu_sap <= 0) delete m.inputBuffer.yuzu_sap;
           m.fuelTimer = 6.5;
           anyFuelChanged = true;
+        } else if ((m.inputBuffer.orange ?? 0) > 0) {
+          m.inputBuffer.orange = (m.inputBuffer.orange ?? 1) - 1;
+          if (m.inputBuffer.orange <= 0) delete m.inputBuffer.orange;
+          m.fuelTimer = 5.0;
+          anyFuelChanged = true;
         }
       }
     }
@@ -1238,6 +1439,7 @@ export class CapytorioFactoryEngine {
 
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
+      const mTierMult = m.tierMult ?? 1.0;
       const fGx = m.gx + DIR_DX[m.dir];
       const fGz = m.gz + DIR_DZ[m.dir];
       const frontTarget = this.machines.get(tileKey(fGx, fGz));
@@ -1246,7 +1448,7 @@ export class CapytorioFactoryEngine {
         const oreTile = this.getResourceAt(m.gx, m.gz);
         const bufferedOut = this.countMapValues(m.outputBuffer);
         if (oreTile && bufferedOut < 4) {
-          m.craftProgress += (clampedDt * craftRate) / 2.2;
+          m.craftProgress += (clampedDt * craftRate * mTierMult) / 2.2;
           if (m.craftProgress >= 1.0) {
             m.craftProgress -= 1.0;
             const mined = this.depleteOreAt(m.gx, m.gz, 1);
@@ -1290,7 +1492,7 @@ export class CapytorioFactoryEngine {
         if (activeInput && smeltSpec && outCount < 16) {
           const rec = RECIPE_BY_ID.get(smeltSpec.recipeId);
           const craftSec = rec?.craftTimeSec ?? 1.6;
-          m.craftProgress += (clampedDt * craftRate) / craftSec;
+          m.craftProgress += (clampedDt * craftRate * mTierMult) / craftSec;
           if (m.craftProgress >= 1.0) {
             m.craftProgress -= 1.0;
             m.inputBuffer[activeInput] = (m.inputBuffer[activeInput] ?? smeltSpec.inputCount) - smeltSpec.inputCount;
@@ -1332,7 +1534,7 @@ export class CapytorioFactoryEngine {
           }
           const outCount = this.countMapValues(m.outputBuffer);
           if (hasAll && outCount < 20) {
-            m.craftProgress += (clampedDt * craftRate) / rec.craftTimeSec;
+            m.craftProgress += (clampedDt * craftRate * mTierMult) / rec.craftTimeSec;
             if (m.craftProgress >= 1.0) {
               m.craftProgress -= 1.0;
               for (let j = 0; j < rec.ingredients.length; j++) {
@@ -1394,10 +1596,11 @@ export class CapytorioFactoryEngine {
           }
         }
       } else if (m.type === 'belt') {
+        const tileBeltRate = beltRate * mTierMult;
         for (let bi = m.beltItems.length - 1; bi >= 0; bi--) {
           const bItem = m.beltItems[bi];
           const maxAllow = bi === 0 ? 1.0 : Math.min(1.0, m.beltItems[bi - 1].progress - 0.34);
-          bItem.progress = Math.min(maxAllow, bItem.progress + clampedDt * beltRate);
+          bItem.progress = Math.min(maxAllow, bItem.progress + clampedDt * tileBeltRate);
           if (bItem.progress >= 0.98 && frontTarget) {
             if (this.tryAcceptItemIntoTarget(frontTarget, bItem.item, m.gx, m.gz)) {
               m.beltItems.splice(bi, 1);
@@ -1463,7 +1666,7 @@ export class CapytorioFactoryEngine {
         const srcGx = m.gx - DIR_DX[m.dir];
         const srcGz = m.gz - DIR_DZ[m.dir];
         const srcM = this.machines.get(tileKey(srcGx, srcGz));
-        const swingSpeed = 1.85 * Math.max(0.5, this.powerEfficiency);
+        const swingSpeed = 1.85 * mTierMult * Math.max(0.5, this.powerEfficiency);
 
         if (!m.holdingItem && srcM && frontTarget) {
           // Pick best candidate item from source
@@ -1555,7 +1758,7 @@ export class CapytorioFactoryEngine {
       return false;
     }
     if (target.type === 'generator') {
-      return (item === 'coal' || item === 'yuzu_sap') && (target.inputBuffer[item] ?? 0) < 16;
+      return (item === 'coal' || item === 'yuzu_sap' || item === 'orange') && (target.inputBuffer[item] ?? 0) < 16;
     }
     if (target.type === 'lab') {
       const meta = getCapytorioItemMeta(item);
@@ -1615,11 +1818,14 @@ export class CapytorioFactoryEngine {
       selectedTool: this.selectedTool,
       selectedDir: this.selectedDir,
       selectedRecipeId: this.selectedRecipeId,
+      recentTools: this.getRecentTools(),
+      harvestedTreeCount: this.harvestedTrees.size,
       inspectedMachine: inspected
         ? {
             gx: inspected.gx,
             gz: inspected.gz,
             type: inspected.type,
+            variantItemId: inspected.variantItemId,
             dir: inspected.dir,
             recipeId: inspected.recipeId,
             craftProgress: +inspected.craftProgress.toFixed(2),
@@ -1637,7 +1843,9 @@ export class CapytorioFactoryEngine {
         gz: this.hoveredGz,
         resource: hoveredOre?.resource ?? null,
         resourceAmount: hoveredOre?.richness ?? 0,
+        hasTree: this.hasTreeAt(this.hoveredGx, this.hoveredGz),
         machineType: hoveredMachine?.type ?? null,
+        variantItemId: hoveredMachine?.variantItemId,
       },
       pocketItems: { ...this.pocketItems },
       pocketMachines: { ...this.pocketMachines },
@@ -1662,6 +1870,8 @@ export class CapytorioFactoryEngine {
     for (const m of this.machines.values()) {
       machinesOut.push({
         type: m.type,
+        variantItemId: m.variantItemId,
+        tierMult: m.tierMult,
         gx: m.gx,
         gz: m.gz,
         dir: m.dir,
@@ -1675,6 +1885,8 @@ export class CapytorioFactoryEngine {
       version: 1,
       machines: machinesOut,
       depletions: Array.from(this.oreRemainingOverrides.entries()),
+      harvestedTrees: Array.from(this.harvestedTrees.values()),
+      recentTools: this.getRecentTools(),
       pocketItems: { ...this.pocketItems },
       pocketMachines: { ...this.pocketMachines },
       unlockedTechs: Array.from(this.unlockedTechs),
@@ -1690,6 +1902,7 @@ export class CapytorioFactoryEngine {
   public hydrate(raw: CapytorioSerializedState): void {
     this.machines.clear();
     this.oreRemainingOverrides.clear();
+    this.harvestedTrees.clear();
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
       delete this.pocketItems[k];
     }
@@ -1718,6 +1931,30 @@ export class CapytorioFactoryEngine {
           this.oreRemainingOverrides.set(pair[0], Math.max(0, Math.round(pair[1])));
         }
       }
+    }
+    if (Array.isArray(raw.harvestedTrees)) {
+      for (let i = 0; i < raw.harvestedTrees.length; i++) {
+        if (typeof raw.harvestedTrees[i] === 'string') {
+          this.harvestedTrees.add(raw.harvestedTrees[i]);
+        }
+      }
+    }
+    if (Array.isArray(raw.recentTools)) {
+      const cleaned: string[] = [];
+      for (let i = 0; i < raw.recentTools.length && cleaned.length < MAX_RECENT_CAPYTORIO_TOOLS; i++) {
+        const tid = raw.recentTools[i];
+        if (typeof tid === 'string' && resolveCapytorioPlaceableSpec(tid) && !cleaned.includes(tid)) {
+          cleaned.push(tid);
+        }
+      }
+      for (let i = 0; i < CAPYTORIO_HOTBAR_ORDER.length && cleaned.length < MAX_RECENT_CAPYTORIO_TOOLS; i++) {
+        if (!cleaned.includes(CAPYTORIO_HOTBAR_ORDER[i])) {
+          cleaned.push(CAPYTORIO_HOTBAR_ORDER[i]);
+        }
+      }
+      this.recentTools = cleaned;
+    } else {
+      this.recentTools = [...CAPYTORIO_HOTBAR_ORDER];
     }
     this.unlockedTechs.clear();
     if (Array.isArray(raw.unlockedTechs)) {
@@ -1751,6 +1988,8 @@ export class CapytorioFactoryEngine {
         const machine: CapytorioMachine = {
           id: this.nextMachineId++,
           type: sm.type,
+          variantItemId: sm.variantItemId,
+          tierMult: sm.tierMult,
           gx: Math.round(sm.gx),
           gz: Math.round(sm.gz),
           dir: ((sm.dir ?? 1) & 3) as CapytorioDirection,

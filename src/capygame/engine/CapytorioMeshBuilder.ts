@@ -14,12 +14,14 @@ import {
   DIR_DZ,
   capytorioGridToWorldX,
   capytorioGridToWorldZ,
+  resolveCapytorioPlaceableSpec,
   tileKey,
 } from './CapytorioFactoryEngine';
 
 const MAX_ORE_INSTANCES = 1024;
 const MAX_BELT_INSTANCES = 1400;
 const MAX_ITEM_INSTANCES = 1600;
+const MAX_TREE_INSTANCES = 512;
 const MAX_VISIBLE_RADIUS_TILES = 22;
 
 // Module-scoped zero-allocation math helpers
@@ -39,7 +41,7 @@ function hashTile(gx: number, gz: number): number {
   return (h >>> 0) / 4294967296;
 }
 
-function createIndustrialDeckTexture(): THREE.CanvasTexture | null {
+function createLushMeadowGrassTexture(): THREE.CanvasTexture | null {
   if (typeof document === 'undefined') return null;
   const canvas = document.createElement('canvas');
   canvas.width = 512;
@@ -47,27 +49,36 @@ function createIndustrialDeckTexture(): THREE.CanvasTexture | null {
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  // Sunlit warm mineral limestone base with subtle geological speckle
-  ctx.fillStyle = '#c8c3b8';
+  // Lush Factorio-style emerald & olive meadow turf base
+  ctx.fillStyle = '#417930';
   ctx.fillRect(0, 0, 512, 512);
 
-  for (let i = 0; i < 1800; i++) {
-    const x = (i * 197) % 512;
-    const y = (i * 331) % 512;
-    const v = 175 + ((i * 53) % 45);
-    ctx.fillStyle = `rgb(${v},${v - 5},${v - 14})`;
-    ctx.fillRect(x, y, 3, 3);
+  // Warm earthy soil dapples & sun-dappled turf blades
+  for (let i = 0; i < 3200; i++) {
+    const x = (i * 197 + (i % 7) * 13) % 512;
+    const y = (i * 331 + (i % 5) * 19) % 512;
+    if (i % 9 === 0) {
+      // Subtle loam/clover tuft
+      ctx.fillStyle = '#346326';
+      ctx.fillRect(x, y, 5, 4);
+    } else {
+      const g = 108 + ((i * 37) % 38);
+      const r = 52 + ((i * 23) % 26);
+      const b = 36 + ((i * 17) % 18);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(x, y, 2, 4);
+    }
   }
 
-  // Crisp subtle blueprint grid border per tile
-  ctx.strokeStyle = 'rgba(71, 85, 105, 0.24)';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(2, 2, 508, 508);
+  // Crisp subtle Factorio tile grid alignment border (clean building placement clarity)
+  ctx.strokeStyle = 'rgba(18, 42, 14, 0.22)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1.5, 1.5, 509, 509);
 
-  // Corner surveyor crosshairs
-  ctx.fillStyle = 'rgba(51, 65, 85, 0.35)';
-  ctx.fillRect(0, 0, 18, 4);
-  ctx.fillRect(0, 0, 4, 18);
+  // Subtle corner surveyor ticks
+  ctx.fillStyle = 'rgba(20, 48, 16, 0.34)';
+  ctx.fillRect(0, 0, 14, 3);
+  ctx.fillRect(0, 0, 3, 14);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -89,15 +100,15 @@ function createDeckBumpTexture(): THREE.CanvasTexture | null {
 
   ctx.fillStyle = '#808080';
   ctx.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 900; i++) {
+  for (let i = 0; i < 1200; i++) {
     const x = (i * 113) % 256;
     const y = (i * 211) % 256;
-    const g = 105 + ((i * 37) % 55);
+    const g = 102 + ((i * 41) % 58);
     ctx.fillStyle = `rgb(${g},${g},${g})`;
-    ctx.fillRect(x, y, 2, 2);
+    ctx.fillRect(x, y, 2, 3);
   }
-  ctx.strokeStyle = '#505050';
-  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#606060';
+  ctx.lineWidth = 2;
   ctx.strokeRect(1, 1, 254, 254);
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -115,12 +126,15 @@ export class Capytorio3DRenderer {
   private groundEdgeStrip: THREE.Mesh;
   private beaconPillarGroup = new THREE.Group();
 
-  // Instanced meshes for high-density ores, belts & moving items
+  // Instanced meshes for high-density ores, belts, moving items, and tropical citrus trees
   private orePlateInstanced: THREE.InstancedMesh;
   private oreCrystalInstanced: THREE.InstancedMesh;
   private beltBaseInstanced: THREE.InstancedMesh;
   private beltChevronInstanced: THREE.InstancedMesh;
   private itemInstanced: THREE.InstancedMesh;
+  private treeTrunkInstanced: THREE.InstancedMesh;
+  private treeCanopyInstanced: THREE.InstancedMesh;
+  private treeOrangeInstanced: THREE.InstancedMesh;
 
   // Pooled composite machine groups
   private readonly activeMachineGroups = new Map<string, THREE.Group>();
@@ -201,18 +215,18 @@ export class Capytorio3DRenderer {
       this.matLabGlass
     );
 
-    // 1. Infinite Industrial Limestone Deck (320m x 320m snapping smoothly in 10m steps)
-    const deckTex = createIndustrialDeckTexture();
+    // 1. Infinite Lush Meadow Grass Deck (320m x 320m snapping smoothly in 10m steps)
+    const deckTex = createLushMeadowGrassTexture();
     const bumpTex = createDeckBumpTexture();
     const deckGeo = new THREE.PlaneGeometry(320, 320, 1, 1);
     deckGeo.rotateX(-Math.PI * 0.5);
     const deckMat = new THREE.MeshStandardMaterial({
-      color: deckTex ? 0xffffff : 0xcbd5e1,
+      color: deckTex ? 0xffffff : 0x417930,
       map: deckTex ?? null,
       bumpMap: bumpTex ?? null,
-      bumpScale: 0.04,
-      roughness: 0.86,
-      metalness: 0.08,
+      bumpScale: 0.05,
+      roughness: 0.92,
+      metalness: 0.02,
     });
     this.groundDeck = new THREE.Mesh(deckGeo, deckMat);
     this.groundDeck.position.set(CAPYTORIO_WORLD_ORIGIN_X, -0.02, CAPYTORIO_WORLD_ORIGIN_Z);
@@ -312,11 +326,11 @@ export class Capytorio3DRenderer {
     });
     beltChevGeo.rotateX(Math.PI * 0.5); // Lies flat facing -Z
     const beltChevMat = new THREE.MeshStandardMaterial({
-      color: 0xfacc15,
-      emissive: 0xca8a04,
-      emissiveIntensity: 0.42,
-      roughness: 0.35,
-      metalness: 0.25,
+      color: 0xffffff,
+      emissive: 0x262626,
+      emissiveIntensity: 0.35,
+      roughness: 0.34,
+      metalness: 0.22,
     });
     this.beltChevronInstanced = new THREE.InstancedMesh(
       beltChevGeo,
@@ -345,6 +359,57 @@ export class Capytorio3DRenderer {
     this.root.add(this.itemInstanced);
     this.sharedGeometries.push(itemGeo);
     this.sharedMaterials.push(itemMat);
+
+    // 4B. Instanced Tropical Citrus Trees (Bark trunk + lush crown + ripe oranges)
+    const trunkGeo = new THREE.CylinderGeometry(0.18, 0.27, 1.45, 7);
+    trunkGeo.translate(0, 0.725, 0); // Grounded pivot at y = 0
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: 0x6b4423,
+      roughness: 0.9,
+      metalness: 0.04,
+    });
+    this.treeTrunkInstanced = new THREE.InstancedMesh(trunkGeo, trunkMat, MAX_TREE_INSTANCES);
+    this.treeTrunkInstanced.frustumCulled = false;
+    this.treeTrunkInstanced.count = 0;
+    this.treeTrunkInstanced.castShadow = true;
+    this.treeTrunkInstanced.receiveShadow = true;
+    this.treeTrunkInstanced.userData.ignoreCameraFade = true;
+    this.root.add(this.treeTrunkInstanced);
+
+    const canopyGeo = new THREE.DodecahedronGeometry(0.95, 1);
+    const canopyMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.84,
+      metalness: 0.04,
+    });
+    this.treeCanopyInstanced = new THREE.InstancedMesh(canopyGeo, canopyMat, MAX_TREE_INSTANCES);
+    this.treeCanopyInstanced.frustumCulled = false;
+    this.treeCanopyInstanced.count = 0;
+    this.treeCanopyInstanced.castShadow = true;
+    this.treeCanopyInstanced.receiveShadow = true;
+    this.treeCanopyInstanced.userData.ignoreCameraFade = true;
+    this.root.add(this.treeCanopyInstanced);
+
+    const orangeGeo = new THREE.SphereGeometry(0.19, 7, 6);
+    const orangeMat = new THREE.MeshStandardMaterial({
+      color: 0xf97316,
+      emissive: 0xea580c,
+      emissiveIntensity: 0.24,
+      roughness: 0.38,
+      metalness: 0.08,
+    });
+    this.treeOrangeInstanced = new THREE.InstancedMesh(
+      orangeGeo,
+      orangeMat,
+      MAX_TREE_INSTANCES * 3
+    );
+    this.treeOrangeInstanced.frustumCulled = false;
+    this.treeOrangeInstanced.count = 0;
+    this.treeOrangeInstanced.userData.ignoreCameraFade = true;
+    this.root.add(this.treeOrangeInstanced);
+
+    this.sharedGeometries.push(trunkGeo, canopyGeo, orangeGeo);
+    this.sharedMaterials.push(trunkMat, canopyMat, orangeMat);
 
     // 5. Build Ghost & Ground Cursor Overlay
     this.cursorFrameMat = new THREE.MeshStandardMaterial({
@@ -480,6 +545,7 @@ export class Capytorio3DRenderer {
       metalness: 0.35,
     });
     this.sharedMaterials.push(accentMat);
+    g.userData.accentMat = accentMat;
 
     // Base chassis plinth sitting flush on y = 0
     const plinth = new THREE.Mesh(
@@ -752,45 +818,91 @@ export class Capytorio3DRenderer {
     const centerGz = Math.round((camZ - CAPYTORIO_WORLD_ORIGIN_Z) / CAPYTORIO_TILE_SIZE);
 
     let oreCount = 0;
+    let treeCount = 0;
+    let orangeCount = 0;
     for (let dx = -MAX_VISIBLE_RADIUS_TILES; dx <= MAX_VISIBLE_RADIUS_TILES; dx++) {
       const gx = centerGx + dx;
       const wx = capytorioGridToWorldX(gx);
       if (wx < 504) continue; // Keep ocean shelf clean
       for (let dz = -MAX_VISIBLE_RADIUS_TILES; dz <= MAX_VISIBLE_RADIUS_TILES; dz++) {
-        if (oreCount >= MAX_ORE_INSTANCES) break;
         const gz = centerGz + dz;
-        const res = engine.getResourceAt(gx, gz);
-        if (!res) continue;
-
         const wz = capytorioGridToWorldZ(gz);
         const h = hashTile(gx, gz);
-        const meta = getCapytorioItemMeta(res.resource);
 
-        // Mineral floor plate
-        _dummy.position.set(wx, 0.02, wz);
-        _dummy.rotation.set(0, h * Math.PI, 0);
-        _dummy.scale.set(1, 1, 1);
-        _dummy.updateMatrix();
-        this.orePlateInstanced.setMatrixAt(oreCount, _dummy.matrix);
-        _color.setHex(meta.colorHex).multiplyScalar(0.55);
-        this.orePlateInstanced.setColorAt(oreCount, _color);
+        if (oreCount < MAX_ORE_INSTANCES) {
+          const res = engine.getResourceAt(gx, gz);
+          if (res) {
+            const meta = getCapytorioItemMeta(res.resource);
 
-        // 3D Crystal cluster
-        const hasDrill = engine.machines.get(tileKey(gx, gz))?.type === 'drill';
-        const crystalScale = hasDrill ? 0.55 : 0.78 + h * 0.45;
-        _dummy.position.set(
-          wx + (h - 0.5) * 0.5,
-          hasDrill ? 0.14 : 0.24 * crystalScale,
-          wz + ((h * 7) % 1 - 0.5) * 0.5
-        );
-        _dummy.rotation.set(h * 1.1, h * 5.2, h * 0.7);
-        _dummy.scale.setScalar(crystalScale);
-        _dummy.updateMatrix();
-        this.oreCrystalInstanced.setMatrixAt(oreCount, _dummy.matrix);
-        _color.setHex(meta.colorHex);
-        this.oreCrystalInstanced.setColorAt(oreCount, _color);
+            // Mineral floor plate
+            _dummy.position.set(wx, 0.02, wz);
+            _dummy.rotation.set(0, h * Math.PI, 0);
+            _dummy.scale.set(1, 1, 1);
+            _dummy.updateMatrix();
+            this.orePlateInstanced.setMatrixAt(oreCount, _dummy.matrix);
+            _color.setHex(meta.colorHex).multiplyScalar(0.55);
+            this.orePlateInstanced.setColorAt(oreCount, _color);
 
-        oreCount++;
+            // 3D Crystal cluster
+            const hasDrill = engine.machines.get(tileKey(gx, gz))?.type === 'drill';
+            const crystalScale = hasDrill ? 0.55 : 0.78 + h * 0.45;
+            _dummy.position.set(
+              wx + (h - 0.5) * 0.5,
+              hasDrill ? 0.14 : 0.24 * crystalScale,
+              wz + ((h * 7) % 1 - 0.5) * 0.5
+            );
+            _dummy.rotation.set(h * 1.1, h * 5.2, h * 0.7);
+            _dummy.scale.setScalar(crystalScale);
+            _dummy.updateMatrix();
+            this.oreCrystalInstanced.setMatrixAt(oreCount, _dummy.matrix);
+            _color.setHex(meta.colorHex);
+            this.oreCrystalInstanced.setColorAt(oreCount, _color);
+
+            oreCount++;
+            continue;
+          }
+        }
+
+        // Tropical citrus tree on meadow tiles
+        if (treeCount < MAX_TREE_INSTANCES && engine.hasTreeAt(gx, gz)) {
+          const treeScale = 0.85 + h * 0.3;
+          const jitterX = (h - 0.5) * 0.45;
+          const jitterZ = (((h * 13) % 1) - 0.5) * 0.45;
+          const tx = wx + jitterX;
+          const tz = wz + jitterZ;
+
+          _dummy.position.set(tx, 0, tz);
+          _dummy.rotation.set(0, h * Math.PI * 2, 0);
+          _dummy.scale.set(treeScale, treeScale, treeScale);
+          _dummy.updateMatrix();
+          this.treeTrunkInstanced.setMatrixAt(treeCount, _dummy.matrix);
+
+          _dummy.position.set(tx, 1.82 * treeScale, tz);
+          _dummy.rotation.set(h * 0.3, h * 6.28, 0);
+          _dummy.scale.set(treeScale, treeScale * 0.88, treeScale);
+          _dummy.updateMatrix();
+          this.treeCanopyInstanced.setMatrixAt(treeCount, _dummy.matrix);
+          const greenShade = h < 0.34 ? 0x22792c : h < 0.68 ? 0x2f8f34 : 0x3da33d;
+          _color.setHex(greenShade);
+          this.treeCanopyInstanced.setColorAt(treeCount, _color);
+
+          // 3 ripe oranges hanging visibly around upper sunlit canopy rim
+          for (let oi = 0; oi < 3 && orangeCount < MAX_TREE_INSTANCES * 3; oi++) {
+            const oAngle = h * 6.28 + oi * 2.094;
+            const oRad = 0.84 * treeScale;
+            _dummy.position.set(
+              tx + Math.cos(oAngle) * oRad,
+              (2.08 + (oi % 2) * 0.22) * treeScale,
+              tz + Math.sin(oAngle) * oRad
+            );
+            _dummy.rotation.set(0, 0, 0);
+            _dummy.scale.setScalar(treeScale);
+            _dummy.updateMatrix();
+            this.treeOrangeInstanced.setMatrixAt(orangeCount, _dummy.matrix);
+            orangeCount++;
+          }
+          treeCount++;
+        }
       }
     }
     this.orePlateInstanced.count = oreCount;
@@ -799,6 +911,13 @@ export class Capytorio3DRenderer {
     this.oreCrystalInstanced.count = oreCount;
     this.oreCrystalInstanced.instanceMatrix.needsUpdate = true;
     if (this.oreCrystalInstanced.instanceColor) this.oreCrystalInstanced.instanceColor.needsUpdate = true;
+    this.treeTrunkInstanced.count = treeCount;
+    this.treeTrunkInstanced.instanceMatrix.needsUpdate = true;
+    this.treeCanopyInstanced.count = treeCount;
+    this.treeCanopyInstanced.instanceMatrix.needsUpdate = true;
+    if (this.treeCanopyInstanced.instanceColor) this.treeCanopyInstanced.instanceColor.needsUpdate = true;
+    this.treeOrangeInstanced.count = orangeCount;
+    this.treeOrangeInstanced.instanceMatrix.needsUpdate = true;
 
     // 3. Reconcile composite machines, instanced belts, and moving items
     this.lastBeltScrollPhase = (this.lastBeltScrollPhase + dt * engine.getBeltSpeedTilesPerSec()) % 1.0;
@@ -824,7 +943,7 @@ export class Capytorio3DRenderer {
           _dummy.updateMatrix();
           this.beltBaseInstanced.setMatrixAt(beltCount, _dummy.matrix);
 
-          // Offset directional chevron gently along belt flow direction
+          // Offset directional chevron gently along belt flow direction & tint tier color
           const slide = (this.lastBeltScrollPhase - 0.5) * 0.42;
           _dummy.position.set(
             wx + DIR_DX[m.dir] * slide,
@@ -835,6 +954,11 @@ export class Capytorio3DRenderer {
           _dummy.scale.set(1, 1, 1);
           _dummy.updateMatrix();
           this.beltChevronInstanced.setMatrixAt(beltCount, _dummy.matrix);
+          const beltTint = m.variantItemId
+            ? resolveCapytorioPlaceableSpec(m.variantItemId)?.tintHex ?? 0xfacc15
+            : 0xfacc15;
+          _color.setHex(beltTint);
+          this.beltChevronInstanced.setColorAt(beltCount, _color);
           beltCount++;
         }
       } else {
@@ -852,6 +976,12 @@ export class Capytorio3DRenderer {
 
         group.position.set(wx, 0, wz);
         group.rotation.y = dirToRotY(m.dir);
+        if (group.userData.accentMat) {
+          const tint = m.variantItemId
+            ? resolveCapytorioPlaceableSpec(m.variantItemId)?.tintHex ?? CAPYTORIO_MACHINE_SPECS[m.type].colorHex
+            : CAPYTORIO_MACHINE_SPECS[m.type].colorHex;
+          (group.userData.accentMat as THREE.MeshStandardMaterial).color.setHex(tint);
+        }
 
         // Zero-allocation mechanical animations
         if (m.type === 'drill' && group.userData.spinPart) {
@@ -930,6 +1060,7 @@ export class Capytorio3DRenderer {
     this.beltBaseInstanced.instanceMatrix.needsUpdate = true;
     this.beltChevronInstanced.count = beltCount;
     this.beltChevronInstanced.instanceMatrix.needsUpdate = true;
+    if (this.beltChevronInstanced.instanceColor) this.beltChevronInstanced.instanceColor.needsUpdate = true;
     this.itemInstanced.count = itemCount;
     this.itemInstanced.instanceMatrix.needsUpdate = true;
     if (this.itemInstanced.instanceColor) this.itemInstanced.instanceColor.needsUpdate = true;
@@ -948,8 +1079,9 @@ export class Capytorio3DRenderer {
       this.cursorFrameMat.emissive.setHex(0xca8a04);
       this.ghostArrowMesh.visible = false;
     } else {
+      const resolvedGhost = resolveCapytorioPlaceableSpec(engine.selectedTool);
       const validDrill =
-        engine.selectedTool !== 'drill' ||
+        resolvedGhost?.baseType !== 'drill' ||
         engine.getResourceAt(engine.hoveredGx, engine.hoveredGz) !== null;
       this.cursorFrameMat.color.setHex(validDrill ? 0x22c55e : 0xef4444);
       this.cursorFrameMat.emissive.setHex(validDrill ? 0x16a34a : 0xb91c1c);
