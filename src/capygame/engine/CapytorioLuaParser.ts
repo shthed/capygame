@@ -661,7 +661,7 @@ export const CURATED_CAPYTORIO_ITEMS: Record<string, CapytorioItemMeta> = {
   steel_chest: { id: 'steel_chest', name: 'Steel Chest', shortName: 'Steel Chst', category: 'logistics', colorHex: 0x64748b, cssColor: '#64748b' },
   passive_provider_chest: { id: 'passive_provider_chest', name: 'Passive Provider Chest', shortName: 'Prov Chst', category: 'logistics', colorHex: 0xdc2626, cssColor: '#dc2626' },
   requester_chest: { id: 'requester_chest', name: 'Requester Chest', shortName: 'Req Chst', category: 'logistics', colorHex: 0x2563eb, cssColor: '#2563eb' },
-  transport_belt: { id: 'transport_belt', name: 'Transport Belt', shortName: 'Belt', category: 'logistics', colorHex: 0xfacc15, cssColor: '#facc15' },
+  transport_belt: { id: 'transport_belt', name: 'Transport Belt', shortName: 'Belt T1', category: 'logistics', colorHex: 0xfacc15, cssColor: '#facc15' },
   fast_transport_belt: { id: 'fast_transport_belt', name: 'Fast Transport Belt', shortName: 'Fast Belt', category: 'logistics', colorHex: 0xef4444, cssColor: '#ef4444' },
   express_transport_belt: { id: 'express_transport_belt', name: 'Express Transport Belt', shortName: 'Exp Belt', category: 'logistics', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
   underground_belt: { id: 'underground_belt', name: 'Underground Belt', shortName: 'UG Belt', category: 'logistics', colorHex: 0xeab308, cssColor: '#eab308' },

@@ -4473,8 +4473,16 @@ export class PlayStyleManager {
     _raycaster.setFromCamera(_capyPointerNdc, this.camera);
     const hit = _raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit);
     if (!hit) return;
-    this.capytorioEngine.hoveredGx = worldToCapytorioGridX(_capyGroundHit.x);
-    this.capytorioEngine.hoveredGz = worldToCapytorioGridZ(_capyGroundHit.z);
+    const nextGx = worldToCapytorioGridX(_capyGroundHit.x);
+    const nextGz = worldToCapytorioGridZ(_capyGroundHit.z);
+    if (
+      nextGx !== this.capytorioEngine.hoveredGx ||
+      nextGz !== this.capytorioEngine.hoveredGz
+    ) {
+      this.capytorioEngine.hoveredGx = nextGx;
+      this.capytorioEngine.hoveredGz = nextGz;
+      this.emitCapytorioSnapshot();
+    }
   }
 
   public handleCapytorioPrimaryClick(

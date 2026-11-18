@@ -614,12 +614,21 @@ export class CapytorioFactoryEngine {
       for (let i = 0; i < rec.ingredients.length; i++) {
         this.consumePocketItem(rec.ingredients[i].item, rec.ingredients[i].count);
       }
-      this.addPocketItem(rec.result, rec.resultCount);
+      if (Object.prototype.hasOwnProperty.call(CAPYTORIO_MACHINE_SPECS, rec.result)) {
+        const mType = rec.result as CapytorioMachineType;
+        this.pocketMachines[mType] = (this.pocketMachines[mType] ?? 0) + rec.resultCount;
+      } else {
+        this.addPocketItem(rec.result, rec.resultCount);
+      }
       this.totalProduced += rec.resultCount;
       this.score += 5 * rec.resultCount;
       craftedAny = true;
     }
-    if (craftedAny && CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result]) {
+    if (
+      craftedAny &&
+      (Object.prototype.hasOwnProperty.call(CAPYTORIO_MACHINE_SPECS, rec.result) ||
+        CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result])
+    ) {
       this.recordRecentTool(rec.result);
     }
     return craftedAny;

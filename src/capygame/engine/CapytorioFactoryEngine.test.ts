@@ -471,3 +471,14 @@ test('Capytorio supports 10-slot Recent-Items Quickbar & Factorio placeable enti
   assert.equal(roundTrip.machines.get(tileKey(2, 0))?.variantItemId, 'fast_transport_belt');
 });
 
+test('Capytorio pocket crafting shared base machine IDs (inserter/splitter/lab) credits buildable quickbar count', () => {
+  const engine = new CapytorioFactoryEngine();
+  const prevInserters = engine.getPlaceableToolCount('inserter');
+  assert.equal(prevInserters, 8);
+  assert.equal(engine.pocketCraftRecipe('inserter', 1), true);
+  assert.equal(engine.getPocketMachineCount('inserter'), prevInserters + 1);
+  assert.equal(engine.getPlaceableToolCount('inserter'), prevInserters + 1);
+  assert.equal(engine.getRecentTools()[0], 'inserter');
+});
+
+

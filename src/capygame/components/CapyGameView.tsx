@@ -1358,7 +1358,12 @@ export const CapyGameView: React.FC = () => {
           } else if (key === 'e' && !e.repeat) {
             const mined = managerRef.current.handMineCapytorioAtCursorOrHero();
             if (mined) {
-              showToast(`Mined +2 ${getCapytorioItemMeta(mined).name}`);
+              const amt = mined === 'orange' ? 3 : 2;
+              showToast(
+                mined === 'orange'
+                  ? `Harvested +${amt} ${getCapytorioItemMeta(mined).name} from Citrus Tree`
+                  : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
+              );
             } else {
               showToast('Point or stand over an ore seam to mine');
             }
@@ -6091,9 +6096,9 @@ export const CapyGameView: React.FC = () => {
           const inspected = snap.inspectedMachine;
           const hoveredTileInfo = snap.hoveredTile;
           const hoveredTileLabel = hoveredTileInfo.resource
-            ? `${getCapytorioItemMeta(hoveredTileInfo.resource).shortName} (${hoveredTileInfo.resourceAmount})`
+            ? `${getCapytorioItemMeta(hoveredTileInfo.resource).shortName} ${hoveredTileInfo.resourceAmount} (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
             : hoveredTileInfo.hasTree
-              ? 'Citrus Tree (+3 Orange [E])'
+              ? `Citrus Tree +3 [E] (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
               : `Grass (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`;
 
           const isObliqueCam = gameSettings.capytorioCameraMode !== 'chase';
