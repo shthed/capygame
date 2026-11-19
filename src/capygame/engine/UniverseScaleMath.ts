@@ -170,6 +170,12 @@ export function stepMediaSpeedControl(
 export const SURFACE_ZOOM_MIN_DIST = 0.45;
 export const SURFACE_ZOOM_ORBIT_THRESHOLD = 2.2;
 export const CAPYBARA_FOREST_LAUNCH_BASE_LOG = 0.8;
+export const CAPYTORIO_OBLIQUE_BASE_RADIUS_M = 26.0;
+export const CAPYTORIO_ZOOM_MIN_DIST = 0.45;
+export const CAPYTORIO_ORBIT_HANDOFF_DIST = 9000;
+export const CAPYTORIO_ORBIT_HANDOFF_LOG_METERS = Math.log10(
+  CAPYTORIO_OBLIQUE_BASE_RADIUS_M * CAPYTORIO_ORBIT_HANDOFF_DIST
+);
 
 export interface SurfaceZoomStepResult {
   nextDistance: number;
@@ -208,6 +214,41 @@ export function computeSurfaceZoomStep(
     nextDistance: Math.round(clamped * 100) / 100,
     launchToOrbit: false,
     launchTargetLogMeters: CAPYBARA_FOREST_LAUNCH_BASE_LOG,
+  };
+}
+
+/**
+ * Computes proportional overhead zoom distance for Capytorio mode, staying in the
+ * top-down view all the way up to ~234 km (~<0.5px factory footprint inside the
+ * planet surface texture) before transitioning smoothly into orbital spaceflight.
+ */
+export function computeCapytorioZoomStep(
+  currentDist: number,
+  delta: number
+): SurfaceZoomStepResult {
+  const safeCur =
+    Number.isFinite(currentDist) && currentDist > 0
+      ? Math.max(CAPYTORIO_ZOOM_MIN_DIST, Math.min(CAPYTORIO_ORBIT_HANDOFF_DIST, currentDist))
+      : 1.0;
+  const factor = Math.exp(-delta * 1.15);
+  const rawDist = safeCur * factor;
+
+  if (delta < 0 && rawDist >= CAPYTORIO_ORBIT_HANDOFF_DIST) {
+    return {
+      nextDistance: CAPYTORIO_ORBIT_HANDOFF_DIST,
+      launchToOrbit: true,
+      launchTargetLogMeters: CAPYTORIO_ORBIT_HANDOFF_LOG_METERS + Math.max(0.32, Math.abs(delta) * 0.8),
+    };
+  }
+
+  const clamped = Math.max(
+    CAPYTORIO_ZOOM_MIN_DIST,
+    Math.min(CAPYTORIO_ORBIT_HANDOFF_DIST, rawDist)
+  );
+  return {
+    nextDistance: Math.round(clamped * 1000) / 1000,
+    launchToOrbit: false,
+    launchTargetLogMeters: CAPYTORIO_ORBIT_HANDOFF_LOG_METERS,
   };
 }
 

@@ -1797,7 +1797,8 @@ export const CapyGameView: React.FC = () => {
     const g = pointerGestureRef.current;
     if (g.pointerId !== e.pointerId) return;
 
-    const wasDragPaint = capytorioDragRef.current.active && capytorioDragRef.current.placedAny;
+    const wasCapytorioPress = capytorioDragRef.current.active;
+    const wasDragPaint = wasCapytorioPress && capytorioDragRef.current.placedAny;
     const dragCount = capytorioDragRef.current.placedCount;
     const dragMode = capytorioDragRef.current.mode;
     capytorioDragRef.current.active = false;
@@ -1808,7 +1809,8 @@ export const CapyGameView: React.FC = () => {
     capytorioDragRef.current.placedCount = 0;
 
     const elapsed = performance.now() - g.startTime;
-    const wasQuickTap = !wasDragPaint && g.maxDist < 14 && elapsed < 350;
+    const tapMaxMs = wasCapytorioPress ? 1200 : 350;
+    const wasQuickTap = !wasDragPaint && g.maxDist < 14 && elapsed < tapMaxMs;
     const wasMouseDragMouselook =
       g.pointerType === 'mouse' && gameSettingsRef.current.mouselookEnabled !== false;
     const releasedButton = g.button;

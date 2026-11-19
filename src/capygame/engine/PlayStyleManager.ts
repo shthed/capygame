@@ -143,10 +143,16 @@ import {
 } from '../config/ProceduralGameConfig';
 import { computeCosmicAgeGyr } from './SeamlessUniverseSimulator';
 import {
+  CAPYTORIO_OBLIQUE_BASE_RADIUS_M,
+  CAPYTORIO_ORBIT_HANDOFF_DIST,
+  CAPYTORIO_ORBIT_HANDOFF_LOG_METERS,
+  CAPYTORIO_ZOOM_MIN_DIST,
   FlightTrajectoryMode,
   MEDIA_SPEED_GEARS,
   MediaSpeedAction,
+  SURFACE_ZOOM_ORBIT_THRESHOLD,
   clampForwardFlightSpeed,
+  computeCapytorioZoomStep,
   computeOrbitalZoomThrottleStep,
   computeSpiralOrbitAngleRadians,
   computeSurfaceZoomStep,
@@ -194,11 +200,37 @@ import {
 import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
 
 const CAPYTORIO_OBLIQUE_PITCH_RAD = (68 * Math.PI) / 180;
-const CAPYTORIO_OBLIQUE_BASE_RADIUS = 26.0;
-const CAPYTORIO_OBLIQUE_DY_FACTOR =
-  Math.sin(CAPYTORIO_OBLIQUE_PITCH_RAD) * CAPYTORIO_OBLIQUE_BASE_RADIUS;
-const CAPYTORIO_OBLIQUE_DZ_FACTOR =
-  Math.cos(CAPYTORIO_OBLIQUE_PITCH_RAD) * CAPYTORIO_OBLIQUE_BASE_RADIUS;
+const CAPYTORIO_HIGH_ORBIT_PITCH_RAD = (84 * Math.PI) / 180;
+const _capytorioAltPose = {
+  distScale: 1.0,
+  altitudeRadius: CAPYTORIO_OBLIQUE_BASE_RADIUS_M,
+  logAlt: Math.log10(CAPYTORIO_OBLIQUE_BASE_RADIUS_M),
+  pitchRad: CAPYTORIO_OBLIQUE_PITCH_RAD,
+  dy: Math.sin(CAPYTORIO_OBLIQUE_PITCH_RAD) * CAPYTORIO_OBLIQUE_BASE_RADIUS_M,
+  dz: Math.cos(CAPYTORIO_OBLIQUE_PITCH_RAD) * CAPYTORIO_OBLIQUE_BASE_RADIUS_M,
+};
+
+function evaluateCapytorioAltitudePose(distScale: number) {
+  const safeDist =
+    Number.isFinite(distScale) && distScale > 0
+      ? Math.max(CAPYTORIO_ZOOM_MIN_DIST, Math.min(CAPYTORIO_ORBIT_HANDOFF_DIST, distScale))
+      : 1.0;
+  const altitudeRadius = CAPYTORIO_OBLIQUE_BASE_RADIUS_M * safeDist;
+  const logAlt = Math.log10(Math.max(1.0, altitudeRadius));
+  const overheadBlend = THREE.MathUtils.smoothstep(logAlt, 2.0, 4.2);
+  const pitchRad = THREE.MathUtils.lerp(
+    CAPYTORIO_OBLIQUE_PITCH_RAD,
+    CAPYTORIO_HIGH_ORBIT_PITCH_RAD,
+    overheadBlend
+  );
+  _capytorioAltPose.distScale = safeDist;
+  _capytorioAltPose.altitudeRadius = altitudeRadius;
+  _capytorioAltPose.logAlt = logAlt;
+  _capytorioAltPose.pitchRad = pitchRad;
+  _capytorioAltPose.dy = Math.sin(pitchRad) * altitudeRadius;
+  _capytorioAltPose.dz = Math.cos(pitchRad) * altitudeRadius;
+  return _capytorioAltPose;
+}
 
 // Pre-allocated math helpers for zero per-frame garbage collection
 const _tempVec3 = new THREE.Vector3();
@@ -436,6 +468,9 @@ export class PlayStyleManager {
   private targetLogScaleMeters: number = MAX_UNIVERSE_LOG_METERS;
   private autoLandAtForestPending: boolean = false;
   private autoLandTargetMode: 'sanctuary' | 'capytorio' = 'sanctuary';
+  private lastLaunchSourceMode: 'sanctuary' | 'capytorio' = 'sanctuary';
+  private capytorioObliqueZoomDist: number = 1.0;
+  private capytorioPlanetFadeActive: boolean = false;
   private quantumFocusMode: QuantumFocusMode = 'auto';
   private autoZoomDirection: -1 | 0 | 1 = 0;
   public flightTrajectory: FlightTrajectoryMode = 'spiral';
@@ -1698,11 +1733,19 @@ export class PlayStyleManager {
 
   public updateSettings(newSettings: CapyGameSettings) {
     const prevManualTime = this.settings.timeOfDayHours ?? 9.5;
+    const prevCamDist = this.settings.cameraDistance ?? 1.0;
     const prevCapytorioCam = this.getCapytorioCameraMode();
     const manualTimeChanged =
       typeof newSettings.timeOfDayHours === 'number' &&
       Math.abs(newSettings.timeOfDayHours - prevManualTime) > 0.01;
     this.settings = newSettings;
+    if (Math.abs((newSettings.cameraDistance ?? 1.0) - prevCamDist) > 0.005) {
+      this.capytorioObliqueZoomDist = THREE.MathUtils.clamp(
+        newSettings.cameraDistance ?? 1.0,
+        CAPYTORIO_ZOOM_MIN_DIST,
+        CAPYTORIO_ORBIT_HANDOFF_DIST
+      );
+    }
     const nextCapytorioCam = this.getCapytorioCameraMode();
     if (nextCapytorioCam !== prevCapytorioCam && this.currentMode === 'capytorio') {
       this.setCapytorioCameraMode(nextCapytorioCam);
@@ -1805,36 +1848,102 @@ export class PlayStyleManager {
       this.currentLogScaleMeters
     );
 
-    if (Math.abs(this.camera.far - farInfo.cameraFar) > 0.5) {
-      this.camera.far = farInfo.cameraFar;
-      this.camera.updateProjectionMatrix();
-    }
+    const isCapytorioObliqueHighAlt =
+      isSurfaceVisible &&
+      this.cosmicStage === 'playing' &&
+      !this.seamlessZoomActive &&
+      this.currentMode === 'capytorio' &&
+      this.getCapytorioCameraMode() === 'oblique' &&
+      this.capytorioObliqueZoomDist * CAPYTORIO_OBLIQUE_BASE_RADIUS_M > 65;
 
-    if (this.worldEnv) {
-      this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
-      this.worldEnv.skyMesh.scale.setScalar(farInfo.skyScale);
-      // Keep Sanctuary's 220m alpine ring hidden when exploring the far-hemisphere Capytorio plain
-      this.worldEnv.mountainMesh.visible =
-        isSurfaceVisible &&
-        farInfo.showMountains &&
-        this.camera.position.x < 450 &&
-        this.currentMode !== 'capytorio';
-    }
+    if (isCapytorioObliqueHighAlt) {
+      const pose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
+      const desiredNear = Math.max(0.08, pose.altitudeRadius * 0.012);
+      const desiredFar = Math.max(farInfo.cameraFar, pose.altitudeRadius * 36.0);
+      if (
+        Math.abs(this.camera.near - desiredNear) > desiredNear * 0.08 ||
+        Math.abs(this.camera.far - desiredFar) > Math.max(1.0, desiredFar * 0.05)
+      ) {
+        this.camera.near = desiredNear;
+        this.camera.far = desiredFar;
+        this.camera.updateProjectionMatrix();
+      }
+      this.capytorioPlanetFadeActive = true;
+      const skyAlpha = 1.0 - smoothstep01(2.45, 3.85, pose.logAlt);
+      this.setSkyDomeAlpha(skyAlpha);
+      if (this.worldEnv) {
+        this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
+        this.worldEnv.skyMesh.scale.setScalar(Math.max(1.0, (desiredFar * 0.72) / 720));
+        this.worldEnv.mountainMesh.visible = false;
+      }
+      if (this.oceanMesh) {
+        this.oceanMesh.visible = pose.logAlt <= 2.95;
+        if (this.oceanMesh.visible) {
+          this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
+          this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
+        }
+      }
+      if (this.seamlessUniverse) {
+        this.seamlessUniverse.forestGroveGroup.visible = false;
+        this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = false;
+      }
+    } else {
+      if (this.capytorioPlanetFadeActive && !this.seamlessZoomActive) {
+        this.capytorioPlanetFadeActive = false;
+        if (this.camera.near !== 0.1) {
+          this.camera.near = 0.1;
+          this.camera.far = farInfo.cameraFar;
+          this.camera.updateProjectionMatrix();
+        }
+        if (this.cosmicStage === 'playing' || this.cosmicStage === 'capy_selection') {
+          this.setSkyDomeAlpha(1.0);
+          this.setSceneBackgroundHex(
+            this.currentMode === 'sanctuary' || this.currentMode === 'capytorio'
+              ? (this.activeBiome?.skyHex ?? 0x38bdf8)
+              : 0x38bdf8
+          );
+        }
+        if (this.oceanMesh) {
+          this.oceanMesh.visible = isSurfaceVisible;
+        }
+        this.seamlessUniverse?.hide();
+      }
 
-    if (this.oceanMesh && isSurfaceVisible) {
-      this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
-      this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
-    }
+      if (Math.abs(this.camera.far - farInfo.cameraFar) > 0.5 || (!this.seamlessZoomActive && this.camera.near !== 0.1)) {
+        if (!this.seamlessZoomActive) {
+          this.camera.near = 0.1;
+        }
+        this.camera.far = farInfo.cameraFar;
+        this.camera.updateProjectionMatrix();
+      }
 
-    if (this.seamlessUniverse) {
-      const showForestGrove =
-        isSurfaceVisible &&
-        ((this.seamlessZoomActive &&
-          this.currentLogScaleMeters >= -0.85 &&
-          this.currentLogScaleMeters <= 3.1) ||
-          (!this.seamlessZoomActive && this.cosmicStage === 'playing'));
-      this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
-      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
+      if (this.worldEnv) {
+        this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
+        this.worldEnv.skyMesh.scale.setScalar(farInfo.skyScale);
+        // Keep Sanctuary's 220m alpine ring hidden when exploring the far-hemisphere Capytorio plain
+        this.worldEnv.mountainMesh.visible =
+          isSurfaceVisible &&
+          farInfo.showMountains &&
+          this.camera.position.x < 450 &&
+          this.currentMode !== 'capytorio';
+      }
+
+      if (this.oceanMesh && isSurfaceVisible) {
+        this.oceanMesh.visible = true;
+        this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
+        this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
+      }
+
+      if (this.seamlessUniverse) {
+        const showForestGrove =
+          isSurfaceVisible &&
+          ((this.seamlessZoomActive &&
+            this.currentLogScaleMeters >= -0.85 &&
+            this.currentLogScaleMeters <= 3.1) ||
+            (!this.seamlessZoomActive && this.cosmicStage === 'playing'));
+        this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
+        this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
+      }
     }
 
     if (
@@ -2163,13 +2272,15 @@ export class PlayStyleManager {
       this.heroLocalPos.set(0, 0, 3.0);
       this.heroYaw = Math.PI;
       this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
+      const initPose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
       this.capytorioRenderer.sync(
         this.capytorioEngine,
         CAPYTORIO_WORLD_ORIGIN_X,
         CAPYTORIO_WORLD_ORIGIN_Z + 3.0,
         0.016,
         this.worldEnv?.elapsedSeconds ?? 0,
-        true
+        true,
+        this.getCapytorioCameraMode() === 'oblique' ? initPose.altitudeRadius : 26
       );
       this.callbacks.onModeNotification?.(
         'Capytorio Frontier (+1200, 0) • Blank infinite ore field! Click to place Drills [1], Belts [2], Furnaces [4] & Generators [6].'
@@ -2268,19 +2379,21 @@ export class PlayStyleManager {
 
     if (this.currentMode === 'capytorio') {
       if (this.getCapytorioCameraMode() === 'oblique') {
+        const pose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
         this.surfaceCamYaw = Math.PI;
-        this.surfaceCamPitch = CAPYTORIO_OBLIQUE_PITCH_RAD;
-        this.camera.position.set(
-          wx,
-          wy + CAPYTORIO_OBLIQUE_DY_FACTOR * distScale,
-          wz + CAPYTORIO_OBLIQUE_DZ_FACTOR * distScale
-        );
+        this.surfaceCamPitch = pose.pitchRad;
+        this.camera.position.set(wx, wy + pose.dy, wz + pose.dz);
         this.camera.lookAt(wx, wy + 0.15, wz);
+        this.syncCapytorioHighAltitudePlanetSurface(0.016, wx, wy, wz, pose);
       } else {
         this.surfaceCamYaw = Math.PI;
         this.surfaceCamPitch = 0.66;
         this.camera.position.set(wx, wy + 13.5 * distScale, wz + 16.5 * distScale);
         this.camera.lookAt(wx, wy + 0.5, wz - 2.0);
+        if (!this.seamlessZoomActive && this.capytorioPlanetFadeActive) {
+          this.capytorioPlanetFadeActive = false;
+          this.seamlessUniverse?.hide();
+        }
       }
     } else if (this.currentMode === 'runner') {
       this.surfaceCamYaw = Math.PI;
@@ -3095,7 +3208,10 @@ export class PlayStyleManager {
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
   }
 
-  public launchIntoCosmos(targetLogMeters: number = 22.0): void {
+  public launchIntoCosmos(
+    targetLogMeters: number = 22.0,
+    sourceMode: 'sanctuary' | 'capytorio' = 'sanctuary'
+  ): void {
     if (this.placementGhost.active) {
       this.cancelBuildingPlacementGhost(true);
     }
@@ -3104,18 +3220,28 @@ export class PlayStyleManager {
       MIN_UNIVERSE_LOG_METERS,
       MAX_UNIVERSE_LOG_METERS
     );
+    this.lastLaunchSourceMode = sourceMode;
+    this.capytorioPlanetFadeActive = false;
     if (!this.seamlessZoomActive) {
       this.seamlessZoomActive = true;
       this.dockedChronoVesselVisible = false;
-      this.currentLogScaleMeters = Math.max(CAPYBARA_FOREST_LOG_METERS, this.currentLogScaleMeters);
+      this.currentLogScaleMeters =
+        sourceMode === 'capytorio'
+          ? Math.max(CAPYTORIO_ORBIT_HANDOFF_LOG_METERS, this.currentLogScaleMeters)
+          : Math.max(CAPYBARA_FOREST_LOG_METERS, this.currentLogScaleMeters);
       this.performanceLog.notifyTransitionWarmup(4);
-      // Match departure orbit yaw cleanly to current player look heading so liftoff doesn't flip the camera
-      this.cosmicOrbitYaw = this.surfaceCamYaw - Math.PI;
-      this.cosmicOrbitPitch = THREE.MathUtils.clamp(this.surfaceCamPitch, 0.16, 1.05);
+      if (sourceMode === 'capytorio') {
+        this.cosmicOrbitYaw = 0;
+        this.cosmicOrbitPitch = 1.18;
+      } else {
+        // Match departure orbit yaw cleanly to current player look heading so liftoff doesn't flip the camera
+        this.cosmicOrbitYaw = this.surfaceCamYaw - Math.PI;
+        this.cosmicOrbitPitch = THREE.MathUtils.clamp(this.surfaceCamPitch, 0.16, 1.05);
+      }
     }
     this.resetDescentRings();
     this.autoLandAtForestPending = false;
-    this.autoLandTargetMode = 'sanctuary';
+    this.autoLandTargetMode = sourceMode;
     this.vesselMode = 'chase_pod';
     this.chronoVessel?.setMode('chase_pod');
     this.targetLogScaleMeters = clampedTarget;
@@ -4633,11 +4759,17 @@ export class PlayStyleManager {
 
   public setCapytorioCameraMode(mode: 'oblique' | 'chase'): void {
     this.settings.capytorioCameraMode = mode;
+    if (mode === 'chase' && this.capytorioObliqueZoomDist > SURFACE_ZOOM_ORBIT_THRESHOLD) {
+      this.capytorioObliqueZoomDist = Math.min(2.2, this.settings.cameraDistance || 1.0);
+    }
     if (this.currentMode === 'capytorio') {
       this.surfaceCamYaw = Math.PI;
       this.surfaceCamPitch = mode === 'oblique' ? CAPYTORIO_OBLIQUE_PITCH_RAD : 0.66;
       if (mode === 'oblique') {
         this.mouselookLastActiveTimeMs = -100000;
+      } else if (!this.seamlessZoomActive) {
+        this.capytorioPlanetFadeActive = false;
+        this.seamlessUniverse?.hide();
       }
       if (this.isSoftwareGl) {
         this.snapCameraToCurrentZone();
@@ -8051,16 +8183,14 @@ export class PlayStyleManager {
     const distScale = this.settings.cameraDistance || 1.0;
 
     if (this.currentMode === 'capytorio' && this.getCapytorioCameraMode() === 'oblique') {
+      const pose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
       this.surfaceCamYaw = Math.PI;
-      this.surfaceCamPitch = CAPYTORIO_OBLIQUE_PITCH_RAD;
-      _camTarget.set(
-        wx,
-        wy + CAPYTORIO_OBLIQUE_DY_FACTOR * distScale,
-        wz + CAPYTORIO_OBLIQUE_DZ_FACTOR * distScale
-      );
+      this.surfaceCamPitch = pose.pitchRad;
+      _camTarget.set(wx, wy + pose.dy, wz + pose.dz);
       this.camera.position.lerp(_camTarget, 1 - Math.exp(-10.0 * dt));
       _lookTarget.set(wx, wy + 0.15, wz);
       this.camera.lookAt(_lookTarget);
+      this.syncCapytorioHighAltitudePlanetSurface(dt, wx, wy, wz, pose);
       return;
     }
 
@@ -9831,17 +9961,22 @@ export class PlayStyleManager {
     }
 
     this.capytorioEngine.step(dt, this.capytorioStepCallbacks);
+    const activeAltitudeRadius =
+      this.getCapytorioCameraMode() === 'oblique'
+        ? evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist).altitudeRadius
+        : 26;
     this.capytorioRenderer.sync(
       this.capytorioEngine,
       zone.x + this.heroLocalPos.x,
       zone.z + this.heroLocalPos.z,
       dt,
       this.worldEnv?.elapsedSeconds ?? performance.now() * 0.001,
-      true
+      true,
+      activeAltitudeRadius
     );
 
     this.capytorioUiAccum += dt;
-    if (this.capytorioUiAccum >= 0.25) {
+    if (this.capytorioUiAccum >= 0.1) {
       this.capytorioUiAccum = 0;
       this.emitCapytorioSnapshot();
     }
@@ -10282,7 +10417,24 @@ export class PlayStyleManager {
         prevLogVal <= CAPYBARA_FOREST_LOG_METERS + 0.05 &&
         nextLog >= CAPYBARA_FOREST_LOG_METERS;
 
-      if (this.autoLandAtForestPending && (crossedForestFromCosmos || crossedForestFromQuantum)) {
+      if (
+        this.lastLaunchSourceMode === 'capytorio' &&
+        !this.autoLandAtForestPending &&
+        activeVelocity < -0.02 &&
+        prevLogVal >= CAPYTORIO_ORBIT_HANDOFF_LOG_METERS - 0.12 &&
+        nextLog < CAPYTORIO_ORBIT_HANDOFF_LOG_METERS
+      ) {
+        this.autoZoomDirection = 0;
+        this.cruiseVelocityLogPerSec = 0;
+        this.targetCruiseVelocityLogPerSec = 0;
+        this.lastLaunchSourceMode = 'sanctuary';
+        this.capytorioObliqueZoomDist = CAPYTORIO_ORBIT_HANDOFF_DIST * 0.85;
+        this.settings.capytorioCameraMode = 'oblique';
+        this.resumeSurfacePlayFromForest(true);
+        this.switchMode('capytorio', true);
+        this.snapCameraToCurrentZone();
+        return;
+      } else if (this.autoLandAtForestPending && (crossedForestFromCosmos || crossedForestFromQuantum)) {
         this.currentLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
         this.targetLogScaleMeters = CAPYBARA_FOREST_LOG_METERS;
         this.targetCruiseVelocityLogPerSec = 0;
@@ -11260,15 +11412,93 @@ export class PlayStyleManager {
     this.surfaceCamPitch = res.pitch;
   }
 
+  private syncCapytorioHighAltitudePlanetSurface(
+    dt: number,
+    wx: number,
+    wy: number,
+    wz: number,
+    pose: typeof _capytorioAltPose
+  ): void {
+    if (!this.seamlessUniverse || this.seamlessZoomActive) return;
+    if (pose.altitudeRadius <= 65) {
+      if (this.capytorioPlanetFadeActive) {
+        this.capytorioPlanetFadeActive = false;
+        this.seamlessUniverse.hide();
+        this.setSkyDomeAlpha(1.0);
+        if (this.oceanMesh) {
+          this.oceanMesh.visible = true;
+        }
+        this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
+      }
+      return;
+    }
+
+    this.capytorioPlanetFadeActive = true;
+    const effectiveGamma = this.isRealityRescalerUnlocked()
+      ? (this.settings.realityScaleGamma ?? 1.0)
+      : 1.0;
+    const paletteMode: AstrophysicsPaletteMode =
+      this.settings.astrophysicsPalette ?? 'natural';
+    _seamlessFocalPos.set(wx, wy, wz);
+    this.seamlessUniverse.updateForLogScale(
+      pose.logAlt,
+      dt,
+      'auto',
+      _seamlessFocalPos,
+      _seamlessSkyColor,
+      effectiveGamma,
+      false,
+      paletteMode
+    );
+    this.seamlessUniverse.rootGroup.scale.setScalar(pose.altitudeRadius / 38.0);
+    this.seamlessUniverse.forestGroveGroup.visible = false;
+    this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = false;
+
+    const skyAlpha = 1.0 - smoothstep01(2.45, 3.85, pose.logAlt);
+    this.setSkyDomeAlpha(skyAlpha);
+    if (this.worldEnv) {
+      _colorHelper.copy(this.worldEnv.currentHorizonSkyColor);
+    } else {
+      _colorHelper.setHex(this.activeBiome?.skyHex ?? 0x38bdf8);
+    }
+    _colorHelper.lerp(_seamlessSkyColor, 1.0 - skyAlpha);
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.copy(_colorHelper);
+    } else {
+      this.scene.background = _colorHelper.clone();
+    }
+  }
+
   public adjustZoom(delta: number): number {
     if (this.isVesselFlying()) {
       return this.adjustVesselThrottle(delta, false);
     }
-    const curDist = this.settings.cameraDistance ?? 1.0;
-    const step = computeSurfaceZoomStep(curDist, delta, this.cosmicStage === 'playing');
+    const isCapytorioOblique =
+      this.cosmicStage === 'playing' &&
+      this.currentMode === 'capytorio' &&
+      this.getCapytorioCameraMode() === 'oblique';
+    const curDist = isCapytorioOblique
+      ? this.capytorioObliqueZoomDist
+      : (this.settings.cameraDistance ?? 1.0);
+    const step = isCapytorioOblique
+      ? computeCapytorioZoomStep(curDist, delta)
+      : computeSurfaceZoomStep(curDist, delta, this.cosmicStage === 'playing');
     if (step.launchToOrbit) {
-      this.launchIntoCosmos(step.launchTargetLogMeters);
+      if (isCapytorioOblique) {
+        this.currentLogScaleMeters = CAPYTORIO_ORBIT_HANDOFF_LOG_METERS;
+        this.launchIntoCosmos(step.launchTargetLogMeters, 'capytorio');
+      } else {
+        this.launchIntoCosmos(step.launchTargetLogMeters, 'sanctuary');
+      }
       return this.adjustVesselThrottle(delta, true);
+    }
+    if (isCapytorioOblique) {
+      this.capytorioObliqueZoomDist = step.nextDistance;
+      if (step.nextDistance <= 2.2) {
+        this.settings.cameraDistance = Math.round(step.nextDistance * 100) / 100;
+        ProgressionService.saveSettings(this.settings);
+      }
+      return this.capytorioObliqueZoomDist;
     }
     this.settings.cameraDistance = step.nextDistance;
     this.updateSettings(this.settings);

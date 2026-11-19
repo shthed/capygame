@@ -3,10 +3,15 @@ import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BELT_CURVE_INNER_ARC_M,
+  BELT_CURVE_OUTER_ARC_M,
   CapytorioFactoryEngine,
   MAX_RECENT_CAPYTORIO_TOOLS,
   capytorioGridToWorldX,
   capytorioGridToWorldZ,
+  evalBeltItemLocalPose,
+  getBeltCurveShape,
+  getBeltLaneArcMeters,
   resolveCapytorioPlaceableSpec,
   sampleCapytorioBaseResource,
   sampleCapytorioTreeAt,
@@ -481,5 +486,208 @@ test('Capytorio pocket crafting shared base machine IDs (inserter/splitter/lab) 
   assert.equal(engine.getPlaceableToolCount('inserter'), prevInserters + 1);
   assert.equal(engine.getRecentTools()[0], 'inserter');
 });
+
+test('Capytorio dual-lane belts side-load left/right lanes independently and preserve lanes across flow & save/load', () => {
+  const engine = new CapytorioFactoryEngine();
+
+  // Main belt line heading East (+X): (0,0) -> (1,0) -> (2,0)
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 2, 0, 1).ok, true);
+
+  // Side-feeding belts into (1,0):
+  // For East (dir=1, +X), North (1,-1) is LEFT side -> feeds lane 0; South (1,1) is RIGHT side -> feeds lane 1
+  assert.equal(engine.placeMachine('belt', 1, -1, 2).ok, true); // Facing South (+Z) into (1,0)
+  assert.equal(engine.placeMachine('belt', 1, 1, 0).ok, true);  // Facing North (-Z) into (1,0)
+
+  const leftFeeder = engine.machines.get(tileKey(1, -1))!;
+  const rightFeeder = engine.machines.get(tileKey(1, 1))!;
+  leftFeeder.beltItems.push({ item: 'iron_ore', progress: 0.99, lane: 0 });
+  rightFeeder.beltItems.push({ item: 'coal', progress: 0.99, lane: 0 });
+
+  for (let i = 0; i < 6; i++) {
+    engine.step(0.05);
+  }
+
+  const midBelt = engine.machines.get(tileKey(1, 0))!;
+  const leftLaneItem = midBelt.beltItems.find((b) => b.item === 'iron_ore');
+  const rightLaneItem = midBelt.beltItems.find((b) => b.item === 'coal');
+  assert.equal(leftLaneItem?.lane, 0, 'North side-feeder enters left lane (0)');
+  assert.equal(rightLaneItem?.lane, 1, 'South side-feeder enters right lane (1)');
+
+  // Verify 4-item capacity (2 per lane) and lane preservation flowing downstream to (2,0)
+  for (let i = 0; i < 20; i++) {
+    engine.step(0.05);
+  }
+  const endBelt = engine.machines.get(tileKey(2, 0))!;
+  assert.equal(endBelt.beltItems.find((b) => b.item === 'iron_ore')?.lane, 0);
+  assert.equal(endBelt.beltItems.find((b) => b.item === 'coal')?.lane, 1);
+
+  // Fill remaining slots on (2,0) up to 4 items total (2 left + 2 right) via serialize/hydrate round-trip
+  endBelt.beltItems = [
+    { item: 'iron_ore', progress: 0.9, lane: 0 },
+    { item: 'iron_plate', progress: 0.4, lane: 0 },
+    { item: 'coal', progress: 0.85, lane: 1 },
+    { item: 'copper_plate', progress: 0.35, lane: 1 },
+  ];
+  const roundTrip = new CapytorioFactoryEngine(engine.serialize());
+  const restoredEnd = roundTrip.machines.get(tileKey(2, 0))!;
+  assert.equal(restoredEnd.beltItems.length, 4);
+  assert.equal(restoredEnd.beltItems.filter((b) => b.lane === 0).length, 2);
+  assert.equal(restoredEnd.beltItems.filter((b) => b.lane === 1).length, 2);
+});
+
+test('Capytorio assigns distinct 3D shape archetypes and contrasting colors across key item classes', () => {
+  const shapes = new Map<string, string>();
+  const colors = new Map<string, number>();
+  const sampleIds = [
+    'iron_ore',
+    'coal',
+    'iron_plate',
+    'copper_plate',
+    'iron_gear',
+    'copper_cable',
+    'electronic_circuit',
+    'advanced_circuit',
+    'automation_science',
+    'logistic_science',
+    'orange',
+    'assembling_machine_1',
+  ];
+
+  for (const id of sampleIds) {
+    const meta = getCapytorioItemMeta(id);
+    shapes.set(id, meta.shape ?? 'crate');
+    colors.set(id, meta.colorHex);
+  }
+
+  assert.equal(shapes.get('iron_ore'), 'ore');
+  assert.equal(shapes.get('iron_plate'), 'plate');
+  assert.equal(shapes.get('iron_gear'), 'gear');
+  assert.equal(shapes.get('copper_cable'), 'coil');
+  assert.equal(shapes.get('electronic_circuit'), 'circuit');
+  assert.equal(shapes.get('automation_science'), 'science');
+  assert.equal(shapes.get('orange'), 'fruit');
+  assert.equal(shapes.get('assembling_machine_1'), 'crate');
+
+  // Ensure visually distinct colors for commonly mixed items
+  assert.notEqual(colors.get('iron_ore'), colors.get('coal'));
+  assert.notEqual(colors.get('iron_plate'), colors.get('copper_plate'));
+  assert.notEqual(colors.get('electronic_circuit'), colors.get('advanced_circuit'));
+  assert.notEqual(colors.get('automation_science'), colors.get('logistic_science'));
+});
+
+test('Factorio belt 90-degree corner curving, dynamic T-merge un-curving, and concentric arc lane conservation', () => {
+  const engine = new CapytorioFactoryEngine();
+
+  // South feeder at (0, -1) dir=2 (+Z) feeding corner (0, 0) dir=1 (East +X) -> curve_from_left
+  assert.equal(engine.placeMachine('belt', 0, -1, 2).ok, true);
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+
+  const corner = engine.machines.get(tileKey(0, 0))!;
+  assert.equal(getBeltCurveShape(engine.machines, corner), 'curve_from_left');
+
+  // Verify concentric inner/outer arc pose continuity at entry (progress=0) and exit (progress=1)
+  const poseOut: [number, number, number] = [0, 0, 0];
+  evalBeltItemLocalPose('curve_from_left', 0, 0.0, poseOut);
+  assert.ok(Math.abs(poseOut[0] - (-CAPYTORIO_TILE_SIZE * 0.5)) < 1e-4, 'Left-side entry sits at -X edge');
+  evalBeltItemLocalPose('curve_from_left', 0, 1.0, poseOut);
+  assert.ok(Math.abs(poseOut[1] - (-CAPYTORIO_TILE_SIZE * 0.5)) < 1e-4, 'Exit sits at -Z (local forward)');
+  assert.ok(Math.abs(poseOut[0] - (-0.49)) < 1e-4, 'Lane 0 exits at -0.49m');
+
+  // Feed items on both lanes through the curve and assert identical lane conservation + 1:1 beltScrollPhase
+  const feeder = engine.machines.get(tileKey(0, -1))!;
+  feeder.beltItems.push({ item: 'iron_ore', progress: 0.99, lane: 0 });
+  feeder.beltItems.push({ item: 'copper_ore', progress: 0.99, lane: 1 });
+  const prevPhase = engine.beltScrollPhase;
+  assert.ok(Math.abs(getBeltLaneArcMeters('curve_from_left', 0) - BELT_CURVE_INNER_ARC_M) < 1e-4);
+  assert.ok(Math.abs(getBeltLaneArcMeters('curve_from_left', 1) - BELT_CURVE_OUTER_ARC_M) < 1e-4);
+  assert.ok(getBeltLaneArcMeters('curve_from_left', 1) > BELT_CURVE_INNER_ARC_M);
+
+  for (let i = 0; i < 36; i++) {
+    engine.step(0.05);
+  }
+  assert.ok(engine.beltScrollPhase > prevPhase + 0.5);
+  const downstream = engine.machines.get(tileKey(1, 0))!;
+  assert.equal(downstream.beltItems.find((b) => b.item === 'iron_ore')?.lane, 0);
+  assert.equal(downstream.beltItems.find((b) => b.item === 'copper_ore')?.lane, 1);
+
+  // Adding a straight rear feeder at (-1, 0) dir=1 un-curves (0, 0) into a straight T-merge
+  assert.equal(engine.placeMachine('belt', -1, 0, 1).ok, true);
+  assert.equal(getBeltCurveShape(engine.machines, corner), 'straight');
+
+  // Demolishing the rear feeder restores the 90-degree corner dynamically
+  assert.equal(engine.demolishAt(-1, 0), 'belt');
+  assert.equal(getBeltCurveShape(engine.machines, corner), 'curve_from_left');
+
+  // Adding an opposite right-side feeder (0, 1) dir=0 (North) also keeps it a straight T-junction
+  assert.equal(engine.placeMachine('belt', 0, 1, 0).ok, true);
+  assert.equal(getBeltCurveShape(engine.machines, corner), 'straight');
+
+  // Demolishing left feeder (0, -1) leaves only right feeder -> curve_from_right
+  assert.equal(engine.demolishAt(0, -1), 'belt');
+  assert.equal(getBeltCurveShape(engine.machines, corner), 'curve_from_right');
+});
+
+test('Capytorio inserters track exact lane coordinates with 4-phase object permanence (no belt item pop)', () => {
+  const engine = new CapytorioFactoryEngine();
+
+  // Vertical belt at (0, 1) going North (-Z), inserter at (0, 0) facing North (-Z, picks from South +Z -> drops North -Z),
+  // perpendicular destination belt at (0, -1) going East (+X, dir=1).
+  assert.equal(engine.placeMachine('belt', 0, 1, 0).ok, true);
+  assert.equal(engine.placeMachine('inserter', 0, 0, 0).ok, true);
+  assert.equal(engine.placeMachine('belt', 0, -1, 1).ok, true);
+
+  const srcBelt = engine.machines.get(tileKey(0, 1))!;
+  const inserter = engine.machines.get(tileKey(0, 0))!;
+  const dstBelt = engine.machines.get(tileKey(0, -1))!;
+  srcBelt.beltItems.push({ item: 'iron_plate', progress: 0.48, lane: 1 });
+
+  // Step 1: inserter locks onto target belt item UID and reaches out WITHOUT removing it yet
+  engine.step(0.05);
+  assert.equal(inserter.inserterPhase, 'reaching');
+  assert.equal(inserter.holdingItem, null);
+  assert.equal(srcBelt.beltItems.length, 1, 'Item remains on belt while inserter reaches toward it');
+  assert.ok((inserter.armExtend ?? 0) > 0 && (inserter.armExtend ?? 0) < 1);
+  assert.equal(inserter.pickupLane, 1);
+
+  // Advance until physical contact lifts the item off the belt cleanly into holdingItem
+  let lifted = false;
+  for (let i = 0; i < 15; i++) {
+    engine.step(0.05);
+    if (String(inserter.inserterPhase) === 'carrying' && inserter.holdingItem === 'iron_plate') {
+      lifted = true;
+      break;
+    }
+  }
+  assert.equal(lifted, true);
+  assert.equal(srcBelt.beltItems.length, 0, 'Item leaves belt only at physical claw grab contact');
+
+  // Advance until inserter drops onto perpendicular belt far lane (East belt approached from South drops onto lane 0 = North/Left)
+  let releasedToReturn = false;
+  for (let i = 0; i < 20; i++) {
+    engine.step(0.05);
+    if (String(inserter.inserterPhase) === 'returning') {
+      releasedToReturn = true;
+      break;
+    }
+  }
+  assert.equal(releasedToReturn, true);
+  assert.equal(inserter.holdingItem, null);
+  assert.equal(dstBelt.beltItems.length, 1);
+  assert.equal(dstBelt.beltItems[0].lane, 0, 'Factorio perpendicular inserter drop places onto far lane');
+  engine.step(0.05);
+  assert.ok(inserter.armSwing > 0 && inserter.armSwing < 1, 'Arm swings smoothly back instead of snapping');
+
+  // Settles back cleanly into idle_pickup
+  for (let i = 0; i < 24; i++) {
+    engine.step(0.05);
+  }
+  assert.equal(inserter.inserterPhase, 'idle_pickup');
+  assert.equal(inserter.armSwing, 0);
+});
+
+
 
 

@@ -10,10 +10,15 @@ import {
   DEFAULT_TECH_LUA_SOURCE,
 } from './capytorioLuaDefaults';
 import {
+  CAPYTORIO_ITEM_SHAPES,
   CURATED_CAPYTORIO_ITEMS,
   createProceduralItemMeta,
   parseCapytorioLuaCatalog,
+  resolveCapytorioItemShape,
+  type CapytorioItemShape,
 } from './CapytorioLuaParser';
+
+export { CAPYTORIO_ITEM_SHAPES, resolveCapytorioItemShape, type CapytorioItemShape };
 
 export type CapytorioItemId = string;
 
@@ -49,6 +54,7 @@ export interface CapytorioItemMeta {
     | 'combat'
     | 'science'
     | 'rocket';
+  shape?: CapytorioItemShape;
   colorHex: number;
   cssColor: string;
 }

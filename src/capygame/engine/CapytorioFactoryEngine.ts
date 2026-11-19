@@ -67,9 +67,20 @@ export function resolveCapytorioPlaceableSpec(toolId: string): CapytorioPlaceabl
   return null;
 }
 
+export type CapytorioBeltCurveShape = 'straight' | 'curve_from_left' | 'curve_from_right';
+export type CapytorioInserterPhase = 'idle_pickup' | 'reaching' | 'carrying' | 'returning';
+
+export const BELT_LANE_OFFSET_M = 0.49;
+export const BELT_CURVE_INNER_RADIUS_M = CAPYTORIO_TILE_SIZE * 0.5 - BELT_LANE_OFFSET_M; // 0.76m
+export const BELT_CURVE_OUTER_RADIUS_M = CAPYTORIO_TILE_SIZE * 0.5 + BELT_LANE_OFFSET_M; // 1.74m
+export const BELT_CURVE_INNER_ARC_M = (Math.PI * 0.5) * BELT_CURVE_INNER_RADIUS_M; // ~1.194m
+export const BELT_CURVE_OUTER_ARC_M = (Math.PI * 0.5) * BELT_CURVE_OUTER_RADIUS_M; // ~2.733m
+
 export interface CapytorioBeltItem {
+  uid?: number;
   item: CapytorioItemId;
-  progress: number; // 0..1 along tile direction
+  progress: number; // 0..1 along tile direction (straight or curve arc)
+  lane?: 0 | 1; // 0 = left track (-X local), 1 = right track (+X local)
 }
 
 export interface CapytorioMachine {
@@ -84,7 +95,15 @@ export interface CapytorioMachine {
   craftProgress: number;
   productivityProgress: number;
   fuelTimer: number;
-  armSwing: number; // 0..1 inserter visual arm progress
+  armSwing: number; // 0 (pickup side) .. 1 (drop side) inserter visual arm progress
+  armExtend?: number; // 0..1 inserter reach/retract extension
+  inserterPhase?: CapytorioInserterPhase;
+  pickupLane?: 0 | 1;
+  pickupLocalX?: number;
+  pickupLocalZ?: number;
+  dropLocalX?: number;
+  dropLocalZ?: number;
+  targetBeltUid?: number;
   holdingItem: CapytorioItemId | null;
   splitterToggle: number;
   inputBuffer: Partial<Record<CapytorioItemId, number>>;
@@ -118,7 +137,7 @@ export interface CapytorioSerializedState {
     recipeId?: CapytorioRecipeId;
     inputBuffer?: Partial<Record<CapytorioItemId, number>>;
     outputBuffer?: Partial<Record<CapytorioItemId, number>>;
-    beltItems?: Array<{ item: CapytorioItemId; progress: number }>;
+    beltItems?: Array<{ item: CapytorioItemId; progress: number; lane?: 0 | 1 }>;
   }>;
   depletions: Array<[string, number]>;
   harvestedTrees?: string[];
@@ -201,6 +220,7 @@ export interface CapytorioStepCallbacks {
 
 export const DIR_DX: readonly [number, number, number, number] = [0, 1, 0, -1];
 export const DIR_DZ: readonly [number, number, number, number] = [-1, 0, 1, 0];
+const _inserterPoseScratch: [number, number, number] = [0, 0, 0];
 
 export function tileKey(gx: number, gz: number): string {
   return `${gx},${gz}`;
@@ -220,6 +240,106 @@ export function capytorioGridToWorldX(gx: number): number {
 
 export function capytorioGridToWorldZ(gz: number): number {
   return CAPYTORIO_WORLD_ORIGIN_Z + gz * CAPYTORIO_TILE_SIZE;
+}
+
+function isBeltLineFeederType(type: CapytorioMachineType): boolean {
+  return type === 'belt' || type === 'splitter' || type === 'tunnel';
+}
+
+/**
+ * Factorio-accurate orthogonal belt neighbor evaluation:
+ * - A transport belt curves 90° ONLY when fed from a single perpendicular side (left OR right)
+ *   AND not fed straight from behind (`!backFeed && (leftFeed !== rightFeed)`).
+ * - Adding a straight back belt or an opposite side belt dynamically straightens it into a T-merge.
+ */
+export function getBeltCurveShape(
+  machines: ReadonlyMap<string, CapytorioMachine>,
+  m: CapytorioMachine
+): CapytorioBeltCurveShape {
+  if (m.type !== 'belt') return 'straight';
+  const fwdDx = DIR_DX[m.dir];
+  const fwdDz = DIR_DZ[m.dir];
+  const rightDx = -fwdDz;
+  const rightDz = fwdDx;
+
+  const backNb = machines.get(tileKey(m.gx - fwdDx, m.gz - fwdDz));
+  const backFeed = Boolean(
+    backNb &&
+      isBeltLineFeederType(backNb.type) &&
+      DIR_DX[backNb.dir] === fwdDx &&
+      DIR_DZ[backNb.dir] === fwdDz
+  );
+  if (backFeed) return 'straight';
+
+  const leftNb = machines.get(tileKey(m.gx - rightDx, m.gz - rightDz));
+  const leftFeed = Boolean(
+    leftNb &&
+      isBeltLineFeederType(leftNb.type) &&
+      DIR_DX[leftNb.dir] === rightDx &&
+      DIR_DZ[leftNb.dir] === rightDz
+  );
+
+  const rightNb = machines.get(tileKey(m.gx + rightDx, m.gz + rightDz));
+  const rightFeed = Boolean(
+    rightNb &&
+      isBeltLineFeederType(rightNb.type) &&
+      DIR_DX[rightNb.dir] === -rightDx &&
+      DIR_DZ[rightNb.dir] === -rightDz
+  );
+
+  if (leftFeed && !rightFeed) return 'curve_from_left';
+  if (rightFeed && !leftFeed) return 'curve_from_right';
+  return 'straight';
+}
+
+export function getBeltLaneArcMeters(curve: CapytorioBeltCurveShape, lane: 0 | 1): number {
+  if (curve === 'curve_from_left') {
+    return lane === 0 ? BELT_CURVE_INNER_ARC_M : BELT_CURVE_OUTER_ARC_M;
+  }
+  if (curve === 'curve_from_right') {
+    return lane === 0 ? BELT_CURVE_OUTER_ARC_M : BELT_CURVE_INNER_ARC_M;
+  }
+  return CAPYTORIO_TILE_SIZE;
+}
+
+/**
+ * Evaluates local tile pose `[localX, localZ, tangentYawOffsetRad]` in a machine's local
+ * coordinate frame (where forward exit is `-Z`, rear entrance is `+Z`, left is `-X`, right is `+X`)
+ * with zero heap allocations.
+ */
+export function evalBeltItemLocalPose(
+  curve: CapytorioBeltCurveShape,
+  lane: 0 | 1,
+  progress: number,
+  outPose: [number, number, number]
+): void {
+  const halfTile = CAPYTORIO_TILE_SIZE * 0.5;
+  const p = progress < 0 ? 0 : progress > 1 ? 1 : progress;
+
+  if (curve === 'straight') {
+    outPose[0] = lane === 1 ? BELT_LANE_OFFSET_M : -BELT_LANE_OFFSET_M;
+    outPose[1] = (0.5 - p) * CAPYTORIO_TILE_SIZE;
+    outPose[2] = 0;
+    return;
+  }
+
+  const theta = (1 - p) * (Math.PI * 0.5);
+  const cosT = Math.cos(theta);
+  const sinT = Math.sin(theta);
+
+  if (curve === 'curve_from_left') {
+    const r = lane === 0 ? BELT_CURVE_INNER_RADIUS_M : BELT_CURVE_OUTER_RADIUS_M;
+    outPose[0] = -halfTile + r * cosT;
+    outPose[1] = -halfTile + r * sinT;
+    outPose[2] = -theta; // At p=0 (theta=PI/2), heading East (+X) = -PI/2; exits -Z = 0
+    return;
+  }
+
+  // 'curve_from_right'
+  const r = lane === 0 ? BELT_CURVE_OUTER_RADIUS_M : BELT_CURVE_INNER_RADIUS_M;
+  outPose[0] = halfTile - r * cosT;
+  outPose[1] = -halfTile + r * sinT;
+  outPose[2] = theta; // At p=0 (theta=PI/2), heading West (-X) = +PI/2; exits -Z = 0
 }
 
 function hashInt2D(x: number, z: number, seed: number): number {
@@ -330,6 +450,10 @@ function getDefaultTechId(): CapytorioTechId | null {
 }
 
 function getDefaultAssemblerRecipeId(): CapytorioRecipeId {
+  const ironGear = RECIPE_BY_ID.get('iron_gear');
+  if (ironGear && ironGear.station === 'assembler' && ironGear.unlockedByDefault) {
+    return ironGear.id;
+  }
   for (let i = 0; i < CAPYTORIO_RECIPES.length; i++) {
     const r = CAPYTORIO_RECIPES[i];
     if (r.station === 'assembler' && r.unlockedByDefault) return r.id;
@@ -350,10 +474,14 @@ export class CapytorioFactoryEngine {
   private recentTools: string[] = [...CAPYTORIO_HOTBAR_ORDER];
 
   private nextMachineId = 1;
+  private nextBeltItemUid = 1;
   private rocketLaunches = 0;
   private totalProduced = 0;
   private score = 0;
   private lastReportedScore = 0;
+
+  // Deterministic synchronized conveyor surface phase (advanced strictly with clampedDt * beltRate)
+  public beltScrollPhase = 0;
 
   // Player build tool state
   public selectedTool: string = 'drill';
@@ -406,6 +534,7 @@ export class CapytorioFactoryEngine {
     this.activeTechId = getDefaultTechId();
     this.techDelivered = {};
     this.recentTools = [...CAPYTORIO_HOTBAR_ORDER];
+    this.beltScrollPhase = 0;
     this.rocketLaunches = 0;
     this.totalProduced = 0;
     this.score = 0;
@@ -731,6 +860,8 @@ export class CapytorioFactoryEngine {
       productivityProgress: 0,
       fuelTimer: 0,
       armSwing: 0,
+      armExtend: 0,
+      inserterPhase: baseType === 'inserter' ? 'idle_pickup' : undefined,
       holdingItem: null,
       splitterToggle: 0,
       inputBuffer: {},
@@ -1269,19 +1400,87 @@ export class CapytorioFactoryEngine {
     target: CapytorioMachine,
     item: CapytorioItemId,
     fromGx: number,
-    fromGz: number
+    fromGz: number,
+    preferredLane?: 0 | 1,
+    initialProgress?: number,
+    isInserterDrop: boolean = false
   ): boolean {
     if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
-      if (target.beltItems.length >= 2) return false;
-      const progress =
-        target.type === 'belt' && fromGx === target.gx - DIR_DX[target.dir] && fromGz === target.gz - DIR_DZ[target.dir]
-          ? 0.05
-          : 0.45;
-      for (let i = 0; i < target.beltItems.length; i++) {
-        if (Math.abs(target.beltItems[i].progress - progress) < 0.25) return false;
+      if (target.beltItems.length >= 4) return false;
+      const tDx = DIR_DX[target.dir];
+      const tDz = DIR_DZ[target.dir];
+      const relX = fromGx - target.gx;
+      const relZ = fromGz - target.gz;
+      const rightDx = -tDz;
+      const rightDz = tDx;
+
+      const isInlineBehind = relX === -tDx && relZ === -tDz;
+      const isLeftSide = relX === -rightDx && relZ === -rightDz;
+      const isRightSide = relX === rightDx && relZ === rightDz;
+
+      const targetCurve = target.type === 'belt' ? getBeltCurveShape(this.machines, target) : 'straight';
+      const isCurveEntry =
+        (targetCurve === 'curve_from_left' && isLeftSide) ||
+        (targetCurve === 'curve_from_right' && isRightSide);
+
+      let progress: number;
+      if (target.type === 'belt' && (isInlineBehind || isCurveEntry)) {
+        const clampedInit =
+          initialProgress !== undefined && Number.isFinite(initialProgress)
+            ? Math.max(0.01, Math.min(0.24, initialProgress))
+            : 0.02;
+        progress = clampedInit;
+      } else {
+        progress = 0.45;
       }
-      target.beltItems.push({ item, progress });
-      return true;
+
+      let primaryLane: 0 | 1;
+      if (isInserterDrop && (isLeftSide || isRightSide)) {
+        // Canonical Factorio rule: inserters drop onto the FAR lane of perpendicular belts
+        primaryLane = isLeftSide ? 1 : 0;
+      } else if (!isCurveEntry && isLeftSide) {
+        primaryLane = 0;
+      } else if (!isCurveEntry && isRightSide) {
+        primaryLane = 1;
+      } else if (preferredLane === 0 || preferredLane === 1) {
+        primaryLane = preferredLane;
+      } else if (target.type === 'belt') {
+        primaryLane = (target.splitterToggle & 1) as 0 | 1;
+        target.splitterToggle = (target.splitterToggle + 1) & 1;
+      } else {
+        primaryLane = 0;
+      }
+
+      const fallbackLane: 0 | 1 = primaryLane === 0 ? 1 : 0;
+      const allowAltLane =
+        !isInserterDrop && !isCurveEntry && !isLeftSide && !isRightSide && preferredLane === undefined;
+
+      for (let attempt = 0; attempt < (allowAltLane ? 2 : 1); attempt++) {
+        const lane: 0 | 1 = attempt === 0 ? primaryLane : fallbackLane;
+        const arcMeters = getBeltLaneArcMeters(targetCurve, lane);
+        const minGapProg = Math.min(0.42, (0.32 * CAPYTORIO_TILE_SIZE) / arcMeters);
+        let laneCount = 0;
+        let blocked = false;
+        for (let i = 0; i < target.beltItems.length; i++) {
+          const existing = target.beltItems[i];
+          if ((existing.lane ?? 0) !== lane) continue;
+          laneCount++;
+          if (Math.abs(existing.progress - progress) < minGapProg) {
+            blocked = true;
+            break;
+          }
+        }
+        if (!blocked && laneCount < 2) {
+          target.beltItems.push({
+            uid: this.nextBeltItemUid++,
+            item,
+            progress,
+            lane,
+          });
+          return true;
+        }
+      }
+      return false;
     }
 
     if (target.type === 'chest') {
@@ -1446,6 +1645,12 @@ export class CapytorioFactoryEngine {
     const prodBonus = this.getProductivityBonusFraction();
     const inserterStack = this.getInserterStackSize();
 
+    // Advance belt surface phase strictly 1:1 with simulation item advancement
+    this.beltScrollPhase = (this.beltScrollPhase + clampedDt * beltRate) % 1000.0;
+
+    // Reusable scratch tuple for zero-allocation inserter pickup target calculation
+    const poseScratch = _inserterPoseScratch;
+
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
       const mTierMult = m.tierMult ?? 1.0;
@@ -1606,21 +1811,52 @@ export class CapytorioFactoryEngine {
         }
       } else if (m.type === 'belt') {
         const tileBeltRate = beltRate * mTierMult;
-        for (let bi = m.beltItems.length - 1; bi >= 0; bi--) {
-          const bItem = m.beltItems[bi];
-          const maxAllow = bi === 0 ? 1.0 : Math.min(1.0, m.beltItems[bi - 1].progress - 0.34);
-          bItem.progress = Math.min(maxAllow, bItem.progress + clampedDt * tileBeltRate);
-          if (bItem.progress >= 0.98 && frontTarget) {
-            if (this.tryAcceptItemIntoTarget(frontTarget, bItem.item, m.gx, m.gz)) {
-              m.beltItems.splice(bi, 1);
-            }
+        const curveShape = getBeltCurveShape(this.machines, m);
+        // Sort beltItems highest-progress first (<= 4 items, zero-allocation insertion sort)
+        for (let a = 1; a < m.beltItems.length; a++) {
+          const cur = m.beltItems[a];
+          let b = a - 1;
+          while (b >= 0 && m.beltItems[b].progress < cur.progress) {
+            m.beltItems[b + 1] = m.beltItems[b];
+            b--;
           }
+          m.beltItems[b + 1] = cur;
         }
-        // Keep beltItems sorted highest-progress first
-        if (m.beltItems.length === 2 && m.beltItems[0].progress < m.beltItems[1].progress) {
-          const tmp = m.beltItems[0];
-          m.beltItems[0] = m.beltItems[1];
-          m.beltItems[1] = tmp;
+        let lane0Max = 1.0;
+        let lane1Max = 1.0;
+        for (let bi = 0; bi < m.beltItems.length; bi++) {
+          const bItem = m.beltItems[bi];
+          if (bItem.uid === undefined) bItem.uid = this.nextBeltItemUid++;
+          const lane: 0 | 1 = bItem.lane === 1 ? 1 : 0;
+          const arcMeters = getBeltLaneArcMeters(curveShape, lane);
+          const worldStepMeters = clampedDt * tileBeltRate * CAPYTORIO_TILE_SIZE;
+          const laneAdvance = worldStepMeters / arcMeters;
+          const maxAllow = lane === 0 ? lane0Max : lane1Max;
+          const rawNext = bItem.progress + laneAdvance;
+          bItem.progress = Math.min(maxAllow, rawNext);
+          if (
+            bItem.progress >= 0.99 &&
+            frontTarget &&
+            this.tryAcceptItemIntoTarget(
+              frontTarget,
+              bItem.item,
+              m.gx,
+              m.gz,
+              lane,
+              Math.max(0.01, (rawNext - 1.0) * (arcMeters / CAPYTORIO_TILE_SIZE))
+            )
+          ) {
+            m.beltItems.splice(bi, 1);
+            bi--;
+            continue;
+          }
+          const minGapProg = Math.min(0.78, (0.38 * CAPYTORIO_TILE_SIZE) / arcMeters);
+          const nextLimit = Math.max(0, bItem.progress - minGapProg);
+          if (lane === 0) {
+            if (nextLimit < lane0Max) lane0Max = nextLimit;
+          } else {
+            if (nextLimit < lane1Max) lane1Max = nextLimit;
+          }
         }
       } else if (m.type === 'splitter') {
         if (m.beltItems.length > 0) {
@@ -1631,12 +1867,12 @@ export class CapytorioFactoryEngine {
             leftDir,
             rightDir,
           ];
-          const item = m.beltItems[0].item;
+          const frontItem = m.beltItems[0];
           let transferred = false;
           for (let attempt = 0; attempt < 3; attempt++) {
             const tryDir = dirs[(m.splitterToggle + attempt) % 3];
             const tgt = this.machines.get(tileKey(m.gx + DIR_DX[tryDir], m.gz + DIR_DZ[tryDir]));
-            if (tgt && this.tryAcceptItemIntoTarget(tgt, item, m.gx, m.gz)) {
+            if (tgt && this.tryAcceptItemIntoTarget(tgt, frontItem.item, m.gx, m.gz, frontItem.lane)) {
               m.beltItems.shift();
               m.splitterToggle = (m.splitterToggle + attempt + 1) % 3;
               transferred = true;
@@ -1672,68 +1908,211 @@ export class CapytorioFactoryEngine {
           }
         }
       } else if (m.type === 'inserter') {
-        const srcGx = m.gx - DIR_DX[m.dir];
-        const srcGz = m.gz - DIR_DZ[m.dir];
+        const iFwdDx = DIR_DX[m.dir];
+        const iFwdDz = DIR_DZ[m.dir];
+        const iRightDx = -iFwdDz;
+        const iRightDz = iFwdDx;
+        const srcGx = m.gx - iFwdDx;
+        const srcGz = m.gz - iFwdDz;
         const srcM = this.machines.get(tileKey(srcGx, srcGz));
-        const swingSpeed = 1.85 * mTierMult * Math.max(0.5, this.powerEfficiency);
+        const swingSpeed = 2.05 * mTierMult * Math.max(0.5, this.powerEfficiency);
+        const reachSpeed = 4.6 * mTierMult * Math.max(0.5, this.powerEfficiency);
+        const returnSpeed = 2.3 * mTierMult * Math.max(0.5, this.powerEfficiency);
 
-        if (!m.holdingItem && srcM && frontTarget) {
-          // Pick best candidate item from source
-          let picked: CapytorioItemId | null = null;
-          if (srcM.type === 'belt' && srcM.beltItems.length > 0) {
-            // Check filter against frontTarget acceptance
-            for (let bi = 0; bi < srcM.beltItems.length; bi++) {
-              const cand = srcM.beltItems[bi].item;
-              if (this.wouldMachineAccept(frontTarget, cand)) {
-                picked = cand;
-                srcM.beltItems.splice(bi, 1);
-                break;
+        // Migrate legacy saves seamlessly
+        if (!m.inserterPhase) {
+          m.inserterPhase = m.holdingItem
+            ? 'carrying'
+            : m.armSwing > 0.01
+              ? 'returning'
+              : 'idle_pickup';
+          m.armExtend = m.holdingItem ? 1.0 : 0;
+        }
+
+        // Helper compute drop target in inserter's local coordinates (-Z = forward, +X = right)
+        if (frontTarget && (frontTarget.type === 'belt' || frontTarget.type === 'splitter' || frontTarget.type === 'tunnel')) {
+          const tDx = DIR_DX[frontTarget.dir];
+          const tDz = DIR_DZ[frontTarget.dir];
+          const relX = m.gx - frontTarget.gx;
+          const relZ = m.gz - frontTarget.gz;
+          const tRightDx = -tDz;
+          const tRightDz = tDx;
+          const isLeft = relX === -tRightDx && relZ === -tRightDz;
+          const isRight = relX === tRightDx && relZ === tRightDz;
+          const dropLane: 0 | 1 = isLeft ? 1 : isRight ? 0 : 0;
+          const fCurve = frontTarget.type === 'belt' ? getBeltCurveShape(this.machines, frontTarget) : 'straight';
+          evalBeltItemLocalPose(fCurve, dropLane, isLeft || isRight ? 0.45 : 0.08, poseScratch);
+          const tgtDx = (frontTarget.gx - m.gx) * CAPYTORIO_TILE_SIZE + tRightDx * poseScratch[0] - tDx * poseScratch[1];
+          const tgtDz = (frontTarget.gz - m.gz) * CAPYTORIO_TILE_SIZE + tRightDz * poseScratch[0] - tDz * poseScratch[1];
+          m.dropLocalX = iRightDx * tgtDx + iRightDz * tgtDz;
+          m.dropLocalZ = -(iFwdDx * tgtDx + iFwdDz * tgtDz);
+        } else {
+          m.dropLocalX = 0;
+          m.dropLocalZ = -CAPYTORIO_TILE_SIZE * 0.9;
+        }
+
+        if (m.inserterPhase === 'idle_pickup') {
+          m.armSwing = 0;
+          m.armExtend = Math.max(0, (m.armExtend ?? 0) - clampedDt * reachSpeed);
+          if (!m.holdingItem && srcM && frontTarget) {
+            if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
+              for (let bi = 0; bi < srcM.beltItems.length; bi++) {
+                const candItem = srcM.beltItems[bi];
+                if (this.wouldMachineAccept(frontTarget, candItem.item)) {
+                  if (candItem.uid === undefined) candItem.uid = this.nextBeltItemUid++;
+                  m.targetBeltUid = candItem.uid;
+                  m.pickupLane = candItem.lane === 1 ? 1 : 0;
+                  m.inserterPhase = 'reaching';
+                  m.armExtend = 0.05;
+                  break;
+                }
+              }
+            } else if (
+              srcM.type === 'drill' ||
+              srcM.type === 'furnace' ||
+              srcM.type === 'assembler' ||
+              srcM.type === 'chest'
+            ) {
+              for (const k in srcM.outputBuffer) {
+                const cand = k as CapytorioItemId;
+                if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
+                  m.targetBeltUid = undefined;
+                  m.pickupLane = 0;
+                  m.pickupLocalX = 0;
+                  m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
+                  m.inserterPhase = 'reaching';
+                  m.armExtend = 0.05;
+                  break;
+                }
               }
             }
-          } else if (
-            srcM.type === 'drill' ||
-            srcM.type === 'furnace' ||
-            srcM.type === 'assembler' ||
-            srcM.type === 'chest'
-          ) {
-            for (const k in srcM.outputBuffer) {
-              const cand = k as CapytorioItemId;
-              if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
-                picked = cand;
-                srcM.outputBuffer[cand] = (srcM.outputBuffer[cand] ?? 1) - 1;
-                if (srcM.outputBuffer[cand]! <= 0) delete srcM.outputBuffer[cand];
-                break;
-              }
-            }
-          }
-          if (picked) {
-            m.holdingItem = picked;
-            m.armSwing = 0;
           }
         }
 
-        if (m.holdingItem) {
-          m.armSwing = Math.min(1.0, m.armSwing + clampedDt * swingSpeed);
-          if (m.armSwing >= 1.0 && frontTarget) {
-            if (this.tryAcceptItemIntoTarget(frontTarget, m.holdingItem, m.gx, m.gz)) {
-              // Bonus stack grab for electric stack inserters from buffer sources!
-              if (inserterStack > 1 && srcM && (srcM.type === 'chest' || srcM.type === 'furnace' || srcM.type === 'assembler')) {
-                for (let extra = 1; extra < inserterStack; extra++) {
-                  const avail = srcM.outputBuffer[m.holdingItem] ?? 0;
-                  if (avail > 0 && this.tryAcceptItemIntoTarget(frontTarget, m.holdingItem, m.gx, m.gz)) {
-                    srcM.outputBuffer[m.holdingItem] = avail - 1;
-                    if (avail - 1 <= 0) delete srcM.outputBuffer[m.holdingItem];
-                  } else {
+        if (m.inserterPhase === 'reaching') {
+          m.armSwing = 0;
+          let targetReady = false;
+          let grabbedItem: CapytorioItemId | null = null;
+          let shouldGrabNow = false;
+
+          m.armExtend = Math.min(1.0, (m.armExtend ?? 0) + clampedDt * reachSpeed);
+          shouldGrabNow = (m.armExtend ?? 0) >= 1.0;
+
+          if (srcM && frontTarget) {
+            if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
+              let foundIdx = -1;
+              for (let bi = 0; bi < srcM.beltItems.length; bi++) {
+                if (srcM.beltItems[bi].uid === m.targetBeltUid) {
+                  foundIdx = bi;
+                  break;
+                }
+              }
+              if (foundIdx === -1 && srcM.beltItems.length > 0) {
+                for (let bi = 0; bi < srcM.beltItems.length; bi++) {
+                  if (this.wouldMachineAccept(frontTarget, srcM.beltItems[bi].item)) {
+                    foundIdx = bi;
+                    m.targetBeltUid = srcM.beltItems[bi].uid;
                     break;
                   }
                 }
               }
-              m.holdingItem = null;
-              m.armSwing = 0;
+              if (foundIdx !== -1) {
+                const bItem = srcM.beltItems[foundIdx];
+                if (this.wouldMachineAccept(frontTarget, bItem.item)) {
+                  targetReady = true;
+                  m.pickupLane = bItem.lane === 1 ? 1 : 0;
+                  const sCurve = srcM.type === 'belt' ? getBeltCurveShape(this.machines, srcM) : 'straight';
+                  evalBeltItemLocalPose(sCurve, m.pickupLane, bItem.progress, poseScratch);
+                  const sDx = DIR_DX[srcM.dir];
+                  const sDz = DIR_DZ[srcM.dir];
+                  const sRightDx = -sDz;
+                  const sRightDz = sDx;
+                  const itemWorldDeltaX = (srcM.gx - m.gx) * CAPYTORIO_TILE_SIZE + sRightDx * poseScratch[0] - sDx * poseScratch[1];
+                  const itemWorldDeltaZ = (srcM.gz - m.gz) * CAPYTORIO_TILE_SIZE + sRightDz * poseScratch[0] - sDz * poseScratch[1];
+                  m.pickupLocalX = iRightDx * itemWorldDeltaX + iRightDz * itemWorldDeltaZ;
+                  m.pickupLocalZ = -(iFwdDx * itemWorldDeltaX + iFwdDz * itemWorldDeltaZ);
+
+                  if (shouldGrabNow) {
+                    grabbedItem = bItem.item;
+                    srcM.beltItems.splice(foundIdx, 1);
+                  }
+                }
+              }
+            } else if (
+              srcM.type === 'drill' ||
+              srcM.type === 'furnace' ||
+              srcM.type === 'assembler' ||
+              srcM.type === 'chest'
+            ) {
+              m.pickupLocalX = 0;
+              m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
+              for (const k in srcM.outputBuffer) {
+                const cand = k as CapytorioItemId;
+                if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
+                  targetReady = true;
+                  if (shouldGrabNow) {
+                    grabbedItem = cand;
+                    srcM.outputBuffer[cand] = (srcM.outputBuffer[cand] ?? 1) - 1;
+                    if (srcM.outputBuffer[cand]! <= 0) delete srcM.outputBuffer[cand];
+                  }
+                  break;
+                }
+              }
             }
           }
-        } else if (m.armSwing > 0) {
-          m.armSwing = Math.max(0, m.armSwing - clampedDt * swingSpeed * 1.3);
+
+          if (!targetReady) {
+            m.inserterPhase = 'idle_pickup';
+            m.armExtend = 0;
+            m.targetBeltUid = undefined;
+          } else if (grabbedItem) {
+            m.holdingItem = grabbedItem;
+            m.targetBeltUid = undefined;
+            m.inserterPhase = 'carrying';
+            m.armExtend = 1.0;
+            m.armSwing = 0;
+          }
+        } else if (m.inserterPhase === 'carrying') {
+          if (!m.holdingItem) {
+            m.inserterPhase = 'returning';
+          } else {
+            m.armSwing = Math.min(1.0, m.armSwing + clampedDt * swingSpeed);
+            m.armExtend = 1.0;
+            if (m.armSwing >= 1.0 && frontTarget) {
+              if (this.tryAcceptItemIntoTarget(frontTarget, m.holdingItem, m.gx, m.gz, undefined, undefined, true)) {
+                // Bonus stack grab for electric stack inserters from buffer sources
+                if (
+                  inserterStack > 1 &&
+                  srcM &&
+                  (srcM.type === 'chest' || srcM.type === 'furnace' || srcM.type === 'assembler')
+                ) {
+                  for (let extra = 1; extra < inserterStack; extra++) {
+                    const avail = srcM.outputBuffer[m.holdingItem] ?? 0;
+                    if (
+                      avail > 0 &&
+                      this.tryAcceptItemIntoTarget(frontTarget, m.holdingItem, m.gx, m.gz, undefined, undefined, true)
+                    ) {
+                      srcM.outputBuffer[m.holdingItem] = avail - 1;
+                      if (avail - 1 <= 0) delete srcM.outputBuffer[m.holdingItem];
+                    } else {
+                      break;
+                    }
+                  }
+                }
+                m.holdingItem = null;
+                m.armSwing = 1.0;
+                m.inserterPhase = 'returning';
+              }
+            }
+          }
+        } else if (m.inserterPhase === 'returning') {
+          m.armSwing = Math.max(0, m.armSwing - clampedDt * returnSpeed);
+          m.armExtend = Math.max(0, (m.armExtend ?? 1.0) - clampedDt * returnSpeed * 1.4);
+          if (m.armSwing <= 0.001) {
+            m.armSwing = 0;
+            m.armExtend = 0;
+            m.inserterPhase = 'idle_pickup';
+          }
         }
       }
     }
@@ -1748,7 +2127,7 @@ export class CapytorioFactoryEngine {
 
   private wouldMachineAccept(target: CapytorioMachine, item: CapytorioItemId): boolean {
     if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
-      return target.beltItems.length < 2;
+      return target.beltItems.length < 4;
     }
     if (target.type === 'chest') {
       return this.countMapValues(target.outputBuffer) < 120;
@@ -1887,7 +2266,11 @@ export class CapytorioFactoryEngine {
         recipeId: m.recipeId,
         inputBuffer: { ...m.inputBuffer },
         outputBuffer: { ...m.outputBuffer },
-        beltItems: m.beltItems.map((bi) => ({ item: bi.item, progress: +bi.progress.toFixed(2) })),
+        beltItems: m.beltItems.map((bi) => ({
+          item: bi.item,
+          progress: +bi.progress.toFixed(2),
+          lane: bi.lane === 1 ? 1 : 0,
+        })),
       });
     }
     return {
@@ -2007,12 +2390,19 @@ export class CapytorioFactoryEngine {
           productivityProgress: 0,
           fuelTimer: 0,
           armSwing: 0,
+          armExtend: 0,
+          inserterPhase: sm.type === 'inserter' ? 'idle_pickup' : undefined,
           holdingItem: null,
           splitterToggle: 0,
           inputBuffer: sm.inputBuffer ? { ...sm.inputBuffer } : {},
           outputBuffer: sm.outputBuffer ? { ...sm.outputBuffer } : {},
           beltItems: Array.isArray(sm.beltItems)
-            ? sm.beltItems.slice(0, 2).map((b) => ({ item: b.item, progress: b.progress }))
+            ? sm.beltItems.slice(0, 4).map((b) => ({
+                uid: this.nextBeltItemUid++,
+                item: b.item,
+                progress: b.progress,
+                lane: b.lane === 1 ? 1 : 0,
+              }))
             : [],
         };
         this.machines.set(tileKey(machine.gx, machine.gz), machine);

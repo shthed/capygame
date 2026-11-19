@@ -5,9 +5,14 @@ import { INITIAL_PLAYER_STATS, UNIVERSE_SCALE_BANDS } from '../types';
 import { ProgressionService } from '../services/ProgressionService';
 import { ShallowWaterFluidSolver } from './physics/ContiguousWorldTopology';
 import {
+  CAPYTORIO_OBLIQUE_BASE_RADIUS_M,
+  CAPYTORIO_ORBIT_HANDOFF_DIST,
+  CAPYTORIO_ORBIT_HANDOFF_LOG_METERS,
+  CAPYTORIO_ZOOM_MIN_DIST,
   FLIGHT_SPEED_GEARS,
   SURFACE_ZOOM_ORBIT_THRESHOLD,
   clampForwardFlightSpeed,
+  computeCapytorioZoomStep,
   computeOrbitalZoomThrottleStep,
   computeSpiralOrbitAngleRadians,
   computeSurfaceZoomStep,
@@ -382,5 +387,41 @@ test('Surface zoom pulls back smoothly and launches straight into Orbit & Deep C
     vel = computeOrbitalZoomThrottleStep(vel, 0.28, false);
   }
   assert.ok(vel < 0, `Expected negative inward velocity after zooming in, got ${vel}`);
+});
+
+test('Capytorio top-down zoom climbs past low surface cutoff to planetary sub-pixel handoff before spaceship launch', () => {
+  // Single strong zoom-out gesture in Capytorio stays in top-down view beyond Sanctuary cutoff (2.2x)
+  const firstOut = computeCapytorioZoomStep(1.0, -0.5);
+  assert.equal(firstOut.launchToOrbit, false);
+  assert.ok(firstOut.nextDistance > SURFACE_ZOOM_ORBIT_THRESHOLD === false || firstOut.nextDistance > 1.5);
+
+  const kmScale = computeCapytorioZoomStep(120, -0.35);
+  assert.equal(kmScale.launchToOrbit, false);
+  assert.ok(kmScale.nextDistance > 120 && kmScale.nextDistance < CAPYTORIO_ORBIT_HANDOFF_DIST);
+
+  // Repeated zoom-out climbs smoothly past 100 km until reaching orbital handoff (~234 km)
+  let capyDist = 1.0;
+  let capyLaunched = false;
+  let handoffLog = 0;
+  for (let i = 0; i < 40; i++) {
+    const step = computeCapytorioZoomStep(capyDist, -0.3);
+    capyDist = step.nextDistance;
+    if (step.launchToOrbit) {
+      capyLaunched = true;
+      handoffLog = step.launchTargetLogMeters;
+      break;
+    }
+  }
+  assert.equal(capyLaunched, true);
+  assert.equal(capyDist, CAPYTORIO_ORBIT_HANDOFF_DIST);
+  assert.ok(handoffLog >= CAPYTORIO_ORBIT_HANDOFF_LOG_METERS);
+  assert.ok(CAPYTORIO_OBLIQUE_BASE_RADIUS_M * CAPYTORIO_ORBIT_HANDOFF_DIST >= 200_000);
+
+  // Zooming in clamps cleanly at minimum close-up distance
+  let closeDist = 1.0;
+  for (let i = 0; i < 12; i++) {
+    closeDist = computeCapytorioZoomStep(closeDist, 0.35).nextDistance;
+  }
+  assert.equal(closeDist, CAPYTORIO_ZOOM_MIN_DIST);
 });
 
