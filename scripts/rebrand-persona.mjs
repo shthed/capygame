@@ -23,6 +23,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 export const DEV_ONLY_RELATIVE_PATHS = new Set([
   'scripts/rebrand-persona.mjs',
   '.github/workflows/publish-capyboop.yml',
+  '.github/workflows/deploy-cloudflare.yml',
   'docs/sync',
 ]);
 
