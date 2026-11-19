@@ -1,0 +1,70 @@
+{
+  "id": "./",
+  "name": "CapyGame 3D",
+  "short_name": "CapyGame",
+  "description": "3D hardware-accelerated Capybara universe simulator, contiguous world builder, and multiphysics mini-game archipelago.",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "prefer_related_applications": false,
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "assets/screenshot-desktop-wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Sanctuary Island Hub, Docked Chrono-Vessel & Orchard Bounties"
+    },
+    {
+      "src": "assets/screenshot-orbit-descent.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Smooth Orbit-to-Surface Chrono-Vessel Descent & Skydiving Rings"
+    },
+    {
+      "src": "assets/screenshot-tablet-wide.png",
+      "sizes": "1024x640",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "65-Order Cosmic Galaxy Exploration in the Chrono-Vessel"
+    },
+    {
+      "src": "assets/screenshot-mobile-portrait.png",
+      "sizes": "540x960",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Portrait Mobile Controls with Kinetic Dash & Belly-Flop Slam"
+    }
+  ]
+}
