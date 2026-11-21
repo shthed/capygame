@@ -688,6 +688,107 @@ test('Capytorio inserters track exact lane coordinates with 4-phase object perma
   assert.equal(inserter.armSwing, 0);
 });
 
+test('Capytorio belt items squish up tightly when backed up and stay on belt when beltEndSpillEnabled is false (default)', () => {
+  const engine = new CapytorioFactoryEngine();
+  assert.equal(engine.beltEndSpillEnabled, false, 'Belt end item spill must be disabled by default');
+
+  // 2-tile straight belt East: (0,0) -> (1,0) with open end at (1,0)
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+
+  const b0 = engine.machines.get(tileKey(0, 0))!;
+  const b1 = engine.machines.get(tileKey(1, 0))!;
+  b1.beltItems.push({ item: 'iron_ore', progress: 0.92, lane: 0 });
+  b1.beltItems.push({ item: 'iron_ore', progress: 0.45, lane: 0 });
+  b0.beltItems.push({ item: 'iron_ore', progress: 0.85, lane: 0 });
+
+  for (let i = 0; i < 30; i++) {
+    engine.step(0.05);
+  }
+
+  // With spill disabled by default, all 3 items squish tightly onto the end belt and ZERO spill onto ground
+  assert.equal(engine.spilledItems.length, 0);
+  assert.equal(b1.beltItems.length, 3, 'Squish compression packs up to 3 items in a single congested lane');
+  assert.ok((b1.beltItems[0].squish ?? 0) > 0.7, 'Leading backed-up item exhibits high squish');
+  assert.ok((b1.beltItems[1].squish ?? 0) > 0.5, 'Trailing backed-up item exhibits squish');
+  assert.equal(b1.beltItems[0].edgeProgress ?? 0, 0, 'No edge overhang when spill is disabled');
+});
+
+test('Capytorio optional belt-end spill-off tips items off open ends, bounces to ground, and supports hero, inserter, collect-all & save round-trip', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.beltEndSpillEnabled = true;
+
+  // Open-ended East belt at (0,0)
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  const belt = engine.machines.get(tileKey(0, 0))!;
+  belt.beltItems.push({ item: 'copper_plate', progress: 0.96, lane: 0 });
+  belt.beltItems.push({ item: 'iron_gear', progress: 0.52, lane: 0 });
+
+  // Step a little to verify overhang edgeProgress rises before detaching
+  engine.step(0.05);
+  engine.step(0.05);
+  assert.ok(
+    (belt.beltItems[0]?.edgeProgress ?? 0) > 0 || engine.spilledItems.length > 0,
+    'Leading item tips over the open belt lip'
+  );
+
+  // Step until both items spill off, arc through gravity, bounce, and settle on the ground
+  for (let i = 0; i < 60; i++) {
+    engine.step(0.05);
+  }
+  assert.equal(belt.beltItems.length, 0, 'Both items fell off the open belt end');
+  assert.equal(engine.spilledItems.length, 2, 'Two spilled items resting on the ground');
+  for (const sp of engine.spilledItems) {
+    assert.ok(sp.lx > CAPYTORIO_TILE_SIZE * 0.5, 'Spilled items launched past East belt lip');
+    assert.equal(sp.y, 0, 'Spilled items settled on ground plane y=0');
+    assert.equal(sp.settled, true);
+  }
+
+  // Verify serialization/hydration round-trip preserves spilled items
+  const snap = engine.getUiSnapshot();
+  assert.equal(snap.spilledItemCount, 2);
+  assert.equal(snap.beltEndSpillEnabled, true);
+  const roundTrip = new CapytorioFactoryEngine(engine.serialize());
+  assert.equal(roundTrip.spilledItems.length, 2);
+
+  // Verify hero walk-over auto-collect picks up nearby spilled items
+  const firstSpill = roundTrip.spilledItems[0];
+  const prevCount = roundTrip.getPocketItemCount(firstSpill.item);
+  const walkedCollected = roundTrip.collectFromNearbyChestsAndOutputs(firstSpill.lx, firstSpill.lz, 0.25);
+  assert.ok(walkedCollected >= 1);
+  assert.ok(roundTrip.getPocketItemCount(firstSpill.item) >= prevCount + 1);
+
+  // Verify Inserter facing an empty ground tile with spilled item picks it up into a chest!
+  const engine2 = new CapytorioFactoryEngine();
+  engine2.beltEndSpillEnabled = true;
+  // Open belt at (0,0) East spills onto tile (1,0); inserter at (2,0) East picks from (1,0) -> chest at (3,0)
+  assert.equal(engine2.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine2.placeMachine('inserter', 2, 0, 1).ok, true);
+  assert.equal(engine2.placeMachine('chest', 3, 0, 1).ok, true);
+  engine2.machines.get(tileKey(0, 0))!.beltItems.push({ item: 'iron_plate', progress: 0.99, lane: 0 });
+  for (let i = 0; i < 90; i++) {
+    engine2.step(0.05);
+  }
+  const chest = engine2.machines.get(tileKey(3, 0))!;
+  assert.equal(chest.outputBuffer.iron_plate ?? 0, 1, 'Inserter picked up spilled item from ground into chest');
+  assert.equal(engine2.spilledItems.length, 0);
+
+  // Verify Collect Outputs sweeps remaining spilled items
+  const engine3 = new CapytorioFactoryEngine();
+  engine3.beltEndSpillEnabled = true;
+  assert.equal(engine3.placeMachine('belt', 0, 0, 1).ok, true);
+  engine3.machines.get(tileKey(0, 0))!.beltItems.push({ item: 'coal', progress: 0.99, lane: 1 });
+  for (let i = 0; i < 40; i++) {
+    engine3.step(0.05);
+  }
+  assert.equal(engine3.spilledItems.length, 1);
+  const coalBefore = engine3.getPocketItemCount('coal');
+  const swept = engine3.collectAllChestsAndOutputs();
+  assert.equal(swept, 1);
+  assert.equal(engine3.spilledItems.length, 0);
+  assert.equal(engine3.getPocketItemCount('coal'), coalBefore + 1);
+});
+
 
 
 

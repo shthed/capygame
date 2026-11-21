@@ -76,11 +76,35 @@ export const BELT_CURVE_OUTER_RADIUS_M = CAPYTORIO_TILE_SIZE * 0.5 + BELT_LANE_O
 export const BELT_CURVE_INNER_ARC_M = (Math.PI * 0.5) * BELT_CURVE_INNER_RADIUS_M; // ~1.194m
 export const BELT_CURVE_OUTER_ARC_M = (Math.PI * 0.5) * BELT_CURVE_OUTER_RADIUS_M; // ~2.733m
 
+export const MAX_CAPYTORIO_SPILLED_ITEMS = 160;
+export const CAPYTORIO_BELT_SURFACE_Y = 0.28;
+
 export interface CapytorioBeltItem {
   uid?: number;
   item: CapytorioItemId;
   progress: number; // 0..1 along tile direction (straight or curve arc)
   lane?: 0 | 1; // 0 = left track (-X local), 1 = right track (+X local)
+  squish?: number; // 0..1 elastic compression factor when backed up or tipping
+  edgeProgress?: number; // 0..1 overhang progress off an open belt end (when beltEndSpillEnabled)
+}
+
+export interface CapytorioSpilledItem {
+  uid: number;
+  item: CapytorioItemId;
+  lx: number; // Local X relative to CAPYTORIO_WORLD_ORIGIN_X
+  y: number; // World height above Capytorio ground plane (0 = resting on meadow)
+  lz: number; // Local Z relative to CAPYTORIO_WORLD_ORIGIN_Z
+  vx: number;
+  vy: number;
+  vz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  vrx: number;
+  vrz: number;
+  squish: number; // 0..1 elastic landing bounce squish
+  settled: boolean;
+  ageSec: number;
 }
 
 export interface CapytorioMachine {
@@ -137,7 +161,20 @@ export interface CapytorioSerializedState {
     recipeId?: CapytorioRecipeId;
     inputBuffer?: Partial<Record<CapytorioItemId, number>>;
     outputBuffer?: Partial<Record<CapytorioItemId, number>>;
-    beltItems?: Array<{ item: CapytorioItemId; progress: number; lane?: 0 | 1 }>;
+    beltItems?: Array<{
+      item: CapytorioItemId;
+      progress: number;
+      lane?: 0 | 1;
+      squish?: number;
+      edgeProgress?: number;
+    }>;
+  }>;
+  spilledItems?: Array<{
+    item: CapytorioItemId;
+    lx: number;
+    y: number;
+    lz: number;
+    ry?: number;
   }>;
   depletions: Array<[string, number]>;
   harvestedTrees?: string[];
@@ -203,6 +240,8 @@ export interface CapytorioUiSnapshot {
   productivityBonus: number;
   milestones: CapytorioMilestoneStatus[];
   milestonesCompletedCount: number;
+  spilledItemCount: number;
+  beltEndSpillEnabled: boolean;
 }
 
 export interface CapytorioStepCallbacks {
@@ -500,6 +539,9 @@ export class CapytorioFactoryEngine {
   public configCraftSpeedMult = 1.0;
   public configBeltSpeedMult = 1.0;
   public configOreRichnessMult = 1.0;
+  public beltEndSpillEnabled = false;
+  public readonly spilledItems: CapytorioSpilledItem[] = [];
+  private nextSpilledItemUid = 1;
 
   // Reusable ordered snapshot list for zero-allocation iteration inside step()
   private machineStepList: CapytorioMachine[] = [];
@@ -515,6 +557,7 @@ export class CapytorioFactoryEngine {
 
   public resetToBlankStarterField(): void {
     this.machines.clear();
+    this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
     this.harvestedTrees.clear();
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
@@ -1321,6 +1364,17 @@ export class CapytorioFactoryEngine {
         }
       }
     }
+    const radiusSq = pickupRadiusMeters * pickupRadiusMeters;
+    for (let i = this.spilledItems.length - 1; i >= 0; i--) {
+      const sp = this.spilledItems[i];
+      const dx = sp.lx - heroLocalX;
+      const dz = sp.lz - heroLocalZ;
+      if (dx * dx + dz * dz <= radiusSq) {
+        this.addPocketItem(sp.item, 1);
+        collected += 1;
+        this.spilledItems.splice(i, 1);
+      }
+    }
     return collected;
   }
 
@@ -1337,6 +1391,11 @@ export class CapytorioFactoryEngine {
         }
       }
     }
+    for (let i = 0; i < this.spilledItems.length; i++) {
+      this.addPocketItem(this.spilledItems[i].item, 1);
+      collected += 1;
+    }
+    this.spilledItems.length = 0;
     return collected;
   }
 
@@ -1406,7 +1465,7 @@ export class CapytorioFactoryEngine {
     isInserterDrop: boolean = false
   ): boolean {
     if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
-      if (target.beltItems.length >= 4) return false;
+      if (target.beltItems.length >= 6) return false;
       const tDx = DIR_DX[target.dir];
       const tDz = DIR_DZ[target.dir];
       const relX = fromGx - target.gx;
@@ -1458,24 +1517,36 @@ export class CapytorioFactoryEngine {
       for (let attempt = 0; attempt < (allowAltLane ? 2 : 1); attempt++) {
         const lane: 0 | 1 = attempt === 0 ? primaryLane : fallbackLane;
         const arcMeters = getBeltLaneArcMeters(targetCurve, lane);
-        const minGapProg = Math.min(0.42, (0.32 * CAPYTORIO_TILE_SIZE) / arcMeters);
         let laneCount = 0;
-        let blocked = false;
+        let laneMaxSquish = 0;
         for (let i = 0; i < target.beltItems.length; i++) {
           const existing = target.beltItems[i];
           if ((existing.lane ?? 0) !== lane) continue;
           laneCount++;
+          if ((existing.squish ?? 0) > laneMaxSquish) {
+            laneMaxSquish = existing.squish ?? 0;
+          }
+        }
+        // Compressed lanes allow tighter squish spacing (0.32 -> 0.21 tile units) up to 3 items/lane
+        const gapTileUnits = 0.32 - 0.11 * laneMaxSquish;
+        const minGapProg = Math.min(0.42, (gapTileUnits * CAPYTORIO_TILE_SIZE) / arcMeters);
+        let blocked = false;
+        for (let i = 0; i < target.beltItems.length; i++) {
+          const existing = target.beltItems[i];
+          if ((existing.lane ?? 0) !== lane) continue;
           if (Math.abs(existing.progress - progress) < minGapProg) {
             blocked = true;
             break;
           }
         }
-        if (!blocked && laneCount < 2) {
+        if (!blocked && laneCount < 3) {
           target.beltItems.push({
             uid: this.nextBeltItemUid++,
             item,
             progress,
             lane,
+            squish: laneMaxSquish * 0.4,
+            edgeProgress: 0,
           });
           return true;
         }
@@ -1812,7 +1883,7 @@ export class CapytorioFactoryEngine {
       } else if (m.type === 'belt') {
         const tileBeltRate = beltRate * mTierMult;
         const curveShape = getBeltCurveShape(this.machines, m);
-        // Sort beltItems highest-progress first (<= 4 items, zero-allocation insertion sort)
+        // Sort beltItems highest-progress first (<= 6 items, zero-allocation insertion sort)
         for (let a = 1; a < m.beltItems.length; a++) {
           const cur = m.beltItems[a];
           let b = a - 1;
@@ -1833,7 +1904,9 @@ export class CapytorioFactoryEngine {
           const laneAdvance = worldStepMeters / arcMeters;
           const maxAllow = lane === 0 ? lane0Max : lane1Max;
           const rawNext = bItem.progress + laneAdvance;
+          const blockedByAhead = rawNext > maxAllow + 1e-4;
           bItem.progress = Math.min(maxAllow, rawNext);
+
           if (
             bItem.progress >= 0.99 &&
             frontTarget &&
@@ -1850,7 +1923,44 @@ export class CapytorioFactoryEngine {
             bi--;
             continue;
           }
-          const minGapProg = Math.min(0.78, (0.38 * CAPYTORIO_TILE_SIZE) / arcMeters);
+
+          // Open belt end overhang & spill-off when enabled by user option
+          if (bItem.progress >= 0.99 && !frontTarget && this.beltEndSpillEnabled) {
+            // Check if a trailing item in the same lane is actively pushing from behind
+            let pushedFromBehind = false;
+            for (let k = bi + 1; k < m.beltItems.length; k++) {
+              if ((m.beltItems[k].lane === 1 ? 1 : 0) === lane && m.beltItems[k].progress >= 0.55) {
+                pushedFromBehind = true;
+                break;
+              }
+            }
+            const edgeRate = tileBeltRate * (pushedFromBehind ? 3.2 : 2.1);
+            const nextEdge = (bItem.edgeProgress ?? 0) + clampedDt * edgeRate;
+            bItem.edgeProgress = nextEdge;
+            bItem.squish = Math.min(1.0, (bItem.squish ?? 0) + clampedDt * 5.0);
+            if (nextEdge >= 1.0) {
+              this.spawnSpilledItemFromBelt(m, curveShape, lane, bItem.item, tileBeltRate, pushedFromBehind);
+              m.beltItems.splice(bi, 1);
+              bi--;
+              continue;
+            }
+          } else {
+            if ((bItem.edgeProgress ?? 0) > 0) {
+              bItem.edgeProgress = Math.max(0, (bItem.edgeProgress ?? 0) - clampedDt * 6.0);
+            }
+            // Elastic squish accumulation when compressed against an obstacle or item ahead
+            const isCompressed = blockedByAhead || (bItem.progress >= 0.99 && (!frontTarget || rawNext > 1.0));
+            if (isCompressed) {
+              bItem.squish = Math.min(1.0, (bItem.squish ?? 0) + clampedDt * 5.5);
+            } else {
+              bItem.squish = Math.max(0, (bItem.squish ?? 0) - clampedDt * 6.0);
+            }
+          }
+
+          const squishVal = bItem.squish ?? 0;
+          // Squished items pack tighter (0.38 -> 0.21 tile spacing) so items visibly bunch up!
+          const gapTileUnits = 0.38 - 0.17 * squishVal;
+          const minGapProg = Math.min(0.78, (gapTileUnits * CAPYTORIO_TILE_SIZE) / arcMeters);
           const nextLimit = Math.max(0, bItem.progress - minGapProg);
           if (lane === 0) {
             if (nextLimit < lane0Max) lane0Max = nextLimit;
@@ -1954,32 +2064,58 @@ export class CapytorioFactoryEngine {
         if (m.inserterPhase === 'idle_pickup') {
           m.armSwing = 0;
           m.armExtend = Math.max(0, (m.armExtend ?? 0) - clampedDt * reachSpeed);
-          if (!m.holdingItem && srcM && frontTarget) {
-            if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
-              for (let bi = 0; bi < srcM.beltItems.length; bi++) {
-                const candItem = srcM.beltItems[bi];
-                if (this.wouldMachineAccept(frontTarget, candItem.item)) {
-                  if (candItem.uid === undefined) candItem.uid = this.nextBeltItemUid++;
-                  m.targetBeltUid = candItem.uid;
-                  m.pickupLane = candItem.lane === 1 ? 1 : 0;
-                  m.inserterPhase = 'reaching';
-                  m.armExtend = 0.05;
-                  break;
+          if (!m.holdingItem && frontTarget) {
+            if (srcM) {
+              if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
+                for (let bi = 0; bi < srcM.beltItems.length; bi++) {
+                  const candItem = srcM.beltItems[bi];
+                  if (this.wouldMachineAccept(frontTarget, candItem.item)) {
+                    if (candItem.uid === undefined) candItem.uid = this.nextBeltItemUid++;
+                    m.targetBeltUid = candItem.uid;
+                    m.pickupLane = candItem.lane === 1 ? 1 : 0;
+                    m.inserterPhase = 'reaching';
+                    m.armExtend = 0.05;
+                    break;
+                  }
+                }
+              } else if (
+                srcM.type === 'drill' ||
+                srcM.type === 'furnace' ||
+                srcM.type === 'assembler' ||
+                srcM.type === 'chest'
+              ) {
+                for (const k in srcM.outputBuffer) {
+                  const cand = k as CapytorioItemId;
+                  if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
+                    m.targetBeltUid = undefined;
+                    m.pickupLane = 0;
+                    m.pickupLocalX = 0;
+                    m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
+                    m.inserterPhase = 'reaching';
+                    m.armExtend = 0.05;
+                    break;
+                  }
                 }
               }
-            } else if (
-              srcM.type === 'drill' ||
-              srcM.type === 'furnace' ||
-              srcM.type === 'assembler' ||
-              srcM.type === 'chest'
-            ) {
-              for (const k in srcM.outputBuffer) {
-                const cand = k as CapytorioItemId;
-                if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
-                  m.targetBeltUid = undefined;
+            } else if (this.spilledItems.length > 0) {
+              // Empty ground tile behind inserter: pick up spilled belt-end ground items!
+              const srcCenterX = srcGx * CAPYTORIO_TILE_SIZE;
+              const srcCenterZ = srcGz * CAPYTORIO_TILE_SIZE;
+              const halfTile = CAPYTORIO_TILE_SIZE * 0.65;
+              for (let si = 0; si < this.spilledItems.length; si++) {
+                const sp = this.spilledItems[si];
+                if (
+                  sp.y <= 0.35 &&
+                  Math.abs(sp.lx - srcCenterX) <= halfTile &&
+                  Math.abs(sp.lz - srcCenterZ) <= halfTile &&
+                  this.wouldMachineAccept(frontTarget, sp.item)
+                ) {
+                  m.targetBeltUid = -sp.uid; // Negative UID tags ground-spilled item
                   m.pickupLane = 0;
-                  m.pickupLocalX = 0;
-                  m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
+                  const deltaX = sp.lx - m.gx * CAPYTORIO_TILE_SIZE;
+                  const deltaZ = sp.lz - m.gz * CAPYTORIO_TILE_SIZE;
+                  m.pickupLocalX = iRightDx * deltaX + iRightDz * deltaZ;
+                  m.pickupLocalZ = -(iFwdDx * deltaX + iFwdDz * deltaZ);
                   m.inserterPhase = 'reaching';
                   m.armExtend = 0.05;
                   break;
@@ -1998,64 +2134,109 @@ export class CapytorioFactoryEngine {
           m.armExtend = Math.min(1.0, (m.armExtend ?? 0) + clampedDt * reachSpeed);
           shouldGrabNow = (m.armExtend ?? 0) >= 1.0;
 
-          if (srcM && frontTarget) {
-            if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
-              let foundIdx = -1;
-              for (let bi = 0; bi < srcM.beltItems.length; bi++) {
-                if (srcM.beltItems[bi].uid === m.targetBeltUid) {
-                  foundIdx = bi;
-                  break;
+          if (frontTarget) {
+            if (srcM) {
+              if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
+                let foundIdx = -1;
+                for (let bi = 0; bi < srcM.beltItems.length; bi++) {
+                  if (srcM.beltItems[bi].uid === m.targetBeltUid) {
+                    foundIdx = bi;
+                    break;
+                  }
+                }
+                if (foundIdx === -1 && srcM.beltItems.length > 0) {
+                  for (let bi = 0; bi < srcM.beltItems.length; bi++) {
+                    if (this.wouldMachineAccept(frontTarget, srcM.beltItems[bi].item)) {
+                      foundIdx = bi;
+                      m.targetBeltUid = srcM.beltItems[bi].uid;
+                      break;
+                    }
+                  }
+                }
+                if (foundIdx !== -1) {
+                  const bItem = srcM.beltItems[foundIdx];
+                  if (this.wouldMachineAccept(frontTarget, bItem.item)) {
+                    targetReady = true;
+                    m.pickupLane = bItem.lane === 1 ? 1 : 0;
+                    const sCurve = srcM.type === 'belt' ? getBeltCurveShape(this.machines, srcM) : 'straight';
+                    evalBeltItemLocalPose(sCurve, m.pickupLane, bItem.progress, poseScratch);
+                    const sDx = DIR_DX[srcM.dir];
+                    const sDz = DIR_DZ[srcM.dir];
+                    const sRightDx = -sDz;
+                    const sRightDz = sDx;
+                    const itemWorldDeltaX = (srcM.gx - m.gx) * CAPYTORIO_TILE_SIZE + sRightDx * poseScratch[0] - sDx * poseScratch[1];
+                    const itemWorldDeltaZ = (srcM.gz - m.gz) * CAPYTORIO_TILE_SIZE + sRightDz * poseScratch[0] - sDz * poseScratch[1];
+                    m.pickupLocalX = iRightDx * itemWorldDeltaX + iRightDz * itemWorldDeltaZ;
+                    m.pickupLocalZ = -(iFwdDx * itemWorldDeltaX + iFwdDz * itemWorldDeltaZ);
+
+                    if (shouldGrabNow) {
+                      grabbedItem = bItem.item;
+                      srcM.beltItems.splice(foundIdx, 1);
+                    }
+                  }
+                }
+              } else if (
+                srcM.type === 'drill' ||
+                srcM.type === 'furnace' ||
+                srcM.type === 'assembler' ||
+                srcM.type === 'chest'
+              ) {
+                m.pickupLocalX = 0;
+                m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
+                for (const k in srcM.outputBuffer) {
+                  const cand = k as CapytorioItemId;
+                  if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
+                    targetReady = true;
+                    if (shouldGrabNow) {
+                      grabbedItem = cand;
+                      srcM.outputBuffer[cand] = (srcM.outputBuffer[cand] ?? 1) - 1;
+                      if (srcM.outputBuffer[cand]! <= 0) delete srcM.outputBuffer[cand];
+                    }
+                    break;
+                  }
                 }
               }
-              if (foundIdx === -1 && srcM.beltItems.length > 0) {
-                for (let bi = 0; bi < srcM.beltItems.length; bi++) {
-                  if (this.wouldMachineAccept(frontTarget, srcM.beltItems[bi].item)) {
-                    foundIdx = bi;
-                    m.targetBeltUid = srcM.beltItems[bi].uid;
+            } else if (this.spilledItems.length > 0) {
+              const targetSpillUid = m.targetBeltUid !== undefined && m.targetBeltUid < 0 ? -m.targetBeltUid : -1;
+              const srcCenterX = srcGx * CAPYTORIO_TILE_SIZE;
+              const srcCenterZ = srcGz * CAPYTORIO_TILE_SIZE;
+              const halfTile = CAPYTORIO_TILE_SIZE * 0.65;
+              let foundIdx = -1;
+              if (targetSpillUid > 0) {
+                for (let si = 0; si < this.spilledItems.length; si++) {
+                  if (this.spilledItems[si].uid === targetSpillUid) {
+                    foundIdx = si;
+                    break;
+                  }
+                }
+              }
+              if (foundIdx === -1) {
+                for (let si = 0; si < this.spilledItems.length; si++) {
+                  const sp = this.spilledItems[si];
+                  if (
+                    sp.y <= 0.35 &&
+                    Math.abs(sp.lx - srcCenterX) <= halfTile &&
+                    Math.abs(sp.lz - srcCenterZ) <= halfTile &&
+                    this.wouldMachineAccept(frontTarget, sp.item)
+                  ) {
+                    foundIdx = si;
+                    m.targetBeltUid = -sp.uid;
                     break;
                   }
                 }
               }
               if (foundIdx !== -1) {
-                const bItem = srcM.beltItems[foundIdx];
-                if (this.wouldMachineAccept(frontTarget, bItem.item)) {
+                const sp = this.spilledItems[foundIdx];
+                if (this.wouldMachineAccept(frontTarget, sp.item)) {
                   targetReady = true;
-                  m.pickupLane = bItem.lane === 1 ? 1 : 0;
-                  const sCurve = srcM.type === 'belt' ? getBeltCurveShape(this.machines, srcM) : 'straight';
-                  evalBeltItemLocalPose(sCurve, m.pickupLane, bItem.progress, poseScratch);
-                  const sDx = DIR_DX[srcM.dir];
-                  const sDz = DIR_DZ[srcM.dir];
-                  const sRightDx = -sDz;
-                  const sRightDz = sDx;
-                  const itemWorldDeltaX = (srcM.gx - m.gx) * CAPYTORIO_TILE_SIZE + sRightDx * poseScratch[0] - sDx * poseScratch[1];
-                  const itemWorldDeltaZ = (srcM.gz - m.gz) * CAPYTORIO_TILE_SIZE + sRightDz * poseScratch[0] - sDz * poseScratch[1];
-                  m.pickupLocalX = iRightDx * itemWorldDeltaX + iRightDz * itemWorldDeltaZ;
-                  m.pickupLocalZ = -(iFwdDx * itemWorldDeltaX + iFwdDz * itemWorldDeltaZ);
-
+                  const deltaX = sp.lx - m.gx * CAPYTORIO_TILE_SIZE;
+                  const deltaZ = sp.lz - m.gz * CAPYTORIO_TILE_SIZE;
+                  m.pickupLocalX = iRightDx * deltaX + iRightDz * deltaZ;
+                  m.pickupLocalZ = -(iFwdDx * deltaX + iFwdDz * deltaZ);
                   if (shouldGrabNow) {
-                    grabbedItem = bItem.item;
-                    srcM.beltItems.splice(foundIdx, 1);
+                    grabbedItem = sp.item;
+                    this.spilledItems.splice(foundIdx, 1);
                   }
-                }
-              }
-            } else if (
-              srcM.type === 'drill' ||
-              srcM.type === 'furnace' ||
-              srcM.type === 'assembler' ||
-              srcM.type === 'chest'
-            ) {
-              m.pickupLocalX = 0;
-              m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
-              for (const k in srcM.outputBuffer) {
-                const cand = k as CapytorioItemId;
-                if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
-                  targetReady = true;
-                  if (shouldGrabNow) {
-                    grabbedItem = cand;
-                    srcM.outputBuffer[cand] = (srcM.outputBuffer[cand] ?? 1) - 1;
-                    if (srcM.outputBuffer[cand]! <= 0) delete srcM.outputBuffer[cand];
-                  }
-                  break;
                 }
               }
             }
@@ -2117,6 +2298,7 @@ export class CapytorioFactoryEngine {
       }
     }
 
+    this.stepSpilledItems(clampedDt);
     this.evaluateMilestones(callbacks);
 
     if (this.score !== this.lastReportedScore) {
@@ -2125,9 +2307,159 @@ export class CapytorioFactoryEngine {
     }
   }
 
+  private spawnSpilledItemFromBelt(
+    belt: CapytorioMachine,
+    curveShape: CapytorioBeltCurveShape,
+    lane: 0 | 1,
+    item: CapytorioItemId,
+    tileBeltRate: number,
+    pushedFromBehind: boolean
+  ): void {
+    const uid = this.nextSpilledItemUid++;
+    const fwdDx = DIR_DX[belt.dir];
+    const fwdDz = DIR_DZ[belt.dir];
+    const rightDx = -fwdDz;
+    const rightDz = fwdDx;
+
+    evalBeltItemLocalPose(curveShape, lane, 1.0, _inserterPoseScratch);
+    // Start just past the belt roller lip
+    const lipLocalX = _inserterPoseScratch[0];
+    const lipLocalZ = _inserterPoseScratch[1] - 0.34;
+    const lx = belt.gx * CAPYTORIO_TILE_SIZE + rightDx * lipLocalX - fwdDx * lipLocalZ;
+    const lz = belt.gz * CAPYTORIO_TILE_SIZE + rightDz * lipLocalX - fwdDz * lipLocalZ;
+
+    // Deterministic pseudo-random jitter from uid so piles fan out naturally without Math.random instability
+    const h1 = Math.sin(uid * 12.9898 + belt.gx * 78.233 + belt.gz * 37.719) * 43758.5453;
+    const jitterA = (h1 - Math.floor(h1)) * 2 - 1; // -1..1
+    const h2 = Math.sin(uid * 93.989 + belt.gz * 19.19) * 24634.6345;
+    const jitterB = (h2 - Math.floor(h2)) * 2 - 1;
+
+    const launchSpeed = Math.max(1.35, tileBeltRate * CAPYTORIO_TILE_SIZE * (pushedFromBehind ? 1.15 : 0.85));
+    const lateralSpeed = jitterA * 0.55;
+
+    if (this.spilledItems.length >= MAX_CAPYTORIO_SPILLED_ITEMS) {
+      let evictIdx = 0;
+      for (let i = 0; i < this.spilledItems.length; i++) {
+        if (this.spilledItems[i].settled) {
+          evictIdx = i;
+          break;
+        }
+      }
+      this.spilledItems.splice(evictIdx, 1);
+    }
+
+    this.spilledItems.push({
+      uid,
+      item,
+      lx,
+      y: CAPYTORIO_BELT_SURFACE_Y,
+      lz,
+      vx: fwdDx * launchSpeed + rightDx * lateralSpeed,
+      vy: 0.72 + Math.abs(jitterB) * 0.35,
+      vz: fwdDz * launchSpeed + rightDz * lateralSpeed,
+      rx: -0.45,
+      ry: -belt.dir * (Math.PI * 0.5) + jitterB * 0.35,
+      rz: 0,
+      vrx: (fwdDz !== 0 ? -fwdDz : fwdDx) * (3.2 + Math.abs(jitterA) * 2.4),
+      vrz: jitterB * 3.4,
+      squish: 0.35,
+      settled: false,
+      ageSec: 0,
+    });
+  }
+
+  private stepSpilledItems(dt: number): void {
+    const count = this.spilledItems.length;
+    if (count === 0) return;
+
+    const gravity = 14.5;
+    const restitution = 0.28;
+    const groundDrag = Math.exp(-7.5 * dt);
+    const airDrag = Math.exp(-0.9 * dt);
+    const minSep = 0.34;
+    const minSepSq = minSep * minSep;
+
+    for (let i = 0; i < count; i++) {
+      const sp = this.spilledItems[i];
+      sp.ageSec += dt;
+      if (sp.squish > 0) {
+        sp.squish = Math.max(0, sp.squish - dt * 4.8);
+      }
+
+      if (!sp.settled) {
+        sp.vy -= gravity * dt;
+        sp.lx += sp.vx * dt;
+        sp.y += sp.vy * dt;
+        sp.lz += sp.vz * dt;
+        sp.rx += sp.vrx * dt;
+        sp.rz += sp.vrz * dt;
+
+        if (sp.y <= 0) {
+          sp.y = 0;
+          if (sp.vy < -0.55) {
+            sp.vy = -sp.vy * restitution;
+            sp.squish = Math.min(1.0, Math.max(sp.squish, 0.72));
+            sp.vx *= 0.72;
+            sp.vz *= 0.72;
+            sp.vrx *= 0.5;
+            sp.vrz *= 0.5;
+          } else {
+            sp.vy = 0;
+            sp.vx *= groundDrag;
+            sp.vz *= groundDrag;
+            // Ease tumble angles flat on the meadow
+            sp.rx *= Math.exp(-8.0 * dt);
+            sp.rz *= Math.exp(-8.0 * dt);
+            sp.vrx = 0;
+            sp.vrz = 0;
+            if (Math.hypot(sp.vx, sp.vz) < 0.06 && Math.abs(sp.rx) < 0.05 && Math.abs(sp.rz) < 0.05) {
+              sp.vx = 0;
+              sp.vz = 0;
+              sp.rx = 0;
+              sp.rz = 0;
+              sp.settled = true;
+            }
+          }
+        } else {
+          sp.vx *= airDrag;
+          sp.vz *= airDrag;
+        }
+      }
+    }
+
+    // Gentle local pile separation so spilled items fan out instead of stacking on one point
+    for (let i = 0; i < count; i++) {
+      const a = this.spilledItems[i];
+      if (a.y > 0.12) continue;
+      for (let j = i + 1; j < count; j++) {
+        const b = this.spilledItems[j];
+        if (b.y > 0.12) continue;
+        let dx = b.lx - a.lx;
+        let dz = b.lz - a.lz;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < minSepSq) {
+          const dist = Math.sqrt(distSq);
+          if (dist < 1e-4) {
+            const angle = ((a.uid + b.uid) * 2.399963) % (Math.PI * 2);
+            dx = Math.cos(angle);
+            dz = Math.sin(angle);
+          } else {
+            dx /= dist;
+            dz /= dist;
+          }
+          const overlap = (minSep - dist) * 0.35;
+          a.lx -= dx * overlap;
+          a.lz -= dz * overlap;
+          b.lx += dx * overlap;
+          b.lz += dz * overlap;
+        }
+      }
+    }
+  }
+
   private wouldMachineAccept(target: CapytorioMachine, item: CapytorioItemId): boolean {
     if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
-      return target.beltItems.length < 4;
+      return target.beltItems.length < 6;
     }
     if (target.type === 'chest') {
       return this.countMapValues(target.outputBuffer) < 120;
@@ -2250,6 +2582,8 @@ export class CapytorioFactoryEngine {
       productivityBonus: +this.getProductivityBonusFraction().toFixed(2),
       milestones,
       milestonesCompletedCount,
+      spilledItemCount: this.spilledItems.length,
+      beltEndSpillEnabled: this.beltEndSpillEnabled,
     };
   }
 
@@ -2270,12 +2604,25 @@ export class CapytorioFactoryEngine {
           item: bi.item,
           progress: +bi.progress.toFixed(2),
           lane: bi.lane === 1 ? 1 : 0,
+          squish: bi.squish ? +bi.squish.toFixed(2) : undefined,
+          edgeProgress: bi.edgeProgress ? +bi.edgeProgress.toFixed(2) : undefined,
         })),
       });
     }
+    const spilledOut =
+      this.spilledItems.length > 0
+        ? this.spilledItems.slice(0, MAX_CAPYTORIO_SPILLED_ITEMS).map((sp) => ({
+            item: sp.item,
+            lx: +sp.lx.toFixed(2),
+            y: +sp.y.toFixed(2),
+            lz: +sp.lz.toFixed(2),
+            ry: +sp.ry.toFixed(2),
+          }))
+        : undefined;
     return {
       version: 1,
       machines: machinesOut,
+      spilledItems: spilledOut,
       depletions: Array.from(this.oreRemainingOverrides.entries()),
       harvestedTrees: Array.from(this.harvestedTrees.values()),
       recentTools: this.getRecentTools(),
@@ -2293,6 +2640,7 @@ export class CapytorioFactoryEngine {
 
   public hydrate(raw: CapytorioSerializedState): void {
     this.machines.clear();
+    this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
     this.harvestedTrees.clear();
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
@@ -2397,17 +2745,59 @@ export class CapytorioFactoryEngine {
           inputBuffer: sm.inputBuffer ? { ...sm.inputBuffer } : {},
           outputBuffer: sm.outputBuffer ? { ...sm.outputBuffer } : {},
           beltItems: Array.isArray(sm.beltItems)
-            ? sm.beltItems.slice(0, 4).map((b) => ({
+            ? sm.beltItems.slice(0, 6).map((b) => ({
                 uid: this.nextBeltItemUid++,
                 item: b.item,
                 progress: b.progress,
                 lane: b.lane === 1 ? 1 : 0,
+                squish: typeof b.squish === 'number' && Number.isFinite(b.squish) ? Math.max(0, Math.min(1, b.squish)) : 0,
+                edgeProgress:
+                  typeof b.edgeProgress === 'number' && Number.isFinite(b.edgeProgress)
+                    ? Math.max(0, Math.min(1, b.edgeProgress))
+                    : 0,
               }))
             : [],
         };
         this.machines.set(tileKey(machine.gx, machine.gz), machine);
       }
     }
+
+    if (Array.isArray(raw.spilledItems)) {
+      for (let i = 0; i < raw.spilledItems.length && this.spilledItems.length < MAX_CAPYTORIO_SPILLED_ITEMS; i++) {
+        const sp = raw.spilledItems[i];
+        if (
+          !sp ||
+          typeof sp.item !== 'string' ||
+          typeof sp.lx !== 'number' ||
+          !Number.isFinite(sp.lx) ||
+          typeof sp.lz !== 'number' ||
+          !Number.isFinite(sp.lz)
+        ) {
+          continue;
+        }
+        const cleanY = typeof sp.y === 'number' && Number.isFinite(sp.y) ? Math.max(0, Math.min(8, sp.y)) : 0;
+        const cleanRy = typeof sp.ry === 'number' && Number.isFinite(sp.ry) ? sp.ry : 0;
+        this.spilledItems.push({
+          uid: this.nextSpilledItemUid++,
+          item: sp.item as CapytorioItemId,
+          lx: sp.lx,
+          y: cleanY,
+          lz: sp.lz,
+          vx: 0,
+          vy: 0,
+          vz: 0,
+          rx: 0,
+          ry: cleanRy,
+          rz: 0,
+          vrx: 0,
+          vrz: 0,
+          squish: 0,
+          settled: cleanY <= 0.01,
+          ageSec: 0,
+        });
+      }
+    }
+
     this.machineListDirty = true;
     this.recomputePowerMetrics();
   }

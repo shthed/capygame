@@ -242,6 +242,7 @@ export class ProgressionService {
       ...parsed,
       advancedMode: Boolean(parsed.advancedMode),
       capytorioCameraMode: parsed.capytorioCameraMode === 'chase' ? 'chase' : 'oblique',
+      capytorioBeltEndSpill: Boolean(parsed.capytorioBeltEndSpill),
       worldFogEnabled: false,
       drawDistance:
         typeof parsed.drawDistance === 'number' && Number.isFinite(parsed.drawDistance)

@@ -836,6 +836,7 @@ export class PlayStyleManager {
     this.settings = initialSettings;
     this.callbacks = callbacks;
     this.capytorioEngine = new CapytorioFactoryEngine(initialStats.capytorioFactory ?? null);
+    this.capytorioEngine.beltEndSpillEnabled = Boolean(initialSettings.capytorioBeltEndSpill);
     this.capytorioRenderer = new Capytorio3DRenderer();
     this.capytorioStepCallbacks = {
       onTechCompleted: (_techId, techName, rewardDna, _rewardCoins, isRocketLaunch) => {
@@ -1749,6 +1750,11 @@ export class PlayStyleManager {
     const nextCapytorioCam = this.getCapytorioCameraMode();
     if (nextCapytorioCam !== prevCapytorioCam && this.currentMode === 'capytorio') {
       this.setCapytorioCameraMode(nextCapytorioCam);
+    }
+    const nextBeltSpill = Boolean(newSettings.capytorioBeltEndSpill);
+    if (this.capytorioEngine && this.capytorioEngine.beltEndSpillEnabled !== nextBeltSpill) {
+      this.capytorioEngine.beltEndSpillEnabled = nextBeltSpill;
+      this.emitCapytorioSnapshot();
     }
     this.performanceLog.lock60FpsEnabled = newSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = newSettings.fpsTarget ?? 60;
@@ -4783,6 +4789,18 @@ export class PlayStyleManager {
     const next = this.getCapytorioCameraMode() === 'oblique' ? 'chase' : 'oblique';
     this.setCapytorioCameraMode(next);
     return next;
+  }
+
+  public getCapytorioBeltEndSpill(): boolean {
+    return Boolean(this.settings.capytorioBeltEndSpill);
+  }
+
+  public setCapytorioBeltEndSpill(enabled: boolean): void {
+    const next = Boolean(enabled);
+    this.settings.capytorioBeltEndSpill = next;
+    this.capytorioEngine.beltEndSpillEnabled = next;
+    AudioService.playCoin();
+    this.emitCapytorioSnapshot();
   }
 
   public setCapytorioAssemblerRecipe(recipeId: CapytorioRecipeId): boolean {

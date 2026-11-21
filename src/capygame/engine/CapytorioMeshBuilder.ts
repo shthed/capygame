@@ -26,7 +26,7 @@ import {
 const MAX_ORE_INSTANCES = 1024;
 const MAX_BELT_INSTANCES = 1400;
 const MAX_CURVED_BELT_INSTANCES = 600;
-const MAX_SHAPE_ITEM_INSTANCES = 600;
+const MAX_SHAPE_ITEM_INSTANCES = 800;
 const MAX_TREE_INSTANCES = 512;
 const MAX_VISIBLE_RADIUS_TILES = 22;
 const BELT_SURFACE_Y = 0.145;
@@ -1951,7 +1951,7 @@ export class Capytorio3DRenderer {
         }
       }
 
-      // Render items riding along straight or concentric curved arc lanes
+      // Render items riding along straight or concentric curved arc lanes (with elastic squish & edge tip)
       if (renderItemsAtScale && m.beltItems.length > 0) {
         for (let bi = 0; bi < m.beltItems.length; bi++) {
           const bItem = m.beltItems[bi];
@@ -1962,16 +1962,28 @@ export class Capytorio3DRenderer {
 
           const lane: 0 | 1 = bItem.lane === 1 ? 1 : 0;
           evalBeltItemLocalPose(curveShape, lane, bItem.progress, _itemPoseScratch);
-          const localX = _itemPoseScratch[0];
-          const localZ = _itemPoseScratch[1];
+          const squish = bItem.squish ?? 0;
+          const edge = bItem.edgeProgress ?? 0;
+          const jitter =
+            squish > 0.12
+              ? Math.sin(timeSec * 34.0 + (bItem.uid ?? bi) * 2.1) * 0.022 * squish
+              : 0;
+          const localX = _itemPoseScratch[0] + jitter;
+          const localZ = _itemPoseScratch[1] - edge * 0.42;
           const tangentYaw = _itemPoseScratch[2];
 
           const worldX = wx + rightDx * localX - fwdDx * localZ;
           const worldZ = wz + rightDz * localX - fwdDz * localZ;
+          const worldY = BELT_SURFACE_Y - edge * edge * 0.065;
 
-          _dummy.position.set(worldX, BELT_SURFACE_Y, worldZ);
-          _dummy.rotation.set(0, rotY + tangentYaw, 0);
-          _dummy.scale.setScalar(subPixelShrink);
+          _dummy.position.set(worldX, worldY, worldZ);
+          _dummy.rotation.order = 'YXZ';
+          _dummy.rotation.set(-edge * 0.85, rotY + tangentYaw, 0);
+          _dummy.scale.set(
+            (1.0 + 0.22 * squish) * subPixelShrink,
+            (1.0 + 0.18 * squish) * subPixelShrink,
+            (1.0 - 0.34 * squish) * subPixelShrink
+          );
           _dummy.updateMatrix();
           const instMesh = this.itemInstancedByShape[shape];
           instMesh.setMatrixAt(idx, _dummy.matrix);
@@ -1979,6 +1991,46 @@ export class Capytorio3DRenderer {
           instMesh.setColorAt(idx, _color);
           _shapeCounts[shape] = idx + 1;
         }
+      }
+    }
+
+    // Render spilled belt-end items tumbling and resting on the Capytorio meadow (shared instanced pools, 0 extra draw calls)
+    if (renderItemsAtScale && engine.spilledItems.length > 0) {
+      const maxSpillRadiusM = MAX_VISIBLE_RADIUS_TILES * CAPYTORIO_TILE_SIZE;
+      const camLocalX = camX - CAPYTORIO_WORLD_ORIGIN_X;
+      const camLocalZ = camZ - CAPYTORIO_WORLD_ORIGIN_Z;
+      for (let si = 0; si < engine.spilledItems.length; si++) {
+        const sp = engine.spilledItems[si];
+        if (
+          Math.abs(sp.lx - camLocalX) > maxSpillRadiusM ||
+          Math.abs(sp.lz - camLocalZ) > maxSpillRadiusM
+        ) {
+          continue;
+        }
+        const meta = getCapytorioItemMeta(sp.item);
+        const shape = meta.shape ?? resolveCapytorioItemShape(sp.item, meta.category);
+        const idx = _shapeCounts[shape];
+        if (idx >= MAX_SHAPE_ITEM_INSTANCES) continue;
+
+        const sq = sp.squish;
+        _dummy.position.set(
+          CAPYTORIO_WORLD_ORIGIN_X + sp.lx,
+          sp.y + 0.015,
+          CAPYTORIO_WORLD_ORIGIN_Z + sp.lz
+        );
+        _dummy.rotation.order = 'YXZ';
+        _dummy.rotation.set(sp.rx, sp.ry, sp.rz);
+        _dummy.scale.set(
+          (1.0 + 0.26 * sq) * subPixelShrink,
+          (1.0 - 0.34 * sq) * subPixelShrink,
+          (1.0 + 0.26 * sq) * subPixelShrink
+        );
+        _dummy.updateMatrix();
+        const instMesh = this.itemInstancedByShape[shape];
+        instMesh.setMatrixAt(idx, _dummy.matrix);
+        _color.setHex(meta.colorHex);
+        instMesh.setColorAt(idx, _color);
+        _shapeCounts[shape] = idx + 1;
       }
     }
 

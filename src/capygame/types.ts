@@ -291,6 +291,7 @@ export interface CapyGameSettings {
   advancedMode: boolean;
   cameraFollowBehind: boolean;
   capytorioCameraMode: 'oblique' | 'chase';
+  capytorioBeltEndSpill: boolean;
   mouselookEnabled: boolean;
   mouselookSensitivity: number;
   invertMouseY: boolean;
@@ -336,6 +337,7 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   advancedMode: false,
   cameraFollowBehind: true,
   capytorioCameraMode: 'oblique',
+  capytorioBeltEndSpill: false,
   mouselookEnabled: true,
   mouselookSensitivity: 1.0,
   invertMouseY: false,

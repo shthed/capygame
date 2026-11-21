@@ -1478,9 +1478,15 @@ test('Capytorio Camera Mode: defaults to Factorio top-down oblique and sanitizes
   );
 });
 
-
-
-
-
-
-
+test('Capytorio Belt End Item Spill: disabled by default and sanitizes cleanly', () => {
+  assert.equal(DEFAULT_CAPY_SETTINGS.capytorioBeltEndSpill, false);
+  assert.equal(ProgressionService.sanitizeGameSettings({}).capytorioBeltEndSpill, false);
+  assert.equal(
+    ProgressionService.sanitizeGameSettings({ capytorioBeltEndSpill: true }).capytorioBeltEndSpill,
+    true
+  );
+  assert.equal(
+    ProgressionService.sanitizeGameSettings({ capytorioBeltEndSpill: false }).capytorioBeltEndSpill,
+    false
+  );
+});

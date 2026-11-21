@@ -76,28 +76,22 @@ import { FOREST_MICRO_SPECIMENS } from '../engine/forestMicroSpecimens';
 import { formatFlightSpeedReadout } from '../engine/UniverseScaleMath';
 import {
   CAPYTORIO_HOTBAR_ORDER,
-  CAPYTORIO_ITEM_CATALOG,
   CAPYTORIO_MACHINE_SPECS,
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
-  CAPYTORIO_TECHS,
   TECH_BY_ID,
   getCapytorioItemMeta,
   getCapytorioLuaCatalogInfo,
-  reloadCapytorioLuaFromServer,
-  resetCustomCapytorioLuaSources,
-  setCustomCapytorioLuaSources,
   subscribeCapytorioLuaChanges,
   type CapytorioLuaCatalogInfo,
-  type CapytorioMachineType,
   type CapytorioRecipeGroup,
   type CapytorioRecipeId,
-  type CapytorioTechId,
 } from '../engine/CapytorioData';
 import {
   resolveCapytorioPlaceableSpec,
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
+import { CapytorioHud } from './CapytorioHud';
 import {
   Sparkles,
   Volume2,
@@ -532,8 +526,6 @@ export const CapyGameView: React.FC = () => {
   const [luaCatalogInfo, setLuaCatalogInfo] = useState<CapytorioLuaCatalogInfo>(() =>
     getCapytorioLuaCatalogInfo()
   );
-  const recipeLuaInputRef = useRef<HTMLInputElement | null>(null);
-  const techLuaInputRef = useRef<HTMLInputElement | null>(null);
 
   // Cosmic Genesis & Multi-Scale Universe State
   const [cosmicStage, setCosmicStage] = useState<CosmicStage>(() => {
@@ -6163,7 +6155,7 @@ export const CapyGameView: React.FC = () => {
           );
         })()}
 
-      {/* Capytorio 3D Factory Dock (Collapsible Solid Bottom Strip, Zero Overlap) */}
+      {/* Capytorio 3D Factory HUD (Factorio-styled Quickbar + Centered Modals) */}
       {cosmicStage === 'playing' &&
         !universeScale.active &&
         activeMode === 'capytorio' &&
@@ -6173,1103 +6165,163 @@ export const CapyGameView: React.FC = () => {
         !isAboutOpen &&
         !isPrivacyOpen &&
         !isJsonEditorOpen &&
-        capytorioSnap && (() => {
-          const snap = capytorioSnap;
-          const dirLabels = ['N', 'E', 'S', 'W'];
-          const dirLabel = dirLabels[snap.selectedDir] ?? 'E';
-          const effPct = Math.round(snap.powerEfficiency * 100);
-          const totalSciInPocket = Object.entries(snap.pocketItems).reduce<number>(
-            (sum, [id, qty]) =>
-              qty && qty > 0 && getCapytorioItemMeta(id).category === 'science'
-                ? sum + qty
-                : sum,
-            0
-          );
-          const activeTech = snap.activeTechId ? TECH_BY_ID.get(snap.activeTechId) : null;
-          const pocketCraftableRecipes = CAPYTORIO_RECIPES.filter(
-            (r) => r.pocketCraftable && snap.unlockedRecipes.includes(r.id)
-          );
-          const assemblerRecipes = CAPYTORIO_RECIPES.filter(
-            (r) => r.station === 'assembler' && snap.unlockedRecipes.includes(r.id)
-          );
-          const inspected = snap.inspectedMachine;
-          const hoveredTileInfo = snap.hoveredTile;
-          const hoveredTileLabel = hoveredTileInfo.resource
-            ? `${getCapytorioItemMeta(hoveredTileInfo.resource).shortName} ${hoveredTileInfo.resourceAmount} (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
-            : hoveredTileInfo.hasTree
-              ? `Citrus Tree +3 [E] (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
-              : `Grass (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`;
-
-          const isObliqueCam = gameSettings.capytorioCameraMode !== 'chase';
-          const categoryOrder: Record<string, number> = {
-            ore: 0,
-            plate: 1,
-            logistics: 2,
-            production: 3,
-            intermediate: 4,
-            combat: 5,
-            science: 6,
-            rocket: 7,
-          };
-          const allCatalogItems = Object.values(CAPYTORIO_ITEM_CATALOG).sort((a, b) => {
-            const ca = categoryOrder[a.category] ?? 9;
-            const cb = categoryOrder[b.category] ?? 9;
-            if (ca !== cb) return ca - cb;
-            return a.name.localeCompare(b.name);
-          });
-          const extraPocketIds = Object.keys(snap.pocketItems).filter(
-            (id) => !CAPYTORIO_ITEM_CATALOG[id] && (snap.pocketItems[id] ?? 0) > 0
-          );
-          const inventoryItemList = [
-            ...allCatalogItems,
-            ...extraPocketIds.map((id) => getCapytorioItemMeta(id)),
-          ];
-          const totalPocketItemsCount = Object.values(snap.pocketItems).reduce<number>(
-            (sum, v) => sum + (v ?? 0),
-            0
-          );
-          const activeResolvedTool =
-            snap.selectedTool !== 'mine' && snap.selectedTool !== 'demolish'
-              ? resolveCapytorioPlaceableSpec(snap.selectedTool)
-              : null;
-          const activeToolLabel =
-            snap.selectedTool === 'mine'
-              ? 'Mine [E]'
-              : snap.selectedTool === 'demolish'
-                ? 'Demolish [X]'
-                : activeResolvedTool?.name ?? snap.selectedTool;
-
-          const recentSlots = snap.recentTools.slice(0, 10);
-          const groupTabs: Array<{ id: CapytorioRecipeGroup | 'machines' | 'lua'; label: string }> = [
-            { id: 'logistics', label: 'Logistics' },
-            { id: 'production', label: 'Production' },
-            { id: 'intermediate', label: 'Intermediates' },
-            { id: 'combat', label: 'Combat' },
-            { id: 'science', label: 'Science' },
-            { id: 'machines', label: 'Starter Kit' },
-            { id: 'lua', label: 'Mod .lua' },
-          ];
-          const groupRecipes =
-            capytorioCraftGroup === 'machines' || capytorioCraftGroup === 'lua'
-              ? []
-              : pocketCraftableRecipes.filter((r) => r.group === capytorioCraftGroup);
-          const inspectedSpec = inspected
-            ? resolveCapytorioPlaceableSpec(inspected.variantItemId ?? inspected.type)
-            : null;
-          const detailRecipe =
-            groupRecipes.find((r) => r.id === selectedCraftRecipeId) ??
-            pocketCraftableRecipes.find((r) => r.id === selectedCraftRecipeId) ??
-            groupRecipes[0] ??
-            pocketCraftableRecipes[0];
-
-          return (
-            <section
-              data-testid="capytorio-build-bar"
-              aria-label="Capytorio Factorio Workbench & Quickbar"
-              className="fixed bottom-1.5 left-1/2 -translate-x-1/2 z-20 pointer-events-auto w-[calc(100vw-12px)] md:max-w-[calc(100vw-280px)] lg:max-w-[960px] text-[#e6e6e6]"
-            >
-              {/* Floating Factorio Crafting & Inventory Toggle Strip anchored above Quickbar */}
-              <div className="flex items-center justify-end gap-1.5 mb-1.5 px-0.5 pointer-events-none">
-                <div className="pointer-events-auto inline-flex items-center gap-1 rounded bg-[#202124] border-2 border-[#3b3d42] border-t-[#52555c] border-l-[#4a4d54] shadow-xl p-1">
-                  <button
-                    type="button"
-                    data-testid="capytorio-drawer-inventory-btn"
-                    onClick={() => {
-                      setIsCapytorioDockCollapsed(false);
-                      setCapytorioDrawerTab((prev) =>
-                        prev === 'inventory' ? 'none' : 'inventory'
-                      );
-                    }}
-                    className={`h-8 px-2.5 rounded-sm border text-[11px] font-semibold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
-                      capytorioDrawerTab === 'inventory'
-                        ? 'bg-[#e58926] border-[#f4b054] text-[#18181b]'
-                        : 'bg-[#2c2e33] hover:bg-[#3a3d45] border-[#44474e] text-[#e6e6e6]'
-                    }`}
-                  >
-                    <Package className="w-3.5 h-3.5 shrink-0" />
-                    <span>Inv [I] ({totalPocketItemsCount})</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="capytorio-drawer-craft-btn"
-                    onClick={() => {
-                      setIsCapytorioDockCollapsed(false);
-                      setCapytorioDrawerTab((prev) => (prev === 'craft' ? 'none' : 'craft'));
-                    }}
-                    className={`h-8 px-2.5 rounded-sm border text-[11px] font-semibold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
-                      capytorioDrawerTab === 'craft'
-                        ? 'bg-[#e58926] border-[#f4b054] text-[#18181b]'
-                        : 'bg-[#363940] hover:bg-[#444852] border-[#e58926]/70 text-[#fcd38d]'
-                    }`}
-                  >
-                    <Hammer className="w-3.5 h-3.5 shrink-0" />
-                    <span>Craft ({pocketCraftableRecipes.length})</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="capytorio-feed-sci-btn"
-                    onClick={() => {
-                      const fed = managerRef.current?.feedScienceCapytorio() ?? 0;
-                      if (fed > 0) {
-                        showToast(`Delivered ${fed} Science Pack${fed === 1 ? '' : 's'} to Lab`);
-                      } else {
-                        showToast('Craft Science Packs & place a Science Lab first');
-                      }
-                    }}
-                    className="h-8 px-2 rounded-sm bg-[#2c2e33] hover:bg-[#3b3e46] border border-purple-400/50 text-purple-200 text-[10px] font-medium whitespace-nowrap cursor-pointer"
-                  >
-                    Feed Sci ({totalSciInPocket})
-                  </button>
-                  {(snap.pocketItems.rocket_part ?? 0) > 0 && (
-                    <button
-                      type="button"
-                      data-testid="capytorio-launch-rocket-btn"
-                      onClick={() => {
-                        const res = managerRef.current?.launchCapytorioRocket();
-                        if (res?.ok) {
-                          showToast(`ORBITAL YUZU ROCKET #${res.rocketLaunches} LAUNCHED!`);
-                        } else if (res?.reason) {
-                          showToast(res.reason);
-                        }
-                      }}
-                      className="h-8 px-2 rounded-sm bg-[#e58926] hover:bg-[#f09a3c] border border-[#ffd08a] text-zinc-950 text-[10px] font-bold whitespace-nowrap cursor-pointer flex items-center gap-1"
-                    >
-                      <Rocket className="w-3 h-3 shrink-0" />
-                      <span>Launch Rocket</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Factorio Outer Charcoal Bevel Container */}
-              <div className="rounded bg-[#202124] border-2 border-[#3b3d42] border-t-[#52555c] border-l-[#4a4d54] shadow-2xl overflow-hidden">
-                {/* Factorio Drawer: Unified Character Pocket Inventory & Crafting Workbench / Tech / Inspect */}
-                {capytorioDrawerTab !== 'none' && !isCapytorioDockCollapsed && (
-                  <div
-                    data-testid={`capytorio-drawer-${capytorioDrawerTab}`}
-                    className="bg-[#24262a] border-b-2 border-[#141518] max-h-[54vh] overflow-y-auto p-2 space-y-2"
-                  >
-                    {(capytorioDrawerTab === 'inventory' || capytorioDrawerTab === 'craft') && (
-                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
-                        {/* LEFT PANE: Factorio Pocket Inventory (always visible on lg desktop; active tab on mobile) */}
-                        <div
-                          className={`${
-                            capytorioDrawerTab === 'inventory' ? 'block' : 'hidden lg:block'
-                          } lg:col-span-5 bg-[#1b1c1f] border border-[#3a3d42] rounded-sm p-2 space-y-2`}
-                        >
-                          <div className="flex items-center justify-between gap-2 border-b border-[#32343a] pb-1">
-                            <span className="text-[11px] font-bold tracking-wide text-[#f4b054] uppercase">
-                              Character Inventory ({totalPocketItemsCount})
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => setCapytorioDrawerTab('none')}
-                              aria-label="Close Factorio Panel"
-                              className="w-5 h-5 rounded-sm bg-[#2c2e33] hover:bg-[#3f424a] border border-[#4a4d54] flex items-center justify-center cursor-pointer"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-
-                          {/* Base Kit Machines (clickable to equip straight into Recent Quickbar) */}
-                          <div>
-                            <div className="text-[9px] font-mono uppercase text-zinc-400 mb-1">
-                              Starter Kit Buildings (Click to Equip)
-                            </div>
-                            <div className="grid grid-cols-5 gap-1">
-                              {CAPYTORIO_HOTBAR_ORDER.map((mType) => {
-                                const spec = CAPYTORIO_MACHINE_SPECS[mType];
-                                const count = snap.pocketMachines[mType] ?? 0;
-                                const isActive = snap.selectedTool === mType;
-                                return (
-                                  <button
-                                    key={mType}
-                                    type="button"
-                                    data-testid={`capytorio-inv-machine-${mType}`}
-                                    title={`${spec.name} (x${count}) — Click to equip`}
-                                    onClick={() => {
-                                      lastCapytorioMachineRef.current = mType;
-                                      managerRef.current?.setCapytorioTool(mType, true);
-                                      showToast(`Equipped ${spec.name}`);
-                                    }}
-                                    className={`h-10 rounded-sm border p-1 flex flex-col justify-between cursor-pointer text-left ${
-                                      isActive
-                                        ? 'bg-[#453118] border-[#e58926] text-[#ffe1ad]'
-                                        : 'bg-[#151618] hover:bg-[#25272c] border-[#32343a] text-[#dcdcdc]'
-                                    }`}
-                                  >
-                                    <div className="flex items-center gap-1 min-w-0">
-                                      <span
-                                        className="w-2 h-2 rounded-xs shrink-0"
-                                        style={{
-                                          backgroundColor: `#${spec.colorHex
-                                            .toString(16)
-                                            .padStart(6, '0')}`,
-                                        }}
-                                      />
-                                      <span className="text-[9px] font-medium truncate">
-                                        {spec.shortName}
-                                      </span>
-                                    </div>
-                                    <span className="text-[9px] font-mono tabular-nums text-right leading-none text-zinc-300">
-                                      {count}
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          {/* All Pocket Items & Placeable Factorio Structures */}
-                          <div>
-                            <div className="flex items-center justify-between text-[9px] font-mono uppercase text-zinc-400 mb-1">
-                              <span>Resources, Items & Crafted Entities</span>
-                              <button
-                                type="button"
-                                data-testid="capytorio-collect-outputs-btn"
-                                onClick={() => {
-                                  const got =
-                                    managerRef.current?.collectAllCapytorioOutputs() ?? 0;
-                                  showToast(
-                                    got > 0
-                                      ? `Collected ${got} items from machines & chests`
-                                      : 'No finished machine buffers ready yet'
-                                  );
-                                }}
-                                className="text-[#45b649] hover:text-[#6ee772] font-sans font-semibold cursor-pointer"
-                              >
-                                Collect Outputs
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-5 sm:grid-cols-6 gap-1 max-h-44 overflow-y-auto pr-0.5">
-                              {inventoryItemList.map((meta) => {
-                                const qty = snap.pocketItems[meta.id] ?? 0;
-                                const isPlaceable = Boolean(
-                                  CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[meta.id]
-                                );
-                                const isEquipped = snap.selectedTool === meta.id;
-                                return (
-                                  <button
-                                    key={meta.id}
-                                    type="button"
-                                    data-testid={`capytorio-inv-item-${meta.id}`}
-                                    title={`${meta.name}${isPlaceable ? ' (Click to equip & place)' : ''}: ${qty}`}
-                                    onClick={() => {
-                                      if (isPlaceable) {
-                                        lastCapytorioMachineRef.current = meta.id;
-                                        managerRef.current?.setCapytorioTool(meta.id, true);
-                                        showToast(`Equipped ${meta.name} into Quickbar Slot 1`);
-                                      }
-                                    }}
-                                    className={`h-10 rounded-sm border p-1 flex flex-col justify-between text-left ${
-                                      isPlaceable ? 'cursor-pointer' : 'cursor-default'
-                                    } ${
-                                      isEquipped
-                                        ? 'bg-[#453118] border-[#e58926] text-[#ffe1ad]'
-                                        : qty > 0
-                                          ? 'bg-[#151618] hover:bg-[#222429] border-[#3f424a] text-[#e6e6e6]'
-                                          : 'bg-[#121315] border-[#25272b] text-zinc-500'
-                                    }`}
-                                  >
-                                    <div className="flex items-center gap-1 min-w-0">
-                                      <span
-                                        className="w-2 h-2 rounded-xs shrink-0 border border-black/40"
-                                        style={{ backgroundColor: meta.cssColor }}
-                                      />
-                                      <span className="text-[9px] font-medium truncate">
-                                        {meta.shortName}
-                                      </span>
-                                    </div>
-                                    <span className="text-[9px] font-mono tabular-nums text-right leading-none font-semibold">
-                                      {qty}
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* RIGHT PANE: Factorio Tabbed Crafting Menu (always visible on lg desktop; active tab on mobile) */}
-                        <div
-                          className={`${
-                            capytorioDrawerTab === 'craft' ? 'flex' : 'hidden lg:flex'
-                          } lg:col-span-7 bg-[#1b1c1f] border border-[#3a3d42] rounded-sm p-2 flex-col justify-between space-y-2`}
-                        >
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[11px] font-bold tracking-wide text-[#f4b054] uppercase">
-                                Crafting ({pocketCraftableRecipes.length} Unlocked Recipes)
-                              </span>
-                              <span className="text-[10px] font-mono text-zinc-400">
-                                Click tile to select · +1 / +5 to craft
-                              </span>
-                            </div>
-
-                            {/* Factorio Category Group Tabs */}
-                            <div className="flex flex-wrap gap-1 border-b border-[#32343a] pb-1.5">
-                              {groupTabs.map((tab) => {
-                                const active = capytorioCraftGroup === tab.id;
-                                return (
-                                  <button
-                                    key={tab.id}
-                                    type="button"
-                                    data-testid={`capytorio-craft-tab-${tab.id}`}
-                                    onClick={() => setCapytorioCraftGroup(tab.id)}
-                                    className={`px-2 py-1 rounded-sm border text-[10px] font-semibold cursor-pointer ${
-                                      active
-                                        ? 'bg-[#e58926] border-[#f4b054] text-[#18181b]'
-                                        : 'bg-[#2c2e33] hover:bg-[#383b42] border-[#454850] text-zinc-200'
-                                    }`}
-                                  >
-                                    {tab.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-
-                            {/* Grid Content for Active Category */}
-                            {capytorioCraftGroup === 'machines' ? (
-                              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
-                                {CAPYTORIO_HOTBAR_ORDER.map((mType) => {
-                                  const spec = CAPYTORIO_MACHINE_SPECS[mType];
-                                  const canAffordMachine = Object.entries(spec.craftCost).every(
-                                    ([id, amt]) => (snap.pocketItems[id] ?? 0) >= (amt ?? 0)
-                                  );
-                                  const costLabel = Object.entries(spec.craftCost)
-                                    .map(([id, amt]) => `${amt} ${getCapytorioItemMeta(id).shortName}`)
-                                    .join(' · ');
-                                  return (
-                                    <button
-                                      key={mType}
-                                      type="button"
-                                      data-testid={`capytorio-craft-machine-${mType}`}
-                                      onClick={() => {
-                                        const ok =
-                                          managerRef.current?.craftCapytorioMachine(mType) ?? false;
-                                        if (ok) {
-                                          showToast(`Crafted +1 ${spec.name}`);
-                                        } else {
-                                          showToast(`Need ${costLabel}`);
-                                        }
-                                      }}
-                                      className={`p-1.5 rounded-sm border text-left cursor-pointer ${
-                                        canAffordMachine
-                                          ? 'bg-[#151618] hover:bg-[#24272c] border-[#45b649]/70 text-zinc-100'
-                                          : 'bg-[#141517] border-[#d9483b]/40 text-zinc-400'
-                                      }`}
-                                    >
-                                      <div className="flex items-center gap-1">
-                                        <span
-                                          className="w-2.5 h-2.5 rounded-xs shrink-0"
-                                          style={{
-                                            backgroundColor: `#${spec.colorHex
-                                              .toString(16)
-                                              .padStart(6, '0')}`,
-                                          }}
-                                        />
-                                        <span className="text-[10px] font-semibold truncate">
-                                          +1 {spec.shortName}
-                                        </span>
-                                      </div>
-                                      <div className="text-[9px] font-mono text-zinc-400 truncate mt-0.5">
-                                        {costLabel}
-                                      </div>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            ) : capytorioCraftGroup === 'lua' ? (
-                              <div className="p-2 rounded-sm bg-[#151618] border border-[#32343a] space-y-2 text-[10px]">
-                                <div className="font-mono text-zinc-300">
-                                  Active .lua Catalog:{' '}
-                                  {luaCatalogInfo.sourceMode === 'custom_override'
-                                    ? 'Custom Upload'
-                                    : luaCatalogInfo.sourceMode === 'live_server'
-                                      ? 'Live ./data/capytorio/*.lua'
-                                      : 'Bundled .lua'}{' '}
-                                  ({luaCatalogInfo.recipeCount} recipes · {luaCatalogInfo.techCount} techs)
-                                </div>
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <input
-                                    ref={recipeLuaInputRef}
-                                    type="file"
-                                    accept=".lua,.txt"
-                                    data-testid="capytorio-upload-recipe-lua-input"
-                                    className="hidden"
-                                    onChange={async (e) => {
-                                      const file = e.target.files?.[0];
-                                      e.target.value = '';
-                                      if (!file) return;
-                                      const text = await file.text();
-                                      const info = setCustomCapytorioLuaSources(text, undefined);
-                                      setLuaCatalogInfo(info);
-                                      showToast(`Loaded recipe.lua (${info.recipeCount} recipes)`);
-                                    }}
-                                  />
-                                  <input
-                                    ref={techLuaInputRef}
-                                    type="file"
-                                    accept=".lua,.txt"
-                                    data-testid="capytorio-upload-tech-lua-input"
-                                    className="hidden"
-                                    onChange={async (e) => {
-                                      const file = e.target.files?.[0];
-                                      e.target.value = '';
-                                      if (!file) return;
-                                      const text = await file.text();
-                                      const info = setCustomCapytorioLuaSources(undefined, text);
-                                      setLuaCatalogInfo(info);
-                                      showToast(`Loaded technology.lua (${info.techCount} techs)`);
-                                    }}
-                                  />
-                                  <button
-                                    type="button"
-                                    data-testid="capytorio-reload-lua-btn"
-                                    onClick={async () => {
-                                      const info = await reloadCapytorioLuaFromServer(true);
-                                      setLuaCatalogInfo(info);
-                                      showToast(`Reloaded .lua (${info.recipeCount} recipes)`);
-                                    }}
-                                    className="px-2 py-1 rounded-sm bg-[#2c2e33] hover:bg-[#3a3d45] border border-[#4a4d54] text-zinc-100 cursor-pointer"
-                                  >
-                                    Reload .lua
-                                  </button>
-                                  <button
-                                    type="button"
-                                    data-testid="capytorio-upload-recipe-lua-btn"
-                                    onClick={() => recipeLuaInputRef.current?.click()}
-                                    className="px-2 py-1 rounded-sm bg-[#2c2e33] hover:bg-[#3a3d45] border border-sky-400/50 text-sky-200 cursor-pointer"
-                                  >
-                                    Load recipe.lua
-                                  </button>
-                                  <button
-                                    type="button"
-                                    data-testid="capytorio-upload-tech-lua-btn"
-                                    onClick={() => techLuaInputRef.current?.click()}
-                                    className="px-2 py-1 rounded-sm bg-[#2c2e33] hover:bg-[#3a3d45] border border-amber-400/50 text-amber-200 cursor-pointer"
-                                  >
-                                    Load tech.lua
-                                  </button>
-                                  {luaCatalogInfo.sourceMode === 'custom_override' && (
-                                    <button
-                                      type="button"
-                                      data-testid="capytorio-reset-lua-btn"
-                                      onClick={async () => {
-                                        const info = await resetCustomCapytorioLuaSources();
-                                        setLuaCatalogInfo(info);
-                                        showToast('Restored default .lua files');
-                                      }}
-                                      className="px-2 py-1 rounded-sm bg-[#2c2e33] hover:bg-[#3a3d45] border border-rose-400/50 text-rose-200 cursor-pointer"
-                                    >
-                                      Reset .lua
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 max-h-36 overflow-y-auto pr-0.5">
-                                {groupRecipes.map((rec) => {
-                                  const outMeta = getCapytorioItemMeta(rec.result);
-                                  const canAfford = rec.ingredients.every(
-                                    (i) => (snap.pocketItems[i.item] ?? 0) >= i.count
-                                  );
-                                  const isSelected = detailRecipe?.id === rec.id;
-                                  return (
-                                    <button
-                                      key={rec.id}
-                                      type="button"
-                                      data-testid={`capytorio-craft-recipe-${rec.id}`}
-                                      onClick={() => {
-                                        setSelectedCraftRecipeId(rec.id);
-                                        const ok =
-                                          managerRef.current?.pocketCraftCapytorioRecipe(
-                                            rec.id,
-                                            1
-                                          ) ?? false;
-                                        if (ok) {
-                                          if (CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result]) {
-                                            lastCapytorioMachineRef.current = rec.result;
-                                            managerRef.current?.setCapytorioTool(rec.result, true);
-                                          }
-                                          showToast(
-                                            `Crafted +${rec.resultCount} ${outMeta.name}`
-                                          );
-                                        }
-                                      }}
-                                      className={`h-12 rounded-sm border p-1 text-left flex flex-col justify-between cursor-pointer ${
-                                        isSelected
-                                          ? 'bg-[#3d311c] border-[#e58926]'
-                                          : canAfford
-                                            ? 'bg-[#151618] hover:bg-[#23262b] border-[#45b649]/75'
-                                            : 'bg-[#131416] hover:bg-[#1d1e22] border-[#d9483b]/45 opacity-80'
-                                      }`}
-                                    >
-                                      <div className="flex items-center justify-between gap-1">
-                                        <span
-                                          className="w-2.5 h-2.5 rounded-xs shrink-0 border border-black/40"
-                                          style={{ backgroundColor: outMeta.cssColor }}
-                                        />
-                                        <span
-                                          className={`text-[9px] font-mono font-bold ${
-                                            canAfford ? 'text-[#45b649]' : 'text-[#d9483b]'
-                                          }`}
-                                        >
-                                          x{rec.resultCount}
-                                        </span>
-                                      </div>
-                                      <div className="text-[9px] font-medium truncate text-[#e6e6e6]">
-                                        {outMeta.shortName}
-                                      </div>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Selected Recipe Factorio Ingredient Bar */}
-                          {detailRecipe &&
-                            capytorioCraftGroup !== 'machines' &&
-                            capytorioCraftGroup !== 'lua' && (
-                              <div className="pt-1.5 border-t border-[#32343a] flex flex-wrap items-center justify-between gap-2 text-[10px]">
-                                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                                  <span className="font-semibold text-[#f4b054] truncate">
-                                    {detailRecipe.name}
-                                  </span>
-                                  {detailRecipe.ingredients.map((ing) => {
-                                    const have = snap.pocketItems[ing.item] ?? 0;
-                                    const ok = have >= ing.count;
-                                    return (
-                                      <span
-                                        key={ing.item}
-                                        className={`px-1.5 py-0.5 rounded-sm font-mono border ${
-                                          ok
-                                            ? 'bg-[#172619] border-[#45b649]/60 text-[#7ce881]'
-                                            : 'bg-[#261616] border-[#d9483b]/60 text-[#f2857c]'
-                                        }`}
-                                      >
-                                        {have}/{ing.count} {getCapytorioItemMeta(ing.item).shortName}
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const ok =
-                                        managerRef.current?.pocketCraftCapytorioRecipe(
-                                          detailRecipe.id,
-                                          1
-                                        ) ?? false;
-                                      if (ok) {
-                                        showToast(
-                                          `Crafted +${detailRecipe.resultCount} ${getCapytorioItemMeta(detailRecipe.result).name}`
-                                        );
-                                      } else {
-                                        showToast('Missing required ingredients in Inventory');
-                                      }
-                                    }}
-                                    className="px-2 py-1 rounded-sm bg-[#2c2e33] hover:bg-[#3a3d45] border border-[#45b649]/70 text-[#7ce881] font-mono font-semibold cursor-pointer"
-                                  >
-                                    Craft 1
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const ok =
-                                        managerRef.current?.pocketCraftCapytorioRecipe(
-                                          detailRecipe.id,
-                                          5
-                                        ) ?? false;
-                                      if (ok) {
-                                        showToast(
-                                          `Crafted up to 5x ${getCapytorioItemMeta(detailRecipe.result).name}`
-                                        );
-                                      } else {
-                                        showToast('Missing required ingredients in Inventory');
-                                      }
-                                    }}
-                                    className="px-2 py-1 rounded-sm bg-[#e58926] hover:bg-[#f29b38] border border-[#f8c173] text-zinc-950 font-mono font-bold cursor-pointer"
-                                  >
-                                    Craft 5
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                        </div>
-                      </div>
-                    )}
-
-                    {capytorioDrawerTab === 'tech' && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
-                        {CAPYTORIO_TECHS.map((tech: { id: CapytorioTechId; name: string; cost: Partial<Record<string, number>>; prerequisites: CapytorioTechId[]; effectSummary: string; repeatable?: boolean }) => {
-                          const completed = snap.unlockedTechs.includes(tech.id);
-                          const isActive = snap.activeTechId === tech.id;
-                          const prereqsMet = tech.prerequisites.every((p) =>
-                            snap.unlockedTechs.includes(p)
-                          );
-                          const costStr = Object.entries(tech.cost)
-                            .map(([id, amt]) => `${amt} ${getCapytorioItemMeta(id).shortName}`)
-                            .join(' · ');
-                          return (
-                            <button
-                              key={tech.id}
-                              type="button"
-                              data-testid={`capytorio-tech-${tech.id}`}
-                              onClick={() => {
-                                const ok =
-                                  managerRef.current?.selectCapytorioTech(tech.id) ?? false;
-                                if (ok) {
-                                  showToast(`Researching: ${tech.name}`);
-                                } else if (completed && !tech.repeatable) {
-                                  showToast(`${tech.name} already researched`);
-                                } else {
-                                  showToast('Unlock prerequisite research first');
-                                }
-                              }}
-                              className={`p-2 rounded-sm border text-left cursor-pointer ${
-                                isActive
-                                  ? 'bg-[#453118] border-[#e58926] text-[#ffe1ad]'
-                                  : completed
-                                    ? 'bg-[#17281a] border-[#45b649]/60 text-[#86ef92]'
-                                    : prereqsMet
-                                      ? 'bg-[#151618] hover:bg-[#23252a] border-[#3f424a] text-zinc-200'
-                                      : 'bg-[#121315] border-[#25272b] text-zinc-500'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[11px] font-semibold truncate">
-                                  {tech.name}
-                                </span>
-                                <span className="text-[9px] font-mono shrink-0 uppercase">
-                                  {isActive
-                                    ? 'Active'
-                                    : completed && !tech.repeatable
-                                      ? 'Done'
-                                      : prereqsMet
-                                        ? 'Start'
-                                        : 'Locked'}
-                                </span>
-                              </div>
-                              <div className="text-[10px] text-zinc-400 truncate mt-0.5">
-                                {tech.effectSummary}
-                              </div>
-                              <div className="text-[9px] font-mono text-[#f4b054] mt-0.5 truncate">
-                                {costStr}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {capytorioDrawerTab === 'inspect' && (
-                      <div className="space-y-2">
-                        {inspected ? (
-                          <div className="space-y-2 bg-[#151618] p-2.5 rounded-sm border border-[#3a3d42]">
-                            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[#f4b054] font-semibold">
-                                  {inspectedSpec?.name ?? CAPYTORIO_MACHINE_SPECS[inspected.type].name}{' '}
-                                  ({inspected.gx}, {inspected.gz})
-                                </span>
-                                <span className="text-[10px] font-mono text-zinc-400">
-                                  Facing {dirLabels[inspected.dir] ?? 'E'}
-                                </span>
-                              </div>
-                              <span className="font-mono text-zinc-400 tabular-nums">
-                                {inspected.type === 'generator'
-                                  ? inspected.fuelTimer > 0
-                                    ? `Burning (${inspected.fuelTimer.toFixed(1)}s · 6.0 MW)`
-                                    : 'Idle (1.5 MW — Load Coal/Orange for 6.0 MW)'
-                                  : `Progress ${Math.round(inspected.craftProgress * 100)}% · In ${inspected.inputTotal} · Out ${inspected.outputTotal}`}
-                              </span>
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-                              {inspected.type === 'generator' && (
-                                <button
-                                  type="button"
-                                  data-testid="capytorio-inspect-fuel-btn"
-                                  onClick={() => {
-                                    const loaded =
-                                      managerRef.current?.fuelCapytorioGenerator(
-                                        inspected.gx,
-                                        inspected.gz,
-                                        5
-                                      ) ?? 0;
-                                    showToast(
-                                      loaded > 0
-                                        ? `Loaded +${loaded} fuel into Generator (6.0 MW active)`
-                                        : 'Need Coal, Sap, or Orange in pocket to fuel Generator'
-                                    );
-                                  }}
-                                  className="px-2 py-1 rounded-sm bg-[#453118] hover:bg-[#573e1f] border border-[#e58926] text-[#ffe1ad] font-medium cursor-pointer flex items-center gap-1"
-                                >
-                                  <Flame className="w-3 h-3 shrink-0" />
-                                  <span>Feed Fuel (+5)</span>
-                                </button>
-                              )}
-
-                              {(inspected.type === 'furnace' ||
-                                inspected.type === 'assembler' ||
-                                inspected.type === 'lab') && (
-                                <button
-                                  type="button"
-                                  data-testid="capytorio-inspect-load-btn"
-                                  onClick={() => {
-                                    const moved =
-                                      managerRef.current?.insertInputsCapytorioMachine(
-                                        inspected.gx,
-                                        inspected.gz,
-                                        4
-                                      ) ?? 0;
-                                    showToast(
-                                      moved > 0
-                                        ? `Loaded +${moved} inputs into ${inspectedSpec?.shortName ?? inspected.type}`
-                                        : 'No matching ingredients/science in pocket'
-                                    );
-                                  }}
-                                  className="px-2 py-1 rounded-sm bg-[#2c2e33] hover:bg-[#3a3d45] border border-sky-400/50 text-sky-200 font-medium cursor-pointer"
-                                >
-                                  Load Inputs [F]
-                                </button>
-                              )}
-
-                              {(inspected.outputTotal > 0 || inspected.beltItemCount > 0) && (
-                                <button
-                                  type="button"
-                                  data-testid="capytorio-inspect-take-btn"
-                                  onClick={() => {
-                                    const taken =
-                                      managerRef.current?.takeOutputsCapytorioMachine(
-                                        inspected.gx,
-                                        inspected.gz
-                                      ) ?? 0;
-                                    showToast(
-                                      taken > 0
-                                        ? `Collected +${taken} items from machine`
-                                        : 'Machine output buffer is empty'
-                                    );
-                                  }}
-                                  className="px-2 py-1 rounded-sm bg-[#17281a] hover:bg-[#203624] border border-[#45b649]/60 text-[#86ef92] font-medium cursor-pointer"
-                                >
-                                  Take Outputs ({inspected.outputTotal + inspected.beltItemCount})
-                                </button>
-                              )}
-
-                              <button
-                                type="button"
-                                data-testid="capytorio-inspect-rotate-btn"
-                                onClick={() => {
-                                  managerRef.current?.rotateCapytorioMachineAt(
-                                    inspected.gx,
-                                    inspected.gz
-                                  );
-                                }}
-                                className="px-2 py-1 rounded-sm bg-[#2c2e33] hover:bg-[#3a3d45] border border-[#4a4d54] text-zinc-200 font-mono cursor-pointer"
-                              >
-                                Rotate
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <p className="text-[11px] text-zinc-400">
-                            Click any placed machine on the meadow to configure or feed inputs.
-                          </p>
-                        )}
-
-                        {(!inspected || inspected.type === 'assembler') && (
-                          <div>
-                            <div className="text-[10px] font-semibold text-[#f4b054] mb-1">
-                              Assembler Recipe Selection
-                            </div>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1">
-                              {assemblerRecipes.map((rec) => {
-                                const isSel =
-                                  (inspected?.type === 'assembler'
-                                    ? inspected.recipeId
-                                    : snap.selectedRecipeId) === rec.id;
-                                return (
-                                  <button
-                                    key={rec.id}
-                                    type="button"
-                                    data-testid={`capytorio-assembler-recipe-${rec.id}`}
-                                    onClick={() => {
-                                      managerRef.current?.setCapytorioAssemblerRecipe(
-                                        rec.id as CapytorioRecipeId
-                                      );
-                                      showToast(`Assembler Recipe: ${rec.name}`);
-                                    }}
-                                    className={`px-2 py-1 rounded-sm border text-left text-[10px] cursor-pointer ${
-                                      isSel
-                                        ? 'bg-[#453118] border-[#e58926] text-[#ffe1ad]'
-                                        : 'bg-[#151618] hover:bg-[#23252a] border-[#32343a] text-zinc-300'
-                                    }`}
-                                  >
-                                    <div className="font-medium truncate">{rec.name}</div>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Compact Telemetry Header Row */}
-                <div className="px-2 py-1 bg-[#26282c] border-b border-[#141518] flex items-center justify-between gap-2 text-[10px] tabular-nums">
-                  <div className="flex items-center gap-1.5 min-w-0 overflow-hidden font-mono">
-                    <span
-                      data-testid="capytorio-power-readout"
-                      className={
-                        effPct >= 95
-                          ? 'text-[#45b649] font-semibold truncate'
-                          : effPct >= 60
-                            ? 'text-[#f4b054] font-semibold truncate'
-                            : 'text-[#d9483b] font-semibold truncate'
-                      }
-                    >
-                      {snap.powerSupplyMw.toFixed(1)}/{snap.powerDemandMw.toFixed(1)} MW{' '}
-                      <span className="hidden sm:inline">({effPct}%)</span>
-                    </span>
-                    <span className="hidden sm:inline text-zinc-600" aria-hidden="true">·</span>
-                    <span className="hidden sm:inline text-[#f4b054] truncate max-w-[140px] md:max-w-[175px]">
-                      {activeTech
-                        ? `${activeTech.name} ${Math.round(snap.activeTechProgress * 100)}%`
-                        : 'Tech Complete'}
-                    </span>
-                    <span className="hidden sm:inline text-zinc-600" aria-hidden="true">·</span>
-                    <span className="hidden sm:inline text-zinc-400 truncate max-w-[155px]">
-                      {hoveredTileLabel}
-                    </span>
-                    {(() => {
-                      const nextGoal = snap.milestones.find((ms) => !ms.completed);
-                      return (
-                        <span
-                          data-testid="capytorio-milestone-badge"
-                          title={nextGoal ? nextGoal.hint : 'All Factory Milestones Achieved!'}
-                          className="hidden lg:inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-[#151618] border border-[#3a3d42] text-[9px] text-[#ffe1ad] font-sans font-medium max-w-[200px] truncate"
-                        >
-                          <Check className="w-2.5 h-2.5 shrink-0 text-[#45b649]" />
-                          <span className="truncate">
-                            {snap.milestonesCompletedCount}/{snap.milestones.length}:{' '}
-                            {nextGoal ? nextGoal.label : 'Rocket Ready'}
-                          </span>
-                        </span>
-                      );
-                    })()}
-                  </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      data-testid="capytorio-zoom-out-btn"
-                      aria-label="Zoom Out Camera"
-                      onClick={() => managerRef.current?.adjustZoom(-0.24)}
-                      className="h-6 w-6 rounded-sm bg-[#151618] hover:bg-[#2c2e33] border border-[#3f424a] text-zinc-200 flex items-center justify-center cursor-pointer"
-                    >
-                      <Minus className="w-3 h-3" />
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="capytorio-zoom-in-btn"
-                      aria-label="Zoom In Camera"
-                      onClick={() => managerRef.current?.adjustZoom(0.24)}
-                      className="h-6 w-6 rounded-sm bg-[#151618] hover:bg-[#2c2e33] border border-[#3f424a] text-zinc-200 flex items-center justify-center cursor-pointer"
-                    >
-                      <Plus className="w-3 h-3" />
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="capytorio-camera-mode-btn"
-                      onClick={() => {
-                        const nextCam = isObliqueCam ? 'chase' : 'oblique';
-                        managerRef.current?.setCapytorioCameraMode(nextCam);
-                        updateGameSettings({ capytorioCameraMode: nextCam });
-                        showToast(
-                          nextCam === 'oblique'
-                            ? 'Camera: 68° Overhead Factorio View'
-                            : 'Camera: 3D Chase View'
-                        );
-                      }}
-                      title="Toggle 68° Factorio Overhead / 3D Chase [V]"
-                      className={`h-6 px-1.5 rounded-sm border text-[10px] font-medium whitespace-nowrap cursor-pointer flex items-center gap-1 ${
-                        isObliqueCam
-                          ? 'bg-[#453118] border-[#e58926] text-[#ffe1ad]'
-                          : 'bg-[#151618] hover:bg-[#2c2e33] border-[#3f424a] text-zinc-200'
-                      }`}
-                    >
-                      <Camera className="w-3 h-3 shrink-0" />
-                      <span>{isObliqueCam ? '68° [V]' : '3D [V]'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="capytorio-drawer-tech-btn"
-                      onClick={() => {
-                        setIsCapytorioDockCollapsed(false);
-                        setCapytorioDrawerTab((prev) => (prev === 'tech' ? 'none' : 'tech'));
-                      }}
-                      className={`h-6 px-1.5 rounded-sm border text-[10px] font-medium cursor-pointer ${
-                        capytorioDrawerTab === 'tech'
-                          ? 'bg-[#e58926] border-[#f4b054] text-zinc-950 font-bold'
-                          : 'bg-[#151618] hover:bg-[#2c2e33] border-[#3f424a] text-zinc-200'
-                      }`}
-                    >
-                      Tech
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="capytorio-drawer-inspect-btn"
-                      onClick={() => {
-                        setIsCapytorioDockCollapsed(false);
-                        setCapytorioDrawerTab((prev) => (prev === 'inspect' ? 'none' : 'inspect'));
-                      }}
-                      className={`h-6 px-1.5 rounded-sm border text-[10px] font-medium cursor-pointer ${
-                        capytorioDrawerTab === 'inspect'
-                          ? 'bg-[#45b649] border-[#7ce881] text-zinc-950 font-bold'
-                          : 'bg-[#151618] hover:bg-[#2c2e33] border-[#3f424a] text-zinc-200'
-                      }`}
-                    >
-                      Inspect
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="capytorio-beacon-btn"
-                      onClick={() => {
-                        managerRef.current?.returnToCapytorioBeacon();
-                        showToast('Returned to Survey Beacon (0, 0)');
-                      }}
-                      title="Warp to Survey Beacon [H]"
-                      className="h-6 w-6 rounded-sm bg-[#151618] hover:bg-[#2c2e33] border border-[#3f424a] text-zinc-200 flex items-center justify-center cursor-pointer"
-                    >
-                      <Home className="w-3 h-3" />
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="capytorio-collapse-btn"
-                      aria-label={isCapytorioDockCollapsed ? 'Expand Quickbar' : 'Collapse Quickbar'}
-                      onClick={() => setIsCapytorioDockCollapsed((prev) => !prev)}
-                      className="h-6 w-6 rounded-sm bg-[#151618] hover:bg-[#2c2e33] border border-[#3f424a] text-zinc-300 flex items-center justify-center cursor-pointer"
-                    >
-                      {isCapytorioDockCollapsed ? (
-                        <ChevronUp className="w-3.5 h-3.5" />
-                      ) : (
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Compact 10-Slot Recent-Items Quickbar */}
-                {!isCapytorioDockCollapsed && (
-                  <div data-testid="capytorio-toolbar" className="bg-[#202124]">
-                    <div className="px-1.5 py-1 flex items-center gap-1 overflow-x-auto">
-                      <button
-                        type="button"
-                        data-testid="capytorio-tool-mine"
-                        onClick={() => {
-                          managerRef.current?.setCapytorioTool('mine');
-                          const mined = managerRef.current?.handMineCapytorioAtCursorOrHero();
-                          if (mined) {
-                            const amt = mined === 'orange' ? 3 : 2;
-                            showToast(
-                              mined === 'orange'
-                                ? `Harvested +${amt} ${getCapytorioItemMeta(mined).name}`
-                                : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
-                            );
-                          }
-                        }}
-                        className={`h-10 px-2 rounded-sm border text-[10px] font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
-                          snap.selectedTool === 'mine'
-                            ? 'bg-[#453118] border-[#e58926] text-[#ffe1ad]'
-                            : 'bg-[#151618] hover:bg-[#2b2d32] border-[#3a3d42] text-zinc-200'
-                        }`}
-                      >
-                        Mine [E]
-                      </button>
-
-                      <button
-                        type="button"
-                        data-testid="capytorio-tool-demolish"
-                        onClick={() => managerRef.current?.setCapytorioTool('demolish')}
-                        className={`h-10 px-2 rounded-sm border text-[10px] font-semibold whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1 ${
-                          snap.selectedTool === 'demolish'
-                            ? 'bg-[#471c1c] border-[#d9483b] text-rose-100'
-                            : 'bg-[#151618] hover:bg-[#2b2d32] border-[#3a3d42] text-zinc-200'
-                        }`}
-                      >
-                        <Trash2 className="w-3 h-3 shrink-0" />
-                        <span>Del [X]</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        data-testid="capytorio-rotate-btn"
-                        onClick={() => managerRef.current?.rotateCapytorioDirection()}
-                        className="h-10 px-2 rounded-sm bg-[#151618] hover:bg-[#2b2d32] border border-[#3a3d42] text-zinc-200 text-[10px] font-mono whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1"
-                      >
-                        <RotateCcw className="w-3 h-3 shrink-0" />
-                        <span>{dirLabel}</span>
-                      </button>
-
-                      <div className="w-px h-7 bg-[#3a3d42] shrink-0 mx-0.5" aria-hidden="true" />
-
-                      {recentSlots.map((toolId, slotIdx) => {
-                        const resolved = resolveCapytorioPlaceableSpec(toolId);
-                        if (!resolved) return null;
-                        const hotkey = slotIdx === 9 ? '0' : String(slotIdx + 1);
-                        const count = resolved.isBaseMachine
-                          ? snap.pocketMachines[resolved.baseType] ?? 0
-                          : snap.pocketItems[resolved.id] ?? 0;
-                        const selected = snap.selectedTool === toolId;
-                        const tintCss = `#${resolved.tintHex.toString(16).padStart(6, '0')}`;
-                        return (
-                          <button
-                            key={toolId}
-                            type="button"
-                            data-testid={`capytorio-tool-${toolId}`}
-                            data-capytorio-recent-slot="true"
-                            onClick={() => {
-                              lastCapytorioMachineRef.current = toolId;
-                              managerRef.current?.setCapytorioTool(toolId, false);
-                            }}
-                            title={`${resolved.name} [${hotkey}] — ${resolved.description}`}
-                            className={`h-10 min-w-[54px] max-w-[78px] px-1.5 py-0.5 rounded-sm border text-left whitespace-nowrap shrink-0 cursor-pointer flex flex-col justify-between transition-colors ${
-                              selected
-                                ? 'bg-[#453118] border-[#e58926] text-[#ffe1ad]'
-                                : 'bg-[#151618] hover:bg-[#282a30] border-[#3a3d42] text-[#e6e6e6]'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-1 text-[9px] font-mono">
-                              <span
-                                className="w-2 h-2 rounded-xs shrink-0"
-                                style={{ backgroundColor: tintCss }}
-                              />
-                              <span className="text-zinc-400 leading-none">{hotkey}</span>
-                            </div>
-                            <div className="flex items-end justify-between gap-1 leading-none">
-                              <span className="text-[10px] font-medium truncate">
-                                {resolved.shortName}
-                              </span>
-                              <span className="text-[9px] font-mono tabular-nums text-zinc-400 shrink-0">
-                                {count}
-                              </span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </section>
-          );
-        })()}
+        capytorioSnap && (
+          <CapytorioHud
+            snap={capytorioSnap}
+            isObliqueCam={gameSettings.capytorioCameraMode !== 'chase'}
+            beltEndSpillEnabled={Boolean(gameSettings.capytorioBeltEndSpill)}
+            drawerTab={capytorioDrawerTab}
+            setDrawerTab={setCapytorioDrawerTab}
+            isDockCollapsed={isCapytorioDockCollapsed}
+            setIsDockCollapsed={setIsCapytorioDockCollapsed}
+            craftGroup={capytorioCraftGroup}
+            setCraftGroup={setCapytorioCraftGroup}
+            selectedCraftRecipeId={selectedCraftRecipeId}
+            setSelectedCraftRecipeId={setSelectedCraftRecipeId}
+            luaCatalogInfo={luaCatalogInfo}
+            setLuaCatalogInfo={setLuaCatalogInfo}
+            onSelectTool={(toolId, promoteToRecent = false) => {
+              if (toolId !== 'mine' && toolId !== 'demolish') {
+                lastCapytorioMachineRef.current = toolId;
+              }
+              managerRef.current?.setCapytorioTool(toolId, promoteToRecent);
+            }}
+            onMineAction={() => {
+              managerRef.current?.setCapytorioTool('mine');
+              const mined = managerRef.current?.handMineCapytorioAtCursorOrHero();
+              if (mined) {
+                const amt = mined === 'orange' ? 3 : 2;
+                showToast(
+                  mined === 'orange'
+                    ? `Harvested +${amt} ${getCapytorioItemMeta(mined).name}`
+                    : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
+                );
+              }
+            }}
+            onRotateDir={() => managerRef.current?.rotateCapytorioDirection()}
+            onToggleCameraMode={() => {
+              const nextCam = gameSettings.capytorioCameraMode === 'chase' ? 'oblique' : 'chase';
+              managerRef.current?.setCapytorioCameraMode(nextCam);
+              updateGameSettings({ capytorioCameraMode: nextCam });
+              showToast(
+                nextCam === 'oblique'
+                  ? 'Camera: 68° Overhead Factorio View'
+                  : 'Camera: 3D Chase View'
+              );
+            }}
+            onToggleBeltEndSpill={() => {
+              const nextSpill = !gameSettings.capytorioBeltEndSpill;
+              managerRef.current?.setCapytorioBeltEndSpill(nextSpill);
+              updateGameSettings({ capytorioBeltEndSpill: nextSpill });
+              showToast(
+                nextSpill
+                  ? 'Belt End Spill: ON (items fall off open belt ends onto ground)'
+                  : 'Belt End Spill: OFF (items squish at open belt ends)'
+              );
+            }}
+            onAdjustZoom={(delta) => managerRef.current?.adjustZoom(delta)}
+            onReturnToBeacon={() => {
+              managerRef.current?.returnToCapytorioBeacon();
+              showToast('Returned to Survey Beacon (0, 0)');
+            }}
+            onCollectAllOutputs={() => {
+              const got = managerRef.current?.collectAllCapytorioOutputs() ?? 0;
+              showToast(
+                got > 0
+                  ? `Collected ${got} items from machines, chests & floor`
+                  : 'No finished outputs or spilled items ready yet'
+              );
+            }}
+            onFeedScience={() => {
+              const fed = managerRef.current?.feedScienceCapytorio() ?? 0;
+              if (fed > 0) {
+                showToast(`Delivered ${fed} Science Pack${fed === 1 ? '' : 's'} to Lab`);
+              } else {
+                showToast('Craft Science Packs & place a Science Lab first');
+              }
+            }}
+            onLaunchRocket={() => {
+              const res = managerRef.current?.launchCapytorioRocket();
+              if (res?.ok) {
+                showToast(`ORBITAL YUZU ROCKET #${res.rocketLaunches} LAUNCHED!`);
+              } else if (res?.reason) {
+                showToast(res.reason);
+              }
+            }}
+            onCraftMachine={(mType) => {
+              const spec = CAPYTORIO_MACHINE_SPECS[mType];
+              const ok = managerRef.current?.craftCapytorioMachine(mType) ?? false;
+              if (ok) {
+                showToast(`Crafted +1 ${spec.name}`);
+              } else {
+                const costLabel = Object.entries(spec.craftCost)
+                  .map(([id, amt]) => `${amt} ${getCapytorioItemMeta(id).shortName}`)
+                  .join(' · ');
+                showToast(`Need ${costLabel}`);
+              }
+            }}
+            onCraftRecipe={(recipeId, count, autoEquipResult = false) => {
+              const rec = CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
+              const ok = managerRef.current?.pocketCraftCapytorioRecipe(recipeId, count) ?? false;
+              if (ok && rec) {
+                const outMeta = getCapytorioItemMeta(rec.result);
+                if (autoEquipResult && CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result]) {
+                  lastCapytorioMachineRef.current = rec.result;
+                  managerRef.current?.setCapytorioTool(rec.result, true);
+                }
+                showToast(
+                  count > 1
+                    ? `Crafted up to ${count}x ${outMeta.name}`
+                    : `Crafted +${rec.resultCount} ${outMeta.name}`
+                );
+              } else if (!autoEquipResult) {
+                showToast('Missing required ingredients in Inventory');
+              }
+            }}
+            onSelectTech={(techId) => {
+              const tech = TECH_BY_ID.get(techId);
+              const ok = managerRef.current?.selectCapytorioTech(techId) ?? false;
+              if (ok && tech) {
+                showToast(`Researching: ${tech.name}`);
+              } else if (tech && capytorioSnap.unlockedTechs.includes(techId) && !tech.repeatable) {
+                showToast(`${tech.name} already researched`);
+              } else {
+                showToast('Unlock prerequisite research first');
+              }
+            }}
+            onFuelGenerator={(gx, gz) => {
+              const loaded = managerRef.current?.fuelCapytorioGenerator(gx, gz, 5) ?? 0;
+              showToast(
+                loaded > 0
+                  ? `Loaded +${loaded} fuel into Generator (6.0 MW active)`
+                  : 'Need Coal, Sap, or Orange in pocket to fuel Generator'
+              );
+            }}
+            onInsertInputs={(gx, gz) => {
+              const moved = managerRef.current?.insertInputsCapytorioMachine(gx, gz, 4) ?? 0;
+              showToast(
+                moved > 0
+                  ? `Loaded +${moved} inputs into machine`
+                  : 'No matching ingredients/science in pocket'
+              );
+            }}
+            onTakeOutputs={(gx, gz) => {
+              const taken = managerRef.current?.takeOutputsCapytorioMachine(gx, gz) ?? 0;
+              showToast(
+                taken > 0 ? `Collected +${taken} items from machine` : 'Machine output buffer is empty'
+              );
+            }}
+            onRotateMachineAt={(gx, gz) => {
+              managerRef.current?.rotateCapytorioMachineAt(gx, gz);
+            }}
+            onSelectAssemblerRecipe={(recipeId) => {
+              managerRef.current?.setCapytorioAssemblerRecipe(recipeId);
+              const rec = CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
+              showToast(`Assembler Recipe: ${rec?.name ?? recipeId}`);
+            }}
+            showToast={showToast}
+          />
+        )}
 
       {/* Optional On-Screen Steering Pad (Hidden unless explicitly set to 'always' in Settings) */}
       {showTouchDpad && (
@@ -7575,6 +6627,33 @@ export const CapyGameView: React.FC = () => {
                     </button>
                   </div>
 
+                  <div className="flex items-center justify-between gap-4 p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-100">
+                        Belt End Item Spill
+                      </div>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        Allow items to tumble off unconnected belt ends onto the meadow (off by default)
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="settings-capytorio-belt-spill"
+                      onClick={() => {
+                        const nextSpill = !gameSettings.capytorioBeltEndSpill;
+                        updateGameSettings({ capytorioBeltEndSpill: nextSpill });
+                        managerRef.current?.setCapytorioBeltEndSpill(nextSpill);
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shrink-0 border ${
+                        gameSettings.capytorioBeltEndSpill
+                          ? 'bg-amber-500/20 text-amber-200 border-amber-400/45'
+                          : 'bg-zinc-900 text-zinc-400 border-white/10'
+                      }`}
+                    >
+                      {gameSettings.capytorioBeltEndSpill ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+
                   <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-zinc-100">Time of Day</span>
@@ -7775,6 +6854,33 @@ export const CapyGameView: React.FC = () => {
                   }`}
                 >
                   {gameSettings.capytorioCameraMode === 'chase' ? '3D Chase' : 'Oblique'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                <div>
+                  <div className="text-xs font-semibold text-zinc-100">
+                    Belt End Item Spill
+                  </div>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    When enabled, backed-up items tip and tumble off open belt ends onto the ground (default OFF)
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="settings-capytorio-belt-spill"
+                  onClick={() => {
+                    const nextSpill = !gameSettings.capytorioBeltEndSpill;
+                    updateGameSettings({ capytorioBeltEndSpill: nextSpill });
+                    managerRef.current?.setCapytorioBeltEndSpill(nextSpill);
+                  }}
+                  className={`px-3 py-1 rounded text-xs font-mono cursor-pointer shrink-0 border ${
+                    gameSettings.capytorioBeltEndSpill
+                      ? 'bg-amber-500/20 text-amber-200 border-amber-400/45'
+                      : 'bg-zinc-900 text-zinc-400 border-white/10'
+                  }`}
+                >
+                  {gameSettings.capytorioBeltEndSpill ? 'ON' : 'OFF'}
                 </button>
               </div>
 
