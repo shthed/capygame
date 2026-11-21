@@ -157,11 +157,11 @@ jobs:
             -d '{"value":"on"}' > /dev/null
           echo "Enabled Always Use HTTPS on capyboop.com."
 
-          # 2. Enforce www.capyboop.com -> https://capypaint/capyboop.com 301 Single Redirect + /paint -> paint.capyboop.com 301
+          # 2. Enforce www.capyboop.com -> https://capyboop.com, /paint -> https://capypaint.com/, and paint.capyboop.com -> https://capypaint.com 301 rules
           ENTRYPOINT_RESP="$(curl -sS -H "Authorization: Bearer ${CF_TOKEN}" -H 'Content-Type: application/json' \
             "${CF_API}/zones/${ZONE_ID}/rulesets/phases/http_request_dynamic_redirect/entrypoint")"
           if [ "$(printf '%s' "${ENTRYPOINT_RESP}" | jq -r '.success // false')" = "true" ]; then
-            EXISTING_RULES="$(printf '%s' "${ENTRYPOINT_RESP}" | jq -c '[.result.rules[]? | select(.ref != "capyboop_www_redirect" and .description != "Redirect www.capyboop.com to capyboop.com" and .ref != "capyboop_paint_redirect" and .description != "Redirect capyboop.com/paint to paint.capyboop.com")]')"
+            EXISTING_RULES="$(printf '%s' "${ENTRYPOINT_RESP}" | jq -c '[.result.rules[]? | select(.ref != "capyboop_www_redirect" and .description != "Redirect www.capyboop.com to capyboop.com" and .ref != "capyboop_paint_redirect" and .description != "Redirect capyboop.com/paint to paint.capyboop.com" and .description != "Redirect capyboop.com/paint to capypaint.com" and .ref != "capyboop_paint_subdomain_redirect" and .description != "Redirect paint.capyboop.com to capypaint.com")]')"
           else
             EXISTING_RULES='[]'
           fi
@@ -185,7 +185,7 @@ jobs:
 
           PAINT_RULE="$(jq -nc '{
             ref: "capyboop_paint_redirect",
-            description: "Redirect capyboop.com/paint to paint.capyboop.com",
+            description: "Redirect capyboop.com/paint to capypaint.com",
             enabled: true,
             expression: "(http.host eq \"capyboop.com\" and (http.request.uri.path eq \"/paint\" or starts_with(http.request.uri.path, \"/paint/\")))",
             action: "redirect",
@@ -193,17 +193,34 @@ jobs:
               from_value: {
                 status_code: 301,
                 target_url: {
-                  value: "https://paint.capyboop.com/"
+                  value: "https://capypaint.com/"
                 },
                 preserve_query_string: true
               }
             }
           }')"
 
-          PAYLOAD="$(jq -nc --argjson existing "${EXISTING_RULES}" --argjson www "${WWW_RULE}" --argjson paint "${PAINT_RULE}" '{rules: ($existing + [$www, $paint])}')"
+          PAINT_SUBDOMAIN_RULE="$(jq -nc '{
+            ref: "capyboop_paint_subdomain_redirect",
+            description: "Redirect paint.capyboop.com to capypaint.com",
+            enabled: true,
+            expression: "(http.host eq \"paint.capyboop.com\")",
+            action: "redirect",
+            action_parameters: {
+              from_value: {
+                status_code: 301,
+                target_url: {
+                  expression: "concat(\"https://capypaint.com\", http.request.uri.path)"
+                },
+                preserve_query_string: true
+              }
+            }
+          }')"
+
+          PAYLOAD="$(jq -nc --argjson existing "${EXISTING_RULES}" --argjson www "${WWW_RULE}" --argjson paint "${PAINT_RULE}" --argjson paint_sub "${PAINT_SUBDOMAIN_RULE}" '{rules: ($existing + [$www, $paint, $paint_sub])}')"
           api -X PUT "${CF_API}/zones/${ZONE_ID}/rulesets/phases/http_request_dynamic_redirect/entrypoint" \
             -d "${PAYLOAD}" > /dev/null
-          echo "Synced www.capyboop.com -> https://capyboop.com and capyboop.com/paint -> https://paint.capyboop.com/ 301 rules."
+          echo "Synced www.capyboop.com -> https://capyboop.com, capyboop.com/paint -> https://capypaint.com/, and paint.capyboop.com -> https://capypaint.com 301 rules."
 
       - name: Verify capyboop.com & edge redirects
         if: steps.creds.outputs.enabled == 'true'
@@ -247,5 +264,6 @@ jobs:
 
           check_redirect "http://capyboop.com/" "https://capyboop.com/"
           check_redirect "https://www.capyboop.com/" "https://capyboop.com/"
-          check_redirect "https://capyboop.com/paint" "https://paint.capyboop.com/"
-          check_redirect "https://capyboop.com/paint/" "https://paint.capyboop.com/"
+          check_redirect "https://capyboop.com/paint" "https://capypaint.com/"
+          check_redirect "https://capyboop.com/paint/" "https://capypaint.com/"
+          check_redirect "https://paint.capyboop.com/" "https://capypaint.com/"
