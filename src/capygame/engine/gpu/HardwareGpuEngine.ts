@@ -118,10 +118,21 @@ const CapyGpuMasterFilterShader = {
     varying vec2 vUv;
 
     float readLinearDepth(vec2 uv) {
-      float z_b = texture2D(tDepth, uv).x;
+      vec2 safeUv = clamp(uv, vec2(0.001), vec2(0.999));
+      float z_b = texture2D(tDepth, safeUv).x;
       float z_n = 2.0 * z_b - 1.0;
       return (2.0 * uCameraNear * uCameraFar) /
         max(0.0001, uCameraFar + uCameraNear - z_n * (uCameraFar - uCameraNear));
+    }
+
+    vec3 sanitizeHdrColor(vec3 c) {
+      // Guard against NaN / Infinity propagation from HDR bloom or specular highlights on mobile GPUs
+      vec3 safeC = vec3(
+        (c.r == c.r) ? c.r : 0.0,
+        (c.g == c.g) ? c.g : 0.0,
+        (c.b == c.b) ? c.b : 0.0
+      );
+      return clamp(safeC, vec3(0.0), vec3(64.0));
     }
 
     void main() {
@@ -130,12 +141,14 @@ const CapyGpuMasterFilterShader = {
 
       // 1. Radial Lens Chromatic Dispersion + Single-Tap Center Fetch
       vec4 baseTap = texture2D(tDiffuse, vUv);
-      vec3 col = baseTap.rgb;
-      float alpha = baseTap.a;
+      vec3 col = sanitizeHdrColor(baseTap.rgb);
+      float alpha = clamp((baseTap.a == baseTap.a) ? baseTap.a : 1.0, 0.0, 1.0);
       if (uChromatic > 0.00005) {
         vec2 disp = centerOffset * uChromatic * radialDist * 1.8;
-        col.r = texture2D(tDiffuse, clamp(vUv - disp, 0.001, 0.999)).r;
-        col.b = texture2D(tDiffuse, clamp(vUv + disp, 0.001, 0.999)).b;
+        float cr = texture2D(tDiffuse, clamp(vUv - disp, 0.001, 0.999)).r;
+        float cb = texture2D(tDiffuse, clamp(vUv + disp, 0.001, 0.999)).b;
+        col.r = (cr == cr) ? clamp(cr, 0.0, 64.0) : col.r;
+        col.b = (cb == cb) ? clamp(cb, 0.0, 64.0) : col.b;
       }
 
       float dCenter = (uHasDepth > 0.5) ? readLinearDepth(vUv) : 18.0;
@@ -144,10 +157,10 @@ const CapyGpuMasterFilterShader = {
       // 2. Contrast-Adaptive Unsharp Mask (CAS) Foreground Sharpening + Far-Horizon Optical Depth-of-Field Bokeh
       if (uSharpen > 0.005 || farDofMix > 0.005) {
         vec2 tapStep = uTexelSize * (1.0 + farDofMix * 2.2);
-        vec3 n = texture2D(tDiffuse, vUv + vec2(0.0, tapStep.y)).rgb;
-        vec3 s = texture2D(tDiffuse, vUv - vec2(0.0, tapStep.y)).rgb;
-        vec3 e = texture2D(tDiffuse, vUv + vec2(tapStep.x, 0.0)).rgb;
-        vec3 w = texture2D(tDiffuse, vUv - vec2(tapStep.x, 0.0)).rgb;
+        vec3 n = sanitizeHdrColor(texture2D(tDiffuse, clamp(vUv + vec2(0.0, tapStep.y), 0.001, 0.999)).rgb);
+        vec3 s = sanitizeHdrColor(texture2D(tDiffuse, clamp(vUv - vec2(0.0, tapStep.y), 0.001, 0.999)).rgb);
+        vec3 e = sanitizeHdrColor(texture2D(tDiffuse, clamp(vUv + vec2(tapStep.x, 0.0), 0.001, 0.999)).rgb);
+        vec3 w = sanitizeHdrColor(texture2D(tDiffuse, clamp(vUv - vec2(tapStep.x, 0.0), 0.001, 0.999)).rgb);
         vec3 avg = (n + s + e + w) * 0.25;
 
         if (farDofMix > 0.005) {
@@ -225,7 +238,7 @@ const CapyGpuMasterFilterShader = {
         col *= vig;
       }
 
-      gl_FragColor = vec4(col, alpha);
+      gl_FragColor = vec4(sanitizeHdrColor(col), alpha);
     }
   `,
 };
@@ -519,6 +532,7 @@ export class HardwareGpuEngine {
       if (!this.isWebGpu && (!this.isSoftwareGl || this.shouldActivateComposer())) {
         this.rebuildComposer();
       }
+      this.render();
     };
     if (!this.isWebGpu) {
       this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLostHandler, false);
@@ -573,7 +587,17 @@ export class HardwareGpuEngine {
     const rtW = Math.max(1, Math.floor(width * pixelRatio));
     const rtH = Math.max(1, Math.floor(height * pixelRatio));
 
+    const gl = glRenderer.getContext();
     const canDepthTex = Boolean(glRenderer.capabilities?.isWebGL2);
+    // Mobile WebGL2 drivers require EXT_color_buffer_float / EXT_color_buffer_half_float to render
+    // into RGBA16F FBOs; using HalfFloatType without those extensions yields incomplete black FBOs!
+    const canRenderHalfFloat =
+      !this.isSoftwareGl &&
+      canDepthTex &&
+      Boolean(
+        gl.getExtension('EXT_color_buffer_float') ||
+          gl.getExtension('EXT_color_buffer_half_float')
+      );
     const useDepthCapture = canDepthTex && this.config.ssaoEnabled;
     const effectiveSamples =
       !this.isSoftwareGl && canDepthTex && !useDepthCapture
@@ -581,10 +605,9 @@ export class HardwareGpuEngine {
         : 0;
     this.activeMsaaSamples = effectiveSamples;
 
-    const rtType =
-      !this.isSoftwareGl && canDepthTex
-        ? THREE.HalfFloatType
-        : THREE.UnsignedByteType;
+    const rtType = canRenderHalfFloat
+      ? THREE.HalfFloatType
+      : THREE.UnsignedByteType;
 
     // Ping-pong target used by EffectComposer NEVER carries `depthTexture` so ShaderPass
     // never triggers a WebGL2 framebuffer-texture feedback loop!
@@ -952,20 +975,33 @@ export class HardwareGpuEngine {
       return;
     }
 
-    // 5. Rebuild WebGL2 Composer RenderTarget if MSAA / DepthTexture / PixelRatio requirements changed,
-    // or lazily initialize / dispose when switching to Direct Pass / Performance mode to free VRAM!
+    // 5. Update WebGL2 Composer RenderTargets without destructive FBO teardown/flicker:
+    // - Turning SSAO off only zeroes uSsaoStrength / uHasDepth via uniforms (zero FBO churn!).
+    // - Changing pixelRatio resizes existing targets in-place via setSize/setPixelRatio.
+    // - Only rebuild composer when MSAA sample count changes or depth capture is enabled for the first time.
+    const needsDepthCaptureAdded =
+      this.config.ssaoEnabled && !prevSsao && !this.sceneCaptureTarget;
+    const msaaSampleTopologyChanged =
+      (prevAa === 'msaa_fxaa') !== (this.config.antiAliasing === 'msaa_fxaa') &&
+      !this.sceneCaptureTarget;
+
     if (!this.shouldActivateComposer()) {
       if (this.composer || this.renderTarget || this.sceneCaptureTarget) {
         this.disposeComposerTargets();
       }
     } else if (!this.composer) {
       this.rebuildComposer();
-    } else if (
-      prevSsao !== this.config.ssaoEnabled ||
-      prevAa !== this.config.antiAliasing ||
-      prChanged
-    ) {
+    } else if (needsDepthCaptureAdded || msaaSampleTopologyChanged) {
       this.rebuildComposer();
+    } else if (prChanged) {
+      const pr = this.renderer.getPixelRatio();
+      if (this.sceneCaptureTarget) {
+        const rtW = Math.max(1, Math.floor(this.viewportWidth * pr));
+        const rtH = Math.max(1, Math.floor(this.viewportHeight * pr));
+        this.sceneCaptureTarget.setSize(rtW, rtH);
+      }
+      this.composer.setPixelRatio(pr);
+      this.composer.setSize(this.viewportWidth, this.viewportHeight);
     }
 
     if (this.bloomPass) {
@@ -1249,7 +1285,14 @@ export class HardwareGpuEngine {
       return;
     }
     if (this.isPostProcessingRunning() && this.composer) {
-      this.composer.render();
+      try {
+        this.composer.render();
+      } catch {
+        // Fallback to direct render if mobile FBO or post-process pass throws
+        this.disposeComposerTargets();
+        this.renderer.setRenderTarget(null);
+        this.renderer.render(this.scene, this.camera);
+      }
     } else {
       this.renderer.render(this.scene, this.camera);
     }

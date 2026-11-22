@@ -869,6 +869,12 @@ export class WebGpuPostAndComputePipeline {
   public readonly computeSprite: THREE_WEBGPU.Sprite;
   private computeInitialized = false;
   private disposed = false;
+  private postProcessFaulted = false;
+  private builtWithAo = false;
+  private builtWithBloom = false;
+  private readonly isMobileViewport: boolean;
+  private readonly gpuDeviceRef: GPUDevice | null;
+  private readonly onUncapturedError: ((ev: Event) => void) | null = null;
 
   constructor(
     renderer: THREE_WEBGPU.WebGPURenderer,
@@ -882,9 +888,32 @@ export class WebGpuPostAndComputePipeline {
     this.camera = camera;
     this.adapterName = adapterName;
     this.config = { ...initialConfig };
+    this.isMobileViewport =
+      typeof window !== 'undefined' &&
+      Boolean(
+        window.matchMedia?.('(pointer: coarse)')?.matches ||
+          /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
+      );
 
-    const gpuDev = (renderer as unknown as { backend?: { device?: GPUDevice } }).backend?.device;
+    const gpuDev =
+      (renderer as unknown as { backend?: { device?: GPUDevice } }).backend?.device ?? null;
+    this.gpuDeviceRef = gpuDev;
     this.subgroupsSupported = Boolean(gpuDev?.features?.has?.('subgroups'));
+    if (gpuDev && typeof gpuDev.addEventListener === 'function') {
+      let uncapturedCount = 0;
+      this.onUncapturedError = () => {
+        uncapturedCount++;
+        // If mobile WebGPU post-processing triggers repeated validation faults,
+        // fall back cleanly to direct WebGPURenderer rendering so the canvas never flickers black.
+        if (uncapturedCount >= 2 && this.postProcessing && !this.postProcessFaulted) {
+          this.postProcessFaulted = true;
+          this.postProcessing.dispose();
+          this.postProcessing = null;
+          this.taaActive = false;
+        }
+      };
+      gpuDev.addEventListener('uncapturederror', this.onUncapturedError);
+    }
 
     // Build WGSL GPU Compute Shader for 1024 ambient firefly / daylight pollen motes
     const positions = instancedArray(COMPUTE_MOTE_COUNT, 'vec3');
@@ -1026,53 +1055,68 @@ export class WebGpuPostAndComputePipeline {
       this.postProcessing = null;
     }
     this.taaActive = false;
-    if (!this.config.postProcessingEnabled) {
+    this.builtWithAo = false;
+    this.builtWithBloom = false;
+    if (!this.config.postProcessingEnabled || this.postProcessFaulted) {
       return;
     }
 
-    const useTaa = this.config.antiAliasing === 'msaa_fxaa';
+    // Mobile WebGPU drivers frequently glitch or flash black with temporal history MRT TRAA on
+    // viewport resize / camera cuts; use crisp single-pass FXAA on coarse-pointer mobile devices.
+    const useTaa = this.config.antiAliasing === 'msaa_fxaa' && !this.isMobileViewport;
     const postProcessing = new THREE_WEBGPU.PostProcessing(this.renderer);
     const scenePass = pass(this.scene, this.camera);
-    scenePass.setMRT(
-      mrt({
-        output,
-        normal: normalView,
-        velocity,
-      })
-    );
+    if (useTaa || this.config.ssaoEnabled) {
+      scenePass.setMRT(
+        useTaa
+          ? mrt({
+              output,
+              normal: normalView,
+              velocity,
+            })
+          : mrt({
+              output,
+              normal: normalView,
+            })
+      );
+    }
     const scenePassColor = scenePass.getTextureNode('output');
     const scenePassDepth = scenePass.getTextureNode('depth');
-    const scenePassNormal = scenePass.getTextureNode('normal');
-    const scenePassVelocity = scenePass.getTextureNode('velocity');
+    const scenePassNormal =
+      useTaa || this.config.ssaoEnabled ? scenePass.getTextureNode('normal') : null;
+    const scenePassVelocity = useTaa ? scenePass.getTextureNode('velocity') : null;
 
     // 1. TSL Ground-Truth Ambient Occlusion (GTAO) when SSAO enabled
-    const afterAo = this.config.ssaoEnabled
-      ? (() => {
-          const aoPass = ao(scenePassDepth, scenePassNormal, this.camera);
-          aoPass.resolutionScale = this.config.qualityPreset === 'ultra' ? 0.85 : 0.6;
-          const aoFactor = mix(float(1.0), aoPass.getTextureNode(), this.uAoStrength);
-          return scenePassColor.mul(aoFactor);
-        })()
-      : scenePassColor;
+    const afterAo =
+      this.config.ssaoEnabled && scenePassNormal
+        ? (() => {
+            this.builtWithAo = true;
+            const aoPass = ao(scenePassDepth, scenePassNormal, this.camera);
+            aoPass.resolutionScale = this.config.qualityPreset === 'ultra' ? 0.85 : 0.6;
+            const aoFactor = mix(float(1.0), aoPass.getTextureNode(), this.uAoStrength);
+            return scenePassColor.mul(aoFactor);
+          })()
+        : scenePassColor;
 
-    // 2. TSL Atmospheric Volumetric Crepuscular Light Shafts
+    // 2. TSL Atmospheric Volumetric Crepuscular Light Shafts (clamped UVs prevent out-of-bounds NaNs)
     const withVolumetricRays = Fn(() => {
       const deltaUv = screenUV.sub(this.uSunScreenUv);
       const radDist = length(deltaUv);
       const rayFalloff = clamp(float(1.0).sub(radDist.mul(1.25)), 0.0, 1.0);
-      const dMid = scenePassDepth.sample(screenUV.sub(deltaUv.mul(0.28))).r;
-      const dFar = scenePassDepth.sample(screenUV.sub(deltaUv.mul(0.55))).r;
+      const uvMid = clamp(screenUV.sub(deltaUv.mul(0.28)), vec2(0.001), vec2(0.999));
+      const uvFar = clamp(screenUV.sub(deltaUv.mul(0.55)), vec2(0.001), vec2(0.999));
+      const dMid = scenePassDepth.sample(uvMid).r;
+      const dFar = scenePassDepth.sample(uvFar).r;
       const skyMask = smoothstep(0.92, 0.999, max(dMid, dFar));
       const shaftBoost = rayFalloff.mul(rayFalloff).mul(skyMask).mul(this.uSunRayStrength);
-      return vec4(
-        afterAo.rgb.add(this.uSunRayColor.mul(shaftBoost)),
-        afterAo.a
-      );
+      const baseRgb = clamp(afterAo.rgb, vec3(0.0), vec3(64.0));
+      return vec4(baseRgb.add(this.uSunRayColor.mul(shaftBoost)), afterAo.a);
     })();
 
     // 3. TSL Filmic HDR Bloom
     const workingColor = this.config.bloomEnabled
       ? (() => {
+          this.builtWithBloom = true;
           const bloomPass = bloom(
             withVolumetricRays,
             this.config.bloomStrength ?? 0.24,
@@ -1080,30 +1124,31 @@ export class WebGpuPostAndComputePipeline {
             0.82
           );
           return withVolumetricRays.add(
-            bloomPass.mul(
+            clamp(bloomPass, vec4(0.0), vec4(16.0)).mul(
               this.uBloomStrength.div(Math.max(0.01, this.config.bloomStrength || 0.24))
             )
           );
         })()
       : withVolumetricRays;
 
-    // 4. TSL Color Grading + Optical Vignette
+    // 4. TSL Color Grading + Optical Vignette (HDR-clamped to prevent NaN blackout propagation)
     const graded = Fn(() => {
-      let c = max(vec3(0.0), workingColor.rgb.add(vec3(this.uLift)).mul(this.uTint));
+      const safeRgb = clamp(workingColor.rgb, vec3(0.0), vec3(64.0));
+      let c = max(vec3(0.0), safeRgb.add(vec3(this.uLift)).mul(this.uTint));
       c = pow(max(c, vec3(0.0001)), vec3(this.uGamma));
       c = max(vec3(0.0), c.sub(0.18).mul(this.uContrast).add(0.18));
       const luma = luminance(c);
       c = max(vec3(0.0), mix(vec3(luma), c, this.uSaturation));
       const dist = length(uv().sub(0.5));
       const vig = clamp(float(1.0).sub(dist.mul(dist).mul(this.uVignette).mul(1.45)), 0.28, 1.0);
-      return vec4(c.mul(vig), workingColor.a);
+      return vec4(clamp(c.mul(vig), vec3(0.0), vec3(64.0)), clamp(workingColor.a, 0.0, 1.0));
     })();
 
-    // 5. Temporal Anti-Aliasing (TRAA History Accumulation) or FXAA
-    if (useTaa) {
+    // 5. Temporal Anti-Aliasing (desktop TRAA) or crisp single-pass FXAA
+    if (useTaa && scenePassVelocity) {
       this.taaActive = true;
       postProcessing.outputNode = traa(graded, scenePassDepth, scenePassVelocity, this.camera);
-    } else if (this.config.antiAliasing === 'fxaa') {
+    } else if (this.config.antiAliasing !== 'none') {
       postProcessing.outputNode = fxaa(graded);
     } else {
       postProcessing.outputNode = graded;
@@ -1112,12 +1157,13 @@ export class WebGpuPostAndComputePipeline {
   }
 
   public applyConfig(cfg: GpuPipelineConfig): void {
+    // Only rebuild the WGSL PostProcessing graph when structural nodes must be added or AA/master toggle changes.
+    // Turning Bloom or SSAO off modulates uBloomStrength / uAoStrength cleanly with zero shader recompile black flash!
     const needRebuild =
       cfg.postProcessingEnabled !== this.config.postProcessingEnabled ||
-      cfg.bloomEnabled !== this.config.bloomEnabled ||
-      cfg.ssaoEnabled !== this.config.ssaoEnabled ||
       cfg.antiAliasing !== this.config.antiAliasing ||
-      cfg.qualityPreset !== this.config.qualityPreset;
+      (cfg.bloomEnabled && !this.builtWithBloom && cfg.postProcessingEnabled) ||
+      (cfg.ssaoEnabled && !this.builtWithAo && cfg.postProcessingEnabled);
 
     this.config = { ...cfg };
     this.uDrawDistMax.value = cfg.drawDistance ?? 650;
@@ -1212,8 +1258,16 @@ export class WebGpuPostAndComputePipeline {
       }
     }
 
-    if (this.postProcessing && this.config.postProcessingEnabled) {
-      this.postProcessing.render();
+    if (this.postProcessing && this.config.postProcessingEnabled && !this.postProcessFaulted) {
+      try {
+        this.postProcessing.render();
+      } catch {
+        this.postProcessFaulted = true;
+        this.postProcessing.dispose();
+        this.postProcessing = null;
+        this.taaActive = false;
+        this.renderer.render(this.scene, this.camera);
+      }
     } else {
       this.renderer.render(this.scene, this.camera);
     }
@@ -1227,6 +1281,9 @@ export class WebGpuPostAndComputePipeline {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.gpuDeviceRef && this.onUncapturedError) {
+      this.gpuDeviceRef.removeEventListener('uncapturederror', this.onUncapturedError);
+    }
     this.scene.remove(this.computeSprite);
     this.computeSprite.geometry.dispose();
     (this.computeSprite.material as THREE.Material).dispose();

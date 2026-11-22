@@ -2,9 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as THREE from 'three';
+import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
 import {
   BELT_CURVE_INNER_ARC_M,
   BELT_CURVE_OUTER_ARC_M,
+  CAPYTORIO_BELT_ITEMS_PER_LANE,
+  CAPYTORIO_BELT_ITEM_SPACING_M,
+  CAPYTORIO_BELT_MAX_ITEMS_PER_TILE,
   CapytorioFactoryEngine,
   MAX_RECENT_CAPYTORIO_TOOLS,
   capytorioGridToWorldX,
@@ -12,6 +17,7 @@ import {
   evalBeltItemLocalPose,
   getBeltCurveShape,
   getBeltLaneArcMeters,
+  getBeltLaneCapacity,
   resolveCapytorioPlaceableSpec,
   sampleCapytorioBaseResource,
   sampleCapytorioTreeAt,
@@ -688,9 +694,15 @@ test('Capytorio inserters track exact lane coordinates with 4-phase object perma
   assert.equal(inserter.armSwing, 0);
 });
 
-test('Capytorio belt items squish up tightly when backed up and stay on belt when beltEndSpillEnabled is false (default)', () => {
+test('Capytorio belts hold canonical Factorio capacity (4/lane, 8/tile), pack flush with zero gaps across tile seams, and never deform items', () => {
   const engine = new CapytorioFactoryEngine();
   assert.equal(engine.beltEndSpillEnabled, false, 'Belt end item spill must be disabled by default');
+  assert.equal(CAPYTORIO_BELT_ITEMS_PER_LANE, 4);
+  assert.equal(CAPYTORIO_BELT_MAX_ITEMS_PER_TILE, 8);
+  assert.equal(getBeltLaneCapacity('straight', 0), 4);
+  assert.equal(getBeltLaneCapacity('straight', 1), 4);
+  assert.equal(getBeltLaneCapacity('curve_from_left', 0), 2);
+  assert.equal(getBeltLaneCapacity('curve_from_left', 1), 4);
 
   // 2-tile straight belt East: (0,0) -> (1,0) with open end at (1,0)
   assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
@@ -698,20 +710,57 @@ test('Capytorio belt items squish up tightly when backed up and stay on belt whe
 
   const b0 = engine.machines.get(tileKey(0, 0))!;
   const b1 = engine.machines.get(tileKey(1, 0))!;
-  b1.beltItems.push({ item: 'iron_ore', progress: 0.92, lane: 0 });
-  b1.beltItems.push({ item: 'iron_ore', progress: 0.45, lane: 0 });
-  b0.beltItems.push({ item: 'iron_ore', progress: 0.85, lane: 0 });
+  // Feed 6 copper plates on lane 0 and 4 iron plates on lane 1
+  b1.beltItems.push({ item: 'copper_plate', progress: 0.875, lane: 0 });
+  b1.beltItems.push({ item: 'copper_plate', progress: 0.60, lane: 0 });
+  b1.beltItems.push({ item: 'copper_plate', progress: 0.30, lane: 0 });
+  b0.beltItems.push({ item: 'copper_plate', progress: 0.90, lane: 0 });
+  b0.beltItems.push({ item: 'copper_plate', progress: 0.55, lane: 0 });
+  b0.beltItems.push({ item: 'copper_plate', progress: 0.20, lane: 0 });
 
-  for (let i = 0; i < 30; i++) {
+  b1.beltItems.push({ item: 'iron_plate', progress: 0.85, lane: 1 });
+  b1.beltItems.push({ item: 'iron_plate', progress: 0.50, lane: 1 });
+  b0.beltItems.push({ item: 'iron_plate', progress: 0.80, lane: 1 });
+  b0.beltItems.push({ item: 'iron_plate', progress: 0.35, lane: 1 });
+
+  for (let i = 0; i < 60; i++) {
     engine.step(0.05);
   }
 
-  // With spill disabled by default, all 3 items squish tightly onto the end belt and ZERO spill onto ground
+  // With spill disabled by default, zero items fall off and end belt packs 100% full (4 left + 4 right = 8)
   assert.equal(engine.spilledItems.length, 0);
-  assert.equal(b1.beltItems.length, 3, 'Squish compression packs up to 3 items in a single congested lane');
-  assert.ok((b1.beltItems[0].squish ?? 0) > 0.7, 'Leading backed-up item exhibits high squish');
-  assert.ok((b1.beltItems[1].squish ?? 0) > 0.5, 'Trailing backed-up item exhibits squish');
-  assert.equal(b1.beltItems[0].edgeProgress ?? 0, 0, 'No edge overhang when spill is disabled');
+  const b1Lane0 = b1.beltItems.filter((b) => b.lane === 0).sort((a, b) => b.progress - a.progress);
+  const b1Lane1 = b1.beltItems.filter((b) => b.lane === 1).sort((a, b) => b.progress - a.progress);
+  const b0Lane0 = b0.beltItems.filter((b) => b.lane === 0).sort((a, b) => b.progress - a.progress);
+
+  assert.equal(b1Lane0.length, 4, 'Straight belt lane 0 holds exactly 4 Factorio items');
+  assert.equal(b1Lane1.length, 4, 'Straight belt lane 1 holds exactly 4 Factorio items');
+  assert.equal(b1.beltItems.length, 8, 'Straight belt tile holds exactly 8 Factorio items total');
+  assert.equal(b0Lane0.length, 2, 'Remaining 2 lane-0 items back up seamlessly onto upstream belt');
+
+  // Verify exact touching 0.25-tile (0.625 m) slot positions with zero gaps and zero shape squish
+  const expectedSlots = [0.875, 0.625, 0.375, 0.125];
+  for (let idx = 0; idx < 4; idx++) {
+    assert.ok(
+      Math.abs(b1Lane0[idx].progress - expectedSlots[idx]) < 1e-3,
+      `Lane 0 slot ${idx} expected ${expectedSlots[idx]}, got ${b1Lane0[idx].progress}`
+    );
+    assert.equal(b1Lane0[idx].squish ?? 0, 0, 'Belt items stay rigid (squish === 0)');
+    assert.equal(b1Lane0[idx].edgeProgress ?? 0, 0, 'No edge overhang when spill is disabled');
+  }
+
+  // Verify zero-gap cross-tile seam continuity: b0 leading item (0.875) touches b1 trailing item (0.125)
+  const crossSeamDistMeters = ((1.0 - b0Lane0[0].progress) + b1Lane0[3].progress) * CAPYTORIO_TILE_SIZE;
+  assert.ok(
+    Math.abs(crossSeamDistMeters - CAPYTORIO_BELT_ITEM_SPACING_M) < 1e-3,
+    `Cross-tile seam spacing must equal ${CAPYTORIO_BELT_ITEM_SPACING_M}m, got ${crossSeamDistMeters}m`
+  );
+  assert.ok(Math.abs(b0Lane0[0].progress - 0.875) < 1e-3);
+  assert.ok(Math.abs(b0Lane0[1].progress - 0.625) < 1e-3);
+
+  // Serialization & hydration preserves all 8 items per belt tile
+  const roundTrip = new CapytorioFactoryEngine(engine.serialize());
+  assert.equal(roundTrip.machines.get(tileKey(1, 0))?.beltItems.length, 8);
 });
 
 test('Capytorio optional belt-end spill-off tips items off open ends, bounces to ground, and supports hero, inserter, collect-all & save round-trip', () => {
@@ -788,6 +837,264 @@ test('Capytorio optional belt-end spill-off tips items off open ends, bounces to
   assert.equal(engine3.spilledItems.length, 0);
   assert.equal(engine3.getPocketItemCount('coal'), coalBefore + 1);
 });
+
+test('Capytorio3DRenderer: low-profile machines are immune to camera-fade, share pooled geometries, and track topologyRevision', () => {
+  const engine = new CapytorioFactoryEngine();
+
+  const rev0 = engine.topologyRevision;
+  assert.equal(engine.placeMachine('furnace', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('furnace', 0, 1, 1).ok, true);
+  assert.equal(engine.placeMachine('furnace', 0, 2, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', -1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', -1, 1, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', 1, 0, 1).ok, true);
+  assert.ok(engine.topologyRevision >= rev0 + 6, 'topologyRevision increments on each placement');
+
+  const revBeforeRotate = engine.topologyRevision;
+  assert.notEqual(engine.rotateMachineAt(-1, 0), null);
+  assert.equal(engine.topologyRevision, revBeforeRotate + 1, 'topologyRevision increments on rotate');
+
+  const renderer3d = new Capytorio3DRenderer();
+  try {
+    renderer3d.sync(
+      engine,
+      CAPYTORIO_WORLD_ORIGIN_X,
+      CAPYTORIO_WORLD_ORIGIN_Z,
+      0.016,
+      1.25,
+      true,
+      26
+    );
+
+    // 1. Oblique mode (includeTallLandmark=false) yields zero occluders; chase mode yields ONLY beaconPillarGroup
+    const obliqueOccluders: THREE.Object3D[] = [];
+    renderer3d.collectOccluderCandidates(obliqueOccluders, false);
+    assert.equal(obliqueOccluders.length, 0, 'Oblique top-down camera never fades Capytorio structures');
+
+    const chaseOccluders: THREE.Object3D[] = [];
+    renderer3d.collectOccluderCandidates(chaseOccluders, true);
+    assert.equal(chaseOccluders.length, 1, '3D chase camera only exposes the tall Drop-Pod Beacon landmark');
+    assert.equal(
+      chaseOccluders[0].userData.__occluderRoot,
+      chaseOccluders[0],
+      'Beacon landmark carries self __occluderRoot so sub-parts never vanish independently'
+    );
+
+    // 2. Every placed furnace & inserter sub-mesh carries ignoreCameraFade=true and shares pooled geometries
+    const machineGroups: THREE.Group[] = [];
+    for (const child of renderer3d.root.children) {
+      if (child instanceof THREE.Group && child.userData.machineType) {
+        machineGroups.push(child);
+      }
+    }
+    assert.equal(machineGroups.length, 6, 'All 6 placed machines synced into 3D scene');
+
+    const furnaceGeos = new Set<THREE.BufferGeometry>();
+    const inserterGeos = new Set<THREE.BufferGeometry>();
+    for (const grp of machineGroups) {
+      assert.equal(grp.userData.ignoreCameraFade, true);
+      assert.equal(grp.userData.__occluderRoot, grp);
+      grp.traverse((node) => {
+        assert.equal(node.userData.ignoreCameraFade, true, 'Every machine sub-mesh resists partial fade');
+        assert.equal(node.userData.__occluderRoot, grp, 'Every machine sub-mesh points to its parent group');
+        if (node instanceof THREE.Mesh) {
+          if (grp.userData.machineType === 'furnace') furnaceGeos.add(node.geometry);
+          if (grp.userData.machineType === 'inserter') inserterGeos.add(node.geometry);
+        }
+      });
+    }
+    // 3 furnaces share exact same 6 cached geometries (plinth, kiln, chimney, hearth, capRing, outPort)
+    assert.ok(furnaceGeos.size <= 6, `Expected <=6 shared furnace geometries across 3 furnaces, got ${furnaceGeos.size}`);
+    // 3 inserters share plinth + inserter parts + 8 held-item shapes (never multiplied by 3!)
+    assert.ok(inserterGeos.size <= 22, `Expected pooled inserter geometries, got ${inserterGeos.size}`);
+
+    // 3. Ground deck stays opaque at normal factory altitude for clean early-Z and SSAO depth
+    const deckMesh = renderer3d.root.children.find(
+      (c) => c instanceof THREE.Mesh && c.geometry instanceof THREE.PlaneGeometry
+    ) as THREE.Mesh | undefined;
+    assert.ok(deckMesh, 'Ground deck mesh exists');
+    const deckMat = deckMesh.material as THREE.MeshStandardMaterial;
+    assert.equal(deckMat.transparent, false, 'Ground deck renders in opaque pass at normal altitude');
+    assert.equal(deckMat.depthWrite, true, 'Ground deck writes to hardware depth buffer');
+  } finally {
+    renderer3d.dispose();
+  }
+});
+
+test('Capytorio universal tile inspection reports belt item counts/lanes, ore richness, trees, drills on ore, spilled items, beacon, and terrain', () => {
+  const engine = new CapytorioFactoryEngine();
+
+  // 1. Straight belt with mixed items across left & right lanes
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+  const straightBelt = engine.machines.get(tileKey(0, 0))!;
+  straightBelt.beltItems.push(
+    { item: 'iron_ore', progress: 0.85, lane: 0 },
+    { item: 'iron_ore', progress: 0.55, lane: 0 },
+    { item: 'copper_plate', progress: 0.25, lane: 0 },
+    { item: 'coal', progress: 0.75, lane: 1 },
+    { item: 'coal', progress: 0.45, lane: 1 }
+  );
+
+  const beltInfo = engine.inspectTileAt(0, 0);
+  assert.equal(beltInfo.primaryKind, 'machine');
+  assert.equal(beltInfo.title, 'Transport Belt');
+  assert.ok(beltInfo.machine);
+  assert.equal(beltInfo.machine!.beltItemCount, 5);
+  assert.equal(beltInfo.machine!.beltCapacity, 8);
+  assert.equal(beltInfo.machine!.beltLeftLaneCount, 3);
+  assert.equal(beltInfo.machine!.beltRightLaneCount, 2);
+  assert.equal(beltInfo.machine!.beltLeftLaneCapacity, 4);
+  assert.equal(beltInfo.machine!.beltRightLaneCapacity, 4);
+  assert.equal(beltInfo.machine!.beltCurveShape, 'straight');
+  assert.equal(beltInfo.machine!.status, 'Working');
+  assert.deepEqual(beltInfo.machine!.beltItemsByType, [
+    { item: 'coal', count: 2 },
+    { item: 'iron_ore', count: 2 },
+    { item: 'copper_plate', count: 1 },
+  ]);
+
+  // Verify curved belt reports canonical capacity 6 (2 inner + 4 outer)
+  assert.equal(engine.placeMachine('belt', 1, 1, 2).ok, true);
+  const curveTarget = engine.machines.get(tileKey(1, 0))!;
+  curveTarget.dir = 2; // East belt (0,0) feeds into South belt (1,0) -> curve_from_right
+  const curvedInfo = engine.inspectTileSnapshot(1, 0);
+  assert.equal(curvedInfo.machine?.beltCurveShape, 'curve_from_right');
+  assert.equal(curvedInfo.machine?.beltCapacity, 6);
+
+  // 2. Find an untouched ground ore patch & inspect it directly, then place a Mining Drill on top
+  let oreGx = 0;
+  let oreGz = 0;
+  let foundOre = false;
+  for (let gx = -14; gx <= 14 && !foundOre; gx++) {
+    for (let gz = -14; gz <= 14 && !foundOre; gz++) {
+      if (!engine.machines.has(tileKey(gx, gz)) && engine.getResourceAt(gx, gz)) {
+        oreGx = gx;
+        oreGz = gz;
+        foundOre = true;
+      }
+    }
+  }
+  assert.equal(foundOre, true, 'Found a ground ore tile in starter field');
+  const oreInfo = engine.inspectTileAt(oreGx, oreGz);
+  assert.equal(oreInfo.primaryKind, 'resource');
+  assert.ok(oreInfo.resource && oreInfo.resource.remaining > 0);
+  assert.equal(oreInfo.machine, null);
+  assert.equal(engine.inspectedKey, null, 'Non-machine inspected tile does not set inspectedKey');
+  assert.deepEqual(engine.inspectedTile, { gx: oreGx, gz: oreGz });
+
+  const initialRemaining = oreInfo.resource!.remaining;
+  assert.equal(engine.placeMachine('drill', oreGx, oreGz, 1).ok, true);
+  const drillOnOreInfo = engine.inspectTileSnapshot(oreGx, oreGz);
+  assert.equal(drillOnOreInfo.primaryKind, 'machine');
+  assert.equal(drillOnOreInfo.machine?.type, 'drill');
+  assert.equal(drillOnOreInfo.resource?.remaining, initialRemaining, 'Drill inspection preserves underlying ore richness');
+
+  // 3. Find a Wild Citrus Tree and inspect it without destroying it
+  let treeGx = 0;
+  let treeGz = 0;
+  let foundTree = false;
+  for (let gx = -18; gx <= 18 && !foundTree; gx++) {
+    for (let gz = -18; gz <= 18 && !foundTree; gz++) {
+      if (engine.hasTreeAt(gx, gz)) {
+        treeGx = gx;
+        treeGz = gz;
+        foundTree = true;
+      }
+    }
+  }
+  assert.equal(foundTree, true, 'Found a Wild Citrus Tree');
+  const treeInfo = engine.inspectTileAt(treeGx, treeGz);
+  assert.equal(treeInfo.primaryKind, 'tree');
+  assert.equal(treeInfo.title, 'Wild Citrus Tree');
+  assert.equal(treeInfo.tree?.yieldItem, 'orange');
+  assert.equal(treeInfo.tree?.yieldCount, 3);
+  assert.equal(engine.hasTreeAt(treeGx, treeGz), true, 'Inspecting tree does not destroy it');
+
+  // 4. Inspect spilled items on an empty meadow tile
+  let emptyGx = 0;
+  let emptyGz = 0;
+  let foundEmpty = false;
+  for (let gx = -10; gx <= 10 && !foundEmpty; gx++) {
+    for (let gz = -10; gz <= 10 && !foundEmpty; gz++) {
+      if (
+        !engine.machines.has(tileKey(gx, gz)) &&
+        !engine.getResourceAt(gx, gz) &&
+        !engine.hasTreeAt(gx, gz) &&
+        !engine.isBeaconTile(gx, gz)
+      ) {
+        emptyGx = gx;
+        emptyGz = gz;
+        foundEmpty = true;
+      }
+    }
+  }
+  assert.equal(foundEmpty, true);
+  const terrainInfo = engine.inspectTileSnapshot(emptyGx, emptyGz);
+  assert.equal(terrainInfo.primaryKind, 'terrain');
+  assert.equal(terrainInfo.title, 'Meadow Grass');
+
+  engine.spilledItems.push(
+    {
+      uid: 9001,
+      item: 'iron_plate',
+      lx: emptyGx * CAPYTORIO_TILE_SIZE,
+      y: 0,
+      lz: emptyGz * CAPYTORIO_TILE_SIZE,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      rx: 0,
+      ry: 0,
+      rz: 0,
+      vrx: 0,
+      vrz: 0,
+      squish: 0,
+      settled: true,
+      ageSec: 1,
+    },
+    {
+      uid: 9002,
+      item: 'iron_plate',
+      lx: emptyGx * CAPYTORIO_TILE_SIZE + 0.2,
+      y: 0,
+      lz: emptyGz * CAPYTORIO_TILE_SIZE - 0.1,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      rx: 0,
+      ry: 0,
+      rz: 0,
+      vrx: 0,
+      vrz: 0,
+      squish: 0,
+      settled: true,
+      ageSec: 1,
+    }
+  );
+  const spilledInfo = engine.inspectTileSnapshot(emptyGx, emptyGz);
+  assert.equal(spilledInfo.primaryKind, 'spilled');
+  assert.equal(spilledInfo.spilledTotalCount, 2);
+  assert.deepEqual(spilledInfo.spilledItems, [{ item: 'iron_plate', count: 2 }]);
+
+  // 5. Inspect Drop-Pod Surveyor Beacon at (0, -3)
+  const beaconInfo = engine.inspectTileSnapshot(0, -3);
+  assert.equal(beaconInfo.primaryKind, 'beacon');
+  assert.equal(beaconInfo.isBeacon, true);
+  assert.equal(beaconInfo.title, 'Surveyor Beacon');
+
+  // 6. Verify getUiSnapshot() exposes both inspectedTile and hoveredTileInfo cleanly
+  engine.hoveredGx = 0;
+  engine.hoveredGz = 0;
+  const snap = engine.getUiSnapshot();
+  assert.equal(snap.hoveredTileInfo.machine?.beltItemCount, 5);
+  assert.equal(snap.inspectedTile?.primaryKind, 'tree');
+
+  engine.clearInspection();
+  assert.equal(engine.getUiSnapshot().inspectedTile, null);
+});
+
+
 
 
 

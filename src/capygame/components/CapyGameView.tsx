@@ -362,6 +362,7 @@ export const CapyGameView: React.FC = () => {
     () => CAPYTORIO_RECIPES[0]?.id ?? 'iron_gear'
   );
   const [isCapytorioDockCollapsed, setIsCapytorioDockCollapsed] = useState<boolean>(false);
+  const [capytorioPointerHoverActive, setCapytorioPointerHoverActive] = useState<boolean>(false);
   const lastCapytorioMachineRef = useRef<string>('drill');
   const capytorioDrawerTabRef = useRef<
     'none' | 'inventory' | 'craft' | 'tech' | 'inspect'
@@ -1676,6 +1677,9 @@ export const CapyGameView: React.FC = () => {
       if (rect.width > 0 && rect.height > 0) {
         const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        if (e.pointerType === 'mouse') {
+          setCapytorioPointerHoverActive((prev) => (prev ? prev : true));
+        }
         managerRef.current.updateCapytorioHoverFromNdc(ndcX, ndcY);
 
         const cDrag = capytorioDragRef.current;
@@ -1846,11 +1850,14 @@ export const CapyGameView: React.FC = () => {
             return;
           }
           if (releasedButton === 0) {
+            if (e.pointerType !== 'mouse') {
+              setCapytorioPointerHoverActive(false);
+            }
             const priRes = managerRef.current.handleCapytorioPrimaryClick(ndcX, ndcY);
-            if (priRes.message && (!priRes.ok || priRes.message.startsWith('Inspecting'))) {
+            if (priRes.message && (!priRes.ok || !priRes.inspected || priRes.openInspectorModal)) {
               showToast(priRes.message);
             }
-            if (priRes.ok && priRes.message?.startsWith('Inspecting')) {
+            if (priRes.ok && priRes.openInspectorModal) {
               setCapytorioDrawerTab('inspect');
               setIsCapytorioDockCollapsed(false);
             }
@@ -2654,6 +2661,7 @@ export const CapyGameView: React.FC = () => {
         onPointerMove={handleCanvasPointerMove}
         onPointerUp={handleCanvasPointerUpOrCancel}
         onPointerCancel={handleCanvasPointerUpOrCancel}
+        onPointerLeave={() => setCapytorioPointerHoverActive(false)}
         onContextMenu={(e) => e.preventDefault()}
         style={{ touchAction: 'none' }}
         className="absolute inset-0 w-full h-full cursor-crosshair active:cursor-grabbing"
@@ -6110,8 +6118,8 @@ export const CapyGameView: React.FC = () => {
               : 'bottom-[88px] right-2';
           } else if (activeMode === 'capytorio') {
             positionClass = isCapytorioDockCollapsed
-              ? 'bottom-[98px] right-2.5'
-              : 'bottom-[142px] right-2.5';
+              ? 'bottom-[46px] left-2'
+              : 'bottom-[104px] left-2';
           } else if (showTouchDpad) {
             positionClass = 'bottom-[104px] right-3';
           } else if (gameSettings.touchControlsMode !== 'hidden') {
@@ -6170,6 +6178,7 @@ export const CapyGameView: React.FC = () => {
             snap={capytorioSnap}
             isObliqueCam={gameSettings.capytorioCameraMode !== 'chase'}
             beltEndSpillEnabled={Boolean(gameSettings.capytorioBeltEndSpill)}
+            pointerHoverActive={capytorioPointerHoverActive}
             drawerTab={capytorioDrawerTab}
             setDrawerTab={setCapytorioDrawerTab}
             isDockCollapsed={isCapytorioDockCollapsed}
@@ -6197,6 +6206,24 @@ export const CapyGameView: React.FC = () => {
                     : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
                 );
               }
+            }}
+            onMineTileAt={(gx, gz) => {
+              const mined = managerRef.current?.mineCapytorioTileAt(gx, gz);
+              if (mined) {
+                const amt = mined === 'orange' ? 3 : 2;
+                showToast(
+                  mined === 'orange'
+                    ? `Harvested +${amt} ${getCapytorioItemMeta(mined).name}`
+                    : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
+                );
+              }
+            }}
+            onInspectTileAt={(gx, gz) => {
+              setCapytorioPointerHoverActive(false);
+              managerRef.current?.inspectCapytorioTile(gx, gz);
+            }}
+            onClearInspection={() => {
+              managerRef.current?.clearCapytorioInspection();
             }}
             onRotateDir={() => managerRef.current?.rotateCapytorioDirection()}
             onToggleCameraMode={() => {

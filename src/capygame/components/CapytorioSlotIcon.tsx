@@ -206,6 +206,49 @@ export const CapytorioItemIcon: React.FC<CapytorioItemIconProps> = ({
   }
 };
 
+export interface CapytorioWorldIconProps {
+  kind: 'tree' | 'beacon' | 'terrain';
+  size?: number;
+  className?: string;
+}
+
+export const CapytorioWorldIcon: React.FC<CapytorioWorldIconProps> = ({
+  kind,
+  size = 20,
+  className = '',
+}) => {
+  switch (kind) {
+    case 'tree':
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+          <rect x="10.2" y="14.5" width="3.6" height="6.5" rx="0.8" fill="#7c4a26" stroke="#111317" strokeWidth="1.2" />
+          <circle cx="12" cy="10.2" r="6.8" fill="#3da34d" stroke="#111317" strokeWidth="1.4" />
+          <circle cx="9.2" cy="9.2" r="1.5" fill="#fb923c" stroke="#111317" strokeWidth="0.9" />
+          <circle cx="15" cy="11.2" r="1.5" fill="#fb923c" stroke="#111317" strokeWidth="0.9" />
+          <circle cx="12.2" cy="6.6" r="1.3" fill="#facc15" stroke="#111317" strokeWidth="0.9" />
+        </svg>
+      );
+    case 'beacon':
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+          <polygon points="6,20 8,16 16,16 18,20" fill="#3a404c" stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+          <rect x="10.6" y="7.5" width="2.8" height="9" fill="#9ca3af" stroke="#111317" strokeWidth="1.1" />
+          <ellipse cx="12" cy="9.5" rx="4.8" ry="1.6" stroke="#f4b054" strokeWidth="1.4" />
+          <polygon points="12,2.5 15.2,6 12,9.2 8.8,6" fill="#38bdf8" stroke="#111317" strokeWidth="1.1" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'terrain':
+    default:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" fill="#4f8b47" stroke="#111317" strokeWidth="1.4" />
+          <path d="M8 15.5L9.5 10.5M12 16V9.5M16 15.5L14.5 11" stroke="#86ef92" strokeWidth="1.4" strokeLinecap="round" />
+          <path d="M4.5 17H19.5" stroke="#2d5a29" strokeWidth="1.2" />
+        </svg>
+      );
+  }
+};
+
 export interface CapytorioSlotTileProps {
   label: string;
   title?: string;

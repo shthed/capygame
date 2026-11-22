@@ -412,6 +412,7 @@ export class PlayStyleManager {
   private adaptiveLastStepMs: number = 0;
   private adaptiveRecoveryAccumSec: number = 0;
   private adaptiveLowPerfStreak: number = 0;
+  private pendingAdaptiveGpuConfig: GpuPipelineConfig | null = null;
   private readonly adaptiveMitigationResult: AdaptiveGpuMitigationResult = {
     level: 0,
     postProcessingEnabled: true,
@@ -1765,6 +1766,7 @@ export class PlayStyleManager {
     this.adaptiveMitigationLevel = 0;
     this.adaptiveLowPerfStreak = 0;
     this.adaptiveRecoveryAccumSec = 0;
+    this.pendingAdaptiveGpuConfig = null;
     this.performanceLog.activeGovernorTier = 0;
     this.performanceLog.disabledFeatures = [];
     this.performanceLog.notifyTransitionWarmup(2);
@@ -1773,6 +1775,7 @@ export class PlayStyleManager {
     this.camera.updateProjectionMatrix();
     this.applyFogSetting();
     this.gpuEngine?.applyConfig(this.buildEffectiveGpuConfig(newSettings, 0));
+    this.gpuEngine?.render();
     if (!newSettings.autoCapyLod && newSettings.manualCapyLodTier !== undefined) {
       this.applyGlobalCapyLodTier(newSettings.manualCapyLodTier);
     } else if (newSettings.autoCapyLod !== false && this.currentCapyLodTier < 3) {
@@ -4305,9 +4308,11 @@ export class PlayStyleManager {
       this.adaptiveMitigationLevel = 0;
       this.adaptiveLowPerfStreak = 0;
       this.adaptiveRecoveryAccumSec = 0;
+      this.pendingAdaptiveGpuConfig = null;
       this.performanceLog.activeGovernorTier = 0;
       this.performanceLog.disabledFeatures = [];
       this.gpuEngine?.applyConfig(this.buildEffectiveGpuConfig(this.settings, 0));
+      this.gpuEngine?.render();
       if (this.settings.autoCapyLod !== false) {
         this.applyGlobalCapyLodTier(3);
       }
@@ -4615,10 +4620,40 @@ export class PlayStyleManager {
     }
   }
 
+  public inspectCapytorioTile(gx: number, gz: number): void {
+    this.capytorioEngine.inspectTileAt(gx, gz);
+    this.emitCapytorioSnapshot();
+  }
+
+  public clearCapytorioInspection(): void {
+    this.capytorioEngine.clearInspection();
+    this.emitCapytorioSnapshot();
+  }
+
+  public mineCapytorioTileAt(gx: number, gz: number): CapytorioItemId | null {
+    const mined = this.capytorioEngine.handMineAt(gx, gz, 2);
+    if (mined) {
+      const meta = getCapytorioItemMeta(mined);
+      AudioService.playCoin();
+      this.vfxEngine?.emitBurst(
+        capytorioGridToWorldX(gx),
+        0.4,
+        capytorioGridToWorldZ(gz),
+        'citrus_burst',
+        5,
+        meta.colorHex
+      );
+      this.capytorioEngine.inspectTileAt(gx, gz);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return mined;
+  }
+
   public handleCapytorioPrimaryClick(
     ndcX: number,
     ndcY: number
-  ): { ok: boolean; message?: string } {
+  ): { ok: boolean; message?: string; inspected?: boolean; openInspectorModal?: boolean } {
     if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
       return { ok: false };
     }
@@ -4628,6 +4663,12 @@ export class PlayStyleManager {
     const tool = this.capytorioEngine.selectedTool;
     const key = capytorioTileKey(gx, gz);
     const existing = this.capytorioEngine.machines.get(key);
+    const isConfigurableMachine = (mType: CapytorioMachineType): boolean =>
+      mType === 'furnace' ||
+      mType === 'assembler' ||
+      mType === 'generator' ||
+      mType === 'lab' ||
+      mType === 'chest';
 
     if (tool === 'demolish') {
       const removed = this.capytorioEngine.demolishAt(gx, gz);
@@ -4636,21 +4677,39 @@ export class PlayStyleManager {
         this.markCapytorioDirty();
         return { ok: true, message: `Refunded ${CAPYTORIO_MACHINE_SPECS[removed].name}` };
       }
-      return { ok: false, message: 'Nothing to demolish at cursor' };
+      this.capytorioEngine.inspectTileAt(gx, gz);
+      this.emitCapytorioSnapshot();
+      return { ok: false, message: 'Nothing to demolish at cursor', inspected: true };
     }
 
     if (tool === 'mine') {
       if (existing) {
-        this.capytorioEngine.inspectedKey = key;
+        const info = this.capytorioEngine.inspectTileAt(gx, gz);
         this.emitCapytorioSnapshot();
-        const existingSpec = resolveCapytorioPlaceableSpec(
-          existing.variantItemId ?? existing.type
-        );
         return {
           ok: true,
-          message: `Inspecting ${existingSpec?.name ?? CAPYTORIO_MACHINE_SPECS[existing.type].name}`,
+          inspected: true,
+          openInspectorModal: isConfigurableMachine(existing.type),
+          message: `Inspecting ${info.title}`,
         };
       }
+      const alreadyInspectingThisTile =
+        this.capytorioEngine.inspectedTile !== null &&
+        this.capytorioEngine.inspectedTile.gx === gx &&
+        this.capytorioEngine.inspectedTile.gz === gz;
+
+      // Trees: first tap inspects so players can inspect flora without accidentally destroying it;
+      // second tap on the already-inspected tree (or pressing [E] / Chop button) harvests it.
+      if (this.capytorioEngine.hasTreeAt(gx, gz) && !alreadyInspectingThisTile) {
+        const info = this.capytorioEngine.inspectTileAt(gx, gz);
+        this.emitCapytorioSnapshot();
+        return {
+          ok: true,
+          inspected: true,
+          message: `Inspecting ${info.title}`,
+        };
+      }
+
       const mined = this.capytorioEngine.handMineAt(gx, gz, 2);
       if (mined) {
         const meta = getCapytorioItemMeta(mined);
@@ -4664,28 +4723,38 @@ export class PlayStyleManager {
           5,
           meta.colorHex
         );
+        this.capytorioEngine.inspectTileAt(gx, gz);
         this.markCapytorioDirty();
         return {
           ok: true,
+          inspected: true,
           message:
             mined === 'orange'
               ? `Harvested +${amt} ${meta.name} from Citrus Tree`
               : `Mined +${amt} ${meta.name}`,
         };
       }
-      return { ok: false, message: 'Point over an ore seam or orange tree to mine' };
+
+      const info = this.capytorioEngine.inspectTileAt(gx, gz);
+      this.emitCapytorioSnapshot();
+      return {
+        ok: true,
+        inspected: true,
+        message: `Inspecting ${info.title}`,
+      };
     }
 
     const resolvedTool = resolveCapytorioPlaceableSpec(tool);
     if (existing) {
       const existingToolId = existing.variantItemId ?? existing.type;
       if (existingToolId !== tool) {
-        this.capytorioEngine.inspectedKey = key;
+        const info = this.capytorioEngine.inspectTileAt(gx, gz);
         this.emitCapytorioSnapshot();
-        const existingSpec = resolveCapytorioPlaceableSpec(existingToolId);
         return {
           ok: true,
-          message: `Inspecting ${existingSpec?.name ?? CAPYTORIO_MACHINE_SPECS[existing.type].name}`,
+          inspected: true,
+          openInspectorModal: isConfigurableMachine(existing.type),
+          message: `Inspecting ${info.title}`,
         };
       }
     }
@@ -4710,10 +4779,12 @@ export class PlayStyleManager {
           : `Placed ${resolvedTool?.name ?? tool}`,
       };
     }
+    this.capytorioEngine.inspectTileAt(gx, gz);
+    this.emitCapytorioSnapshot();
     if (res.reason) {
       AudioService.playSplash();
     }
-    return { ok: false, message: res.reason };
+    return { ok: false, inspected: true, message: res.reason };
   }
 
   public handleCapytorioSecondaryClick(ndcX: number, ndcY: number): boolean {
@@ -6666,10 +6737,13 @@ export class PlayStyleManager {
       }
     }
 
+    const skipCapytorioObliqueFade =
+      this.currentMode === 'capytorio' && this.getCapytorioCameraMode() !== 'chase';
     if (
       this.cosmicStage === 'playing' &&
       this.heroCapy.visible &&
-      !this.zoneTransition.active
+      !this.zoneTransition.active &&
+      !skipCapytorioObliqueFade
     ) {
       this.camera.updateMatrixWorld();
       this.heroCapy.updateWorldMatrix(true, true);
@@ -6975,7 +7049,10 @@ export class PlayStyleManager {
             }
           }
         } else if (this.currentMode === 'capytorio') {
-          this.capytorioRenderer.collectOccluderCandidates(_occluderCandidates);
+          this.capytorioRenderer.collectOccluderCandidates(
+            _occluderCandidates,
+            this.getCapytorioCameraMode() === 'chase'
+          );
         } else {
           const oz = ZONE_LOCATIONS[this.currentMode];
           for (let i = 0; i < activeGroup.children.length; i++) {
@@ -7448,6 +7525,14 @@ export class PlayStyleManager {
     this.camera.updateMatrixWorld();
     this.profiler.endPhase('scene_graph_matrices');
 
+    // Apply any queued adaptive GPU optimizer change strictly BEFORE render() so canvas
+    // pixelRatio/setSize adjustments are immediately redrawn in the same rAF (zero black flash!).
+    if (this.pendingAdaptiveGpuConfig) {
+      const nextGpuCfg = this.pendingAdaptiveGpuConfig;
+      this.pendingAdaptiveGpuConfig = null;
+      this.gpuEngine.applyConfig(nextGpuCfg);
+    }
+
     // Matrices were just updated cleanly above; suppress redundant internal
     // scene.updateMatrixWorld() inside WebGPURenderer._renderScene / WebGLRenderer.render.
     const prevSceneMatrixAuto = this.scene.matrixWorldAutoUpdate;
@@ -7512,9 +7597,9 @@ export class PlayStyleManager {
         ) {
           this.applyGlobalCapyLodTier((this.currentCapyLodTier - 1) as CapyLodTier);
         }
-        if (!this.isSoftwareGl && nowMs - this.adaptiveLastStepMs >= 1400) {
+        if (!this.isSoftwareGl && nowMs - this.adaptiveLastStepMs >= 2600) {
           this.adaptiveLowPerfStreak++;
-          if (this.adaptiveLowPerfStreak >= 2) {
+          if (this.adaptiveLowPerfStreak >= 3) {
             this.adaptiveLowPerfStreak = 0;
             const baseCfg = this.buildGpuConfigFromSettings(this.settings);
             const nextLevel = findNextEffectiveMitigationLevel(
@@ -7527,7 +7612,8 @@ export class PlayStyleManager {
               this.adaptiveMitigationLevel = nextLevel;
               this.adaptiveLastStepMs = nowMs;
               const effCfg = this.buildEffectiveGpuConfig(this.settings, nextLevel);
-              this.gpuEngine.applyConfig(effCfg);
+              // Queue for start of next rAF before render() so setSize/setPixelRatio never flashes black
+              this.pendingAdaptiveGpuConfig = effCfg;
               if (
                 this.settings.autoCapyLod !== false &&
                 this.currentCapyLodTier > this.adaptiveMitigationResult.maxCapyLodTier
@@ -7550,9 +7636,9 @@ export class PlayStyleManager {
         if (this.adaptiveMitigationLevel > 0 && !this.isSoftwareGl) {
           this.adaptiveRecoveryAccumSec += intervalMs / 1000;
           if (
-            this.adaptiveRecoveryAccumSec >= 6.5 &&
-            nowMs - this.adaptiveLastStepMs >= 6500 &&
-            this.performanceLog.getAvgFrameMs() <= budgetMs * 0.88
+            this.adaptiveRecoveryAccumSec >= 10.0 &&
+            nowMs - this.adaptiveLastStepMs >= 10000 &&
+            this.performanceLog.getAvgFrameMs() <= budgetMs * 0.85
           ) {
             this.adaptiveRecoveryAccumSec = 0;
             this.adaptiveLastStepMs = nowMs;
@@ -7565,7 +7651,8 @@ export class PlayStyleManager {
             );
             this.adaptiveMitigationLevel = prevLevel;
             const effCfg = this.buildEffectiveGpuConfig(this.settings, prevLevel);
-            this.gpuEngine.applyConfig(effCfg);
+            // Queue for start of next rAF before render() so recovery never flashes black
+            this.pendingAdaptiveGpuConfig = effCfg;
             this.performanceLog.activeGovernorTier = prevLevel;
             this.performanceLog.disabledFeatures = this.adaptiveMitigationResult.disabledFeatures.slice();
             this.performanceLog.notifyTransitionWarmup(2);
@@ -11610,14 +11697,16 @@ export class PlayStyleManager {
   }
 
   public handleResize(width: number, height: number) {
-    const safeW = Math.max(1, Math.floor(width));
-    const safeH = Math.max(1, Math.floor(height));
+    if (width < 16 || height < 16) return;
+    const safeW = Math.max(16, Math.floor(width));
+    const safeH = Math.max(16, Math.floor(height));
     const curSize = this.renderer.getSize(_rendererSizeVec2);
     if (Math.floor(curSize.x) === safeW && Math.floor(curSize.y) === safeH) {
       return;
     }
     this.camera.aspect = safeW / safeH;
     this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld();
     this.renderer.setSize(safeW, safeH);
     this.gpuEngine?.handleResize(safeW, safeH);
     this.vfxEngine?.setPixelRatio(this.renderer.getPixelRatio());
@@ -11625,6 +11714,7 @@ export class PlayStyleManager {
     if (_rendererSizeVec2.x > 10 && _rendererSizeVec2.y > 10) {
       SHARED_OCCLUDER_VIEWPORT.set(_rendererSizeVec2.x, _rendererSizeVec2.y);
     }
+    // Redraw immediately after setSize so the cleared canvas buffer never flashes black for a frame
     this.gpuEngine?.render();
   }
 

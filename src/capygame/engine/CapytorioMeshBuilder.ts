@@ -26,7 +26,7 @@ import {
 const MAX_ORE_INSTANCES = 1024;
 const MAX_BELT_INSTANCES = 1400;
 const MAX_CURVED_BELT_INSTANCES = 600;
-const MAX_SHAPE_ITEM_INSTANCES = 800;
+const MAX_SHAPE_ITEM_INSTANCES = 2048;
 const MAX_TREE_INSTANCES = 512;
 const MAX_VISIBLE_RADIUS_TILES = 22;
 const BELT_SURFACE_Y = 0.145;
@@ -333,28 +333,31 @@ function createCurvedArcBandGeometry(
 }
 
 function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometry {
+  // All belt item silhouettes are calibrated to ~0.61–0.63 m along the belt travel axis (Z)
+  // so 4 items per lane (0.625 m Factorio slot pitch) sit tightly packed and touching with zero gaps,
+  // while keeping width (X) <= 0.72 m inside each 0.98 m lane corridor.
   if (shape === 'ore') {
-    const geo = new THREE.DodecahedronGeometry(0.23, 0);
-    geo.scale(1.1, 0.78, 0.96);
+    const geo = new THREE.DodecahedronGeometry(0.325, 0);
+    geo.scale(1.06, 0.72, 0.99);
     return groundGeometryBottomAtZero(geo);
   }
   if (shape === 'plate') {
-    const hw = 0.20;
-    const hd = 0.15;
+    const hw = 0.34;
+    const hd = 0.292;
     const s = new THREE.Shape();
-    s.moveTo(-hw + 0.03, -hd);
-    s.lineTo(hw - 0.03, -hd);
-    s.lineTo(hw, -hd + 0.03);
-    s.lineTo(hw, hd - 0.03);
-    s.lineTo(hw - 0.03, hd);
-    s.lineTo(-hw + 0.03, hd);
-    s.lineTo(-hw, hd - 0.03);
-    s.lineTo(-hw, -hd + 0.03);
+    s.moveTo(-hw + 0.035, -hd);
+    s.lineTo(hw - 0.035, -hd);
+    s.lineTo(hw, -hd + 0.035);
+    s.lineTo(hw, hd - 0.035);
+    s.lineTo(hw - 0.035, hd);
+    s.lineTo(-hw + 0.035, hd);
+    s.lineTo(-hw, hd - 0.035);
+    s.lineTo(-hw, -hd + 0.035);
     s.closePath();
     const geo = new THREE.ExtrudeGeometry(s, {
-      depth: 0.075,
+      depth: 0.085,
       bevelEnabled: true,
-      bevelThickness: 0.018,
+      bevelThickness: 0.02,
       bevelSize: 0.02,
       bevelSegments: 2,
     });
@@ -363,8 +366,8 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
   }
   if (shape === 'gear') {
     const teeth = 8;
-    const rOuter = 0.245;
-    const rRoot = 0.172;
+    const rOuter = 0.302;
+    const rRoot = 0.218;
     const step = (Math.PI * 2) / teeth;
     const s = new THREE.Shape();
     for (let i = 0; i < teeth; i++) {
@@ -382,12 +385,12 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
     }
     s.closePath();
     const hole = new THREE.Path();
-    hole.absarc(0, 0, 0.068, 0, Math.PI * 2, true);
+    hole.absarc(0, 0, 0.084, 0, Math.PI * 2, true);
     s.holes.push(hole);
     const geo = new THREE.ExtrudeGeometry(s, {
-      depth: 0.08,
+      depth: 0.09,
       bevelEnabled: true,
-      bevelThickness: 0.014,
+      bevelThickness: 0.015,
       bevelSize: 0.012,
       bevelSegments: 1,
     });
@@ -395,20 +398,20 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
     return groundGeometryBottomAtZero(geo);
   }
   if (shape === 'circuit') {
-    const hw = 0.185;
-    const hd = 0.165;
+    const hw = 0.32;
+    const hd = 0.298;
     const s = new THREE.Shape();
     s.moveTo(-hw, -hd);
-    s.lineTo(hw - 0.06, -hd);
-    s.lineTo(hw, -hd + 0.06);
+    s.lineTo(hw - 0.075, -hd);
+    s.lineTo(hw, -hd + 0.075);
     s.lineTo(hw, hd);
-    s.lineTo(-hw + 0.05, hd);
-    s.lineTo(-hw, hd - 0.05);
+    s.lineTo(-hw + 0.065, hd);
+    s.lineTo(-hw, hd - 0.065);
     s.closePath();
     const geo = new THREE.ExtrudeGeometry(s, {
-      depth: 0.065,
+      depth: 0.075,
       bevelEnabled: true,
-      bevelThickness: 0.012,
+      bevelThickness: 0.014,
       bevelSize: 0.012,
       bevelSegments: 1,
     });
@@ -419,30 +422,30 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
     // Classic Erlenmeyer conical science flask silhouette
     const pts = [
       new THREE.Vector2(0.001, 0.0),
-      new THREE.Vector2(0.185, 0.0),
-      new THREE.Vector2(0.205, 0.055),
-      new THREE.Vector2(0.175, 0.14),
-      new THREE.Vector2(0.075, 0.31),
-      new THREE.Vector2(0.07, 0.40),
-      new THREE.Vector2(0.105, 0.425),
-      new THREE.Vector2(0.055, 0.44),
-      new THREE.Vector2(0.001, 0.44),
+      new THREE.Vector2(0.28, 0.0),
+      new THREE.Vector2(0.308, 0.075),
+      new THREE.Vector2(0.258, 0.19),
+      new THREE.Vector2(0.11, 0.39),
+      new THREE.Vector2(0.102, 0.50),
+      new THREE.Vector2(0.145, 0.535),
+      new THREE.Vector2(0.075, 0.56),
+      new THREE.Vector2(0.001, 0.56),
     ];
     const geo = new THREE.LatheGeometry(pts, 12);
     return groundGeometryBottomAtZero(geo);
   }
   if (shape === 'coil') {
-    const geo = new THREE.TorusGeometry(0.165, 0.068, 8, 16);
+    const geo = new THREE.TorusGeometry(0.222, 0.088, 8, 16);
     geo.rotateX(Math.PI * 0.5);
     return groundGeometryBottomAtZero(geo);
   }
   if (shape === 'fruit') {
-    const geo = new THREE.SphereGeometry(0.205, 10, 8);
-    geo.scale(1.06, 0.92, 1.06);
+    const geo = new THREE.SphereGeometry(0.306, 10, 8);
+    geo.scale(1.04, 0.90, 1.02);
     return groundGeometryBottomAtZero(geo);
   }
   // 'crate'
-  const c = 0.16;
+  const c = 0.285;
   const s = new THREE.Shape();
   s.moveTo(-c, -c);
   s.lineTo(c, -c);
@@ -450,7 +453,7 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
   s.lineTo(-c, c);
   s.closePath();
   const geo = new THREE.ExtrudeGeometry(s, {
-    depth: 0.22,
+    depth: 0.28,
     bevelEnabled: true,
     bevelThickness: 0.025,
     bevelSize: 0.025,
@@ -582,6 +585,9 @@ export class Capytorio3DRenderer {
   private sharedMaterials: THREE.Material[] = [];
   private sharedGeometries: THREE.BufferGeometry[] = [];
   private sharedTextures: THREE.Texture[] = [];
+  private readonly machineGeoCache = new Map<string, THREE.BufferGeometry>();
+  private readonly accentMatCache = new Map<number, THREE.MeshStandardMaterial>();
+  private readonly heldItemMatCache = new Map<number, THREE.MeshStandardMaterial>();
   private matSteelDark: THREE.MeshStandardMaterial;
   private matSteelLight: THREE.MeshStandardMaterial;
   private matBrass: THREE.MeshStandardMaterial;
@@ -589,8 +595,20 @@ export class Capytorio3DRenderer {
   private matBrick: THREE.MeshStandardMaterial;
   private matCopper: THREE.MeshStandardMaterial;
   private matLabGlass: THREE.MeshStandardMaterial;
+  private matFurnaceHearthIdle: THREE.MeshStandardMaterial;
+  private matFurnaceHearthActive: THREE.MeshStandardMaterial;
+  private matGeneratorFireboxIdle: THREE.MeshStandardMaterial;
+  private matGeneratorFireboxActive: THREE.MeshStandardMaterial;
+  private matLabCoreIdle: THREE.MeshStandardMaterial;
+  private matLabCoreActive: THREE.MeshStandardMaterial;
 
   private lastBeltScrollPhase = 0;
+  // Static ore & tree terrain InstancedMesh dirty-cache (skips 3200+ tile scans/uploads per frame)
+  private lastTerrainCenterGx = Number.NaN;
+  private lastTerrainCenterGz = Number.NaN;
+  private lastTerrainRadius = -1;
+  private lastTerrainTopoRev = -1;
+  private lastTerrainSubPixel = -1;
 
   constructor() {
     this.root.name = 'Capytorio3DRendererRoot';
@@ -637,6 +655,42 @@ export class Capytorio3DRenderer {
       opacity: 0.58,
       depthWrite: false,
     });
+    this.matFurnaceHearthIdle = new THREE.MeshStandardMaterial({
+      color: 0xf97316,
+      emissive: 0xea580c,
+      emissiveIntensity: 0.45,
+      roughness: 0.25,
+    });
+    this.matFurnaceHearthActive = new THREE.MeshStandardMaterial({
+      color: 0xf97316,
+      emissive: 0xea580c,
+      emissiveIntensity: 1.55,
+      roughness: 0.22,
+    });
+    this.matGeneratorFireboxIdle = new THREE.MeshStandardMaterial({
+      color: 0xf97316,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 0.18,
+      roughness: 0.25,
+    });
+    this.matGeneratorFireboxActive = new THREE.MeshStandardMaterial({
+      color: 0xf97316,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 1.55,
+      roughness: 0.22,
+    });
+    this.matLabCoreIdle = new THREE.MeshStandardMaterial({
+      color: 0xa855f7,
+      emissive: 0x9333ea,
+      emissiveIntensity: 0.85,
+      roughness: 0.18,
+    });
+    this.matLabCoreActive = new THREE.MeshStandardMaterial({
+      color: 0xa855f7,
+      emissive: 0x9333ea,
+      emissiveIntensity: 1.85,
+      roughness: 0.16,
+    });
     this.sharedMaterials.push(
       this.matSteelDark,
       this.matSteelLight,
@@ -644,10 +698,17 @@ export class Capytorio3DRenderer {
       this.matHazardYellow,
       this.matBrick,
       this.matCopper,
-      this.matLabGlass
+      this.matLabGlass,
+      this.matFurnaceHearthIdle,
+      this.matFurnaceHearthActive,
+      this.matGeneratorFireboxIdle,
+      this.matGeneratorFireboxActive,
+      this.matLabCoreIdle,
+      this.matLabCoreActive
     );
 
     // 1. Infinite Lush Meadow Grass Deck (320m x 320m snapping smoothly in 10m steps)
+    // Kept opaque at ground altitude for fast early-Z, crisp SSAO depth, and zero sorting glitches!
     const deckTex = createLushMeadowGrassTexture();
     const bumpTex = createDeckBumpTexture();
     if (deckTex) this.sharedTextures.push(deckTex);
@@ -661,8 +722,11 @@ export class Capytorio3DRenderer {
       bumpScale: 0.05,
       roughness: 0.92,
       metalness: 0.02,
-      transparent: true,
+      transparent: false,
       opacity: 1.0,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     });
     this.deckMat = deckMat;
     this.groundDeck = new THREE.Mesh(deckGeo, deckMat);
@@ -679,7 +743,7 @@ export class Capytorio3DRenderer {
       color: 0xfde68a,
       roughness: 0.9,
       metalness: 0.02,
-      transparent: true,
+      transparent: false,
       opacity: 1.0,
     });
     this.coastMat = coastMat;
@@ -1055,24 +1119,21 @@ export class Capytorio3DRenderer {
     const pylon = new THREE.Group();
     pylon.position.set(CAPYTORIO_WORLD_ORIGIN_X, 0, CAPYTORIO_WORLD_ORIGIN_Z - 6.8);
 
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.4, 1.8, 0.35, 8),
-      this.matSteelDark
-    );
+    const baseGeo = new THREE.CylinderGeometry(1.4, 1.8, 0.35, 8);
+    const base = new THREE.Mesh(baseGeo, this.matSteelDark);
     base.position.y = 0.175;
+    base.castShadow = true;
+    base.receiveShadow = true;
     pylon.add(base);
 
-    const mast = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.22, 0.34, 4.6, 8),
-      this.matSteelLight
-    );
+    const mastGeo = new THREE.CylinderGeometry(0.22, 0.34, 4.6, 8);
+    const mast = new THREE.Mesh(mastGeo, this.matSteelLight);
     mast.position.y = 2.5;
+    mast.castShadow = true;
     pylon.add(mast);
 
-    const dish = new THREE.Mesh(
-      new THREE.TorusGeometry(0.85, 0.09, 8, 20),
-      this.matBrass
-    );
+    const dishGeo = new THREE.TorusGeometry(0.85, 0.09, 8, 20);
+    const dish = new THREE.Mesh(dishGeo, this.matBrass);
     dish.position.y = 4.6;
     dish.rotation.x = Math.PI * 0.32;
     pylon.add(dish);
@@ -1084,26 +1145,72 @@ export class Capytorio3DRenderer {
       roughness: 0.15,
       metalness: 0.2,
     });
-    const orb = new THREE.Mesh(new THREE.OctahedronGeometry(0.45, 0), orbMat);
+    const orbGeo = new THREE.OctahedronGeometry(0.45, 0);
+    const orb = new THREE.Mesh(orbGeo, orbMat);
     orb.position.y = 5.3;
     pylon.add(orb);
+    this.sharedGeometries.push(baseGeo, mastGeo, dishGeo, orbGeo);
     this.sharedMaterials.push(orbMat);
 
     this.beaconPillarGroup.add(pylon);
+    this.beaconPillarGroup.userData.__occluderRoot = this.beaconPillarGroup;
+    pylon.traverse((node) => {
+      node.userData.__occluderRoot = this.beaconPillarGroup;
+    });
+  }
+
+  private getCachedMachineGeo(
+    key: string,
+    factory: () => THREE.BufferGeometry
+  ): THREE.BufferGeometry {
+    let geo = this.machineGeoCache.get(key);
+    if (!geo) {
+      geo = factory();
+      this.machineGeoCache.set(key, geo);
+      this.sharedGeometries.push(geo);
+    }
+    return geo;
+  }
+
+  private getCachedAccentMat(colorHex: number): THREE.MeshStandardMaterial {
+    let mat = this.accentMatCache.get(colorHex);
+    if (!mat) {
+      mat = new THREE.MeshStandardMaterial({
+        color: colorHex,
+        roughness: 0.38,
+        metalness: 0.35,
+      });
+      this.accentMatCache.set(colorHex, mat);
+      this.sharedMaterials.push(mat);
+    }
+    return mat;
+  }
+
+  private getCachedHeldItemMat(colorHex: number): THREE.MeshStandardMaterial {
+    let mat = this.heldItemMatCache.get(colorHex);
+    if (!mat) {
+      mat = new THREE.MeshStandardMaterial({
+        color: colorHex,
+        roughness: 0.28,
+        metalness: 0.38,
+      });
+      this.heldItemMatCache.set(colorHex, mat);
+      this.sharedMaterials.push(mat);
+    }
+    return mat;
   }
 
   /**
-   * Returns only tall composite structures & beacon landmarks that might occlude the camera-to-player sightline.
-   * Never yields `root`, ground deck, ores, belts, or cursor overlays.
+   * Returns only the tall Drop-Pod Beacon landmark (when requested in 3D chase camera mode).
+   * Low-profile factory floor machines (furnaces, inserters, drills, etc.) are NEVER faded by
+   * camera sightline rays, eliminating partial sub-mesh disappearance and shader compile stalls.
    */
-  public collectOccluderCandidates(out: THREE.Object3D[]): void {
-    if (this.beaconPillarGroup.visible) {
+  public collectOccluderCandidates(
+    out: THREE.Object3D[],
+    includeTallLandmark: boolean = true
+  ): void {
+    if (includeTallLandmark && this.beaconPillarGroup.visible) {
       out.push(this.beaconPillarGroup);
-    }
-    for (const group of this.activeMachineGroups.values()) {
-      if (group.visible) {
-        out.push(group);
-      }
     }
   }
 
@@ -1131,17 +1238,16 @@ export class Capytorio3DRenderer {
   private createCompositeMachineMesh(type: CapytorioMachineType): THREE.Group {
     const g = new THREE.Group();
     const spec = CAPYTORIO_MACHINE_SPECS[type];
-    const accentMat = new THREE.MeshStandardMaterial({
-      color: spec.colorHex,
-      roughness: 0.38,
-      metalness: 0.35,
-    });
-    this.sharedMaterials.push(accentMat);
-    g.userData.accentMat = accentMat;
+    const accentMat = this.getCachedAccentMat(spec.colorHex);
+    const accentMeshes: THREE.Mesh[] = [];
+    g.userData.accentMeshes = accentMeshes;
+    g.userData.appliedTintHex = spec.colorHex;
+    g.userData.__occluderRoot = g;
+    g.userData.ignoreCameraFade = true;
 
-    // Base chassis plinth sitting flush on y = 0
+    // Base chassis plinth sitting flush on y = 0 (shared geometry across every machine!)
     const plinth = new THREE.Mesh(
-      new THREE.BoxGeometry(2.05, 0.24, 2.05),
+      this.getCachedMachineGeo('plinth', () => new THREE.BoxGeometry(2.05, 0.24, 2.05)),
       this.matSteelDark
     );
     plinth.position.y = 0.12;
@@ -1151,25 +1257,33 @@ export class Capytorio3DRenderer {
 
     if (type === 'drill') {
       // Twin A-frame pillars + rotating drill auger + output chute pointing -Z
+      const legGeo = this.getCachedMachineGeo('drill_leg', () => new THREE.BoxGeometry(0.28, 1.45, 0.36));
       for (const sx of [-0.72, 0.72]) {
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.28, 1.45, 0.36), this.matSteelLight);
+        const leg = new THREE.Mesh(legGeo, this.matSteelLight);
         leg.position.set(sx, 0.92, 0);
+        leg.castShadow = true;
         g.add(leg);
       }
-      const bridge = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.34, 0.9), accentMat);
+      const bridge = new THREE.Mesh(
+        this.getCachedMachineGeo('drill_bridge', () => new THREE.BoxGeometry(1.85, 0.34, 0.9)),
+        accentMat
+      );
       bridge.position.set(0, 1.56, 0);
+      bridge.castShadow = true;
+      bridge.receiveShadow = true;
       g.add(bridge);
+      accentMeshes.push(bridge);
 
       const augerGroup = new THREE.Group();
       augerGroup.position.set(0, 0.86, 0);
       const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(0.46, 1.18, 8),
+        this.getCachedMachineGeo('drill_cone', () => new THREE.ConeGeometry(0.46, 1.18, 8)),
         this.matBrass
       );
       cone.rotation.x = Math.PI;
       augerGroup.add(cone);
       const collar = new THREE.Mesh(
-        new THREE.TorusGeometry(0.4, 0.08, 6, 14),
+        this.getCachedMachineGeo('drill_collar', () => new THREE.TorusGeometry(0.4, 0.08, 6, 14)),
         this.matSteelLight
       );
       collar.rotation.x = Math.PI * 0.5;
@@ -1178,85 +1292,89 @@ export class Capytorio3DRenderer {
       g.add(augerGroup);
       g.userData.spinPart = augerGroup;
 
-      const chute = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.32, 0.65), this.matHazardYellow);
+      const chute = new THREE.Mesh(
+        this.getCachedMachineGeo('drill_chute', () => new THREE.BoxGeometry(0.55, 0.32, 0.65)),
+        this.matHazardYellow
+      );
       chute.position.set(0, 0.36, -0.98);
       g.add(chute);
     } else if (type === 'inserter') {
-      // Multi-joint articulated Factorio mechanical inserter:
-      // Bolted pedestal -> Rotating shoulder turret -> Upper arm boom -> Articulated elbow drum -> Forearm -> Wrist & dual gripper jaws
+      // Multi-joint articulated Factorio mechanical inserter (all geometries pooled & shared)
       const ped = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.56, 0.72, 0.22, 8),
+        this.getCachedMachineGeo('ins_ped', () => new THREE.CylinderGeometry(0.56, 0.72, 0.22, 8)),
         this.matSteelLight
       );
       ped.position.y = 0.26;
+      ped.castShadow = true;
+      ped.receiveShadow = true;
       g.add(ped);
 
       const turret = new THREE.Group();
       turret.position.set(0, 0.38, 0);
 
       const turretCollar = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.36, 0.44, 0.22, 8),
+        this.getCachedMachineGeo('ins_collar', () => new THREE.CylinderGeometry(0.36, 0.44, 0.22, 8)),
         accentMat
       );
       turretCollar.position.y = 0.08;
       turret.add(turretCollar);
+      accentMeshes.push(turretCollar);
 
-      // Shoulder clevis & pivot at y = 0.22 above turret (world y = 0.60)
       const shoulderPivot = new THREE.Group();
       shoulderPivot.position.set(0, 0.22, 0);
 
       const shoulderPin = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.16, 0.16, 0.44, 10),
+        this.getCachedMachineGeo('ins_pin', () => new THREE.CylinderGeometry(0.16, 0.16, 0.44, 10)),
         this.matSteelDark
       );
       shoulderPin.rotation.z = Math.PI * 0.5;
       shoulderPivot.add(shoulderPin);
 
-      // Upper arm boom (length 1.65m along +Y for full reach to adjacent far belt lane)
-      const upperArmL = new THREE.Mesh(
-        new THREE.BoxGeometry(0.11, INSERTER_UPPER_ARM_LEN, 0.2),
-        accentMat
+      const upperArmGeo = this.getCachedMachineGeo(
+        'ins_upper',
+        () => new THREE.BoxGeometry(0.11, INSERTER_UPPER_ARM_LEN, 0.2)
       );
+      const upperArmL = new THREE.Mesh(upperArmGeo, accentMat);
       upperArmL.position.set(-0.12, INSERTER_UPPER_ARM_LEN * 0.5, 0);
       upperArmL.castShadow = true;
       shoulderPivot.add(upperArmL);
+      accentMeshes.push(upperArmL);
 
-      const upperArmR = new THREE.Mesh(
-        new THREE.BoxGeometry(0.11, INSERTER_UPPER_ARM_LEN, 0.2),
-        accentMat
-      );
+      const upperArmR = new THREE.Mesh(upperArmGeo, accentMat);
       upperArmR.position.set(0.12, INSERTER_UPPER_ARM_LEN * 0.5, 0);
       upperArmR.castShadow = true;
       shoulderPivot.add(upperArmR);
+      accentMeshes.push(upperArmR);
 
       const upperStrut = new THREE.Mesh(
-        new THREE.BoxGeometry(0.14, 1.12, 0.14),
+        this.getCachedMachineGeo('ins_strut', () => new THREE.BoxGeometry(0.14, 1.12, 0.14)),
         this.matSteelLight
       );
       upperStrut.position.set(0, 0.72, 0.08);
       shoulderPivot.add(upperStrut);
 
-      // Articulated Elbow Joint at top of upper arm (0, INSERTER_UPPER_ARM_LEN, 0)
       const elbowPivot = new THREE.Group();
       elbowPivot.position.set(0, INSERTER_UPPER_ARM_LEN, 0);
 
       const elbowDrum = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.18, 0.18, 0.36, 12),
+        this.getCachedMachineGeo('ins_drum', () => new THREE.CylinderGeometry(0.18, 0.18, 0.36, 12)),
         this.matSteelDark
       );
       elbowDrum.rotation.z = Math.PI * 0.5;
       elbowPivot.add(elbowDrum);
 
       const elbowCap = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.11, 0.11, 0.4, 10),
+        this.getCachedMachineGeo('ins_cap', () => new THREE.CylinderGeometry(0.11, 0.11, 0.4, 10)),
         this.matBrass
       );
       elbowCap.rotation.z = Math.PI * 0.5;
       elbowPivot.add(elbowCap);
 
-      // Forearm boom reaching forward along -Z (length 1.70m)
       const forearm = new THREE.Mesh(
-        new THREE.BoxGeometry(0.16, 0.15, INSERTER_FOREARM_LEN),
+        this.getCachedMachineGeo(
+          'ins_forearm',
+          () => new THREE.BoxGeometry(0.16, 0.15, INSERTER_FOREARM_LEN)
+        ),
         this.matSteelLight
       );
       forearm.position.set(0, 0, -INSERTER_FOREARM_LEN * 0.5);
@@ -1264,44 +1382,37 @@ export class Capytorio3DRenderer {
       elbowPivot.add(forearm);
 
       const forearmRib = new THREE.Mesh(
-        new THREE.BoxGeometry(0.2, 0.08, 1.24),
+        this.getCachedMachineGeo('ins_rib', () => new THREE.BoxGeometry(0.2, 0.08, 1.24)),
         accentMat
       );
       forearmRib.position.set(0, 0.06, -0.78);
       elbowPivot.add(forearmRib);
+      accentMeshes.push(forearmRib);
 
-      // Wrist & Dual-Prong Gripper Claw at tip of forearm (0, 0, -INSERTER_FOREARM_LEN)
       const wristPivot = new THREE.Group();
       wristPivot.position.set(0, 0, -INSERTER_FOREARM_LEN);
 
       const wristHub = new THREE.Mesh(
-        new THREE.BoxGeometry(0.32, 0.14, 0.22),
+        this.getCachedMachineGeo('ins_wrist', () => new THREE.BoxGeometry(0.32, 0.14, 0.22)),
         this.matSteelDark
       );
       wristPivot.add(wristHub);
 
+      const jawGeo = this.getCachedMachineGeo('ins_jaw', () => new THREE.BoxGeometry(0.065, 0.26, 0.14));
       for (const sx of [-0.15, 0.15]) {
-        const jaw = new THREE.Mesh(
-          new THREE.BoxGeometry(0.065, 0.26, 0.14),
-          this.matBrass
-        );
+        const jaw = new THREE.Mesh(jawGeo, this.matBrass);
         jaw.position.set(sx, -0.14, 0);
         wristPivot.add(jaw);
       }
 
-      // Per-archetype pre-built held item meshes matching exact belt item shape & color
-      const heldMat = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 0.28,
-        metalness: 0.38,
-      });
-      this.sharedMaterials.push(heldMat);
+      // Pre-built held item meshes sharing cached color materials (zero per-inserter material allocs)
+      const defaultHeldMat = this.getCachedHeldItemMat(0xffffff);
       const heldMount = new THREE.Group();
       heldMount.position.set(0, -0.28, 0);
       const heldMeshesByShape = {} as Record<CapytorioItemShape, THREE.Mesh>;
       for (let sIdx = 0; sIdx < CAPYTORIO_ITEM_SHAPES.length; sIdx++) {
         const shape = CAPYTORIO_ITEM_SHAPES[sIdx];
-        const m = new THREE.Mesh(this.itemGeosByShape[shape], heldMat);
+        const m = new THREE.Mesh(this.itemGeosByShape[shape], defaultHeldMat);
         m.visible = false;
         heldMount.add(m);
         heldMeshesByShape[shape] = m;
@@ -1318,100 +1429,133 @@ export class Capytorio3DRenderer {
       g.userData.elbowPivot = elbowPivot;
       g.userData.wristPivot = wristPivot;
       g.userData.heldMeshesByShape = heldMeshesByShape;
-      g.userData.heldMat = heldMat;
+      g.userData.lastHeldColorHex = 0xffffff;
     } else if (type === 'furnace') {
       const kiln = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.86, 1.0, 1.35, 8),
+        this.getCachedMachineGeo('furn_kiln', () => new THREE.CylinderGeometry(0.86, 1.0, 1.35, 8)),
         this.matBrick
       );
       kiln.position.y = 0.9;
+      kiln.castShadow = true;
+      kiln.receiveShadow = true;
       g.add(kiln);
 
-      const chimneyL = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 1.0, 8), this.matSteelDark);
+      const chimneyGeo = this.getCachedMachineGeo(
+        'furn_chimney',
+        () => new THREE.CylinderGeometry(0.18, 0.22, 1.0, 8)
+      );
+      const chimneyL = new THREE.Mesh(chimneyGeo, this.matSteelDark);
       chimneyL.position.set(-0.46, 1.85, 0.35);
+      chimneyL.castShadow = true;
       g.add(chimneyL);
 
-      const chimneyR = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 1.0, 8), this.matSteelDark);
+      const chimneyR = new THREE.Mesh(chimneyGeo, this.matSteelDark);
       chimneyR.position.set(0.46, 1.85, 0.35);
+      chimneyR.castShadow = true;
       g.add(chimneyR);
 
-      const hearthMat = new THREE.MeshStandardMaterial({
-        color: 0xf97316,
-        emissive: 0xea580c,
-        emissiveIntensity: 0.9,
-        roughness: 0.25,
-      });
-      const hearth = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.52, 0.2), hearthMat);
+      const hearth = new THREE.Mesh(
+        this.getCachedMachineGeo('furn_hearth', () => new THREE.BoxGeometry(0.75, 0.52, 0.2)),
+        this.matFurnaceHearthIdle
+      );
       hearth.position.set(0, 0.65, -0.88);
       g.add(hearth);
-      this.sharedMaterials.push(hearthMat);
-      g.userData.glowMat = hearthMat;
+      g.userData.hearthMesh = hearth;
 
-      const capRing = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.08, 6, 12), this.matCopper);
+      const capRing = new THREE.Mesh(
+        this.getCachedMachineGeo('furn_ring', () => new THREE.TorusGeometry(0.72, 0.08, 6, 12)),
+        this.matCopper
+      );
       capRing.rotation.x = Math.PI * 0.5;
       capRing.position.y = 1.56;
       g.add(capRing);
 
-      const furnaceOutPort = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.24, 0.34), this.matHazardYellow);
+      const furnaceOutPort = new THREE.Mesh(
+        this.getCachedMachineGeo('furn_port', () => new THREE.BoxGeometry(0.55, 0.24, 0.34)),
+        this.matHazardYellow
+      );
       furnaceOutPort.position.set(0, 0.28, -0.96);
       g.add(furnaceOutPort);
     } else if (type === 'assembler') {
-      const hull = new THREE.Mesh(new THREE.BoxGeometry(1.86, 1.05, 1.86), accentMat);
+      const hull = new THREE.Mesh(
+        this.getCachedMachineGeo('asm_hull', () => new THREE.BoxGeometry(1.86, 1.05, 1.86)),
+        accentMat
+      );
       hull.position.y = 0.76;
       hull.castShadow = true;
+      hull.receiveShadow = true;
       g.add(hull);
+      accentMeshes.push(hull);
 
-      const hood = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.3, 1.42), this.matSteelLight);
+      const hood = new THREE.Mesh(
+        this.getCachedMachineGeo('asm_hood', () => new THREE.BoxGeometry(1.42, 0.3, 1.42)),
+        this.matSteelLight
+      );
       hood.position.y = 1.42;
+      hood.castShadow = true;
       g.add(hood);
 
-      const gearA = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.18, 8), this.matBrass);
+      const gearA = new THREE.Mesh(
+        this.getCachedMachineGeo('asm_gearA', () => new THREE.CylinderGeometry(0.42, 0.42, 0.18, 8)),
+        this.matBrass
+      );
       gearA.position.set(-0.36, 1.66, 0);
       g.add(gearA);
 
-      const gearB = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.18, 6), this.matSteelLight);
+      const gearB = new THREE.Mesh(
+        this.getCachedMachineGeo('asm_gearB', () => new THREE.CylinderGeometry(0.32, 0.32, 0.18, 6)),
+        this.matSteelLight
+      );
       gearB.position.set(0.38, 1.66, 0);
       g.add(gearB);
 
-      const portOut = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.34, 0.28), this.matHazardYellow);
+      const portOut = new THREE.Mesh(
+        this.getCachedMachineGeo('asm_port', () => new THREE.BoxGeometry(0.6, 0.34, 0.28)),
+        this.matHazardYellow
+      );
       portOut.position.set(0, 0.46, -0.98);
       g.add(portOut);
 
       g.userData.gearA = gearA;
       g.userData.gearB = gearB;
     } else if (type === 'generator') {
-      // Heavy horizontal steam boiler + copper condenser pipes + flywheel + firebox + stack
       const boiler = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.68, 0.68, 1.65, 12),
+        this.getCachedMachineGeo('gen_boiler', () => new THREE.CylinderGeometry(0.68, 0.68, 1.65, 12)),
         accentMat
       );
       boiler.rotation.x = Math.PI * 0.5;
       boiler.position.set(0, 0.98, 0);
+      boiler.castShadow = true;
+      boiler.receiveShadow = true;
       g.add(boiler);
+      accentMeshes.push(boiler);
 
-      const fireboxMat = new THREE.MeshStandardMaterial({
-        color: 0xf97316,
-        emissive: 0xf59e0b,
-        emissiveIntensity: 0.2,
-        roughness: 0.25,
-      });
-      const firebox = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.44, 0.22), fireboxMat);
+      const firebox = new THREE.Mesh(
+        this.getCachedMachineGeo('gen_firebox', () => new THREE.BoxGeometry(0.64, 0.44, 0.22)),
+        this.matGeneratorFireboxIdle
+      );
       firebox.position.set(0, 0.65, -0.82);
       g.add(firebox);
-      this.sharedMaterials.push(fireboxMat);
-      g.userData.fuelGlowMat = fireboxMat;
+      g.userData.fireboxMesh = firebox;
 
-      const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.3, 1.4, 8), this.matSteelDark);
+      const stack = new THREE.Mesh(
+        this.getCachedMachineGeo('gen_stack', () => new THREE.CylinderGeometry(0.24, 0.3, 1.4, 8)),
+        this.matSteelDark
+      );
       stack.position.set(0.45, 1.9, 0.42);
+      stack.castShadow = true;
       g.add(stack);
 
-      const pipe = new THREE.Mesh(new THREE.TorusGeometry(0.48, 0.1, 6, 12), this.matCopper);
+      const pipe = new THREE.Mesh(
+        this.getCachedMachineGeo('gen_pipe', () => new THREE.TorusGeometry(0.48, 0.1, 6, 12)),
+        this.matCopper
+      );
       pipe.position.set(-0.52, 1.15, -0.2);
       pipe.rotation.y = Math.PI * 0.5;
       g.add(pipe);
 
       const flywheel = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.62, 0.62, 0.18, 12),
+        this.getCachedMachineGeo('gen_flywheel', () => new THREE.CylinderGeometry(0.62, 0.62, 0.18, 12)),
         this.matBrass
       );
       flywheel.rotation.z = Math.PI * 0.5;
@@ -1419,28 +1563,28 @@ export class Capytorio3DRenderer {
       g.add(flywheel);
       g.userData.flywheel = flywheel;
     } else if (type === 'lab') {
-      // Hex base + translucent domed glass + spinning interior plasma core
       const consoleBase = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.95, 1.05, 0.45, 6),
+        this.getCachedMachineGeo('lab_base', () => new THREE.CylinderGeometry(0.95, 1.05, 0.45, 6)),
         this.matSteelLight
       );
       consoleBase.position.y = 0.46;
+      consoleBase.castShadow = true;
+      consoleBase.receiveShadow = true;
       g.add(consoleBase);
 
-      const coreMat = new THREE.MeshStandardMaterial({
-        color: 0xa855f7,
-        emissive: 0x9333ea,
-        emissiveIntensity: 1.0,
-        roughness: 0.18,
-      });
-      const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.44, 0), coreMat);
+      const core = new THREE.Mesh(
+        this.getCachedMachineGeo('lab_core', () => new THREE.OctahedronGeometry(0.44, 0)),
+        this.matLabCoreIdle
+      );
       core.position.y = 1.25;
       g.add(core);
-      this.sharedMaterials.push(coreMat);
-      g.userData.labCoreMat = coreMat;
+      g.userData.labCoreMesh = core;
 
       const dome = new THREE.Mesh(
-        new THREE.SphereGeometry(0.88, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        this.getCachedMachineGeo(
+          'lab_dome',
+          () => new THREE.SphereGeometry(0.88, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55)
+        ),
         this.matLabGlass
       );
       dome.position.y = 0.68;
@@ -1449,50 +1593,91 @@ export class Capytorio3DRenderer {
       g.userData.spinPart = core;
     } else if (type === 'splitter') {
       const passDeck = new THREE.Mesh(
-        new THREE.BoxGeometry(2.16, 0.14, CAPYTORIO_TILE_SIZE + 0.02),
+        this.getCachedMachineGeo(
+          'split_deck',
+          () => new THREE.BoxGeometry(2.16, 0.14, CAPYTORIO_TILE_SIZE + 0.02)
+        ),
         this.matSteelDark
       );
       passDeck.position.y = 0.07;
+      passDeck.receiveShadow = true;
       g.add(passDeck);
 
-      const bridge = new THREE.Mesh(new THREE.BoxGeometry(2.14, 0.62, 1.25), accentMat);
+      const bridge = new THREE.Mesh(
+        this.getCachedMachineGeo('split_bridge', () => new THREE.BoxGeometry(2.14, 0.62, 1.25)),
+        accentMat
+      );
       bridge.position.y = 0.54;
+      bridge.castShadow = true;
+      bridge.receiveShadow = true;
       g.add(bridge);
+      accentMeshes.push(bridge);
 
-      const dial = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.45, 4), this.matHazardYellow);
+      const dial = new THREE.Mesh(
+        this.getCachedMachineGeo('split_dial', () => new THREE.ConeGeometry(0.42, 0.45, 4)),
+        this.matHazardYellow
+      );
       dial.rotation.x = -Math.PI * 0.5;
       dial.position.set(0, 0.98, -0.15);
       g.add(dial);
     } else if (type === 'tunnel') {
       const passDeck = new THREE.Mesh(
-        new THREE.BoxGeometry(2.16, 0.14, CAPYTORIO_TILE_SIZE + 0.02),
+        this.getCachedMachineGeo(
+          'split_deck',
+          () => new THREE.BoxGeometry(2.16, 0.14, CAPYTORIO_TILE_SIZE + 0.02)
+        ),
         this.matSteelDark
       );
       passDeck.position.y = 0.07;
+      passDeck.receiveShadow = true;
       g.add(passDeck);
 
       const arch = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.75, 0.85, 1.5, 10, 1, false, 0, Math.PI),
+        this.getCachedMachineGeo(
+          'tun_arch',
+          () => new THREE.CylinderGeometry(0.75, 0.85, 1.5, 10, 1, false, 0, Math.PI)
+        ),
         accentMat
       );
       arch.rotation.z = Math.PI * 0.5;
       arch.rotation.y = Math.PI * 0.5;
       arch.position.set(0, 0.3, 0);
+      arch.castShadow = true;
       g.add(arch);
+      accentMeshes.push(arch);
 
-      const signArrow = new THREE.Mesh(new THREE.ConeGeometry(0.34, 0.65, 4), this.matHazardYellow);
+      const signArrow = new THREE.Mesh(
+        this.getCachedMachineGeo('tun_arrow', () => new THREE.ConeGeometry(0.34, 0.65, 4)),
+        this.matHazardYellow
+      );
       signArrow.rotation.x = -Math.PI * 0.5;
       signArrow.position.set(0, 1.15, -0.1);
       g.add(signArrow);
     } else if (type === 'chest') {
-      const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.88, 1.5), accentMat);
+      const body = new THREE.Mesh(
+        this.getCachedMachineGeo('chest_body', () => new THREE.BoxGeometry(1.5, 0.88, 1.5)),
+        accentMat
+      );
       body.position.y = 0.66;
+      body.castShadow = true;
+      body.receiveShadow = true;
       g.add(body);
+      accentMeshes.push(body);
 
-      const lid = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.22, 1.6), this.matBrass);
+      const lid = new THREE.Mesh(
+        this.getCachedMachineGeo('chest_lid', () => new THREE.BoxGeometry(1.6, 0.22, 1.6)),
+        this.matBrass
+      );
       lid.position.y = 1.18;
+      lid.castShadow = true;
       g.add(lid);
     }
+
+    // Guarantee every sub-mesh is immune to partial camera occlusion fading
+    g.traverse((node) => {
+      node.userData.__occluderRoot = g;
+      node.userData.ignoreCameraFade = true;
+    });
 
     return g;
   }
@@ -1521,6 +1706,15 @@ export class Capytorio3DRenderer {
     this.groundDeck.visible = showGroundDeck;
     this.groundEdgeStrip.visible = showGroundDeck;
     if (showGroundDeck) {
+      const wantTransparent = deckAlpha < 0.995;
+      if (this.deckMat.transparent !== wantTransparent) {
+        this.deckMat.transparent = wantTransparent;
+        this.deckMat.needsUpdate = true;
+      }
+      if (this.coastMat.transparent !== wantTransparent) {
+        this.coastMat.transparent = wantTransparent;
+        this.coastMat.needsUpdate = true;
+      }
       this.deckMat.opacity = deckAlpha;
       this.deckMat.depthWrite = deckAlpha >= 0.98;
       this.coastMat.opacity = deckAlpha;
@@ -1537,7 +1731,7 @@ export class Capytorio3DRenderer {
     // Sub-pixel gentle scale-down right as factory disappears into planet surface
     const subPixelShrink = factoryClusterFade < 0.99 ? 0.35 + 0.65 * factoryClusterFade : 1.0;
 
-    // 2. Determine visible tile window around camera target
+    // 2. Determine visible tile window around camera target & dirty-cache static ore/tree instanced buffers
     const centerGx = Math.round((camX - CAPYTORIO_WORLD_ORIGIN_X) / CAPYTORIO_TILE_SIZE);
     const centerGz = Math.round((camZ - CAPYTORIO_WORLD_ORIGIN_Z) / CAPYTORIO_TILE_SIZE);
     const terrainTileRadius =
@@ -1545,105 +1739,123 @@ export class Capytorio3DRenderer {
         ? 0
         : Math.min(28, Math.max(MAX_VISIBLE_RADIUS_TILES, Math.round(altitudeRadius * 0.25)));
 
-    let oreCount = 0;
-    let treeCount = 0;
-    let orangeCount = 0;
-    if (terrainTileRadius > 0) {
-      for (let dx = -terrainTileRadius; dx <= terrainTileRadius; dx++) {
-        const gx = centerGx + dx;
-        const wx = capytorioGridToWorldX(gx);
-        if (wx < 504) continue; // Keep ocean shelf clean
-        for (let dz = -terrainTileRadius; dz <= terrainTileRadius; dz++) {
-          const gz = centerGz + dz;
-          const wz = capytorioGridToWorldZ(gz);
-          const h = hashTile(gx, gz);
+    const terrainDirty =
+      centerGx !== this.lastTerrainCenterGx ||
+      centerGz !== this.lastTerrainCenterGz ||
+      terrainTileRadius !== this.lastTerrainRadius ||
+      engine.topologyRevision !== this.lastTerrainTopoRev ||
+      Math.abs(subPixelShrink - this.lastTerrainSubPixel) > 0.005;
 
-          if (oreCount < MAX_ORE_INSTANCES) {
-            const res = engine.getResourceAt(gx, gz);
-            if (res) {
-              const meta = getCapytorioItemMeta(res.resource);
+    if (terrainDirty) {
+      this.lastTerrainCenterGx = centerGx;
+      this.lastTerrainCenterGz = centerGz;
+      this.lastTerrainRadius = terrainTileRadius;
+      this.lastTerrainTopoRev = engine.topologyRevision;
+      this.lastTerrainSubPixel = subPixelShrink;
 
-              _dummy.position.set(wx, 0.02, wz);
-              _dummy.rotation.set(0, h * Math.PI, 0);
-              _dummy.scale.setScalar(subPixelShrink);
-              _dummy.updateMatrix();
-              this.orePlateInstanced.setMatrixAt(oreCount, _dummy.matrix);
-              _color.setHex(meta.colorHex).multiplyScalar(0.55);
-              this.orePlateInstanced.setColorAt(oreCount, _color);
+      let oreCount = 0;
+      let treeCount = 0;
+      let orangeCount = 0;
+      if (terrainTileRadius > 0) {
+        for (let dx = -terrainTileRadius; dx <= terrainTileRadius; dx++) {
+          const gx = centerGx + dx;
+          const wx = capytorioGridToWorldX(gx);
+          if (wx < 504) continue; // Keep ocean shelf clean
+          for (let dz = -terrainTileRadius; dz <= terrainTileRadius; dz++) {
+            const gz = centerGz + dz;
+            const wz = capytorioGridToWorldZ(gz);
+            const h = hashTile(gx, gz);
 
-              const hasDrill = engine.machines.get(tileKey(gx, gz))?.type === 'drill';
-              const crystalScale = (hasDrill ? 0.55 : 0.78 + h * 0.45) * subPixelShrink;
-              _dummy.position.set(
-                wx + (h - 0.5) * 0.5,
-                hasDrill ? 0.14 : 0.24 * crystalScale,
-                wz + ((h * 7) % 1 - 0.5) * 0.5
-              );
-              _dummy.rotation.set(h * 1.1, h * 5.2, h * 0.7);
-              _dummy.scale.setScalar(crystalScale);
-              _dummy.updateMatrix();
-              this.oreCrystalInstanced.setMatrixAt(oreCount, _dummy.matrix);
-              _color.setHex(meta.colorHex);
-              this.oreCrystalInstanced.setColorAt(oreCount, _color);
+            if (oreCount < MAX_ORE_INSTANCES) {
+              const res = engine.getResourceAt(gx, gz);
+              if (res) {
+                const meta = getCapytorioItemMeta(res.resource);
 
-              oreCount++;
-              continue;
+                _dummy.position.set(wx, 0.025, wz);
+                _dummy.rotation.set(0, h * Math.PI, 0);
+                _dummy.scale.setScalar(subPixelShrink);
+                _dummy.updateMatrix();
+                this.orePlateInstanced.setMatrixAt(oreCount, _dummy.matrix);
+                _color.setHex(meta.colorHex).multiplyScalar(0.55);
+                this.orePlateInstanced.setColorAt(oreCount, _color);
+
+                const hasDrill = engine.machines.get(tileKey(gx, gz))?.type === 'drill';
+                const crystalScale = (hasDrill ? 0.55 : 0.78 + h * 0.45) * subPixelShrink;
+                _dummy.position.set(
+                  wx + (h - 0.5) * 0.5,
+                  hasDrill ? 0.14 : 0.24 * crystalScale,
+                  wz + ((h * 7) % 1 - 0.5) * 0.5
+                );
+                _dummy.rotation.set(h * 1.1, h * 5.2, h * 0.7);
+                _dummy.scale.setScalar(crystalScale);
+                _dummy.updateMatrix();
+                this.oreCrystalInstanced.setMatrixAt(oreCount, _dummy.matrix);
+                _color.setHex(meta.colorHex);
+                this.oreCrystalInstanced.setColorAt(oreCount, _color);
+
+                oreCount++;
+                continue;
+              }
             }
-          }
 
-          if (treeCount < MAX_TREE_INSTANCES && engine.hasTreeAt(gx, gz)) {
-            const treeScale = (0.85 + h * 0.3) * subPixelShrink;
-            const jitterX = (h - 0.5) * 0.45;
-            const jitterZ = (((h * 13) % 1) - 0.5) * 0.45;
-            const tx = wx + jitterX;
-            const tz = wz + jitterZ;
+            if (treeCount < MAX_TREE_INSTANCES && engine.hasTreeAt(gx, gz)) {
+              const treeScale = (0.85 + h * 0.3) * subPixelShrink;
+              const jitterX = (h - 0.5) * 0.45;
+              const jitterZ = (((h * 13) % 1) - 0.5) * 0.45;
+              const tx = wx + jitterX;
+              const tz = wz + jitterZ;
 
-            _dummy.position.set(tx, 0, tz);
-            _dummy.rotation.set(0, h * Math.PI * 2, 0);
-            _dummy.scale.set(treeScale, treeScale, treeScale);
-            _dummy.updateMatrix();
-            this.treeTrunkInstanced.setMatrixAt(treeCount, _dummy.matrix);
-
-            _dummy.position.set(tx, 1.82 * treeScale, tz);
-            _dummy.rotation.set(h * 0.3, h * 6.28, 0);
-            _dummy.scale.set(treeScale, treeScale * 0.88, treeScale);
-            _dummy.updateMatrix();
-            this.treeCanopyInstanced.setMatrixAt(treeCount, _dummy.matrix);
-            const greenShade = h < 0.34 ? 0x22792c : h < 0.68 ? 0x2f8f34 : 0x3da33d;
-            _color.setHex(greenShade);
-            this.treeCanopyInstanced.setColorAt(treeCount, _color);
-
-            for (let oi = 0; oi < 3 && orangeCount < MAX_TREE_INSTANCES * 3; oi++) {
-              const oAngle = h * 6.28 + oi * 2.094;
-              const oRad = 0.84 * treeScale;
-              _dummy.position.set(
-                tx + Math.cos(oAngle) * oRad,
-                (2.08 + (oi % 2) * 0.22) * treeScale,
-                tz + Math.sin(oAngle) * oRad
-              );
-              _dummy.rotation.set(0, 0, 0);
-              _dummy.scale.setScalar(treeScale);
+              _dummy.position.set(tx, 0, tz);
+              _dummy.rotation.set(0, h * Math.PI * 2, 0);
+              _dummy.scale.set(treeScale, treeScale, treeScale);
               _dummy.updateMatrix();
-              this.treeOrangeInstanced.setMatrixAt(orangeCount, _dummy.matrix);
-              orangeCount++;
+              this.treeTrunkInstanced.setMatrixAt(treeCount, _dummy.matrix);
+
+              _dummy.position.set(tx, 1.82 * treeScale, tz);
+              _dummy.rotation.set(h * 0.3, h * 6.28, 0);
+              _dummy.scale.set(treeScale, treeScale * 0.88, treeScale);
+              _dummy.updateMatrix();
+              this.treeCanopyInstanced.setMatrixAt(treeCount, _dummy.matrix);
+              const greenShade = h < 0.34 ? 0x22792c : h < 0.68 ? 0x2f8f34 : 0x3da33d;
+              _color.setHex(greenShade);
+              this.treeCanopyInstanced.setColorAt(treeCount, _color);
+
+              for (let oi = 0; oi < 3 && orangeCount < MAX_TREE_INSTANCES * 3; oi++) {
+                const oAngle = h * 6.28 + oi * 2.094;
+                const oRad = 0.84 * treeScale;
+                _dummy.position.set(
+                  tx + Math.cos(oAngle) * oRad,
+                  (2.08 + (oi % 2) * 0.22) * treeScale,
+                  tz + Math.sin(oAngle) * oRad
+                );
+                _dummy.rotation.set(0, 0, 0);
+                _dummy.scale.setScalar(treeScale);
+                _dummy.updateMatrix();
+                this.treeOrangeInstanced.setMatrixAt(orangeCount, _dummy.matrix);
+                orangeCount++;
+              }
+              treeCount++;
             }
-            treeCount++;
           }
         }
       }
+      this.orePlateInstanced.count = oreCount;
+      this.orePlateInstanced.instanceMatrix.needsUpdate = true;
+      if (this.orePlateInstanced.instanceColor) this.orePlateInstanced.instanceColor.needsUpdate = true;
+      this.oreCrystalInstanced.count = oreCount;
+      this.oreCrystalInstanced.instanceMatrix.needsUpdate = true;
+      if (this.oreCrystalInstanced.instanceColor) this.oreCrystalInstanced.instanceColor.needsUpdate = true;
+      this.treeTrunkInstanced.count = treeCount;
+      this.treeTrunkInstanced.instanceMatrix.needsUpdate = true;
+      this.treeCanopyInstanced.count = treeCount;
+      this.treeCanopyInstanced.instanceMatrix.needsUpdate = true;
+      if (this.treeCanopyInstanced.instanceColor) this.treeCanopyInstanced.instanceColor.needsUpdate = true;
+      this.treeOrangeInstanced.count = orangeCount;
+      this.treeOrangeInstanced.instanceMatrix.needsUpdate = true;
     }
-    this.orePlateInstanced.count = oreCount;
-    this.orePlateInstanced.instanceMatrix.needsUpdate = true;
-    if (this.orePlateInstanced.instanceColor) this.orePlateInstanced.instanceColor.needsUpdate = true;
-    this.oreCrystalInstanced.count = oreCount;
-    this.oreCrystalInstanced.instanceMatrix.needsUpdate = true;
-    if (this.oreCrystalInstanced.instanceColor) this.oreCrystalInstanced.instanceColor.needsUpdate = true;
-    this.treeTrunkInstanced.count = treeCount;
-    this.treeTrunkInstanced.instanceMatrix.needsUpdate = true;
-    this.treeCanopyInstanced.count = treeCount;
-    this.treeCanopyInstanced.instanceMatrix.needsUpdate = true;
-    if (this.treeCanopyInstanced.instanceColor) this.treeCanopyInstanced.instanceColor.needsUpdate = true;
-    this.treeOrangeInstanced.count = orangeCount;
-    this.treeOrangeInstanced.instanceMatrix.needsUpdate = true;
+
+    // Pulse shared active generator firebox material once per frame
+    this.matGeneratorFireboxActive.emissiveIntensity = 1.55 + Math.sin(timeSec * 8.0) * 0.35;
 
     // 3. Synchronize belt chevron UV scroll strictly 1:1 with CapytorioFactoryEngine.beltScrollPhase
     this.lastBeltScrollPhase = engine.beltScrollPhase;
@@ -1814,11 +2026,18 @@ export class Capytorio3DRenderer {
         group.position.set(wx, 0, wz);
         group.rotation.y = rotY;
         group.scale.setScalar(subPixelShrink);
-        if (group.userData.accentMat) {
+        const accentMeshes = group.userData.accentMeshes as THREE.Mesh[] | undefined;
+        if (accentMeshes && accentMeshes.length > 0) {
           const tint = m.variantItemId
             ? resolveCapytorioPlaceableSpec(m.variantItemId)?.tintHex ?? CAPYTORIO_MACHINE_SPECS[m.type].colorHex
             : CAPYTORIO_MACHINE_SPECS[m.type].colorHex;
-          (group.userData.accentMat as THREE.MeshStandardMaterial).color.setHex(tint);
+          if (group.userData.appliedTintHex !== tint) {
+            const sharedTintMat = this.getCachedAccentMat(tint);
+            for (let ai = 0; ai < accentMeshes.length; ai++) {
+              accentMeshes[ai].material = sharedTintMat;
+            }
+            group.userData.appliedTintHex = tint;
+          }
         }
 
         // Zero-allocation mechanical animations & 2-bone analytical inserter IK
@@ -1834,18 +2053,25 @@ export class Capytorio3DRenderer {
             const genRate = m.fuelTimer > 0 ? 7.5 : 1.8;
             (group.userData.flywheel as THREE.Object3D).rotation.x = timeSec * genRate;
           }
-          if (group.userData.fuelGlowMat) {
-            const firebox = group.userData.fuelGlowMat as THREE.MeshStandardMaterial;
-            firebox.emissiveIntensity =
-              m.fuelTimer > 0 ? 1.55 + Math.sin(timeSec * 8.0) * 0.35 : 0.18;
+          const fireboxMesh = group.userData.fireboxMesh as THREE.Mesh | undefined;
+          if (fireboxMesh) {
+            const desiredMat =
+              m.fuelTimer > 0 ? this.matGeneratorFireboxActive : this.matGeneratorFireboxIdle;
+            if (fireboxMesh.material !== desiredMat) {
+              fireboxMesh.material = desiredMat;
+            }
           }
         } else if (m.type === 'lab' && group.userData.spinPart) {
           const core = group.userData.spinPart as THREE.Object3D;
           core.rotation.y = timeSec * (m.craftProgress > 0.01 ? 4.8 : 2.4);
           core.position.y = 1.25 + Math.sin(timeSec * 3.2) * 0.08;
-          if (group.userData.labCoreMat) {
-            (group.userData.labCoreMat as THREE.MeshStandardMaterial).emissiveIntensity =
-              m.craftProgress > 0.01 ? 1.85 : 0.85;
+          const coreMesh = group.userData.labCoreMesh as THREE.Mesh | undefined;
+          if (coreMesh) {
+            const desiredMat =
+              m.craftProgress > 0.01 ? this.matLabCoreActive : this.matLabCoreIdle;
+            if (coreMesh.material !== desiredMat) {
+              coreMesh.material = desiredMat;
+            }
           }
         } else if (m.type === 'inserter' && group.userData.turret) {
           const turret = group.userData.turret as THREE.Object3D;
@@ -1932,26 +2158,35 @@ export class Capytorio3DRenderer {
           const heldMeshesByShape = group.userData.heldMeshesByShape as
             | Record<CapytorioItemShape, THREE.Mesh>
             | undefined;
-          const heldMat = group.userData.heldMat as THREE.MeshStandardMaterial | undefined;
-          if (heldMeshesByShape && heldMat) {
+          if (heldMeshesByShape) {
             let activeShape: CapytorioItemShape | null = null;
+            let activeMat: THREE.MeshStandardMaterial | null = null;
             if (m.holdingItem) {
               const meta = getCapytorioItemMeta(m.holdingItem);
               activeShape = meta.shape ?? resolveCapytorioItemShape(m.holdingItem, meta.category);
-              heldMat.color.setHex(meta.colorHex);
+              activeMat = this.getCachedHeldItemMat(meta.colorHex);
             }
             for (let sIdx = 0; sIdx < CAPYTORIO_ITEM_SHAPES.length; sIdx++) {
               const sh = CAPYTORIO_ITEM_SHAPES[sIdx];
-              heldMeshesByShape[sh].visible = sh === activeShape;
+              const hm = heldMeshesByShape[sh];
+              const vis = sh === activeShape;
+              hm.visible = vis;
+              if (vis && activeMat && hm.material !== activeMat) {
+                hm.material = activeMat;
+              }
             }
           }
-        } else if (m.type === 'furnace' && group.userData.glowMat) {
-          const glow = group.userData.glowMat as THREE.MeshStandardMaterial;
-          glow.emissiveIntensity = m.craftProgress > 0.01 ? 1.55 : 0.45;
+        } else if (m.type === 'furnace' && group.userData.hearthMesh) {
+          const hearthMesh = group.userData.hearthMesh as THREE.Mesh;
+          const desiredMat =
+            m.craftProgress > 0.01 ? this.matFurnaceHearthActive : this.matFurnaceHearthIdle;
+          if (hearthMesh.material !== desiredMat) {
+            hearthMesh.material = desiredMat;
+          }
         }
       }
 
-      // Render items riding along straight or concentric curved arc lanes (with elastic squish & edge tip)
+      // Render rigid 1:1 items riding along straight or concentric curved arc lanes (zero shape distortion)
       if (renderItemsAtScale && m.beltItems.length > 0) {
         for (let bi = 0; bi < m.beltItems.length; bi++) {
           const bItem = m.beltItems[bi];
@@ -1962,13 +2197,8 @@ export class Capytorio3DRenderer {
 
           const lane: 0 | 1 = bItem.lane === 1 ? 1 : 0;
           evalBeltItemLocalPose(curveShape, lane, bItem.progress, _itemPoseScratch);
-          const squish = bItem.squish ?? 0;
           const edge = bItem.edgeProgress ?? 0;
-          const jitter =
-            squish > 0.12
-              ? Math.sin(timeSec * 34.0 + (bItem.uid ?? bi) * 2.1) * 0.022 * squish
-              : 0;
-          const localX = _itemPoseScratch[0] + jitter;
+          const localX = _itemPoseScratch[0];
           const localZ = _itemPoseScratch[1] - edge * 0.42;
           const tangentYaw = _itemPoseScratch[2];
 
@@ -1979,11 +2209,7 @@ export class Capytorio3DRenderer {
           _dummy.position.set(worldX, worldY, worldZ);
           _dummy.rotation.order = 'YXZ';
           _dummy.rotation.set(-edge * 0.85, rotY + tangentYaw, 0);
-          _dummy.scale.set(
-            (1.0 + 0.22 * squish) * subPixelShrink,
-            (1.0 + 0.18 * squish) * subPixelShrink,
-            (1.0 - 0.34 * squish) * subPixelShrink
-          );
+          _dummy.scale.setScalar(subPixelShrink);
           _dummy.updateMatrix();
           const instMesh = this.itemInstancedByShape[shape];
           instMesh.setMatrixAt(idx, _dummy.matrix);
@@ -1994,7 +2220,7 @@ export class Capytorio3DRenderer {
       }
     }
 
-    // Render spilled belt-end items tumbling and resting on the Capytorio meadow (shared instanced pools, 0 extra draw calls)
+    // Render spilled belt-end items tumbling and resting on the Capytorio meadow (rigid uniform scale, 0 extra draw calls)
     if (renderItemsAtScale && engine.spilledItems.length > 0) {
       const maxSpillRadiusM = MAX_VISIBLE_RADIUS_TILES * CAPYTORIO_TILE_SIZE;
       const camLocalX = camX - CAPYTORIO_WORLD_ORIGIN_X;
@@ -2012,7 +2238,6 @@ export class Capytorio3DRenderer {
         const idx = _shapeCounts[shape];
         if (idx >= MAX_SHAPE_ITEM_INSTANCES) continue;
 
-        const sq = sp.squish;
         _dummy.position.set(
           CAPYTORIO_WORLD_ORIGIN_X + sp.lx,
           sp.y + 0.015,
@@ -2020,11 +2245,7 @@ export class Capytorio3DRenderer {
         );
         _dummy.rotation.order = 'YXZ';
         _dummy.rotation.set(sp.rx, sp.ry, sp.rz);
-        _dummy.scale.set(
-          (1.0 + 0.26 * sq) * subPixelShrink,
-          (1.0 - 0.34 * sq) * subPixelShrink,
-          (1.0 + 0.26 * sq) * subPixelShrink
-        );
+        _dummy.scale.setScalar(subPixelShrink);
         _dummy.updateMatrix();
         const instMesh = this.itemInstancedByShape[shape];
         instMesh.setMatrixAt(idx, _dummy.matrix);
@@ -2114,15 +2335,26 @@ export class Capytorio3DRenderer {
       this.ghostArrowMesh.visible = true;
     }
 
-    // 5. Inspected Machine Selection Halo
-    if (showCursorAndRing && engine.inspectedKey) {
-      const insp = engine.machines.get(engine.inspectedKey);
-      if (insp) {
+    // 5. Universal Inspected Tile / Entity Selection Halo
+    if (showCursorAndRing) {
+      let inspGx: number | null = null;
+      let inspGz: number | null = null;
+      if (engine.inspectedTile) {
+        inspGx = engine.inspectedTile.gx;
+        inspGz = engine.inspectedTile.gz;
+      } else if (engine.inspectedKey) {
+        const insp = engine.machines.get(engine.inspectedKey);
+        if (insp) {
+          inspGx = insp.gx;
+          inspGz = insp.gz;
+        }
+      }
+      if (inspGx !== null && inspGz !== null) {
         this.inspectRingMesh.visible = true;
         this.inspectRingMesh.position.set(
-          capytorioGridToWorldX(insp.gx),
+          capytorioGridToWorldX(inspGx),
           0.05,
-          capytorioGridToWorldZ(insp.gz)
+          capytorioGridToWorldZ(inspGz)
         );
       } else {
         this.inspectRingMesh.visible = false;
@@ -2144,5 +2376,8 @@ export class Capytorio3DRenderer {
     }
     this.activeMachineGroups.clear();
     this.inactivePoolByType.clear();
+    this.machineGeoCache.clear();
+    this.accentMatCache.clear();
+    this.heldItemMatCache.clear();
   }
 }

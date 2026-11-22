@@ -76,6 +76,12 @@ export const BELT_CURVE_OUTER_RADIUS_M = CAPYTORIO_TILE_SIZE * 0.5 + BELT_LANE_O
 export const BELT_CURVE_INNER_ARC_M = (Math.PI * 0.5) * BELT_CURVE_INNER_RADIUS_M; // ~1.194m
 export const BELT_CURVE_OUTER_ARC_M = (Math.PI * 0.5) * BELT_CURVE_OUTER_RADIUS_M; // ~2.733m
 
+// Canonical Factorio belt capacity: 4 items per lane = 8 items per straight tile (0.625 m slot pitch)
+export const CAPYTORIO_BELT_ITEMS_PER_LANE = 4;
+export const CAPYTORIO_BELT_MAX_ITEMS_PER_TILE = CAPYTORIO_BELT_ITEMS_PER_LANE * 2;
+export const CAPYTORIO_BELT_ITEM_SPACING_M = CAPYTORIO_TILE_SIZE / CAPYTORIO_BELT_ITEMS_PER_LANE; // 0.625m
+export const CAPYTORIO_BELT_HALF_ITEM_M = CAPYTORIO_BELT_ITEM_SPACING_M * 0.5; // 0.3125m
+
 export const MAX_CAPYTORIO_SPILLED_ITEMS = 160;
 export const CAPYTORIO_BELT_SURFACE_Y = 0.28;
 
@@ -84,7 +90,7 @@ export interface CapytorioBeltItem {
   item: CapytorioItemId;
   progress: number; // 0..1 along tile direction (straight or curve arc)
   lane?: 0 | 1; // 0 = left track (-X local), 1 = right track (+X local)
-  squish?: number; // 0..1 elastic compression factor when backed up or tipping
+  squish?: number; // Legacy field retained as 0 for save compatibility (items stay rigid on belts)
   edgeProgress?: number; // 0..1 overhang progress off an open belt end (when beltEndSpillEnabled)
 }
 
@@ -190,6 +196,80 @@ export interface CapytorioSerializedState {
   score: number;
 }
 
+export interface CapytorioTileItemCount {
+  item: CapytorioItemId;
+  count: number;
+}
+
+export interface CapytorioInspectedMachineDetail {
+  gx: number;
+  gz: number;
+  type: CapytorioMachineType;
+  variantItemId?: CapytorioItemId;
+  name: string;
+  shortName: string;
+  dir: CapytorioDirection;
+  tierMult: number;
+  colorHex: number;
+  status: 'Working' | 'Idle' | 'No Power' | 'No Fuel' | 'Full' | 'No Resource';
+  powerDemandMw: number;
+  powerSupplyMw: number;
+  recipeId?: CapytorioRecipeId;
+  recipeName?: string;
+  craftProgress: number;
+  fuelTimer: number;
+  holdingItem: CapytorioItemId | null;
+  inputTotal: number;
+  outputTotal: number;
+  inputBuffer: Partial<Record<CapytorioItemId, number>>;
+  outputBuffer: Partial<Record<CapytorioItemId, number>>;
+  beltItemCount: number;
+  beltCapacity: number;
+  beltLeftLaneCount: number;
+  beltRightLaneCount: number;
+  beltLeftLaneCapacity: number;
+  beltRightLaneCapacity: number;
+  beltCurveShape: CapytorioBeltCurveShape;
+  beltSpeedItemsPerSec: number;
+  beltItemsByType: CapytorioTileItemCount[];
+}
+
+export type CapytorioTileInspectionKind =
+  | 'machine'
+  | 'resource'
+  | 'tree'
+  | 'spilled'
+  | 'beacon'
+  | 'terrain';
+
+export interface CapytorioTileInspection {
+  gx: number;
+  gz: number;
+  key: string;
+  primaryKind: CapytorioTileInspectionKind;
+  title: string;
+  subtitle: string;
+  machine: CapytorioInspectedMachineDetail | null;
+  resource: {
+    id: CapytorioItemId;
+    name: string;
+    shortName: string;
+    remaining: number;
+    cssColor: string;
+    harvestAmount: number;
+  } | null;
+  tree: {
+    name: string;
+    yieldItem: CapytorioItemId;
+    yieldCount: number;
+  } | null;
+  spilledItems: CapytorioTileItemCount[];
+  spilledTotalCount: number;
+  isBeacon: boolean;
+  terrainName: string;
+  actionHint: string;
+}
+
 export interface CapytorioUiSnapshot {
   machineCount: number;
   powerSupplyMw: number;
@@ -216,6 +296,8 @@ export interface CapytorioUiSnapshot {
     outputBuffer: Partial<Record<CapytorioItemId, number>>;
     holdingItem: CapytorioItemId | null;
   } | null;
+  inspectedTile: CapytorioTileInspection | null;
+  hoveredTileInfo: CapytorioTileInspection;
   hoveredTile: {
     gx: number;
     gz: number;
@@ -339,6 +421,17 @@ export function getBeltLaneArcMeters(curve: CapytorioBeltCurveShape, lane: 0 | 1
     return lane === 0 ? BELT_CURVE_OUTER_ARC_M : BELT_CURVE_INNER_ARC_M;
   }
   return CAPYTORIO_TILE_SIZE;
+}
+
+/**
+ * Exact Factorio-proportional item capacity for a single belt lane:
+ * - Straight belt tile: 4 items per lane (8 total per tile)
+ * - 90° curved belt inner arc: 2 items
+ * - 90° curved belt outer arc: 4 items
+ */
+export function getBeltLaneCapacity(curve: CapytorioBeltCurveShape, lane: 0 | 1): number {
+  const arcMeters = getBeltLaneArcMeters(curve, lane);
+  return Math.max(2, Math.floor(arcMeters / CAPYTORIO_BELT_ITEM_SPACING_M + 0.15));
 }
 
 /**
@@ -529,6 +622,7 @@ export class CapytorioFactoryEngine {
   public hoveredGx = 0;
   public hoveredGz = 0;
   public inspectedKey: string | null = null;
+  public inspectedTile: { gx: number; gz: number } | null = null;
 
   // Power metrics (zero-allocation cached scalars updated every step)
   public powerSupplyMw = 0;
@@ -546,6 +640,8 @@ export class CapytorioFactoryEngine {
   // Reusable ordered snapshot list for zero-allocation iteration inside step()
   private machineStepList: CapytorioMachine[] = [];
   private machineListDirty = true;
+  /** Monotonic revision incremented on machine placement/demolish/rotate, tree harvest, ore depletion, reset, or hydrate */
+  public topologyRevision = 1;
 
   constructor(initialState?: CapytorioSerializedState | null) {
     if (initialState && initialState.version === 1) {
@@ -560,6 +656,7 @@ export class CapytorioFactoryEngine {
     this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
     this.harvestedTrees.clear();
+    this.topologyRevision++;
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
       delete this.pocketItems[k];
     }
@@ -583,6 +680,7 @@ export class CapytorioFactoryEngine {
     this.score = 0;
     this.lastReportedScore = 0;
     this.inspectedKey = null;
+    this.inspectedTile = null;
     this.selectedTool = 'drill';
     this.selectedDir = 1;
     this.selectedRecipeId = getDefaultAssemblerRecipeId();
@@ -638,6 +736,7 @@ export class CapytorioFactoryEngine {
   public harvestTreeAt(gx: number, gz: number): boolean {
     if (!this.hasTreeAt(gx, gz)) return false;
     this.harvestedTrees.add(tileKey(gx, gz));
+    this.topologyRevision++;
     this.addPocketItem('orange', 3);
     this.score += 6;
     return true;
@@ -664,6 +763,9 @@ export class CapytorioFactoryEngine {
     if (!tile) return null;
     const next = Math.max(0, tile.richness - amount);
     this.oreRemainingOverrides.set(tileKey(gx, gz), next);
+    if (next <= 0) {
+      this.topologyRevision++;
+    }
     return tile.resource;
   }
 
@@ -913,7 +1015,9 @@ export class CapytorioFactoryEngine {
     };
     this.machines.set(key, machine);
     this.machineListDirty = true;
+    this.topologyRevision++;
     this.inspectedKey = key;
+    this.inspectedTile = { gx, gz };
     this.score += 10;
     this.recordRecentTool(resolved.id);
     this.recomputePowerMetrics();
@@ -924,6 +1028,7 @@ export class CapytorioFactoryEngine {
     const m = this.machines.get(tileKey(gx, gz));
     if (!m) return null;
     m.dir = ((m.dir + 1) & 3) as CapytorioDirection;
+    this.topologyRevision++;
     return m.dir;
   }
 
@@ -972,7 +1077,11 @@ export class CapytorioFactoryEngine {
     }
     this.machines.delete(key);
     if (this.inspectedKey === key) this.inspectedKey = null;
+    if (this.inspectedTile && this.inspectedTile.gx === gx && this.inspectedTile.gz === gz) {
+      this.inspectedTile = { gx, gz };
+    }
     this.machineListDirty = true;
+    this.topologyRevision++;
     this.recomputePowerMetrics();
     return m.type;
   }
@@ -1004,6 +1113,7 @@ export class CapytorioFactoryEngine {
           const prevM = this.machines.get(tileKey(prevPlacedGx, prevPlacedGz));
           if (prevM && prevM.type === 'belt') {
             prevM.dir = targetDir;
+            this.topologyRevision++;
           }
         }
       }
@@ -1036,6 +1146,7 @@ export class CapytorioFactoryEngine {
       this.selectedTool = toolId;
       this.selectedDir = existing.dir;
       this.inspectedKey = key;
+      this.inspectedTile = { gx, gz };
       if (existing.type === 'assembler' && existing.recipeId) {
         this.selectedRecipeId = existing.recipeId;
       }
@@ -1465,7 +1576,7 @@ export class CapytorioFactoryEngine {
     isInserterDrop: boolean = false
   ): boolean {
     if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
-      if (target.beltItems.length >= 6) return false;
+      if (target.beltItems.length >= CAPYTORIO_BELT_MAX_ITEMS_PER_TILE) return false;
       const tDx = DIR_DX[target.dir];
       const tDz = DIR_DZ[target.dir];
       const relX = fromGx - target.gx;
@@ -1481,17 +1592,7 @@ export class CapytorioFactoryEngine {
       const isCurveEntry =
         (targetCurve === 'curve_from_left' && isLeftSide) ||
         (targetCurve === 'curve_from_right' && isRightSide);
-
-      let progress: number;
-      if (target.type === 'belt' && (isInlineBehind || isCurveEntry)) {
-        const clampedInit =
-          initialProgress !== undefined && Number.isFinite(initialProgress)
-            ? Math.max(0.01, Math.min(0.24, initialProgress))
-            : 0.02;
-        progress = clampedInit;
-      } else {
-        progress = 0.45;
-      }
+      const isContinuousEntry = target.type === 'belt' && (isInlineBehind || isCurveEntry);
 
       let primaryLane: 0 | 1;
       if (isInserterDrop && (isLeftSide || isRightSide)) {
@@ -1516,36 +1617,103 @@ export class CapytorioFactoryEngine {
 
       for (let attempt = 0; attempt < (allowAltLane ? 2 : 1); attempt++) {
         const lane: 0 | 1 = attempt === 0 ? primaryLane : fallbackLane;
-        const arcMeters = getBeltLaneArcMeters(targetCurve, lane);
+        const arcMeters = target.type === 'belt' ? getBeltLaneArcMeters(targetCurve, lane) : CAPYTORIO_TILE_SIZE;
+        const laneCap = target.type === 'belt' ? getBeltLaneCapacity(targetCurve, lane) : CAPYTORIO_BELT_ITEMS_PER_LANE;
+        const minGapProg = CAPYTORIO_BELT_ITEM_SPACING_M / arcMeters;
+        const minAcceptGapProg = (CAPYTORIO_BELT_ITEM_SPACING_M * 0.96) / arcMeters;
+        const halfItemProg = CAPYTORIO_BELT_HALF_ITEM_M / arcMeters;
+        const endFlushProg = Math.max(0.5, 1.0 - halfItemProg);
+
         let laneCount = 0;
-        let laneMaxSquish = 0;
+        let minExistingProg = Infinity;
         for (let i = 0; i < target.beltItems.length; i++) {
           const existing = target.beltItems[i];
           if ((existing.lane ?? 0) !== lane) continue;
           laneCount++;
-          if ((existing.squish ?? 0) > laneMaxSquish) {
-            laneMaxSquish = existing.squish ?? 0;
+          if (existing.progress < minExistingProg) {
+            minExistingProg = existing.progress;
           }
         }
-        // Compressed lanes allow tighter squish spacing (0.32 -> 0.21 tile units) up to 3 items/lane
-        const gapTileUnits = 0.32 - 0.11 * laneMaxSquish;
-        const minGapProg = Math.min(0.42, (gapTileUnits * CAPYTORIO_TILE_SIZE) / arcMeters);
-        let blocked = false;
-        for (let i = 0; i < target.beltItems.length; i++) {
-          const existing = target.beltItems[i];
-          if ((existing.lane ?? 0) !== lane) continue;
-          if (Math.abs(existing.progress - progress) < minGapProg) {
-            blocked = true;
+        if (laneCount >= laneCap) continue;
+
+        if (isContinuousEntry) {
+          if (initialProgress !== undefined && Number.isFinite(initialProgress)) {
+            if (minExistingProg < minAcceptGapProg) continue;
+            let progress = Math.max(0.002, Math.min(0.24, initialProgress));
+            if (minExistingProg < Infinity) {
+              progress = Math.max(0.002, Math.min(progress, minExistingProg - minGapProg));
+            }
+            target.beltItems.push({
+              uid: this.nextBeltItemUid++,
+              item,
+              progress,
+              lane,
+              squish: 0,
+              edgeProgress: 0,
+            });
+            return true;
+          }
+
+          // Inline drop from a drill / furnace / assembler onto the rear of a belt
+          const inlineProg = Math.min(0.18, halfItemProg);
+          let blocked = false;
+          for (let i = 0; i < target.beltItems.length; i++) {
+            const existing = target.beltItems[i];
+            if ((existing.lane ?? 0) !== lane) continue;
+            if (Math.abs(existing.progress - inlineProg) < minAcceptGapProg) {
+              blocked = true;
+              break;
+            }
+          }
+          if (!blocked) {
+            target.beltItems.push({
+              uid: this.nextBeltItemUid++,
+              item,
+              progress: inlineProg,
+              lane,
+              squish: 0,
+              edgeProgress: 0,
+            });
+            return true;
+          }
+          continue;
+        }
+
+        // Non-inline drop (inserter, side-loading belt, splitter, or tunnel):
+        // Probe preferred middle drop (0.45) first, then canonical packed rear slots (e.g. 0.375, 0.125)
+        // so lanes compress cleanly up to 100% Factorio capacity (4 per straight lane) without gaps.
+        let chosenProgress = -1;
+        for (let c = 0; c <= laneCap; c++) {
+          let cand: number;
+          if (c === 0) {
+            cand = 0.45;
+            if (cand > endFlushProg + 1e-4) continue;
+          } else {
+            cand = endFlushProg - (c - 1) * minGapProg;
+            if (cand > 0.55 || cand < 0.01) continue;
+          }
+          let blocked = false;
+          for (let i = 0; i < target.beltItems.length; i++) {
+            const existing = target.beltItems[i];
+            if ((existing.lane ?? 0) !== lane) continue;
+            if (Math.abs(existing.progress - cand) < minAcceptGapProg) {
+              blocked = true;
+              break;
+            }
+          }
+          if (!blocked) {
+            chosenProgress = cand;
             break;
           }
         }
-        if (!blocked && laneCount < 3) {
+
+        if (chosenProgress >= 0) {
           target.beltItems.push({
             uid: this.nextBeltItemUid++,
             item,
-            progress,
+            progress: chosenProgress,
             lane,
-            squish: laneMaxSquish * 0.4,
+            squish: 0,
             edgeProgress: 0,
           });
           return true;
@@ -1883,7 +2051,7 @@ export class CapytorioFactoryEngine {
       } else if (m.type === 'belt') {
         const tileBeltRate = beltRate * mTierMult;
         const curveShape = getBeltCurveShape(this.machines, m);
-        // Sort beltItems highest-progress first (<= 6 items, zero-allocation insertion sort)
+        // Sort beltItems highest-progress first (<= 8 items, zero-allocation insertion sort)
         for (let a = 1; a < m.beltItems.length; a++) {
           const cur = m.beltItems[a];
           let b = a - 1;
@@ -1893,43 +2061,117 @@ export class CapytorioFactoryEngine {
           }
           m.beltItems[b + 1] = cur;
         }
-        let lane0Max = 1.0;
-        let lane1Max = 1.0;
+
+        // Check if frontTarget is a continuously connected belt (inline continuation or 90° corner curve)
+        let frontCurve: CapytorioBeltCurveShape = 'straight';
+        let isContinuousBeltFront = false;
+        if (frontTarget && frontTarget.type === 'belt') {
+          frontCurve = getBeltCurveShape(this.machines, frontTarget);
+          const ftDx = DIR_DX[frontTarget.dir];
+          const ftDz = DIR_DZ[frontTarget.dir];
+          const ftRightDx = -ftDz;
+          const ftRightDz = ftDx;
+          const relX = m.gx - frontTarget.gx;
+          const relZ = m.gz - frontTarget.gz;
+          isContinuousBeltFront =
+            (relX === -ftDx && relZ === -ftDz) ||
+            (frontCurve === 'curve_from_left' && relX === -ftRightDx && relZ === -ftRightDz) ||
+            (frontCurve === 'curve_from_right' && relX === ftRightDx && relZ === ftRightDz);
+        }
+
+        const arc0 = getBeltLaneArcMeters(curveShape, 0);
+        const arc1 = getBeltLaneArcMeters(curveShape, 1);
+        const endFlush0 = Math.max(0.5, 1.0 - CAPYTORIO_BELT_HALF_ITEM_M / arc0);
+        const endFlush1 = Math.max(0.5, 1.0 - CAPYTORIO_BELT_HALF_ITEM_M / arc1);
+
+        let lane0Max: number;
+        let lane1Max: number;
+        if (isContinuousBeltFront && frontTarget) {
+          const frontArc0 = getBeltLaneArcMeters(frontCurve, 0);
+          const frontArc1 = getBeltLaneArcMeters(frontCurve, 1);
+          const frontCap0 = getBeltLaneCapacity(frontCurve, 0);
+          const frontCap1 = getBeltLaneCapacity(frontCurve, 1);
+          let minFront0 = Infinity;
+          let minFront1 = Infinity;
+          let countFront0 = 0;
+          let countFront1 = 0;
+          for (let fi = 0; fi < frontTarget.beltItems.length; fi++) {
+            const fb = frontTarget.beltItems[fi];
+            if ((fb.lane ?? 0) === 0) {
+              countFront0++;
+              if (fb.progress < minFront0) minFront0 = fb.progress;
+            } else {
+              countFront1++;
+              if (fb.progress < minFront1) minFront1 = fb.progress;
+            }
+          }
+          const tailM0 = minFront0 < Infinity ? minFront0 * frontArc0 : Infinity;
+          const tailM1 = minFront1 < Infinity ? minFront1 * frontArc1 : Infinity;
+          lane0Max =
+            tailM0 < CAPYTORIO_BELT_ITEM_SPACING_M - 1e-4 || countFront0 >= frontCap0
+              ? Math.max(0, 1.0 - Math.max(0, CAPYTORIO_BELT_ITEM_SPACING_M - Math.min(tailM0, CAPYTORIO_BELT_ITEM_SPACING_M)) / arc0)
+              : 1.0;
+          lane1Max =
+            tailM1 < CAPYTORIO_BELT_ITEM_SPACING_M - 1e-4 || countFront1 >= frontCap1
+              ? Math.max(0, 1.0 - Math.max(0, CAPYTORIO_BELT_ITEM_SPACING_M - Math.min(tailM1, CAPYTORIO_BELT_ITEM_SPACING_M)) / arc1)
+              : 1.0;
+        } else if (frontTarget) {
+          lane0Max = endFlush0;
+          lane1Max = endFlush1;
+        } else {
+          lane0Max = this.beltEndSpillEnabled ? 1.0 : endFlush0;
+          lane1Max = this.beltEndSpillEnabled ? 1.0 : endFlush1;
+        }
+
+        const worldStepMeters = clampedDt * tileBeltRate * CAPYTORIO_TILE_SIZE;
         for (let bi = 0; bi < m.beltItems.length; bi++) {
           const bItem = m.beltItems[bi];
           if (bItem.uid === undefined) bItem.uid = this.nextBeltItemUid++;
           const lane: 0 | 1 = bItem.lane === 1 ? 1 : 0;
-          const arcMeters = getBeltLaneArcMeters(curveShape, lane);
-          const worldStepMeters = clampedDt * tileBeltRate * CAPYTORIO_TILE_SIZE;
+          const arcMeters = lane === 0 ? arc0 : arc1;
+          const endFlush = lane === 0 ? endFlush0 : endFlush1;
           const laneAdvance = worldStepMeters / arcMeters;
           const maxAllow = lane === 0 ? lane0Max : lane1Max;
           const rawNext = bItem.progress + laneAdvance;
-          const blockedByAhead = rawNext > maxAllow + 1e-4;
           bItem.progress = Math.min(maxAllow, rawNext);
 
-          if (
-            bItem.progress >= 0.99 &&
-            frontTarget &&
-            this.tryAcceptItemIntoTarget(
-              frontTarget,
-              bItem.item,
-              m.gx,
-              m.gz,
-              lane,
-              Math.max(0.01, (rawNext - 1.0) * (arcMeters / CAPYTORIO_TILE_SIZE))
-            )
-          ) {
-            m.beltItems.splice(bi, 1);
-            bi--;
-            continue;
+          if (frontTarget) {
+            if (isContinuousBeltFront) {
+              if (maxAllow >= 0.999 && (rawNext >= 1.0 || bItem.progress >= 0.995)) {
+                const frontArcMeters = getBeltLaneArcMeters(frontCurve, lane);
+                const carryoverProg = Math.max(0.002, (rawNext - 1.0) * (arcMeters / frontArcMeters));
+                if (this.tryAcceptItemIntoTarget(frontTarget, bItem.item, m.gx, m.gz, lane, carryoverProg)) {
+                  // Immediately propagate exact cross-seam backpressure to trailing items in this lane
+                  const placedItem = frontTarget.beltItems[frontTarget.beltItems.length - 1];
+                  const placedTailMeters = (placedItem ? placedItem.progress : carryoverProg) * frontArcMeters;
+                  const afterSeamMax = Math.max(
+                    0,
+                    1.0 - Math.max(0, CAPYTORIO_BELT_ITEM_SPACING_M - placedTailMeters) / arcMeters
+                  );
+                  if (lane === 0) {
+                    if (afterSeamMax < lane0Max) lane0Max = afterSeamMax;
+                  } else {
+                    if (afterSeamMax < lane1Max) lane1Max = afterSeamMax;
+                  }
+                  m.beltItems.splice(bi, 1);
+                  bi--;
+                  continue;
+                }
+              }
+            } else if (rawNext >= endFlush - 0.005 || bItem.progress >= endFlush - 0.005) {
+              if (this.tryAcceptItemIntoTarget(frontTarget, bItem.item, m.gx, m.gz, lane)) {
+                m.beltItems.splice(bi, 1);
+                bi--;
+                continue;
+              }
+            }
           }
 
           // Open belt end overhang & spill-off when enabled by user option
           if (bItem.progress >= 0.99 && !frontTarget && this.beltEndSpillEnabled) {
-            // Check if a trailing item in the same lane is actively pushing from behind
             let pushedFromBehind = false;
             for (let k = bi + 1; k < m.beltItems.length; k++) {
-              if ((m.beltItems[k].lane === 1 ? 1 : 0) === lane && m.beltItems[k].progress >= 0.55) {
+              if ((m.beltItems[k].lane === 1 ? 1 : 0) === lane && m.beltItems[k].progress >= 0.65) {
                 pushedFromBehind = true;
                 break;
               }
@@ -1937,7 +2179,7 @@ export class CapytorioFactoryEngine {
             const edgeRate = tileBeltRate * (pushedFromBehind ? 3.2 : 2.1);
             const nextEdge = (bItem.edgeProgress ?? 0) + clampedDt * edgeRate;
             bItem.edgeProgress = nextEdge;
-            bItem.squish = Math.min(1.0, (bItem.squish ?? 0) + clampedDt * 5.0);
+            bItem.squish = 0;
             if (nextEdge >= 1.0) {
               this.spawnSpilledItemFromBelt(m, curveShape, lane, bItem.item, tileBeltRate, pushedFromBehind);
               m.beltItems.splice(bi, 1);
@@ -1948,19 +2190,11 @@ export class CapytorioFactoryEngine {
             if ((bItem.edgeProgress ?? 0) > 0) {
               bItem.edgeProgress = Math.max(0, (bItem.edgeProgress ?? 0) - clampedDt * 6.0);
             }
-            // Elastic squish accumulation when compressed against an obstacle or item ahead
-            const isCompressed = blockedByAhead || (bItem.progress >= 0.99 && (!frontTarget || rawNext > 1.0));
-            if (isCompressed) {
-              bItem.squish = Math.min(1.0, (bItem.squish ?? 0) + clampedDt * 5.5);
-            } else {
-              bItem.squish = Math.max(0, (bItem.squish ?? 0) - clampedDt * 6.0);
-            }
+            bItem.squish = 0;
           }
 
-          const squishVal = bItem.squish ?? 0;
-          // Squished items pack tighter (0.38 -> 0.21 tile spacing) so items visibly bunch up!
-          const gapTileUnits = 0.38 - 0.17 * squishVal;
-          const minGapProg = Math.min(0.78, (gapTileUnits * CAPYTORIO_TILE_SIZE) / arcMeters);
+          // Exact Factorio touching spacing (0.625 m along belt arc -> 0.25 tile on straight belts)
+          const minGapProg = CAPYTORIO_BELT_ITEM_SPACING_M / arcMeters;
           const nextLimit = Math.max(0, bItem.progress - minGapProg);
           if (lane === 0) {
             if (nextLimit < lane0Max) lane0Max = nextLimit;
@@ -2459,7 +2693,7 @@ export class CapytorioFactoryEngine {
 
   private wouldMachineAccept(target: CapytorioMachine, item: CapytorioItemId): boolean {
     if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
-      return target.beltItems.length < 6;
+      return target.beltItems.length < CAPYTORIO_BELT_MAX_ITEMS_PER_TILE;
     }
     if (target.type === 'chest') {
       return this.countMapValues(target.outputBuffer) < 120;
@@ -2499,11 +2733,273 @@ export class CapytorioFactoryEngine {
     return this.rocketLaunches;
   }
 
+  public inspectTileAt(gx: number, gz: number): CapytorioTileInspection {
+    const key = tileKey(gx, gz);
+    this.inspectedTile = { gx, gz };
+    this.inspectedKey = this.machines.has(key) ? key : null;
+    return this.inspectTileSnapshot(gx, gz);
+  }
+
+  public clearInspection(): void {
+    this.inspectedTile = null;
+    this.inspectedKey = null;
+  }
+
+  public isBeaconTile(gx: number, gz: number): boolean {
+    return gx === 0 && gz === -3;
+  }
+
+  public getSpilledItemsAtTile(gx: number, gz: number): CapytorioTileItemCount[] {
+    if (this.spilledItems.length === 0) return [];
+    const counts = new Map<CapytorioItemId, number>();
+    for (let i = 0; i < this.spilledItems.length; i++) {
+      const sp = this.spilledItems[i];
+      const spGx = Math.round(sp.lx / CAPYTORIO_TILE_SIZE);
+      const spGz = Math.round(sp.lz / CAPYTORIO_TILE_SIZE);
+      if (spGx === gx && spGz === gz) {
+        counts.set(sp.item, (counts.get(sp.item) ?? 0) + 1);
+      }
+    }
+    if (counts.size === 0) return [];
+    const out: CapytorioTileItemCount[] = [];
+    for (const [item, count] of counts.entries()) {
+      out.push({ item, count });
+    }
+    out.sort((a, b) => b.count - a.count || a.item.localeCompare(b.item));
+    return out;
+  }
+
+  public inspectTileSnapshot(gx: number, gz: number): CapytorioTileInspection {
+    const key = tileKey(gx, gz);
+    const machine = this.machines.get(key) ?? null;
+    const oreTile = this.getResourceAt(gx, gz);
+    const hasTree = this.hasTreeAt(gx, gz);
+    const spilledItems = this.getSpilledItemsAtTile(gx, gz);
+    let spilledTotalCount = 0;
+    for (let i = 0; i < spilledItems.length; i++) {
+      spilledTotalCount += spilledItems[i].count;
+    }
+    const isBeacon = this.isBeaconTile(gx, gz);
+
+    let machineDetail: CapytorioInspectedMachineDetail | null = null;
+    if (machine) {
+      const resolved = resolveCapytorioPlaceableSpec(machine.variantItemId ?? machine.type);
+      const baseSpec = CAPYTORIO_MACHINE_SPECS[machine.type];
+      const tierMult = machine.tierMult ?? resolved?.tierMult ?? 1.0;
+      const inputTotal = this.countMapValues(machine.inputBuffer);
+      const outputTotal = this.countMapValues(machine.outputBuffer);
+      const curveShape =
+        machine.type === 'belt' ? getBeltCurveShape(this.machines, machine) : 'straight';
+      const leftCap =
+        machine.type === 'belt'
+          ? getBeltLaneCapacity(curveShape, 0)
+          : machine.type === 'splitter' || machine.type === 'tunnel'
+            ? CAPYTORIO_BELT_ITEMS_PER_LANE
+            : 0;
+      const rightCap =
+        machine.type === 'belt'
+          ? getBeltLaneCapacity(curveShape, 1)
+          : machine.type === 'splitter' || machine.type === 'tunnel'
+            ? CAPYTORIO_BELT_ITEMS_PER_LANE
+            : 0;
+      let leftCount = 0;
+      let rightCount = 0;
+      const beltTypeMap = new Map<CapytorioItemId, number>();
+      for (let i = 0; i < machine.beltItems.length; i++) {
+        const bi = machine.beltItems[i];
+        if (bi.lane === 1) rightCount++;
+        else leftCount++;
+        beltTypeMap.set(bi.item, (beltTypeMap.get(bi.item) ?? 0) + 1);
+      }
+      const beltItemsByType: CapytorioTileItemCount[] = [];
+      for (const [item, count] of beltTypeMap.entries()) {
+        beltItemsByType.push({ item, count });
+      }
+      beltItemsByType.sort((a, b) => b.count - a.count || a.item.localeCompare(b.item));
+
+      const recipeMeta = machine.recipeId ? RECIPE_BY_ID.get(machine.recipeId) : undefined;
+
+      let status: CapytorioInspectedMachineDetail['status'] = 'Idle';
+      if (machine.type === 'belt' || machine.type === 'splitter' || machine.type === 'tunnel') {
+        const cap = leftCap + rightCap;
+        status =
+          cap > 0 && machine.beltItems.length >= cap
+            ? 'Full'
+            : machine.beltItems.length > 0
+              ? 'Working'
+              : 'Idle';
+      } else if (machine.type === 'generator') {
+        status = machine.fuelTimer > 0 ? 'Working' : 'No Fuel';
+      } else if (machine.type === 'chest') {
+        status = outputTotal >= 120 ? 'Full' : outputTotal > 0 ? 'Working' : 'Idle';
+      } else if (baseSpec.powerDemandMw > 0 && this.powerEfficiency <= 0.05) {
+        status = 'No Power';
+      } else if (machine.type === 'drill') {
+        status = !oreTile ? 'No Resource' : outputTotal >= 20 ? 'Full' : 'Working';
+      } else if (machine.type === 'inserter') {
+        status = machine.holdingItem || machine.inserterPhase !== 'idle_pickup' ? 'Working' : 'Idle';
+      } else if (machine.type === 'furnace' || machine.type === 'assembler' || machine.type === 'lab') {
+        status =
+          outputTotal >= 20
+            ? 'Full'
+            : machine.craftProgress > 0.01 || inputTotal > 0
+              ? 'Working'
+              : 'Idle';
+      }
+
+      const beltSpeedItemsPerSec =
+        machine.type === 'belt' || machine.type === 'splitter' || machine.type === 'tunnel'
+          ? +(
+              this.getBeltSpeedTilesPerSec() *
+              tierMult *
+              CAPYTORIO_BELT_ITEMS_PER_LANE *
+              2
+            ).toFixed(1)
+          : 0;
+
+      machineDetail = {
+        gx: machine.gx,
+        gz: machine.gz,
+        type: machine.type,
+        variantItemId: machine.variantItemId,
+        name: resolved?.name ?? baseSpec.name,
+        shortName: resolved?.shortName ?? baseSpec.shortName,
+        dir: machine.dir,
+        tierMult: +tierMult.toFixed(2),
+        colorHex: resolved?.tintHex ?? baseSpec.colorHex,
+        status,
+        powerDemandMw: baseSpec.powerDemandMw,
+        powerSupplyMw:
+          machine.type === 'generator' ? (machine.fuelTimer > 0 ? 6.0 : 1.5) : baseSpec.powerSupplyMw,
+        recipeId: machine.recipeId,
+        recipeName: recipeMeta?.name,
+        craftProgress: +machine.craftProgress.toFixed(2),
+        fuelTimer: +machine.fuelTimer.toFixed(1),
+        holdingItem: machine.holdingItem,
+        inputTotal,
+        outputTotal,
+        inputBuffer: { ...machine.inputBuffer },
+        outputBuffer: { ...machine.outputBuffer },
+        beltItemCount: machine.beltItems.length,
+        beltCapacity: leftCap + rightCap,
+        beltLeftLaneCount: leftCount,
+        beltRightLaneCount: rightCount,
+        beltLeftLaneCapacity: leftCap,
+        beltRightLaneCapacity: rightCap,
+        beltCurveShape: curveShape,
+        beltSpeedItemsPerSec,
+        beltItemsByType,
+      };
+    }
+
+    const resourceDetail = oreTile
+      ? (() => {
+          const meta = getCapytorioItemMeta(oreTile.resource);
+          return {
+            id: oreTile.resource,
+            name: meta.name,
+            shortName: meta.shortName,
+            remaining: oreTile.richness,
+            cssColor: meta.cssColor,
+            harvestAmount: 2,
+          };
+        })()
+      : null;
+
+    const treeDetail = hasTree
+      ? {
+          name: 'Wild Citrus Tree',
+          yieldItem: 'orange' as CapytorioItemId,
+          yieldCount: 3,
+        }
+      : null;
+
+    let primaryKind: CapytorioTileInspectionKind = 'terrain';
+    let title = 'Meadow Grass';
+    let subtitle = 'Buildable Terrain';
+    let actionHint = 'Select a building from quickbar to place';
+
+    if (machineDetail) {
+      primaryKind = 'machine';
+      title = machineDetail.name;
+      if (machineDetail.type === 'belt') {
+        const shapeLabel =
+          machineDetail.beltCurveShape === 'straight'
+            ? 'Straight'
+            : machineDetail.beltCurveShape === 'curve_from_left'
+              ? 'Curved (Left)'
+              : 'Curved (Right)';
+        subtitle = `Logistics · ${shapeLabel} · ${machineDetail.beltSpeedItemsPerSec}/s`;
+        actionHint = 'Press [R] to rotate · Click Open to collect items';
+      } else if (machineDetail.type === 'drill') {
+        subtitle = resourceDetail
+          ? `Mining ${resourceDetail.shortName} · ${machineDetail.tierMult.toFixed(1)}x`
+          : 'Mining Drill · No Resource Below';
+        actionHint = 'Outputs directly onto front belt, chest, or furnace';
+      } else if (machineDetail.type === 'inserter') {
+        subtitle = `Logistics · ${machineDetail.tierMult.toFixed(1)}x swing`;
+        actionHint = 'Picks up behind · Drops in front · [R] Rotate';
+      } else if (machineDetail.type === 'generator') {
+        subtitle = `Power · ${machineDetail.powerSupplyMw.toFixed(1)} MW`;
+        actionHint = 'Feed Coal or Fresh Orange for 6.0 MW surge';
+      } else {
+        subtitle = `Building · ${machineDetail.status}`;
+        actionHint = 'Click Open to manage buffers or recipes';
+      }
+    } else if (treeDetail) {
+      primaryKind = 'tree';
+      title = treeDetail.name;
+      subtitle = 'Harvestable Flora · Generator Fuel';
+      actionHint = 'Chop [E] or click Chop for +3 Fresh Orange';
+    } else if (resourceDetail) {
+      primaryKind = 'resource';
+      title = resourceDetail.name;
+      subtitle = 'Minable Resource Deposit';
+      actionHint = 'Mine [E] by hand or place a Mining Drill';
+    } else if (spilledTotalCount > 0) {
+      primaryKind = 'spilled';
+      title =
+        spilledItems.length === 1
+          ? getCapytorioItemMeta(spilledItems[0].item).name
+          : 'Items on Ground';
+      subtitle = `Ground Loot · ${spilledTotalCount} item${spilledTotalCount === 1 ? '' : 's'}`;
+      actionHint = 'Walk near, use an Inserter, or click Collect';
+    } else if (isBeacon) {
+      primaryKind = 'beacon';
+      title = 'Surveyor Beacon';
+      subtitle = 'Drop-Pod Landing Landmark';
+      actionHint = 'Press [H] anytime to warp back to base';
+    }
+
+    return {
+      gx,
+      gz,
+      key,
+      primaryKind,
+      title,
+      subtitle,
+      machine: machineDetail,
+      resource: resourceDetail,
+      tree: treeDetail,
+      spilledItems,
+      spilledTotalCount,
+      isBeacon,
+      terrainName: isBeacon ? 'Surveyor Beacon Pad' : 'Meadow Grass',
+      actionHint,
+    };
+  }
+
   public getUiSnapshot(): CapytorioUiSnapshot {
     const inspected = this.inspectedKey ? this.machines.get(this.inspectedKey) ?? null : null;
     const hoveredOre = this.getResourceAt(this.hoveredGx, this.hoveredGz);
     const hoveredMachine = this.machines.get(tileKey(this.hoveredGx, this.hoveredGz)) ?? null;
     const activeTech = this.activeTechId ? TECH_BY_ID.get(this.activeTechId) : null;
+    const hoveredTileInfo = this.inspectTileSnapshot(this.hoveredGx, this.hoveredGz);
+    const inspectedTile = this.inspectedTile
+      ? this.inspectTileSnapshot(this.inspectedTile.gx, this.inspectedTile.gz)
+      : inspected
+        ? this.inspectTileSnapshot(inspected.gx, inspected.gz)
+        : null;
 
     let techFrac = 0;
     if (activeTech) {
@@ -2558,6 +3054,8 @@ export class CapytorioFactoryEngine {
             holdingItem: inspected.holdingItem,
           }
         : null,
+      inspectedTile,
+      hoveredTileInfo,
       hoveredTile: {
         gx: this.hoveredGx,
         gz: this.hoveredGz,
@@ -2643,6 +3141,7 @@ export class CapytorioFactoryEngine {
     this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
     this.harvestedTrees.clear();
+    this.topologyRevision++;
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
       delete this.pocketItems[k];
     }
@@ -2745,12 +3244,12 @@ export class CapytorioFactoryEngine {
           inputBuffer: sm.inputBuffer ? { ...sm.inputBuffer } : {},
           outputBuffer: sm.outputBuffer ? { ...sm.outputBuffer } : {},
           beltItems: Array.isArray(sm.beltItems)
-            ? sm.beltItems.slice(0, 6).map((b) => ({
+            ? sm.beltItems.slice(0, CAPYTORIO_BELT_MAX_ITEMS_PER_TILE).map((b) => ({
                 uid: this.nextBeltItemUid++,
                 item: b.item,
                 progress: b.progress,
                 lane: b.lane === 1 ? 1 : 0,
-                squish: typeof b.squish === 'number' && Number.isFinite(b.squish) ? Math.max(0, Math.min(1, b.squish)) : 0,
+                squish: 0,
                 edgeProgress:
                   typeof b.edgeProgress === 'number' && Number.isFinite(b.edgeProgress)
                     ? Math.max(0, Math.min(1, b.edgeProgress))

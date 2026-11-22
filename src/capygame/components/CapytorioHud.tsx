@@ -38,7 +38,13 @@ import {
   resolveCapytorioPlaceableSpec,
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
-import { CapytorioMachineIcon, CapytorioSlotTile } from './CapytorioSlotIcon';
+import {
+  CapytorioItemIcon,
+  CapytorioMachineIcon,
+  CapytorioSlotTile,
+  CapytorioWorldIcon,
+} from './CapytorioSlotIcon';
+import { CapytorioEntityInfoPanel } from './CapytorioEntityInfoPanel';
 
 export type CapytorioDrawerTab = 'none' | 'inventory' | 'craft' | 'tech' | 'inspect';
 export type CapytorioCraftGroupTab = CapytorioRecipeGroup | 'machines' | 'lua';
@@ -47,6 +53,7 @@ export interface CapytorioHudProps {
   snap: CapytorioUiSnapshot;
   isObliqueCam: boolean;
   beltEndSpillEnabled: boolean;
+  pointerHoverActive: boolean;
   drawerTab: CapytorioDrawerTab;
   setDrawerTab: React.Dispatch<React.SetStateAction<CapytorioDrawerTab>>;
   isDockCollapsed: boolean;
@@ -59,6 +66,9 @@ export interface CapytorioHudProps {
   setLuaCatalogInfo: (info: CapytorioLuaCatalogInfo) => void;
   onSelectTool: (toolId: string, promoteToRecent?: boolean) => void;
   onMineAction: () => void;
+  onMineTileAt: (gx: number, gz: number) => void;
+  onInspectTileAt: (gx: number, gz: number) => void;
+  onClearInspection: () => void;
   onRotateDir: () => void;
   onToggleCameraMode: () => void;
   onToggleBeltEndSpill: () => void;
@@ -124,6 +134,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   snap,
   isObliqueCam,
   beltEndSpillEnabled,
+  pointerHoverActive,
   drawerTab,
   setDrawerTab,
   isDockCollapsed,
@@ -136,6 +147,9 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   setLuaCatalogInfo,
   onSelectTool,
   onMineAction,
+  onMineTileAt,
+  onInspectTileAt,
+  onClearInspection,
   onRotateDir,
   onToggleCameraMode,
   onToggleBeltEndSpill,
@@ -175,6 +189,11 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   const inspectedSpec = inspected
     ? resolveCapytorioPlaceableSpec(inspected.variantItemId ?? inspected.type)
     : null;
+  const inspectedTile = snap.inspectedTile;
+  const activeInfoTarget = pointerHoverActive
+    ? snap.hoveredTileInfo
+    : inspectedTile ?? snap.hoveredTileInfo;
+  const isInfoPinned = !pointerHoverActive && inspectedTile !== null;
   const hoveredTileInfo = snap.hoveredTile;
   const hoveredTileLabel = hoveredTileInfo.resource
     ? `${getCapytorioItemMeta(hoveredTileInfo.resource).shortName} ${hoveredTileInfo.resourceAmount} (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
@@ -750,29 +769,50 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
             </div>
           )}
 
-          {/* MACHINE INSPECTOR WINDOW */}
+          {/* MACHINE & UNIVERSAL ENTITY INSPECTOR WINDOW */}
           {drawerTab === 'inspect' && (
             <div
               data-testid="capytorio-drawer-inspect"
               role="dialog"
-              aria-label="Factorio Machine Inspector"
+              aria-label="Factorio Entity Inspector"
               onClick={(e) => e.stopPropagation()}
               className={`${FACTORIO_PANEL_FRAME} w-full max-w-[680px] max-h-full flex flex-col overflow-hidden text-[#e6e8ec]`}
             >
               <div className={FACTORIO_HEADER_BAR}>
                 <div className="flex items-center gap-2 min-w-0">
-                  {inspected && (
+                  {inspected ? (
                     <CapytorioMachineIcon
                       machineType={inspected.type}
                       color={hexToCss(inspectedSpec?.tintHex ?? CAPYTORIO_MACHINE_SPECS[inspected.type].colorHex)}
                       size={18}
                       className="shrink-0"
                     />
+                  ) : inspectedTile?.tree ? (
+                    <CapytorioWorldIcon kind="tree" size={18} className="shrink-0" />
+                  ) : inspectedTile?.resource ? (
+                    (() => {
+                      const meta = getCapytorioItemMeta(inspectedTile.resource.id);
+                      const shape = meta.shape ?? resolveCapytorioItemShape(meta.id, meta.category);
+                      return (
+                        <CapytorioItemIcon
+                          shape={shape}
+                          color={meta.cssColor}
+                          size={18}
+                          className="shrink-0"
+                        />
+                      );
+                    })()
+                  ) : inspectedTile?.isBeacon ? (
+                    <CapytorioWorldIcon kind="beacon" size={18} className="shrink-0" />
+                  ) : (
+                    <CapytorioWorldIcon kind="terrain" size={18} className="shrink-0" />
                   )}
                   <span className="text-xs font-bold tracking-wider uppercase text-[#f4b054] truncate">
                     {inspected
                       ? `${inspectedSpec?.name ?? CAPYTORIO_MACHINE_SPECS[inspected.type].name} (${inspected.gx}, ${inspected.gz})`
-                      : 'Machine Inspector'}
+                      : inspectedTile
+                        ? `${inspectedTile.title} (${inspectedTile.gx}, ${inspectedTile.gz})`
+                        : 'Entity Inspector'}
                   </span>
                   {inspected && (
                     <span className="text-[10px] font-mono text-[#9aa0ac] shrink-0">
@@ -783,7 +823,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                 <button
                   type="button"
                   onClick={() => setDrawerTab('none')}
-                  aria-label="Close Machine Inspector"
+                  aria-label="Close Entity Inspector"
                   className={`w-6 h-6 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
                 >
                   <X className="w-3.5 h-3.5" />
@@ -793,34 +833,96 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
               <div className="p-2.5 space-y-2.5 overflow-y-auto">
                 {inspected ? (
                   <div className={`${FACTORIO_WELL} p-2.5 space-y-2.5`}>
-                    {/* Progress / Burn Gauge */}
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[10px] font-mono tabular-nums text-[#c4c9d4]">
-                        <span>
-                          {inspected.type === 'generator'
-                            ? inspected.fuelTimer > 0
-                              ? `Burning Fuel · 6.0 MW (${inspected.fuelTimer.toFixed(1)}s)`
-                              : 'Idle · 1.5 MW (Feed Coal/Orange for 6.0 MW)'
-                            : `Craft Progress: ${Math.round(inspected.craftProgress * 100)}%`}
-                        </span>
-                        <span>
-                          In {inspected.inputTotal} · Out {inspected.outputTotal}
-                          {inspected.beltItemCount > 0 ? ` · Belt ${inspected.beltItemCount}` : ''}
-                        </span>
+                    {/* Progress / Burn / Belt Gauge */}
+                    {inspectedTile?.machine &&
+                    (inspected.type === 'belt' ||
+                      inspected.type === 'splitter' ||
+                      inspected.type === 'tunnel') ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between text-[10px] font-mono tabular-nums text-[#c4c9d4]">
+                          <span>
+                            Items on {inspected.type}:{' '}
+                            <strong className="text-[#f4b054]">
+                              {inspectedTile.machine.beltItemCount} /{' '}
+                              {inspectedTile.machine.beltCapacity}
+                            </strong>
+                          </span>
+                          <span>
+                            L {inspectedTile.machine.beltLeftLaneCount}/
+                            {inspectedTile.machine.beltLeftLaneCapacity} · R{' '}
+                            {inspectedTile.machine.beltRightLaneCount}/
+                            {inspectedTile.machine.beltRightLaneCapacity}
+                          </span>
+                        </div>
+                        <div className="h-2 w-full rounded-[1px] bg-[#0e1013] border border-[#30343d] overflow-hidden">
+                          <div
+                            className="h-full bg-[#e58926]"
+                            style={{
+                              width: `${
+                                inspectedTile.machine.beltCapacity > 0
+                                  ? Math.min(
+                                      100,
+                                      Math.round(
+                                        (inspectedTile.machine.beltItemCount /
+                                          inspectedTile.machine.beltCapacity) *
+                                          100
+                                      )
+                                    )
+                                  : 0
+                              }%`,
+                            }}
+                          />
+                        </div>
+                        {inspectedTile.machine.beltItemsByType.length > 0 && (
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {inspectedTile.machine.beltItemsByType.map((entry) => {
+                              const meta = getCapytorioItemMeta(entry.item);
+                              const shape =
+                                meta.shape ?? resolveCapytorioItemShape(meta.id, meta.category);
+                              return (
+                                <CapytorioSlotTile
+                                  key={entry.item}
+                                  compact
+                                  label={meta.shortName}
+                                  title={`${meta.name}: ${entry.count}`}
+                                  count={entry.count}
+                                  itemShape={shape}
+                                  color={meta.cssColor}
+                                />
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-                      <div className="h-2 w-full rounded-[1px] bg-[#0e1013] border border-[#30343d] overflow-hidden">
-                        <div
-                          className={inspected.type === 'generator' ? 'h-full bg-[#e58926]' : 'h-full bg-[#45b649]'}
-                          style={{
-                            width: `${
-                              inspected.type === 'generator'
-                                ? Math.min(100, Math.round((inspected.fuelTimer / 14) * 100))
-                                : Math.round(inspected.craftProgress * 100)
-                            }%`,
-                          }}
-                        />
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px] font-mono tabular-nums text-[#c4c9d4]">
+                          <span>
+                            {inspected.type === 'generator'
+                              ? inspected.fuelTimer > 0
+                                ? `Burning Fuel · 6.0 MW (${inspected.fuelTimer.toFixed(1)}s)`
+                                : 'Idle · 1.5 MW (Feed Coal/Orange for 6.0 MW)'
+                              : `Craft Progress: ${Math.round(inspected.craftProgress * 100)}%`}
+                          </span>
+                          <span>
+                            In {inspected.inputTotal} · Out {inspected.outputTotal}
+                            {inspected.beltItemCount > 0 ? ` · Belt ${inspected.beltItemCount}` : ''}
+                          </span>
+                        </div>
+                        <div className="h-2 w-full rounded-[1px] bg-[#0e1013] border border-[#30343d] overflow-hidden">
+                          <div
+                            className={inspected.type === 'generator' ? 'h-full bg-[#e58926]' : 'h-full bg-[#45b649]'}
+                            style={{
+                              width: `${
+                                inspected.type === 'generator'
+                                  ? Math.min(100, Math.round((inspected.fuelTimer / 14) * 100))
+                                  : Math.round(inspected.craftProgress * 100)
+                              }%`,
+                            }}
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
 
                     {/* Input / Output Slot Wells */}
                     {(inspected.inputTotal > 0 || inspected.outputTotal > 0) && (
@@ -933,9 +1035,69 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       </button>
                     </div>
                   </div>
+                ) : inspectedTile ? (
+                  <div className={`${FACTORIO_WELL} p-2.5 space-y-2 text-[11px]`}>
+                    <div className="text-[#c4c9d4]">{inspectedTile.subtitle}</div>
+                    {inspectedTile.resource && (
+                      <div className="flex items-center justify-between font-mono tabular-nums">
+                        <span className="text-[#9aa0ac]">Remaining Ore:</span>
+                        <span className="text-[#f4b054] font-bold">
+                          {inspectedTile.resource.remaining.toLocaleString()} {inspectedTile.resource.name}
+                        </span>
+                      </div>
+                    )}
+                    {inspectedTile.tree && (
+                      <div className="flex items-center justify-between font-mono tabular-nums">
+                        <span className="text-[#9aa0ac]">Harvest Yield:</span>
+                        <span className="text-[#ffe4b5] font-bold">
+                          +{inspectedTile.tree.yieldCount} Fresh Orange
+                        </span>
+                      </div>
+                    )}
+                    {inspectedTile.spilledTotalCount > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {inspectedTile.spilledItems.map((entry) => {
+                          const meta = getCapytorioItemMeta(entry.item);
+                          const shape =
+                            meta.shape ?? resolveCapytorioItemShape(meta.id, meta.category);
+                          return (
+                            <CapytorioSlotTile
+                              key={entry.item}
+                              compact
+                              label={meta.shortName}
+                              title={`${meta.name}: ${entry.count}`}
+                              count={entry.count}
+                              itemShape={shape}
+                              color={meta.cssColor}
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5 pt-1">
+                      {(inspectedTile.resource || inspectedTile.tree) && (
+                        <button
+                          type="button"
+                          onClick={() => onMineTileAt(inspectedTile.gx, inspectedTile.gz)}
+                          className={`px-2.5 py-1 rounded-[2px] text-[10px] cursor-pointer ${FACTORIO_BTN_ACTIVE}`}
+                        >
+                          {inspectedTile.tree ? 'Chop Tree (+3 Orange)' : 'Hand Mine (+2 Ore)'}
+                        </button>
+                      )}
+                      {inspectedTile.spilledTotalCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={onCollectAllOutputs}
+                          className={`px-2.5 py-1 rounded-[2px] text-[10px] cursor-pointer ${FACTORIO_BTN_ACTIVE}`}
+                        >
+                          Collect Floor Items
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 ) : (
                   <p className="text-[11px] text-[#9aa0ac] px-1">
-                    Click any placed machine on the meadow to inspect buffers, feed fuel, or assign recipes.
+                    Click or hover any building, belt, ore seam, citrus tree, or tile on the meadow to inspect it.
                   </p>
                 )}
 
@@ -973,6 +1135,24 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {/* FACTORIO BOTTOM-RIGHT LIVE ENTITY / TILE INFO WINDOW */}
+      {drawerTab === 'none' && activeInfoTarget && (
+        <CapytorioEntityInfoPanel
+          info={activeInfoTarget}
+          isPinned={isInfoPinned}
+          isDockCollapsed={isDockCollapsed}
+          onClearPin={onClearInspection}
+          onOpenMachineModal={(gx, gz) => {
+            onInspectTileAt(gx, gz);
+            setIsDockCollapsed(false);
+            setDrawerTab('inspect');
+          }}
+          onRotateMachineAt={onRotateMachineAt}
+          onMineTileAt={onMineTileAt}
+          onCollectAllOutputs={onCollectAllOutputs}
+        />
       )}
 
       {/* SINGLE COMPACT BOTTOM FACTORIO QUICKBAR DOCK */}
@@ -1222,7 +1402,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                 <button
                   type="button"
                   data-testid="capytorio-drawer-inspect-btn"
-                  title="Inspect Selected Machine"
+                  title="Inspect Selected Tile or Building"
                   onClick={() => toggleTab('inspect')}
                   className={`h-11 px-2 rounded-[2px] text-[10px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
                     drawerTab === 'inspect' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
@@ -1230,7 +1410,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                 >
                   <span className="text-[10px] font-bold">Inspect</span>
                   <span className="text-[9px] font-mono opacity-80">
-                    {inspected ? `${inspected.gx},${inspected.gz}` : '—'}
+                    {inspectedTile ? `${inspectedTile.gx},${inspectedTile.gz}` : '—'}
                   </span>
                 </button>
 
