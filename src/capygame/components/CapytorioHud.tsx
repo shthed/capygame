@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   Check,
@@ -45,6 +45,7 @@ import {
   type CapytorioClipboardToolState,
   type CapytorioSavedBlueprint,
   type CapytorioSelectionShape,
+  type CapytorioTileInspection,
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
 import {
@@ -54,8 +55,16 @@ import {
   CapytorioWorldIcon,
 } from './CapytorioSlotIcon';
 import { CapytorioEntityInfoPanel } from './CapytorioEntityInfoPanel';
+import { CapytorioPediaView } from './CapytorioPediaView';
 
-export type CapytorioDrawerTab = 'none' | 'inventory' | 'craft' | 'tech' | 'inspect' | 'blueprints';
+export type CapytorioDrawerTab =
+  | 'none'
+  | 'inventory'
+  | 'craft'
+  | 'tech'
+  | 'inspect'
+  | 'blueprints'
+  | 'pedia';
 export type CapytorioCraftGroupTab = CapytorioRecipeGroup | 'machines' | 'lua';
 
 export interface CapytorioHudProps {
@@ -72,6 +81,10 @@ export interface CapytorioHudProps {
   setSelectedCraftRecipeId: (id: string) => void;
   luaCatalogInfo: CapytorioLuaCatalogInfo;
   setLuaCatalogInfo: (info: CapytorioLuaCatalogInfo) => void;
+  pediaEntryId: string;
+  pediaContextInfo: CapytorioTileInspection | null;
+  searchFocusNonce?: number;
+  onOpenPedia: (entryId: string, contextInfo?: CapytorioTileInspection | null) => void;
   onSelectTool: (toolId: string, promoteToRecent?: boolean) => void;
   onMineTileAt: (gx: number, gz: number) => void;
   onInspectTileAt: (gx: number, gz: number) => void;
@@ -238,6 +251,10 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   setSelectedCraftRecipeId,
   luaCatalogInfo,
   setLuaCatalogInfo,
+  pediaEntryId,
+  pediaContextInfo,
+  searchFocusNonce = 0,
+  onOpenPedia,
   onSelectTool,
   onMineTileAt,
   onInspectTileAt,
@@ -271,9 +288,44 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
 }) => {
   const recipeLuaInputRef = useRef<HTMLInputElement | null>(null);
   const techLuaInputRef = useRef<HTMLInputElement | null>(null);
+  const invSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const craftSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const techSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const blueprintSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedCraftMachineType, setSelectedCraftMachineType] =
     useState<CapytorioMachineType>(CAPYTORIO_HOTBAR_ORDER[0]);
   const [focusedInvText, setFocusedInvText] = useState<string | null>(null);
+  const [invSearchQuery, setInvSearchQuery] = useState('');
+  const [craftSearchQuery, setCraftSearchQuery] = useState('');
+  const [techSearchQuery, setTechSearchQuery] = useState('');
+  const [blueprintSearchQuery, setBlueprintSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (searchFocusNonce <= 0) return;
+    const focusSearch = () => {
+      const target =
+        drawerTab === 'craft'
+          ? craftSearchInputRef.current
+          : drawerTab === 'inventory'
+            ? invSearchInputRef.current
+            : drawerTab === 'tech'
+              ? techSearchInputRef.current
+              : drawerTab === 'blueprints'
+                ? blueprintSearchInputRef.current
+                : null;
+      if (target) {
+        target.focus();
+        target.select();
+        return true;
+      }
+      return false;
+    };
+    if (!focusSearch()) {
+      requestAnimationFrame(() => {
+        focusSearch();
+      });
+    }
+  }, [searchFocusNonce, drawerTab]);
 
   const effPct = Math.round(snap.powerEfficiency * 100);
   const totalSciInPocket = Object.entries(snap.pocketItems).reduce<number>(
@@ -314,15 +366,56 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
     ...allCatalogItems,
     ...extraPocketIds.map((id) => getCapytorioItemMeta(id)),
   ];
+  const invNeedle = invSearchQuery.trim().toLowerCase();
+  const filteredStarterMachines = invNeedle
+    ? CAPYTORIO_HOTBAR_ORDER.filter((mType) => {
+        const spec = CAPYTORIO_MACHINE_SPECS[mType];
+        return (
+          spec.name.toLowerCase().includes(invNeedle) ||
+          spec.shortName.toLowerCase().includes(invNeedle) ||
+          mType.toLowerCase().includes(invNeedle)
+        );
+      })
+    : CAPYTORIO_HOTBAR_ORDER;
+  const filteredInventoryItems = invNeedle
+    ? inventoryItemList.filter(
+        (meta) =>
+          meta.name.toLowerCase().includes(invNeedle) ||
+          meta.shortName.toLowerCase().includes(invNeedle) ||
+          meta.id.toLowerCase().includes(invNeedle) ||
+          meta.category.toLowerCase().includes(invNeedle)
+      )
+    : inventoryItemList;
   const totalPocketItemsCount = Object.values(snap.pocketItems).reduce<number>(
     (sum, v) => sum + (v ?? 0),
     0
   );
   const recentSlots = snap.recentTools.slice(0, 10);
-  const groupRecipes =
-    craftGroup === 'machines' || craftGroup === 'lua'
+  const craftNeedle = craftSearchQuery.trim().toLowerCase();
+  const groupRecipes = craftNeedle
+    ? pocketCraftableRecipes.filter((r) => {
+        const outMeta = getCapytorioItemMeta(r.result);
+        return (
+          r.name.toLowerCase().includes(craftNeedle) ||
+          r.id.toLowerCase().includes(craftNeedle) ||
+          r.group.toLowerCase().includes(craftNeedle) ||
+          outMeta.name.toLowerCase().includes(craftNeedle) ||
+          outMeta.shortName.toLowerCase().includes(craftNeedle)
+        );
+      })
+    : craftGroup === 'machines' || craftGroup === 'lua'
       ? []
       : pocketCraftableRecipes.filter((r) => r.group === craftGroup);
+  const filteredCraftMachines = craftNeedle
+    ? CAPYTORIO_HOTBAR_ORDER.filter((mType) => {
+        const spec = CAPYTORIO_MACHINE_SPECS[mType];
+        return (
+          spec.name.toLowerCase().includes(craftNeedle) ||
+          spec.shortName.toLowerCase().includes(craftNeedle) ||
+          mType.toLowerCase().includes(craftNeedle)
+        );
+      })
+    : CAPYTORIO_HOTBAR_ORDER;
   const detailRecipe =
     groupRecipes.find((r) => r.id === selectedCraftRecipeId) ??
     pocketCraftableRecipes.find((r) => r.id === selectedCraftRecipeId) ??
@@ -408,6 +501,25 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
           >
             <span>Tech</span>
             <span className="opacity-80">{Math.round(snap.activeTechProgress * 100)}%</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="capytorio-drawer-pedia-btn"
+            title="Capytoriopedia [Alt + Left-Click anything]"
+            aria-label="Open Capytoriopedia"
+            onClick={() => {
+              if (drawerTab === 'pedia') {
+                setDrawerTab('none');
+              } else {
+                onOpenPedia(pediaEntryId || 'drill', pediaContextInfo);
+              }
+            }}
+            className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${
+              drawerTab === 'pedia' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5" />
           </button>
 
           <button
@@ -542,92 +654,139 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                   } lg:col-span-5 flex-col gap-2.5 ${FACTORIO_WELL} p-2.5`}
                 >
                   <div className="flex items-center justify-between gap-2 border-b border-[#2b2e35] pb-1">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#f4b054]">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#f4b054] shrink-0">
                       Inventory
                     </span>
-                    <span className="text-[10px] font-mono tabular-nums text-[#9aa0ac] truncate">
-                      {focusedInvText ?? `${totalPocketItemsCount} items`}
+                    <div className="relative flex-1 max-w-[175px]">
+                      <Search className="w-3 h-3 text-[#8e95a2] absolute left-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        ref={invSearchInputRef}
+                        type="text"
+                        value={invSearchQuery}
+                        onChange={(e) => setInvSearchQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape' && invSearchQuery) {
+                            e.stopPropagation();
+                            setInvSearchQuery('');
+                          }
+                        }}
+                        data-testid="capytorio-inventory-search"
+                        placeholder="Search [Ctrl+F]..."
+                        aria-label="Search Inventory"
+                        className="w-full h-5 pl-5 pr-4 rounded-[2px] bg-[#101216] border border-[#2f333d] focus:border-[#e58926] outline-none text-[10px] text-[#eef1f5] placeholder-[#6c7382]"
+                      />
+                      {invSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setInvSearchQuery('')}
+                          aria-label="Clear inventory search"
+                          className="absolute right-1 top-1/2 -translate-y-1/2 text-[#8e95a2] hover:text-[#eef1f5] cursor-pointer"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      )}
+                    </div>
+                    <span className="text-[10px] font-mono tabular-nums text-[#9aa0ac] truncate hidden sm:inline">
+                      {focusedInvText ?? `${totalPocketItemsCount}`}
                     </span>
                   </div>
 
                   {/* Starter Kit Buildings */}
-                  <div>
-                    <div className="text-[9px] font-mono uppercase tracking-wider text-[#8e95a2] mb-1.5">
-                      Starter Buildings (Click to Equip)
+                  {filteredStarterMachines.length > 0 && (
+                    <div>
+                      <div className="text-[9px] font-mono uppercase tracking-wider text-[#8e95a2] mb-1.5">
+                        Starter Buildings (Click Equip · Alt+Click Pedia)
+                      </div>
+                      <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1">
+                        {filteredStarterMachines.map((mType) => {
+                          const spec = CAPYTORIO_MACHINE_SPECS[mType];
+                          const count = snap.pocketMachines[mType] ?? 0;
+                          const isActive = snap.selectedTool === mType;
+                          return (
+                            <div
+                              key={mType}
+                              onMouseEnter={() => setFocusedInvText(`${spec.name} ×${count}`)}
+                              onMouseLeave={() => setFocusedInvText(null)}
+                            >
+                              <CapytorioSlotTile
+                                mini
+                                testId={`capytorio-inv-machine-${mType}`}
+                                label={spec.shortName}
+                                title={`${spec.name} (×${count}) — Click to equip · Alt+Click Pedia`}
+                                count={count}
+                                selected={isActive}
+                                dimmed={count === 0 && !isActive}
+                                machineType={mType}
+                                color={hexToCss(spec.colorHex)}
+                                onClick={(e) => {
+                                  if (e.altKey) {
+                                    e.preventDefault();
+                                    onOpenPedia(mType);
+                                    return;
+                                  }
+                                  setFocusedInvText(`${spec.name} ×${count}`);
+                                  onSelectTool(mType, true);
+                                  showToast(`Equipped ${spec.name}`);
+                                }}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1">
-                      {CAPYTORIO_HOTBAR_ORDER.map((mType) => {
-                        const spec = CAPYTORIO_MACHINE_SPECS[mType];
-                        const count = snap.pocketMachines[mType] ?? 0;
-                        const isActive = snap.selectedTool === mType;
-                        return (
-                          <div
-                            key={mType}
-                            onMouseEnter={() => setFocusedInvText(`${spec.name} ×${count}`)}
-                            onMouseLeave={() => setFocusedInvText(null)}
-                          >
-                            <CapytorioSlotTile
-                              mini
-                              testId={`capytorio-inv-machine-${mType}`}
-                              label={spec.shortName}
-                              title={`${spec.name} (×${count}) — Click to equip`}
-                              count={count}
-                              selected={isActive}
-                              dimmed={count === 0 && !isActive}
-                              machineType={mType}
-                              color={hexToCss(spec.colorHex)}
-                              onClick={() => {
-                                setFocusedInvText(`${spec.name} ×${count}`);
-                                onSelectTool(mType, true);
-                                showToast(`Equipped ${spec.name}`);
-                              }}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  )}
 
                   {/* Pocket Resources & Crafted Entities */}
                   <div className="flex-1 min-h-0 flex flex-col">
                     <div className="text-[9px] font-mono uppercase tracking-wider text-[#8e95a2] mb-1.5">
                       Resources & Crafted Entities
                     </div>
-                    <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[38vh] overflow-y-auto pr-0.5">
-                      {inventoryItemList.map((meta) => {
-                        const qty = snap.pocketItems[meta.id] ?? 0;
-                        const placeable = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[meta.id];
-                        const isEquipped = snap.selectedTool === meta.id;
-                        const shape = meta.shape ?? resolveCapytorioItemShape(meta.id, meta.category);
-                        return (
-                          <div
-                            key={meta.id}
-                            onMouseEnter={() => setFocusedInvText(`${meta.name} ×${qty}`)}
-                            onMouseLeave={() => setFocusedInvText(null)}
-                          >
-                            <CapytorioSlotTile
-                              mini
-                              testId={`capytorio-inv-item-${meta.id}`}
-                              label={meta.shortName}
-                              title={`${meta.name}${placeable ? ' (Click to equip)' : ''}: ${qty}`}
-                              count={qty}
-                              selected={isEquipped}
-                              dimmed={qty === 0 && !isEquipped}
-                              machineType={placeable?.baseType}
-                              itemShape={shape}
-                              color={placeable?.tintHex ? hexToCss(placeable.tintHex) : meta.cssColor}
-                              onClick={() => {
-                                setFocusedInvText(`${meta.name} ×${qty}`);
-                                if (placeable) {
-                                  onSelectTool(meta.id, true);
-                                  showToast(`Equipped ${meta.name} into Quickbar Slot 1`);
-                                }
-                              }}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
+                    {filteredInventoryItems.length === 0 ? (
+                      <div className="text-[10px] text-[#7c8391] py-4 text-center">
+                        No inventory items match "{invSearchQuery}"
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[38vh] overflow-y-auto pr-0.5">
+                        {filteredInventoryItems.map((meta) => {
+                          const qty = snap.pocketItems[meta.id] ?? 0;
+                          const placeable = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[meta.id];
+                          const isEquipped = snap.selectedTool === meta.id;
+                          const shape = meta.shape ?? resolveCapytorioItemShape(meta.id, meta.category);
+                          return (
+                            <div
+                              key={meta.id}
+                              onMouseEnter={() => setFocusedInvText(`${meta.name} ×${qty}`)}
+                              onMouseLeave={() => setFocusedInvText(null)}
+                            >
+                              <CapytorioSlotTile
+                                mini
+                                testId={`capytorio-inv-item-${meta.id}`}
+                                label={meta.shortName}
+                                title={`${meta.name}${placeable ? ' (Click to equip)' : ''} · Alt+Click Pedia: ${qty}`}
+                                count={qty}
+                                selected={isEquipped}
+                                dimmed={qty === 0 && !isEquipped}
+                                machineType={placeable?.baseType}
+                                itemShape={shape}
+                                color={placeable?.tintHex ? hexToCss(placeable.tintHex) : meta.cssColor}
+                                onClick={(e) => {
+                                  if (e.altKey) {
+                                    e.preventDefault();
+                                    onOpenPedia(meta.id);
+                                    return;
+                                  }
+                                  setFocusedInvText(`${meta.name} ×${qty}`);
+                                  if (placeable) {
+                                    onSelectTool(meta.id, true);
+                                    showToast(`Equipped ${meta.name} into Quickbar Slot 1`);
+                                  }
+                                }}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -638,25 +797,57 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                   } lg:col-span-7 flex-col justify-between gap-2 ${FACTORIO_WELL} p-2.5`}
                 >
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between border-b border-[#2b2e35] pb-1">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-[#f4b054]">
+                    <div className="flex items-center justify-between gap-2 border-b border-[#2b2e35] pb-1">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-[#f4b054] shrink-0">
                         Crafting
                       </span>
-                      <span className="text-[10px] font-mono tabular-nums text-[#9aa0ac]">
-                        {pocketCraftableRecipes.length} unlocked recipes
+                      <div className="relative flex-1 max-w-[200px]">
+                        <Search className="w-3 h-3 text-[#8e95a2] absolute left-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          ref={craftSearchInputRef}
+                          type="text"
+                          value={craftSearchQuery}
+                          onChange={(e) => setCraftSearchQuery(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape' && craftSearchQuery) {
+                              e.stopPropagation();
+                              setCraftSearchQuery('');
+                            }
+                          }}
+                          data-testid="capytorio-craft-search"
+                          placeholder="Search recipes [Ctrl+F]..."
+                          aria-label="Search Crafting Recipes"
+                          className="w-full h-5 pl-5 pr-4 rounded-[2px] bg-[#101216] border border-[#2f333d] focus:border-[#e58926] outline-none text-[10px] text-[#eef1f5] placeholder-[#6c7382]"
+                        />
+                        {craftSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setCraftSearchQuery('')}
+                            aria-label="Clear crafting search"
+                            className="absolute right-1 top-1/2 -translate-y-1/2 text-[#8e95a2] hover:text-[#eef1f5] cursor-pointer"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                      </div>
+                      <span className="text-[10px] font-mono tabular-nums text-[#9aa0ac] hidden sm:inline shrink-0">
+                        {craftNeedle ? `${groupRecipes.length} matches` : `${pocketCraftableRecipes.length} unlocked`}
                       </span>
                     </div>
 
                     {/* Category Tabs */}
                     <div className="flex flex-wrap gap-1">
                       {GROUP_TABS.map((tab) => {
-                        const active = craftGroup === tab.id;
+                        const active = !craftNeedle && craftGroup === tab.id;
                         return (
                           <button
                             key={tab.id}
                             type="button"
                             data-testid={`capytorio-craft-tab-${tab.id}`}
-                            onClick={() => setCraftGroup(tab.id)}
+                            onClick={() => {
+                              setCraftSearchQuery('');
+                              setCraftGroup(tab.id);
+                            }}
                             className={`px-2 py-1 rounded-[2px] text-[10px] font-semibold cursor-pointer ${
                               active ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
                             }`}
@@ -667,10 +858,10 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       })}
                     </div>
 
-                    {/* Active Category Grid */}
-                    {craftGroup === 'machines' ? (
+                    {/* Active Category Grid (Search spans both Buildings and ALL recipe tabs) */}
+                    {(craftGroup === 'machines' && !craftNeedle) ? (
                       <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[36vh] overflow-y-auto pr-0.5">
-                        {CAPYTORIO_HOTBAR_ORDER.map((mType) => {
+                        {filteredCraftMachines.map((mType) => {
                           const spec = CAPYTORIO_MACHINE_SPECS[mType];
                           const canAffordMachine = Object.entries(spec.craftCost).every(
                             ([id, amt]) => (snap.pocketItems[id] ?? 0) >= (amt ?? 0)
@@ -684,13 +875,18 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                               mini
                               testId={`capytorio-craft-machine-${mType}`}
                               label={spec.shortName}
-                              title={`Craft +1 ${spec.name} (${costLabel})`}
+                              title={`Craft +1 ${spec.name} (${costLabel}) · Alt+Click Pedia`}
                               count="×1"
                               selected={selectedCraftMachineType === mType}
                               accent={canAffordMachine ? 'craftable' : 'missing'}
                               machineType={mType}
                               color={hexToCss(spec.colorHex)}
-                              onClick={() => {
+                              onClick={(e) => {
+                                if (e.altKey) {
+                                  e.preventDefault();
+                                  onOpenPedia(mType);
+                                  return;
+                                }
                                 setSelectedCraftMachineType(mType);
                                 onCraftMachine(mType);
                               }}
@@ -698,7 +894,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                           );
                         })}
                       </div>
-                    ) : craftGroup === 'lua' ? (
+                    ) : craftGroup === 'lua' && !craftNeedle ? (
                       <div className="p-2.5 rounded-[2px] bg-[#121417] border border-[#2d3038] space-y-2 text-[11px]">
                         <div className="font-mono text-[#d4d7de]">
                           Active .lua Catalog:{' '}
@@ -790,6 +986,39 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       </div>
                     ) : (
                       <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[36vh] overflow-y-auto pr-0.5">
+                        {craftNeedle &&
+                          filteredCraftMachines.map((mType) => {
+                            const spec = CAPYTORIO_MACHINE_SPECS[mType];
+                            const canAffordMachine = Object.entries(spec.craftCost).every(
+                              ([id, amt]) => (snap.pocketItems[id] ?? 0) >= (amt ?? 0)
+                            );
+                            const costLabel = Object.entries(spec.craftCost)
+                              .map(([id, amt]) => `${amt} ${getCapytorioItemMeta(id).shortName}`)
+                              .join(' · ');
+                            return (
+                              <CapytorioSlotTile
+                                key={`srch-m-${mType}`}
+                                mini
+                                testId={`capytorio-craft-machine-${mType}`}
+                                label={spec.shortName}
+                                title={`Craft +1 ${spec.name} (${costLabel}) · Alt+Click Pedia`}
+                                count="×1"
+                                selected={selectedCraftMachineType === mType}
+                                accent={canAffordMachine ? 'craftable' : 'missing'}
+                                machineType={mType}
+                                color={hexToCss(spec.colorHex)}
+                                onClick={(e) => {
+                                  if (e.altKey) {
+                                    e.preventDefault();
+                                    onOpenPedia(mType);
+                                    return;
+                                  }
+                                  setSelectedCraftMachineType(mType);
+                                  onCraftMachine(mType);
+                                }}
+                              />
+                            );
+                          })}
                         {groupRecipes.map((rec) => {
                           const outMeta = getCapytorioItemMeta(rec.result);
                           const canAfford = rec.ingredients.every(
@@ -805,20 +1034,32 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                               mini
                               testId={`capytorio-craft-recipe-${rec.id}`}
                               label={outMeta.shortName}
-                              title={`${rec.name} (×${rec.resultCount}) — Click to craft 1`}
+                              title={`${rec.name} (×${rec.resultCount}) — Click craft 1 · Alt+Click Pedia`}
                               count={`×${rec.resultCount}`}
                               selected={isSelected}
                               accent={canAfford ? 'craftable' : 'missing'}
                               machineType={placeable?.baseType}
                               itemShape={shape}
                               color={placeable?.tintHex ? hexToCss(placeable.tintHex) : outMeta.cssColor}
-                              onClick={() => {
+                              onClick={(e) => {
+                                if (e.altKey) {
+                                  e.preventDefault();
+                                  onOpenPedia(rec.result);
+                                  return;
+                                }
                                 setSelectedCraftRecipeId(rec.id);
                                 onCraftRecipe(rec.id, 1, true);
                               }}
                             />
                           );
                         })}
+                        {craftNeedle &&
+                          filteredCraftMachines.length === 0 &&
+                          groupRecipes.length === 0 && (
+                            <div className="col-span-full text-[10px] text-[#7c8391] py-4 text-center">
+                              No crafting recipes match "{craftSearchQuery}"
+                            </div>
+                          )}
                       </div>
                     )}
                   </div>
@@ -948,6 +1189,29 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="relative w-32 sm:w-44">
+                    <Search className="w-3 h-3 text-[#8e95a2] absolute left-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      ref={techSearchInputRef}
+                      type="text"
+                      value={techSearchQuery}
+                      onChange={(e) => setTechSearchQuery(e.target.value)}
+                      data-testid="capytorio-tech-search"
+                      placeholder="Search tech [Ctrl+F]..."
+                      aria-label="Search Technology"
+                      className="w-full h-6 pl-5 pr-4 rounded-[2px] bg-[#101216] border border-[#2f333d] focus:border-[#e58926] outline-none text-[10px] text-[#eef1f5] placeholder-[#6c7382]"
+                    />
+                    {techSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setTechSearchQuery('')}
+                        aria-label="Clear tech search"
+                        className="absolute right-1 top-1/2 -translate-y-1/2 text-[#8e95a2] hover:text-[#eef1f5] cursor-pointer"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    )}
+                  </div>
                   <button
                     type="button"
                     data-testid="capytorio-feed-sci-btn"
@@ -970,7 +1234,15 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
               </div>
 
               <div className="p-2.5 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                {CAPYTORIO_TECHS.map((tech) => {
+                {CAPYTORIO_TECHS.filter((t) => {
+                  const q = techSearchQuery.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    t.name.toLowerCase().includes(q) ||
+                    t.id.toLowerCase().includes(q) ||
+                    t.effectSummary.toLowerCase().includes(q)
+                  );
+                }).map((tech) => {
                   const completed = snap.unlockedTechs.includes(tech.id);
                   const isActive = snap.activeTechId === tech.id;
                   const prereqsMet = tech.prerequisites.every((p) =>
@@ -984,7 +1256,15 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       key={tech.id}
                       type="button"
                       data-testid={`capytorio-tech-${tech.id}`}
-                      onClick={() => onSelectTech(tech.id)}
+                      title={`${tech.name} — Click research · Alt+Click Pedia`}
+                      onClick={(e) => {
+                        if (e.altKey) {
+                          e.preventDefault();
+                          onOpenPedia(`tech:${tech.id}`);
+                          return;
+                        }
+                        onSelectTech(tech.id);
+                      }}
                       className={`p-2.5 rounded-[2px] border text-left cursor-pointer transition-colors ${
                         isActive
                           ? 'bg-[#3b2913] border-[#e58926] text-[#ffe4b5]'
@@ -1419,6 +1699,29 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="relative w-32 sm:w-44">
+                    <Search className="w-3 h-3 text-[#8e95a2] absolute left-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      ref={blueprintSearchInputRef}
+                      type="text"
+                      value={blueprintSearchQuery}
+                      onChange={(e) => setBlueprintSearchQuery(e.target.value)}
+                      data-testid="capytorio-blueprint-search"
+                      placeholder="Search [Ctrl+F]..."
+                      aria-label="Search Blueprint Library"
+                      className="w-full h-6 pl-5 pr-4 rounded-[2px] bg-[#101216] border border-[#2f333d] focus:border-[#e58926] outline-none text-[10px] text-[#eef1f5] placeholder-[#6c7382]"
+                    />
+                    {blueprintSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setBlueprintSearchQuery('')}
+                        aria-label="Clear blueprint search"
+                        className="absolute right-1 top-1/2 -translate-y-1/2 text-[#8e95a2] hover:text-[#eef1f5] cursor-pointer"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    )}
+                  </div>
                   {snap.blueprintLibrary.length > 0 && (
                     <button
                       type="button"
@@ -1466,7 +1769,13 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                    {snap.blueprintLibrary.map((bp, idx) => {
+                    {snap.blueprintLibrary
+                      .filter((bp) => {
+                        const q = blueprintSearchQuery.trim().toLowerCase();
+                        if (!q) return true;
+                        return bp.label.toLowerCase().includes(q) || bp.sourceMode.includes(q);
+                      })
+                      .map((bp, idx) => {
                       const isActive =
                         clip.toolState === 'paste' && clip.activeBlueprintId === bp.id;
                       return (
@@ -1527,6 +1836,23 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
               </div>
             </div>
           )}
+
+          {/* CAPYTORIOPEDIA ENCYCLOPEDIA & HELP WINDOW (Alt + Left-Click anywhere) */}
+          {drawerTab === 'pedia' && (
+            <CapytorioPediaView
+              entryId={pediaEntryId}
+              contextInfo={pediaContextInfo}
+              snap={snap}
+              luaCatalogInfo={luaCatalogInfo}
+              searchFocusNonce={searchFocusNonce}
+              onNavigateEntry={(nextId) => onOpenPedia(nextId, pediaContextInfo)}
+              onClose={() => setDrawerTab('none')}
+              onSelectTool={onSelectTool}
+              onCraftMachine={onCraftMachine}
+              onCraftRecipe={onCraftRecipe}
+              onSelectTech={onSelectTech}
+            />
+          )}
         </div>
       )}
 
@@ -1544,7 +1870,9 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
           onRotateMachineAt={onRotateMachineAt}
           onDemolishMachineAt={onDemolishMachineAt}
           onMineTileAt={onMineTileAt}
+          onTakeOutputs={onTakeOutputs}
           onCollectAllOutputs={onCollectAllOutputs}
+          onOpenPedia={(nextId, ctx) => onOpenPedia(nextId, ctx)}
         />
       )}
 
@@ -1810,14 +2138,21 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                     recentSlot
                     testId={`capytorio-tool-${toolId}`}
                     label={resolved.shortName}
-                    title={`${resolved.name} [${hotkey}] — ${resolved.description}`}
+                    title={`${resolved.name} [${hotkey}] — ${resolved.description} · Alt+Click Pedia`}
                     hotkey={hotkey}
                     count={count}
                     selected={selected}
                     dimmed={count === 0 && !selected}
                     machineType={resolved.baseType}
                     color={hexToCss(resolved.tintHex)}
-                    onClick={() => onSelectTool(toolId, false)}
+                    onClick={(e) => {
+                      if (e.altKey) {
+                        e.preventDefault();
+                        onOpenPedia(toolId);
+                        return;
+                      }
+                      onSelectTool(toolId, false);
+                    }}
                   />
                 );
               })}

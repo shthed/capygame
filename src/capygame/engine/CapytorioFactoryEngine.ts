@@ -2240,7 +2240,64 @@ export class CapytorioFactoryEngine {
       }
       m.beltItems.length = 0;
     }
+    if (
+      taken > 0 &&
+      (this.inspectedKey === tileKey(gx, gz) ||
+        (this.inspectedTile?.gx === gx && this.inspectedTile?.gz === gz))
+    ) {
+      this.inspectTileAt(gx, gz);
+    }
     return taken;
+  }
+
+  public pickupItemsAtTile(gx: number, gz: number): {
+    total: number;
+    source: 'belt' | 'floor' | null;
+    items: Array<{ item: CapytorioItemId; count: number }>;
+  } {
+    const counts = new Map<CapytorioItemId, number>();
+    let total = 0;
+    let source: 'belt' | 'floor' | null = null;
+
+    const m = this.machines.get(tileKey(gx, gz));
+    if (m && m.beltItems.length > 0) {
+      for (let i = 0; i < m.beltItems.length; i++) {
+        const itemId = m.beltItems[i].item;
+        this.addPocketItem(itemId, 1);
+        counts.set(itemId, (counts.get(itemId) ?? 0) + 1);
+        total++;
+      }
+      m.beltItems.length = 0;
+      source = 'belt';
+    }
+
+    for (let i = this.spilledItems.length - 1; i >= 0; i--) {
+      const sp = this.spilledItems[i];
+      const spGx = Math.round(sp.lx / CAPYTORIO_TILE_SIZE);
+      const spGz = Math.round(sp.lz / CAPYTORIO_TILE_SIZE);
+      if (spGx === gx && spGz === gz) {
+        this.addPocketItem(sp.item, 1);
+        counts.set(sp.item, (counts.get(sp.item) ?? 0) + 1);
+        this.spilledItems.splice(i, 1);
+        total++;
+        if (!source) source = 'floor';
+      }
+    }
+
+    if (
+      total > 0 &&
+      (this.inspectedKey === tileKey(gx, gz) ||
+        (this.inspectedTile?.gx === gx && this.inspectedTile?.gz === gz))
+    ) {
+      this.inspectTileAt(gx, gz);
+    }
+
+    const items: Array<{ item: CapytorioItemId; count: number }> = [];
+    for (const [item, count] of counts.entries()) {
+      items.push({ item, count });
+    }
+    items.sort((a, b) => b.count - a.count || a.item.localeCompare(b.item));
+    return { total, source, items };
   }
 
   /**

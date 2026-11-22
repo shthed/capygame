@@ -41,6 +41,11 @@ import {
   getCapytorioSmeltSpec,
 } from './CapytorioData';
 import { parseCapytorioLuaCatalog } from './CapytorioLuaParser';
+import {
+  buildCapytorioPediaCatalog,
+  getCapytorioPediaEntry,
+  resolvePediaIdFromTileInspection,
+} from './CapytorioPedia';
 
 test('Capytorio loads canonical recipe.lua and technology.lua directly with zero duplication', () => {
   assert.ok(CAPYTORIO_RECIPES.length >= 75, `expected >= 75 Factorio recipes, got ${CAPYTORIO_RECIPES.length}`);
@@ -1549,6 +1554,170 @@ test('Partial cut-paste keeps unplaced blueprint entries & Undo Cut intact until
   assert.equal(engine.clipboardToolState, 'off', 'Clipboard clears only once all cut buildings are placed');
   assert.equal(engine.getUiSnapshot().clipboard.canUndoCut, false);
 });
+
+test('pickupItemsAtTile scoops items from belts, splitters, tunnels, and floor while refreshing inspection', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('splitter', 1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('tunnel', 2, 0, 1).ok, true);
+
+  const belt = engine.machines.get(tileKey(0, 0))!;
+  belt.beltItems.push(
+    { item: 'iron_ore', lane: 0, progress: 0.25 },
+    { item: 'copper_plate', lane: 1, progress: 0.55 },
+    { item: 'iron_ore', lane: 1, progress: 0.85 }
+  );
+
+  // Pin inspection on belt tile before pickup
+  const beforeInspect = engine.inspectTileAt(0, 0);
+  assert.equal(beforeInspect.machine?.beltItemCount, 3);
+
+  const oreBefore = engine.getPocketItemCount('iron_ore');
+  const cuBefore = engine.getPocketItemCount('copper_plate');
+  const pickupBelt = engine.pickupItemsAtTile(0, 0);
+
+  assert.equal(pickupBelt.source, 'belt');
+  assert.equal(pickupBelt.total, 3);
+  assert.equal(belt.beltItems.length, 0, 'All items picked up off belt');
+  assert.equal(engine.getPocketItemCount('iron_ore'), oreBefore + 2);
+  assert.equal(engine.getPocketItemCount('copper_plate'), cuBefore + 1);
+  assert.equal(engine.inspectTileSnapshot(0, 0).machine?.beltItemCount, 0);
+
+  // Splitter and tunnel item pickup
+  const splitter = engine.machines.get(tileKey(1, 0))!;
+  splitter.beltItems.push({ item: 'iron_gear', lane: 0, progress: 0.4 });
+  const pickupSplitter = engine.pickupItemsAtTile(1, 0);
+  assert.equal(pickupSplitter.source, 'belt');
+  assert.equal(pickupSplitter.total, 1);
+  assert.equal(splitter.beltItems.length, 0);
+
+  const tunnel = engine.machines.get(tileKey(2, 0))!;
+  tunnel.beltItems.push({ item: 'coal', lane: 1, progress: 0.3 });
+  const pickupTunnel = engine.pickupItemsAtTile(2, 0);
+  assert.equal(pickupTunnel.source, 'belt');
+  assert.equal(pickupTunnel.total, 1);
+  assert.equal(tunnel.beltItems.length, 0);
+
+  // Spilled floor item pickup at empty tile (4, 4)
+  const makeSpilled = (uid: number, item: string, lx: number, lz: number) => ({
+    uid,
+    item,
+    lx,
+    y: 0,
+    lz,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    rx: 0,
+    ry: 0,
+    rz: 0,
+    vrx: 0,
+    vrz: 0,
+    squish: 0,
+    settled: true,
+    ageSec: 0,
+  });
+  engine.spilledItems.push(
+    makeSpilled(901, 'electronic_circuit', 4 * CAPYTORIO_TILE_SIZE, 4 * CAPYTORIO_TILE_SIZE),
+    makeSpilled(
+      902,
+      'electronic_circuit',
+      4 * CAPYTORIO_TILE_SIZE + 0.2,
+      4 * CAPYTORIO_TILE_SIZE - 0.1
+    )
+  );
+  const floorRes = engine.pickupItemsAtTile(4, 4);
+  assert.equal(floorRes.source, 'floor');
+  assert.equal(floorRes.total, 2);
+  assert.equal(engine.spilledItems.length, 0);
+  assert.equal(engine.getPocketItemCount('electronic_circuit'), 2);
+});
+
+test('CapytorioPedia resolves machines, variants, ores, trees, beacon, terrain, recipes, and tech links', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  const catalog = buildCapytorioPediaCatalog();
+  assert.ok(catalog.length >= 60, `expected rich Capytoriopedia catalog, got ${catalog.length}`);
+
+  // Machine & upgraded variant
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  const beltInspect = engine.inspectTileSnapshot(0, 0);
+  assert.equal(resolvePediaIdFromTileInspection(beltInspect), 'belt');
+
+  // Ore seam
+  const ironOreInspect = engine.inspectTileSnapshot(-5, -5);
+  assert.equal(ironOreInspect.resource?.id, 'iron_ore');
+  assert.equal(resolvePediaIdFromTileInspection(ironOreInspect), 'iron_ore');
+
+  // Spilled item on empty tile
+  engine.spilledItems.push({
+    uid: 903,
+    item: 'iron_plate',
+    lx: 2 * CAPYTORIO_TILE_SIZE,
+    y: 0,
+    lz: 2 * CAPYTORIO_TILE_SIZE,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    rx: 0,
+    ry: 0,
+    rz: 0,
+    vrx: 0,
+    vrz: 0,
+    squish: 0,
+    settled: true,
+    ageSec: 0,
+  });
+  const spilledInspect = engine.inspectTileSnapshot(2, 2);
+  assert.equal(resolvePediaIdFromTileInspection(spilledInspect), 'iron_plate');
+
+  // Surveyor Beacon at (0, -3)
+  const beaconInspect = engine.inspectTileSnapshot(0, -3);
+  assert.equal(resolvePediaIdFromTileInspection(beaconInspect), 'world:beacon');
+
+  // Clean terrain at (3, 3) (ensure no tree or ore there)
+  let cleanGx = 3;
+  let cleanGz = 3;
+  while (sampleCapytorioBaseResource(cleanGx, cleanGz) || sampleCapytorioTreeAt(cleanGx, cleanGz)) {
+    cleanGx++;
+  }
+  const terrainInspect = engine.inspectTileSnapshot(cleanGx, cleanGz);
+  assert.equal(resolvePediaIdFromTileInspection(terrainInspect), 'world:terrain');
+
+  // Find a starter Wild Citrus Tree
+  let treeGx: number | null = null;
+  let treeGz: number | null = null;
+  for (let x = -12; x <= 12 && treeGx === null; x++) {
+    for (let z = -12; z <= 12; z++) {
+      if (sampleCapytorioTreeAt(x, z) && !sampleCapytorioBaseResource(x, z)) {
+        treeGx = x;
+        treeGz = z;
+        break;
+      }
+    }
+  }
+  assert.ok(treeGx !== null && treeGz !== null, 'Found a procedural Wild Citrus Tree');
+  const treeInspect = engine.inspectTileSnapshot(treeGx!, treeGz!);
+  assert.equal(resolvePediaIdFromTileInspection(treeInspect), 'world:tree');
+
+  // Check recipe & tech cross-links on entries
+  const ironPlateEntry = getCapytorioPediaEntry('iron_plate', catalog);
+  assert.ok(ironPlateEntry);
+  assert.ok(ironPlateEntry.producedByRecipes.length >= 1, 'Iron Plate has smelting recipe');
+  assert.ok(ironPlateEntry.usedInRecipes.length >= 3, 'Iron Plate used in multiple downstream recipes');
+
+  const drillEntry = getCapytorioPediaEntry('drill', catalog);
+  assert.ok(drillEntry && drillEntry.kind === 'machine');
+  assert.ok(drillEntry.buildCost.length >= 2);
+
+  const techEntry = getCapytorioPediaEntry('tech:automation_1', catalog);
+  assert.ok(techEntry && techEntry.kind === 'tech');
+  assert.ok(techEntry.unlockedRecipesForTech.length >= 1, 'Tech entry lists unlocked recipes');
+});
+
 
 
 

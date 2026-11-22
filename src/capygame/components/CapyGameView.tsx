@@ -89,9 +89,10 @@ import {
 } from '../engine/CapytorioData';
 import {
   resolveCapytorioPlaceableSpec,
+  type CapytorioTileInspection,
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
-import { CapytorioHud } from './CapytorioHud';
+import { CapytorioHud, type CapytorioDrawerTab } from './CapytorioHud';
 import {
   Sparkles,
   Volume2,
@@ -352,9 +353,11 @@ export const CapyGameView: React.FC = () => {
   );
   const [activeTab, setActiveTab] = useState<DockTab>('modes');
   const [capytorioSnap, setCapytorioSnap] = useState<CapytorioUiSnapshot | null>(null);
-  const [capytorioDrawerTab, setCapytorioDrawerTab] = useState<
-    'none' | 'inventory' | 'craft' | 'tech' | 'inspect' | 'blueprints'
-  >('none');
+  const [capytorioDrawerTab, setCapytorioDrawerTab] = useState<CapytorioDrawerTab>('none');
+  const [capytorioPediaEntryId, setCapytorioPediaEntryId] = useState<string>('drill');
+  const [capytorioPediaContextInfo, setCapytorioPediaContextInfo] =
+    useState<CapytorioTileInspection | null>(null);
+  const [capytorioSearchFocusNonce, setCapytorioSearchFocusNonce] = useState<number>(0);
   const [capytorioCraftGroup, setCapytorioCraftGroup] = useState<
     CapytorioRecipeGroup | 'machines' | 'lua'
   >('logistics');
@@ -374,10 +377,21 @@ export const CapyGameView: React.FC = () => {
     points: Array<{ x: number; y: number }>;
   } | null>(null);
   const lastCapytorioMachineRef = useRef<string>('drill');
-  const capytorioDrawerTabRef = useRef<
-    'none' | 'inventory' | 'craft' | 'tech' | 'inspect' | 'blueprints'
-  >('none');
+  const capytorioDrawerTabRef = useRef<CapytorioDrawerTab>('none');
   capytorioDrawerTabRef.current = capytorioDrawerTab;
+
+  const openCapytorioPedia = (
+    entryId: string,
+    contextInfo?: CapytorioTileInspection | null
+  ) => {
+    setCapytorioPediaEntryId(entryId);
+    if (contextInfo !== undefined) {
+      setCapytorioPediaContextInfo(contextInfo);
+    } else {
+      setCapytorioPediaContextInfo(null);
+    }
+    setCapytorioDrawerTab('pedia');
+  };
 
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [isDockCollapsed, setIsDockCollapsed] = useState<boolean>(false);
@@ -726,7 +740,14 @@ export const CapyGameView: React.FC = () => {
 
   const capytorioDragRef = useRef<{
     active: boolean;
-    mode: 'place' | 'demolish' | 'select_box' | 'select_lasso' | 'position_blueprint' | 'none';
+    mode:
+      | 'place'
+      | 'demolish'
+      | 'select_box'
+      | 'select_lasso'
+      | 'position_blueprint'
+      | 'open_pedia'
+      | 'none';
     clipMode: 'copy' | 'cut';
     placedAny: boolean;
     batchStarted: boolean;
@@ -1327,6 +1348,24 @@ export const CapyGameView: React.FC = () => {
         if (!managerRef.current) return;
         const target = e.target;
         if (
+          (e.ctrlKey || e.metaKey) &&
+          !e.repeat &&
+          e.key.toLowerCase() === 'f' &&
+          managerRef.current.currentMode === 'capytorio' &&
+          managerRef.current.cosmicStage === 'playing' &&
+          !modalOpenRef.current &&
+          !menuOpenRef.current &&
+          !firstRunSetupOpenRef.current
+        ) {
+          e.preventDefault();
+          const curDrawer = capytorioDrawerTabRef.current;
+          if (curDrawer === 'none' || curDrawer === 'inspect') {
+            setCapytorioDrawerTab('inventory');
+          }
+          setCapytorioSearchFocusNonce((n) => n + 1);
+          return;
+        }
+        if (
           target instanceof HTMLInputElement ||
           target instanceof HTMLTextAreaElement ||
           target instanceof HTMLSelectElement
@@ -1458,8 +1497,15 @@ export const CapyGameView: React.FC = () => {
           } else if (key === 'b' && !e.repeat) {
             setCapytorioDrawerTab((prev) => (prev === 'blueprints' ? 'none' : 'blueprints'));
           } else if (key === 'f' && !e.repeat) {
-            const insp = managerRef.current.getCapytorioSnapshot().inspectedMachine;
-            if (insp) {
+            const snap = managerRef.current.getCapytorioSnapshot();
+            const insp = snap.inspectedMachine;
+            const loadable =
+              insp &&
+              (insp.type === 'furnace' ||
+                insp.type === 'assembler' ||
+                insp.type === 'lab' ||
+                insp.type === 'generator');
+            if (loadable) {
               const moved = managerRef.current.insertInputsCapytorioMachine(insp.gx, insp.gz, 4);
               showToast(
                 moved > 0
@@ -1467,19 +1513,33 @@ export const CapyGameView: React.FC = () => {
                   : 'No matching pocket fuel/inputs available to load'
               );
             } else {
-              showToast('Click a machine first to load inputs [F]');
+              const picked = managerRef.current.pickupCapytorioBeltOrFloorAtCursorOrHero();
+              if (picked.total > 0) {
+                const leadName = picked.items[0]
+                  ? getCapytorioItemMeta(picked.items[0].item).name
+                  : 'items';
+                showToast(
+                  `Picked up +${picked.total} ${leadName}${picked.items.length > 1 ? '…' : ''} from ${picked.source === 'floor' ? 'ground' : 'belt'}`
+                );
+              } else {
+                showToast('Point at a belt to pick up items or click a machine to load [F]');
+              }
             }
           } else if (key === 'e' && !e.repeat) {
-            const mined = managerRef.current.handMineCapytorioAtCursorOrHero();
-            if (mined) {
-              const amt = mined === 'orange' ? 3 : 2;
+            const act = managerRef.current.mineOrPickupCapytorioAtCursorOrHero();
+            if (act.kind === 'belt_pickup' || act.kind === 'floor_pickup') {
+              const itemName = act.itemId ? getCapytorioItemMeta(act.itemId).name : 'items';
               showToast(
-                mined === 'orange'
-                  ? `Harvested +${amt} ${getCapytorioItemMeta(mined).name} from Citrus Tree`
-                  : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
+                `Picked up +${act.total} ${itemName} from ${act.kind === 'floor_pickup' ? 'ground' : 'belt'}`
+              );
+            } else if (act.itemId) {
+              showToast(
+                act.itemId === 'orange'
+                  ? `Harvested +${act.total} ${getCapytorioItemMeta(act.itemId).name} from Citrus Tree`
+                  : `Mined +${act.total} ${getCapytorioItemMeta(act.itemId).name}`
               );
             } else {
-              showToast('Point or stand over an ore seam to mine');
+              showToast('Point or stand near a belt item or ore seam [E]');
             }
           } else if (key === 'i' && !e.repeat) {
             setCapytorioDrawerTab((prev) => (prev === 'inventory' ? 'none' : 'inventory'));
@@ -1717,6 +1777,16 @@ export const CapyGameView: React.FC = () => {
       const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
       const cSnap = managerRef.current.getCapytorioSnapshot();
       const clipState = cSnap.clipboard.toolState;
+
+      // Alt + Left-Click anywhere opens Capytoriopedia directly on the clicked tile/entity
+      if (e.button === 0 && e.altKey) {
+        e.preventDefault();
+        capytorioDragRef.current.active = true;
+        capytorioDragRef.current.mode = 'open_pedia';
+        capytorioDragRef.current.originNdcX = ndcX;
+        capytorioDragRef.current.originNdcY = ndcY;
+        return;
+      }
 
       // Paste mode: tap or drag on canvas positions & locks the transparent 3D blueprint ghost (BOTH mouse & touch)
       if (clipState === 'paste' && e.button === 0) {
@@ -2030,6 +2100,17 @@ export const CapyGameView: React.FC = () => {
           ? `Demolish ${dragCount} building${dragCount === 1 ? '' : 's'}`
           : `Build ${dragCount} building${dragCount === 1 ? '' : 's'}`
       );
+    }
+
+    if (wasCapytorioPress && dragMode === 'open_pedia' && managerRef.current) {
+      g.pointerId = null;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+      const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
+      const res = managerRef.current.openCapytorioPediaAtNdc(ndcX, ndcY);
+      openCapytorioPedia(res.pediaId, res.info);
+      setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+      return;
     }
 
     if (wasCapytorioPress && dragMode === 'position_blueprint' && managerRef.current) {
@@ -6558,6 +6639,10 @@ export const CapyGameView: React.FC = () => {
             setSelectedCraftRecipeId={setSelectedCraftRecipeId}
             luaCatalogInfo={luaCatalogInfo}
             setLuaCatalogInfo={setLuaCatalogInfo}
+            pediaEntryId={capytorioPediaEntryId}
+            pediaContextInfo={capytorioPediaContextInfo}
+            searchFocusNonce={capytorioSearchFocusNonce}
+            onOpenPedia={openCapytorioPedia}
             onSelectTool={(toolId, promoteToRecent = false) => {
               if (toolId !== 'mine' && toolId !== 'demolish') {
                 lastCapytorioMachineRef.current = toolId;

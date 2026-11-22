@@ -199,8 +199,10 @@ import {
   type CapytorioSelectionShape,
   type CapytorioSerializedState,
   type CapytorioStepCallbacks,
+  type CapytorioTileInspection,
   type CapytorioUiSnapshot,
 } from './CapytorioFactoryEngine';
+import { resolvePediaIdFromTileInspection } from './CapytorioPedia';
 import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
 
 const CAPYTORIO_OBLIQUE_PITCH_RAD = (68 * Math.PI) / 180;
@@ -5215,6 +5217,24 @@ export class PlayStyleManager {
     return nextDir;
   }
 
+  public openCapytorioPediaAtNdc(
+    ndcX: number,
+    ndcY: number
+  ): { pediaId: string; info: CapytorioTileInspection } {
+    const hit = this.raycastCapytorioGridFloat(ndcX, ndcY);
+    const gx = hit ? hit.gx : this.capytorioEngine.hoveredGx;
+    const gz = hit ? hit.gz : this.capytorioEngine.hoveredGz;
+    const info = this.capytorioEngine.inspectTileAt(gx, gz);
+    this.capytorioEngine.hoveredGx = gx;
+    this.capytorioEngine.hoveredGz = gz;
+    AudioService.playCoin();
+    this.markCapytorioDirty();
+    return {
+      pediaId: resolvePediaIdFromTileInspection(info),
+      info,
+    };
+  }
+
   public getCapytorioCameraMode(): 'oblique' | 'chase' {
     return this.settings.capytorioCameraMode === 'chase' ? 'chase' : 'oblique';
   }
@@ -5287,6 +5307,131 @@ export class PlayStyleManager {
       this.markCapytorioDirty();
     }
     return ok;
+  }
+
+  private tryPickupBeltOrFloorTileWithFx(gx: number, gz: number): {
+    total: number;
+    source: 'belt' | 'floor' | null;
+    items: Array<{ item: CapytorioItemId; count: number }>;
+  } {
+    const res = this.capytorioEngine.pickupItemsAtTile(gx, gz);
+    if (res.total > 0) {
+      const leadMeta = res.items[0] ? getCapytorioItemMeta(res.items[0].item) : null;
+      AudioService.playCoin();
+      this.vfxEngine?.emitBurst(
+        capytorioGridToWorldX(gx),
+        0.45,
+        capytorioGridToWorldZ(gz),
+        'citrus_burst',
+        5,
+        leadMeta?.colorHex ?? 0x22c55e
+      );
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return res;
+  }
+
+  public pickupCapytorioBeltOrFloorAtCursorOrHero(): {
+    total: number;
+    source: 'belt' | 'floor' | null;
+    items: Array<{ item: CapytorioItemId; count: number }>;
+  } {
+    const curGx = this.capytorioEngine.hoveredGx;
+    const curGz = this.capytorioEngine.hoveredGz;
+    const atCursor = this.tryPickupBeltOrFloorTileWithFx(curGx, curGz);
+    if (atCursor.total > 0) return atCursor;
+
+    const insp = this.capytorioEngine.inspectedTile;
+    if (insp && (insp.gx !== curGx || insp.gz !== curGz)) {
+      const atInspected = this.tryPickupBeltOrFloorTileWithFx(insp.gx, insp.gz);
+      if (atInspected.total > 0) return atInspected;
+    }
+
+    const hGx = worldToCapytorioGridX(CAPYTORIO_WORLD_ORIGIN_X + this.heroLocalPos.x);
+    const hGz = worldToCapytorioGridZ(CAPYTORIO_WORLD_ORIGIN_Z + this.heroLocalPos.z);
+    const centerPickup = this.tryPickupBeltOrFloorTileWithFx(hGx, hGz);
+    if (centerPickup.total > 0) return centerPickup;
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (dx === 0 && dz === 0) continue;
+        const nearPickup = this.tryPickupBeltOrFloorTileWithFx(hGx + dx, hGz + dz);
+        if (nearPickup.total > 0) return nearPickup;
+      }
+    }
+    return { total: 0, source: null, items: [] };
+  }
+
+  public mineOrPickupCapytorioAtCursorOrHero(): {
+    kind: 'belt_pickup' | 'floor_pickup' | 'mine' | 'chop' | 'none';
+    total: number;
+    itemId: CapytorioItemId | null;
+  } {
+    // 1. Pick up items from hovered belt/splitter/tunnel or floor tile first
+    const curGx = this.capytorioEngine.hoveredGx;
+    const curGz = this.capytorioEngine.hoveredGz;
+    const atCursor = this.tryPickupBeltOrFloorTileWithFx(curGx, curGz);
+    if (atCursor.total > 0) {
+      return {
+        kind: atCursor.source === 'floor' ? 'floor_pickup' : 'belt_pickup',
+        total: atCursor.total,
+        itemId: atCursor.items[0]?.item ?? null,
+      };
+    }
+
+    // 2. Hand-mine ore or chop tree at hovered cursor
+    const cursorOre = this.capytorioEngine.handMineAt(curGx, curGz, 2);
+    if (cursorOre) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+      return {
+        kind: cursorOre === 'orange' ? 'chop' : 'mine',
+        total: cursorOre === 'orange' ? 3 : 2,
+        itemId: cursorOre,
+      };
+    }
+
+    // 3. If user inspected a belt/floor tile (e.g. tap on mobile), pick up from it
+    const insp = this.capytorioEngine.inspectedTile;
+    if (insp && (insp.gx !== curGx || insp.gz !== curGz)) {
+      const atInsp = this.tryPickupBeltOrFloorTileWithFx(insp.gx, insp.gz);
+      if (atInsp.total > 0) {
+        return {
+          kind: atInsp.source === 'floor' ? 'floor_pickup' : 'belt_pickup',
+          total: atInsp.total,
+          itemId: atInsp.items[0]?.item ?? null,
+        };
+      }
+    }
+
+    // 4. Hero 3x3 neighborhood: check nearby belts/floor items, then ore/trees
+    const nearPickup = this.pickupCapytorioBeltOrFloorAtCursorOrHero();
+    if (nearPickup.total > 0) {
+      return {
+        kind: nearPickup.source === 'floor' ? 'floor_pickup' : 'belt_pickup',
+        total: nearPickup.total,
+        itemId: nearPickup.items[0]?.item ?? null,
+      };
+    }
+
+    const hGx = worldToCapytorioGridX(CAPYTORIO_WORLD_ORIGIN_X + this.heroLocalPos.x);
+    const hGz = worldToCapytorioGridZ(CAPYTORIO_WORLD_ORIGIN_Z + this.heroLocalPos.z);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const ore = this.capytorioEngine.handMineAt(hGx + dx, hGz + dz, 2);
+        if (ore) {
+          AudioService.playCoin();
+          this.markCapytorioDirty();
+          return {
+            kind: ore === 'orange' ? 'chop' : 'mine',
+            total: ore === 'orange' ? 3 : 2,
+            itemId: ore,
+          };
+        }
+      }
+    }
+    return { kind: 'none', total: 0, itemId: null };
   }
 
   public handMineCapytorioAtCursorOrHero(): CapytorioItemId | null {

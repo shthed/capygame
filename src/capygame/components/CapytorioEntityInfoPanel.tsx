@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  BookOpen,
   ChevronDown,
   ChevronUp,
   Flame,
@@ -19,6 +20,7 @@ import type {
   CapytorioInspectedMachineDetail,
   CapytorioTileInspection,
 } from '../engine/CapytorioFactoryEngine';
+import { resolvePediaIdFromTileInspection } from '../engine/CapytorioPedia';
 import {
   CapytorioItemIcon,
   CapytorioMachineIcon,
@@ -81,7 +83,9 @@ export interface CapytorioEntityInfoPanelProps {
   onRotateMachineAt: (gx: number, gz: number) => void;
   onDemolishMachineAt: (gx: number, gz: number) => void;
   onMineTileAt: (gx: number, gz: number) => void;
+  onTakeOutputs: (gx: number, gz: number) => void;
   onCollectAllOutputs: () => void;
+  onOpenPedia: (entryId: string, contextInfo: CapytorioTileInspection) => void;
 }
 
 export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> = ({
@@ -93,7 +97,9 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
   onRotateMachineAt,
   onDemolishMachineAt,
   onMineTileAt,
+  onTakeOutputs,
   onCollectAllOutputs,
+  onOpenPedia,
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
@@ -180,6 +186,18 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
             </span>
           </div>
           <div className="flex items-center gap-[2px] shrink-0">
+            {m.beltItemCount > 0 && (
+              <button
+                type="button"
+                data-testid="capytorio-info-pickup-btn"
+                onClick={() => onTakeOutputs(m.gx, m.gz)}
+                title={`Pick up ${m.beltItemCount} belt item${m.beltItemCount === 1 ? '' : 's'} [E / F]`}
+                aria-label="Pick up items from belt"
+                className={`w-[18px] h-[18px] rounded-[1px] flex items-center justify-center cursor-pointer ${FACTORIO_INFO_BTN_AMBER}`}
+              >
+                <Package className="w-2.5 h-2.5" />
+              </button>
+            )}
             <button
               type="button"
               data-testid="capytorio-info-rotate-btn"
@@ -363,6 +381,17 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
           </button>
 
           <div className="flex items-center gap-[2px] shrink-0">
+            <button
+              type="button"
+              data-testid="capytorio-info-pedia-btn"
+              onClick={() => onOpenPedia(resolvePediaIdFromTileInspection(info), info)}
+              title="Open in Capytoriopedia [Alt + Left-Click]"
+              aria-label="Open in Capytoriopedia"
+              className={`w-4 h-4 rounded-[1px] flex items-center justify-center cursor-pointer ${FACTORIO_INFO_BTN}`}
+            >
+              <BookOpen className="w-2.5 h-2.5 text-[#f4b054]" />
+            </button>
+
             <button
               type="button"
               data-testid="capytorio-info-expand-btn"
@@ -669,15 +698,28 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
               <div className="px-1.5 py-1 flex items-center gap-1">
                 {m && (
                   <>
-                    <button
-                      type="button"
-                      data-testid="capytorio-info-open-btn"
-                      onClick={() => onOpenMachineModal(m.gx, m.gz)}
-                      className={`flex-1 h-5 px-1.5 rounded-[1px] text-[9px] cursor-pointer flex items-center justify-center gap-1 ${FACTORIO_INFO_BTN_AMBER}`}
-                    >
-                      <SlidersHorizontal className="w-2.5 h-2.5 shrink-0" />
-                      <span>Open</span>
-                    </button>
+                    {isBeltLike && m.beltItemCount > 0 ? (
+                      <button
+                        type="button"
+                        data-testid="capytorio-info-pickup-btn"
+                        onClick={() => onTakeOutputs(m.gx, m.gz)}
+                        title="Pick up all items on belt [E / F]"
+                        className={`flex-1 h-5 px-1.5 rounded-[1px] text-[9px] cursor-pointer flex items-center justify-center gap-1 ${FACTORIO_INFO_BTN_AMBER}`}
+                      >
+                        <Package className="w-2.5 h-2.5 shrink-0" />
+                        <span>Pick up ({m.beltItemCount})</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        data-testid="capytorio-info-open-btn"
+                        onClick={() => onOpenMachineModal(m.gx, m.gz)}
+                        className={`flex-1 h-5 px-1.5 rounded-[1px] text-[9px] cursor-pointer flex items-center justify-center gap-1 ${FACTORIO_INFO_BTN_AMBER}`}
+                      >
+                        <SlidersHorizontal className="w-2.5 h-2.5 shrink-0" />
+                        <span>Open</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       data-testid="capytorio-info-rotate-btn"
