@@ -1,4 +1,7 @@
 import {
+  CAPYTORIO_CHEST_ITEMS_PER_SLOT,
+  CAPYTORIO_CHEST_MAX_ITEMS,
+  CAPYTORIO_CHEST_SLOTS,
   CAPYTORIO_CHUNK_SIZE,
   CAPYTORIO_HOTBAR_ORDER,
   CAPYTORIO_MACHINE_SPECS,
@@ -10,6 +13,8 @@ import {
   CAPYTORIO_WORLD_ORIGIN_Z,
   RECIPE_BY_ID,
   TECH_BY_ID,
+  getCapytorioFootprint,
+  getCapytorioInserterReach,
   getCapytorioItemMeta,
   getCapytorioSmeltSpec,
   type CapytorioDirection,
@@ -115,6 +120,39 @@ export interface CapytorioSpilledItem {
   ageSec: number;
 }
 
+export type CapytorioSplitterPriority = 'left' | 'none' | 'right';
+export type CapytorioInserterFilterMode = 'whitelist' | 'blacklist';
+
+export interface CapytorioEntitySettingsClipboard {
+  sourceType: 'assembler' | 'splitter' | 'inserter' | 'chest';
+  sourceLabel: string;
+  recipeId?: CapytorioRecipeId;
+  splitterInputPriority?: CapytorioSplitterPriority;
+  splitterOutputPriority?: CapytorioSplitterPriority;
+  splitterFilterItem?: CapytorioItemId | null;
+  inserterFilterMode?: CapytorioInserterFilterMode;
+  inserterFilters?: CapytorioItemId[];
+  inserterStackLimit?: number | null;
+  chestSlotLimit?: number | null;
+}
+
+export interface CapytorioCraftQueueItem {
+  uid: number;
+  kind: 'recipe' | 'machine';
+  recipeId?: CapytorioRecipeId;
+  machineType?: CapytorioMachineType;
+  resultId: string;
+  resultName: string;
+  resultCountPerBatch: number;
+  batchesTotal: number;
+  batchesRemaining: number;
+  craftTimeSec: number;
+  progress: number;
+  isIntermediate: boolean;
+  parentUid?: number;
+  reservedPerBatch: Array<{ item: CapytorioItemId; count: number }>;
+}
+
 export interface CapytorioMachine {
   id: number;
   type: CapytorioMachineType;
@@ -138,6 +176,14 @@ export interface CapytorioMachine {
   targetBeltUid?: number;
   holdingItem: CapytorioItemId | null;
   splitterToggle: number;
+  splitterInputToggle?: number;
+  splitterInputPriority?: CapytorioSplitterPriority;
+  splitterOutputPriority?: CapytorioSplitterPriority;
+  splitterFilterItem?: CapytorioItemId | null;
+  inserterFilterMode?: CapytorioInserterFilterMode;
+  inserterFilters?: CapytorioItemId[];
+  inserterStackLimit?: number | null;
+  chestSlotLimit?: number | null;
   inputBuffer: Partial<Record<CapytorioItemId, number>>;
   outputBuffer: Partial<Record<CapytorioItemId, number>>;
   beltItems: CapytorioBeltItem[];
@@ -167,6 +213,13 @@ export interface CapytorioSerializedState {
     gz: number;
     dir: CapytorioDirection;
     recipeId?: CapytorioRecipeId;
+    splitterInputPriority?: CapytorioSplitterPriority;
+    splitterOutputPriority?: CapytorioSplitterPriority;
+    splitterFilterItem?: CapytorioItemId | null;
+    inserterFilterMode?: CapytorioInserterFilterMode;
+    inserterFilters?: CapytorioItemId[];
+    inserterStackLimit?: number | null;
+    chestSlotLimit?: number | null;
     inputBuffer?: Partial<Record<CapytorioItemId, number>>;
     outputBuffer?: Partial<Record<CapytorioItemId, number>>;
     beltItems?: Array<{
@@ -194,6 +247,7 @@ export interface CapytorioSerializedState {
   techDelivered: Partial<Record<CapytorioItemId, number>>;
   completedMilestones?: string[];
   blueprintLibrary?: CapytorioSavedBlueprint[];
+  altModeEnabled?: boolean;
   rocketLaunches: number;
   totalProduced: number;
   score: number;
@@ -207,6 +261,8 @@ export interface CapytorioTileItemCount {
 export interface CapytorioInspectedMachineDetail {
   gx: number;
   gz: number;
+  width: number;
+  height: number;
   type: CapytorioMachineType;
   variantItemId?: CapytorioItemId;
   name: string;
@@ -222,6 +278,16 @@ export interface CapytorioInspectedMachineDetail {
   craftProgress: number;
   fuelTimer: number;
   holdingItem: CapytorioItemId | null;
+  splitterInputPriority?: CapytorioSplitterPriority;
+  splitterOutputPriority?: CapytorioSplitterPriority;
+  splitterFilterItem?: CapytorioItemId | null;
+  inserterFilterMode?: CapytorioInserterFilterMode;
+  inserterFilters?: CapytorioItemId[];
+  inserterStackLimit?: number | null;
+  inserterMaxStack?: number;
+  inserterReach?: 1 | 2;
+  chestSlotLimit?: number | null;
+  chestCapacityItems?: number;
   inputTotal: number;
   outputTotal: number;
   inputBuffer: Partial<Record<CapytorioItemId, number>>;
@@ -283,6 +349,13 @@ export interface CapytorioBlueprintEntry {
   baseType: CapytorioMachineType;
   dir: CapytorioDirection;
   recipeId?: CapytorioRecipeId;
+  splitterInputPriority?: CapytorioSplitterPriority;
+  splitterOutputPriority?: CapytorioSplitterPriority;
+  splitterFilterItem?: CapytorioItemId | null;
+  inserterFilterMode?: CapytorioInserterFilterMode;
+  inserterFilters?: CapytorioItemId[];
+  inserterStackLimit?: number | null;
+  chestSlotLimit?: number | null;
 }
 
 export interface CapytorioSavedBlueprint {
@@ -318,6 +391,13 @@ export interface CapytorioMachineUndoSnapshot {
   baseType: CapytorioMachineType;
   dir: CapytorioDirection;
   recipeId?: CapytorioRecipeId;
+  splitterInputPriority?: CapytorioSplitterPriority;
+  splitterOutputPriority?: CapytorioSplitterPriority;
+  splitterFilterItem?: CapytorioItemId | null;
+  inserterFilterMode?: CapytorioInserterFilterMode;
+  inserterFilters?: CapytorioItemId[];
+  inserterStackLimit?: number | null;
+  chestSlotLimit?: number | null;
   inputBuffer: Partial<Record<CapytorioItemId, number>>;
   outputBuffer: Partial<Record<CapytorioItemId, number>>;
   beltItems: CapytorioBeltItem[];
@@ -412,6 +492,21 @@ export interface CapytorioUiSnapshot {
     nextRedoLabel: string | null;
   };
   blueprintLibrary: CapytorioSavedBlueprint[];
+  altModeEnabled: boolean;
+  entitySettingsClipboard: {
+    sourceType: 'assembler' | 'splitter' | 'inserter' | 'chest';
+    sourceLabel: string;
+  } | null;
+  craftingQueue: Array<{
+    uid: number;
+    kind: 'recipe' | 'machine';
+    resultId: string;
+    resultName: string;
+    remainingCount: number;
+    batchesRemaining: number;
+    progress: number;
+    isIntermediate: boolean;
+  }>;
 }
 
 export interface CapytorioStepCallbacks {
@@ -449,6 +544,50 @@ export function capytorioGridToWorldX(gx: number): number {
 
 export function capytorioGridToWorldZ(gz: number): number {
   return CAPYTORIO_WORLD_ORIGIN_Z + gz * CAPYTORIO_TILE_SIZE;
+}
+
+export function capytorioMachineCenterWorldX(gx: number, width: number = 1): number {
+  return CAPYTORIO_WORLD_ORIGIN_X + (gx + (width - 1) * 0.5) * CAPYTORIO_TILE_SIZE;
+}
+
+export function capytorioMachineCenterWorldZ(gz: number, height: number = 1): number {
+  return CAPYTORIO_WORLD_ORIGIN_Z + (gz + (height - 1) * 0.5) * CAPYTORIO_TILE_SIZE;
+}
+
+export function capytorioMachineCenterLocalX(gx: number, width: number = 1): number {
+  return (gx + (width - 1) * 0.5) * CAPYTORIO_TILE_SIZE;
+}
+
+export function capytorioMachineCenterLocalZ(gz: number, height: number = 1): number {
+  return (gz + (height - 1) * 0.5) * CAPYTORIO_TILE_SIZE;
+}
+
+export function getCapytorioToolFootprint(
+  toolId: string,
+  dir: CapytorioDirection = 0
+): { width: number; height: number } {
+  const spec = resolveCapytorioPlaceableSpec(toolId);
+  if (!spec) return { width: 1, height: 1 };
+  return getCapytorioFootprint(spec.baseType, spec.isBaseMachine ? undefined : spec.id, dir);
+}
+
+/**
+ * Maps a cursor-hovered tile `(hoveredGx, hoveredGz)` to the centered top-left placement anchor
+ * for any multi-tile building (so 3x3 centers directly on the hovered tile, 2x2 / 2x1 include it cleanly).
+ */
+export function getCapytorioPlacementAnchor(
+  hoveredGx: number,
+  hoveredGz: number,
+  toolId: string,
+  dir: CapytorioDirection = 0
+): { gx: number; gz: number; width: number; height: number } {
+  const fp = getCapytorioToolFootprint(toolId, dir);
+  return {
+    gx: hoveredGx - Math.floor((fp.width - 1) * 0.5),
+    gz: hoveredGz - Math.floor((fp.height - 1) * 0.5),
+    width: fp.width,
+    height: fp.height,
+  };
 }
 
 function isBeltLineFeederType(type: CapytorioMachineType): boolean {
@@ -682,7 +821,10 @@ function getDefaultAssemblerRecipeId(): CapytorioRecipeId {
 }
 
 export class CapytorioFactoryEngine {
+  /** Primary machine map keyed by top-left anchor `tileKey(m.gx, m.gz)` */
   public readonly machines = new Map<string, CapytorioMachine>();
+  /** O(1) multi-tile spatial lookup mapping EVERY occupied sub-tile `tileKey(tx, tz)` to its owning machine */
+  public readonly occupancyGrid = new Map<string, CapytorioMachine>();
   private readonly oreRemainingOverrides = new Map<string, number>();
   private readonly harvestedTrees = new Set<string>();
   private readonly pocketItems: Partial<Record<CapytorioItemId, number>> = {};
@@ -711,6 +853,16 @@ export class CapytorioFactoryEngine {
   public hoveredGz = 0;
   public inspectedKey: string | null = null;
   public inspectedTile: { gx: number; gz: number } | null = null;
+
+  // Alt-Mode 3D overlay toggle (defaults ON so factories are readable immediately)
+  public altModeEnabled = true;
+
+  // Entity Settings Copy/Paste clipboard (Shift+RMB / Shift+LMB)
+  public entitySettingsClipboard: CapytorioEntitySettingsClipboard | null = null;
+
+  // Real-time recursive hand-crafting queue
+  public readonly craftingQueue: CapytorioCraftQueueItem[] = [];
+  private nextCraftQueueUid = 1;
 
   // Multi-building Cut / Copy / Paste Blueprint Clipboard & 100-entry Blueprint Library
   public clipboardToolState: CapytorioClipboardToolState = 'off';
@@ -756,11 +908,159 @@ export class CapytorioFactoryEngine {
     }
   }
 
+  public getMachineFootprint(m: CapytorioMachine): { width: number; height: number } {
+    return getCapytorioFootprint(m.type, m.variantItemId, m.dir);
+  }
+
+  public getMachineAt(gx: number, gz: number): CapytorioMachine | undefined {
+    return this.occupancyGrid.get(tileKey(gx, gz));
+  }
+
+  private registerMachineOccupancy(m: CapytorioMachine): void {
+    const fp = this.getMachineFootprint(m);
+    for (let dx = 0; dx < fp.width; dx++) {
+      for (let dz = 0; dz < fp.height; dz++) {
+        this.occupancyGrid.set(tileKey(m.gx + dx, m.gz + dz), m);
+      }
+    }
+  }
+
+  private unregisterMachineOccupancy(m: CapytorioMachine): void {
+    const fp = this.getMachineFootprint(m);
+    for (let dx = 0; dx < fp.width; dx++) {
+      for (let dz = 0; dz < fp.height; dz++) {
+        const k = tileKey(m.gx + dx, m.gz + dz);
+        if (this.occupancyGrid.get(k) === m) {
+          this.occupancyGrid.delete(k);
+        }
+      }
+    }
+  }
+
+  public canFootprintFit(
+    gx: number,
+    gz: number,
+    width: number,
+    height: number,
+    ignoreMachine?: CapytorioMachine
+  ): boolean {
+    for (let dx = 0; dx < width; dx++) {
+      for (let dz = 0; dz < height; dz++) {
+        const occ = this.occupancyGrid.get(tileKey(gx + dx, gz + dz));
+        if (occ && occ !== ignoreMachine) return false;
+      }
+    }
+    return true;
+  }
+
+  public findFirstOreInFootprint(
+    gx: number,
+    gz: number,
+    width: number,
+    height: number
+  ): CapytorioResourceTile | null {
+    // Check center tile first, then scan all footprint tiles deterministically
+    const cx = gx + Math.floor((width - 1) * 0.5);
+    const cz = gz + Math.floor((height - 1) * 0.5);
+    const centerOre = this.getResourceAt(cx, cz);
+    if (centerOre) return centerOre;
+    for (let dx = 0; dx < width; dx++) {
+      for (let dz = 0; dz < height; dz++) {
+        const ore = this.getResourceAt(gx + dx, gz + dz);
+        if (ore) return ore;
+      }
+    }
+    return null;
+  }
+
+  public getMachineFrontEjectTile(m: CapytorioMachine): {
+    targetGx: number;
+    targetGz: number;
+    edgeGx: number;
+    edgeGz: number;
+  } {
+    const fp = this.getMachineFootprint(m);
+    const midX = m.gx + Math.floor((fp.width - 1) * 0.5);
+    const midZ = m.gz + Math.floor((fp.height - 1) * 0.5);
+    if (m.dir === 0) {
+      return { targetGx: midX, targetGz: m.gz - 1, edgeGx: midX, edgeGz: m.gz };
+    }
+    if (m.dir === 1) {
+      return { targetGx: m.gx + fp.width, targetGz: midZ, edgeGx: m.gx + fp.width - 1, edgeGz: midZ };
+    }
+    if (m.dir === 2) {
+      return { targetGx: midX, targetGz: m.gz + fp.height, edgeGx: midX, edgeGz: m.gz + fp.height - 1 };
+    }
+    return { targetGx: m.gx - 1, targetGz: midZ, edgeGx: m.gx, edgeGz: midZ };
+  }
+
+  /**
+   * Returns the canonical Left (side 0) and Right (side 1) sub-tile coordinates of a 2x1 / 1x2 Splitter
+   * relative to its forward direction `m.dir`, plus their corresponding forward exit tiles.
+   */
+  public getSplitterPorts(m: CapytorioMachine): {
+    leftGx: number;
+    leftGz: number;
+    rightGx: number;
+    rightGz: number;
+    leftOutGx: number;
+    leftOutGz: number;
+    rightOutGx: number;
+    rightOutGz: number;
+  } {
+    const fwdDx = DIR_DX[m.dir];
+    const fwdDz = DIR_DZ[m.dir];
+    // For each facing, determine which sub-tile is on the splitter's Left vs Right when looking forward:
+    // dir 0 (North, -Z): Left is -X (gx, gz), Right is +X (gx+1, gz)
+    // dir 1 (East, +X): Left is -Z (gx, gz), Right is +Z (gx, gz+1)
+    // dir 2 (South, +Z): Left is +X (gx+1, gz), Right is -X (gx, gz)
+    // dir 3 (West, -X): Left is +Z (gx, gz+1), Right is -Z (gx, gz)
+    let leftGx = m.gx;
+    let leftGz = m.gz;
+    let rightGx = m.gx;
+    let rightGz = m.gz;
+    if (m.dir === 0) {
+      leftGx = m.gx;
+      leftGz = m.gz;
+      rightGx = m.gx + 1;
+      rightGz = m.gz;
+    } else if (m.dir === 1) {
+      leftGx = m.gx;
+      leftGz = m.gz;
+      rightGx = m.gx;
+      rightGz = m.gz + 1;
+    } else if (m.dir === 2) {
+      leftGx = m.gx + 1;
+      leftGz = m.gz;
+      rightGx = m.gx;
+      rightGz = m.gz;
+    } else {
+      leftGx = m.gx;
+      leftGz = m.gz + 1;
+      rightGx = m.gx;
+      rightGz = m.gz;
+    }
+    return {
+      leftGx,
+      leftGz,
+      rightGx,
+      rightGz,
+      leftOutGx: leftGx + fwdDx,
+      leftOutGz: leftGz + fwdDz,
+      rightOutGx: rightGx + fwdDx,
+      rightOutGz: rightGz + fwdDz,
+    };
+  }
+
   public resetToBlankStarterField(): void {
     this.machines.clear();
+    this.occupancyGrid.clear();
     this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
     this.harvestedTrees.clear();
+    this.craftingQueue.length = 0;
+    this.entitySettingsClipboard = null;
+    this.altModeEnabled = true;
     this.topologyRevision++;
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
       delete this.pocketItems[k];
@@ -844,7 +1144,7 @@ export class CapytorioFactoryEngine {
   public hasTreeAt(gx: number, gz: number): boolean {
     const key = tileKey(gx, gz);
     if (this.harvestedTrees.has(key)) return false;
-    if (this.machines.has(key)) return false;
+    if (this.occupancyGrid.has(key)) return false;
     return sampleCapytorioTreeAt(gx, gz);
   }
 
@@ -1023,6 +1323,378 @@ export class CapytorioFactoryEngine {
     return craftedAny;
   }
 
+  public toggleAltMode(): boolean {
+    this.altModeEnabled = !this.altModeEnabled;
+    return this.altModeEnabled;
+  }
+
+  public setAltModeEnabled(enabled: boolean): void {
+    this.altModeEnabled = enabled;
+  }
+
+  private findPocketRecipeForItem(itemId: CapytorioItemId): (typeof CAPYTORIO_RECIPES)[number] | null {
+    const direct = RECIPE_BY_ID.get(itemId);
+    if (direct && direct.pocketCraftable && direct.result === itemId && this.isRecipeUnlocked(direct.id)) {
+      return direct;
+    }
+    for (let i = 0; i < CAPYTORIO_RECIPES.length; i++) {
+      const r = CAPYTORIO_RECIPES[i];
+      if (r.result === itemId && r.pocketCraftable && this.isRecipeUnlocked(r.id)) {
+        return r;
+      }
+    }
+    return null;
+  }
+
+  private planRecursiveIngredients(
+    ingredients: ReadonlyArray<{ item: CapytorioItemId; count: number }>,
+    simStock: Map<CapytorioItemId, number>,
+    visiting: Set<CapytorioItemId>,
+    stepsOut: Array<{
+      recipeId: CapytorioRecipeId;
+      resultId: CapytorioItemId;
+      resultName: string;
+      resultCountPerBatch: number;
+      batches: number;
+      craftTimeSec: number;
+      directConsumed: Array<{ item: CapytorioItemId; count: number }>;
+      surplusToPocket: number;
+    }>
+  ): { ok: boolean; directConsumed: Array<{ item: CapytorioItemId; count: number }> } {
+    const directConsumedMap = new Map<CapytorioItemId, number>();
+
+    for (let i = 0; i < ingredients.length; i++) {
+      const ing = ingredients[i];
+      const have = simStock.get(ing.item) ?? 0;
+      const takeExisting = Math.min(have, ing.count);
+      if (takeExisting > 0) {
+        simStock.set(ing.item, have - takeExisting);
+        directConsumedMap.set(ing.item, (directConsumedMap.get(ing.item) ?? 0) + takeExisting);
+      }
+      const shortfall = ing.count - takeExisting;
+      if (shortfall > 0) {
+        if (visiting.has(ing.item)) return { ok: false, directConsumed: [] };
+        const subRec = this.findPocketRecipeForItem(ing.item);
+        if (!subRec) return { ok: false, directConsumed: [] };
+        visiting.add(ing.item);
+        const subBatches = Math.ceil(shortfall / Math.max(1, subRec.resultCount));
+        const scaledSubIngs = subRec.ingredients.map((si) => ({
+          item: si.item,
+          count: si.count * subBatches,
+        }));
+        const subPlan = this.planRecursiveIngredients(scaledSubIngs, simStock, visiting, stepsOut);
+        visiting.delete(ing.item);
+        if (!subPlan.ok) return { ok: false, directConsumed: [] };
+        const produced = subBatches * Math.max(1, subRec.resultCount);
+        const surplus = Math.max(0, produced - shortfall);
+        if (surplus > 0) {
+          simStock.set(ing.item, (simStock.get(ing.item) ?? 0) + surplus);
+        }
+        stepsOut.push({
+          recipeId: subRec.id,
+          resultId: subRec.result,
+          resultName: subRec.name,
+          resultCountPerBatch: Math.max(1, subRec.resultCount),
+          batches: subBatches,
+          craftTimeSec: Math.max(0.25, subRec.craftTimeSec * 0.5),
+          directConsumed: subPlan.directConsumed,
+          surplusToPocket: surplus,
+        });
+      }
+    }
+
+    const directConsumed: Array<{ item: CapytorioItemId; count: number }> = [];
+    for (const [item, count] of directConsumedMap.entries()) {
+      if (count > 0) directConsumed.push({ item, count });
+    }
+    return { ok: true, directConsumed };
+  }
+
+  public getMaxAffordableCraftBatches(
+    kind: 'recipe' | 'machine',
+    id: string,
+    cap: number = 25
+  ): number {
+    let ingredients: Array<{ item: CapytorioItemId; count: number }> = [];
+    if (kind === 'recipe') {
+      const rec = RECIPE_BY_ID.get(id as CapytorioRecipeId);
+      if (!rec || !rec.pocketCraftable || !this.isRecipeUnlocked(rec.id)) return 0;
+      ingredients = rec.ingredients;
+    } else {
+      const spec = CAPYTORIO_MACHINE_SPECS[id as CapytorioMachineType];
+      if (!spec) return 0;
+      ingredients = (Object.entries(spec.craftCost) as Array<[CapytorioItemId, number]>).map(
+        ([item, count]) => ({ item, count })
+      );
+    }
+
+    const simStock = new Map<CapytorioItemId, number>();
+    for (const [k, v] of Object.entries(this.pocketItems) as Array<[CapytorioItemId, number]>) {
+      if (v > 0) simStock.set(k, v);
+    }
+    let count = 0;
+    while (count < cap) {
+      const snap = new Map(simStock);
+      const steps: Array<{
+        recipeId: CapytorioRecipeId;
+        resultId: CapytorioItemId;
+        resultName: string;
+        resultCountPerBatch: number;
+        batches: number;
+        craftTimeSec: number;
+        directConsumed: Array<{ item: CapytorioItemId; count: number }>;
+        surplusToPocket: number;
+      }> = [];
+      const res = this.planRecursiveIngredients(ingredients, snap, new Set(), steps);
+      if (!res.ok) break;
+      simStock.clear();
+      for (const [k, v] of snap.entries()) simStock.set(k, v);
+      count++;
+    }
+    return count;
+  }
+
+  public enqueuePocketCraft(
+    recipeId: CapytorioRecipeId,
+    batches: number = 1
+  ): { ok: boolean; queuedBatches: number; queuedIntermediates: number } {
+    const rec = RECIPE_BY_ID.get(recipeId);
+    if (!rec || !rec.pocketCraftable || !this.isRecipeUnlocked(recipeId) || batches < 1) {
+      return { ok: false, queuedBatches: 0, queuedIntermediates: 0 };
+    }
+    let queuedBatches = 0;
+    let queuedIntermediates = 0;
+    const maxLoop = Math.min(50, Math.floor(batches));
+
+    for (let b = 0; b < maxLoop; b++) {
+      const simStock = new Map<CapytorioItemId, number>();
+      for (const [k, v] of Object.entries(this.pocketItems) as Array<[CapytorioItemId, number]>) {
+        if (v > 0) simStock.set(k, v);
+      }
+      const subSteps: Array<{
+        recipeId: CapytorioRecipeId;
+        resultId: CapytorioItemId;
+        resultName: string;
+        resultCountPerBatch: number;
+        batches: number;
+        craftTimeSec: number;
+        directConsumed: Array<{ item: CapytorioItemId; count: number }>;
+        surplusToPocket: number;
+      }> = [];
+      const plan = this.planRecursiveIngredients(
+        rec.ingredients,
+        simStock,
+        new Set([rec.result]),
+        subSteps
+      );
+      if (!plan.ok) break;
+
+      // Deduct all direct raw pocket materials upfront
+      for (let s = 0; s < subSteps.length; s++) {
+        const dc = subSteps[s].directConsumed;
+        for (let k = 0; k < dc.length; k++) {
+          this.consumePocketItem(dc[k].item, dc[k].count);
+        }
+      }
+      for (let k = 0; k < plan.directConsumed.length; k++) {
+        this.consumePocketItem(plan.directConsumed[k].item, plan.directConsumed[k].count);
+      }
+
+      const parentUid = this.nextCraftQueueUid++;
+      for (let s = 0; s < subSteps.length; s++) {
+        const st = subSteps[s];
+        this.craftingQueue.push({
+          uid: this.nextCraftQueueUid++,
+          kind: 'recipe',
+          recipeId: st.recipeId,
+          resultId: st.resultId,
+          resultName: st.resultName,
+          resultCountPerBatch: st.resultCountPerBatch,
+          batchesTotal: st.batches,
+          batchesRemaining: st.batches,
+          craftTimeSec: st.craftTimeSec,
+          progress: 0,
+          isIntermediate: true,
+          parentUid,
+          reservedPerBatch: st.directConsumed,
+        });
+        queuedIntermediates += st.batches;
+      }
+
+      this.craftingQueue.push({
+        uid: parentUid,
+        kind: 'recipe',
+        recipeId: rec.id,
+        resultId: rec.result,
+        resultName: rec.name,
+        resultCountPerBatch: Math.max(1, rec.resultCount),
+        batchesTotal: 1,
+        batchesRemaining: 1,
+        craftTimeSec: Math.max(0.25, rec.craftTimeSec * 0.5),
+        progress: 0,
+        isIntermediate: false,
+        reservedPerBatch: plan.directConsumed,
+      });
+      queuedBatches++;
+    }
+
+    return { ok: queuedBatches > 0, queuedBatches, queuedIntermediates };
+  }
+
+  public enqueueMachineCraft(
+    type: CapytorioMachineType,
+    count: number = 1
+  ): { ok: boolean; queuedBatches: number; queuedIntermediates: number } {
+    const spec = CAPYTORIO_MACHINE_SPECS[type];
+    if (!spec || count < 1) {
+      return { ok: false, queuedBatches: 0, queuedIntermediates: 0 };
+    }
+    const ingredients = (Object.entries(spec.craftCost) as Array<[CapytorioItemId, number]>).map(
+      ([item, amt]) => ({ item, count: amt })
+    );
+    let queuedBatches = 0;
+    let queuedIntermediates = 0;
+    const maxLoop = Math.min(50, Math.floor(count));
+
+    for (let b = 0; b < maxLoop; b++) {
+      const simStock = new Map<CapytorioItemId, number>();
+      for (const [k, v] of Object.entries(this.pocketItems) as Array<[CapytorioItemId, number]>) {
+        if (v > 0) simStock.set(k, v);
+      }
+      const subSteps: Array<{
+        recipeId: CapytorioRecipeId;
+        resultId: CapytorioItemId;
+        resultName: string;
+        resultCountPerBatch: number;
+        batches: number;
+        craftTimeSec: number;
+        directConsumed: Array<{ item: CapytorioItemId; count: number }>;
+        surplusToPocket: number;
+      }> = [];
+      const plan = this.planRecursiveIngredients(ingredients, simStock, new Set(), subSteps);
+      if (!plan.ok) break;
+
+      for (let s = 0; s < subSteps.length; s++) {
+        const dc = subSteps[s].directConsumed;
+        for (let k = 0; k < dc.length; k++) {
+          this.consumePocketItem(dc[k].item, dc[k].count);
+        }
+      }
+      for (let k = 0; k < plan.directConsumed.length; k++) {
+        this.consumePocketItem(plan.directConsumed[k].item, plan.directConsumed[k].count);
+      }
+
+      const parentUid = this.nextCraftQueueUid++;
+      for (let s = 0; s < subSteps.length; s++) {
+        const st = subSteps[s];
+        this.craftingQueue.push({
+          uid: this.nextCraftQueueUid++,
+          kind: 'recipe',
+          recipeId: st.recipeId,
+          resultId: st.resultId,
+          resultName: st.resultName,
+          resultCountPerBatch: st.resultCountPerBatch,
+          batchesTotal: st.batches,
+          batchesRemaining: st.batches,
+          craftTimeSec: st.craftTimeSec,
+          progress: 0,
+          isIntermediate: true,
+          parentUid,
+          reservedPerBatch: st.directConsumed,
+        });
+        queuedIntermediates += st.batches;
+      }
+
+      this.craftingQueue.push({
+        uid: parentUid,
+        kind: 'machine',
+        machineType: type,
+        resultId: type,
+        resultName: spec.name,
+        resultCountPerBatch: 1,
+        batchesTotal: 1,
+        batchesRemaining: 1,
+        craftTimeSec: 0.55,
+        progress: 0,
+        isIntermediate: false,
+        reservedPerBatch: plan.directConsumed,
+      });
+      queuedBatches++;
+    }
+
+    return { ok: queuedBatches > 0, queuedBatches, queuedIntermediates };
+  }
+
+  public cancelCraftQueueItem(uid: number): { ok: boolean; cancelledCount: number } {
+    const idx = this.craftingQueue.findIndex((q) => q.uid === uid);
+    if (idx < 0) return { ok: false, cancelledCount: 0 };
+    const target = this.craftingQueue[idx];
+    const rootUid = target.isIntermediate && target.parentUid !== undefined ? target.parentUid : target.uid;
+
+    let cancelledCount = 0;
+    for (let i = this.craftingQueue.length - 1; i >= 0; i--) {
+      const q = this.craftingQueue[i];
+      if (q.uid === rootUid || q.parentUid === rootUid) {
+        // Refund 100% of reserved materials for uncrafted batches
+        const frac = q.batchesTotal > 0 ? q.batchesRemaining / q.batchesTotal : 1;
+        for (let r = 0; r < q.reservedPerBatch.length; r++) {
+          const entry = q.reservedPerBatch[r];
+          const refund = Math.max(0, Math.round(entry.count * frac));
+          if (refund > 0) this.addPocketItem(entry.item, refund);
+        }
+        this.craftingQueue.splice(i, 1);
+        cancelledCount++;
+      }
+    }
+    return { ok: cancelledCount > 0, cancelledCount };
+  }
+
+  private stepCraftingQueue(dt: number): void {
+    if (this.craftingQueue.length === 0) return;
+    const head = this.craftingQueue[0];
+    const speed = Math.max(0.5, this.getCraftSpeedMultiplier());
+    head.progress += (dt * speed) / Math.max(0.15, head.craftTimeSec);
+    if (head.progress < 1.0) return;
+
+    head.progress -= 1.0;
+    head.batchesRemaining -= 1;
+
+    if (!head.isIntermediate) {
+      if (head.kind === 'machine' && head.machineType) {
+        this.pocketMachines[head.machineType] =
+          (this.pocketMachines[head.machineType] ?? 0) + head.resultCountPerBatch;
+        this.recordRecentTool(head.machineType);
+      } else if (Object.prototype.hasOwnProperty.call(CAPYTORIO_MACHINE_SPECS, head.resultId)) {
+        const mType = head.resultId as CapytorioMachineType;
+        this.pocketMachines[mType] = (this.pocketMachines[mType] ?? 0) + head.resultCountPerBatch;
+        this.recordRecentTool(mType);
+      } else {
+        this.addPocketItem(head.resultId, head.resultCountPerBatch);
+        if (CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[head.resultId]) {
+          this.recordRecentTool(head.resultId);
+        }
+      }
+      this.totalProduced += head.resultCountPerBatch;
+      this.score += 5 * head.resultCountPerBatch;
+    } else if (head.batchesRemaining <= 0 && head.parentUid !== undefined) {
+      // Completed intermediate: check if parent still exists; if not, deliver to pocket
+      const parent = this.craftingQueue.find((q) => q.uid === head.parentUid);
+      if (parent) {
+        // Track completed intermediate on parent so cancelling parent later refunds the crafted intermediate!
+        const totalOut = head.batchesTotal * head.resultCountPerBatch;
+        const existingRes = parent.reservedPerBatch.find((r) => r.item === head.resultId);
+        if (existingRes) existingRes.count += totalOut;
+        else parent.reservedPerBatch.push({ item: head.resultId, count: totalOut });
+      } else {
+        this.addPocketItem(head.resultId, head.batchesTotal * head.resultCountPerBatch);
+      }
+    }
+
+    if (head.batchesRemaining <= 0) {
+      this.craftingQueue.shift();
+    }
+  }
+
   public handMineAt(gx: number, gz: number, yieldCount: number = 2): CapytorioItemId | null {
     const res = this.depleteOreAt(gx, gz, yieldCount);
     if (res) {
@@ -1049,34 +1721,35 @@ export class CapytorioFactoryEngine {
     }
     const baseType = resolved.baseType;
     const variantItemId = resolved.isBaseMachine ? undefined : resolved.id;
+    const fp = getCapytorioFootprint(baseType, variantItemId, dir);
 
     const key = tileKey(gx, gz);
-    const existing = this.machines.get(key);
-    if (existing) {
+    const existingAnchor = this.machines.get(key);
+    if (existingAnchor) {
       const sameTool =
-        existing.type === baseType &&
-        (existing.variantItemId ?? existing.type) === (variantItemId ?? baseType);
-      // Clicking an existing belt/inserter with same tool rotates it cleanly instead of failing!
+        existingAnchor.type === baseType &&
+        (existingAnchor.variantItemId ?? existingAnchor.type) === (variantItemId ?? baseType);
       if (sameTool) {
-        const beforeSnap = this.snapshotMachineForUndo(existing);
-        existing.dir = ((existing.dir + 1) & 3) as CapytorioDirection;
-        this.topologyRevision++;
-        this.recordHistoryDelta(
-          `Rotate ${resolved.shortName}`,
-          gx,
-          gz,
-          beforeSnap,
-          this.snapshotMachineForUndo(existing)
-        );
-        return { ok: true, machine: existing };
+        const rotated = this.rotateMachineAt(existingAnchor.gx, existingAnchor.gz);
+        if (rotated !== null) {
+          return { ok: true, machine: existingAnchor };
+        }
+        return { ok: false, reason: 'Not enough room to rotate this building here' };
       }
       return { ok: false, reason: 'Tile already occupied — Right-click or press X to demolish first' };
     }
 
+    if (!this.canFootprintFit(gx, gz, fp.width, fp.height)) {
+      return {
+        ok: false,
+        reason: `Needs clear ${fp.width}×${fp.height} footprint — Right-click or press X to clear space`,
+      };
+    }
+
     if (baseType === 'drill') {
-      const ore = this.getResourceAt(gx, gz);
+      const ore = this.findFirstOreInFootprint(gx, gz, fp.width, fp.height);
       if (!ore) {
-        return { ok: false, reason: 'Mining Drills must be placed on glowing ore tiles' };
+        return { ok: false, reason: 'Mining Drills must cover at least one glowing ore tile' };
       }
     }
 
@@ -1087,7 +1760,6 @@ export class CapytorioFactoryEngine {
       } else if (!this.craftMachineIntoPocket(baseType)) {
         return { ok: false, reason: `Need materials to craft ${resolved.name}` };
       } else {
-        // Use the one just crafted
         this.pocketMachines[baseType] = Math.max(0, (this.pocketMachines[baseType] ?? 1) - 1);
       }
     } else {
@@ -1095,7 +1767,6 @@ export class CapytorioFactoryEngine {
       if (itemQty > 0) {
         this.consumePocketItem(resolved.id, 1);
       } else {
-        // Auto-craft matching Factorio recipe if affordable in pocket
         let autoCrafted = false;
         for (let i = 0; i < CAPYTORIO_RECIPES.length; i++) {
           const rec = CAPYTORIO_RECIPES[i];
@@ -1113,8 +1784,12 @@ export class CapytorioFactoryEngine {
       }
     }
 
-    // Clear any citrus tree on this tile cleanly and award oranges!
-    this.harvestTreeAt(gx, gz);
+    // Clear any citrus trees across the full footprint cleanly and award oranges!
+    for (let dx = 0; dx < fp.width; dx++) {
+      for (let dz = 0; dz < fp.height; dz++) {
+        this.harvestTreeAt(gx + dx, gz + dz);
+      }
+    }
 
     const machine: CapytorioMachine = {
       id: this.nextMachineId++,
@@ -1133,11 +1808,20 @@ export class CapytorioFactoryEngine {
       inserterPhase: baseType === 'inserter' ? 'idle_pickup' : undefined,
       holdingItem: null,
       splitterToggle: 0,
+      splitterInputToggle: 0,
+      splitterInputPriority: baseType === 'splitter' ? 'none' : undefined,
+      splitterOutputPriority: baseType === 'splitter' ? 'none' : undefined,
+      splitterFilterItem: baseType === 'splitter' ? null : undefined,
+      inserterFilterMode: baseType === 'inserter' ? 'whitelist' : undefined,
+      inserterFilters: baseType === 'inserter' ? [] : undefined,
+      inserterStackLimit: null,
+      chestSlotLimit: baseType === 'chest' ? null : undefined,
       inputBuffer: {},
       outputBuffer: {},
       beltItems: [],
     };
     this.machines.set(key, machine);
+    this.registerMachineOccupancy(machine);
     this.machineListDirty = true;
     this.topologyRevision++;
     this.inspectedKey = key;
@@ -1156,16 +1840,31 @@ export class CapytorioFactoryEngine {
   }
 
   public rotateMachineAt(gx: number, gz: number): CapytorioDirection | null {
-    const m = this.machines.get(tileKey(gx, gz));
+    const m = this.getMachineAt(gx, gz);
     if (!m) return null;
+    const nextDir = ((m.dir + 1) & 3) as CapytorioDirection;
+    const curFp = this.getMachineFootprint(m);
+    const nextFp = getCapytorioFootprint(m.type, m.variantItemId, nextDir);
+    if (nextFp.width !== curFp.width || nextFp.height !== curFp.height) {
+      if (!this.canFootprintFit(m.gx, m.gz, nextFp.width, nextFp.height, m)) {
+        return null;
+      }
+    }
     const beforeSnap = this.snapshotMachineForUndo(m);
-    m.dir = ((m.dir + 1) & 3) as CapytorioDirection;
+    this.unregisterMachineOccupancy(m);
+    m.dir = nextDir;
+    this.registerMachineOccupancy(m);
+    for (let dx = 0; dx < nextFp.width; dx++) {
+      for (let dz = 0; dz < nextFp.height; dz++) {
+        this.harvestTreeAt(m.gx + dx, m.gz + dz);
+      }
+    }
     this.topologyRevision++;
     const resolved = resolveCapytorioPlaceableSpec(m.variantItemId ?? m.type);
     this.recordHistoryDelta(
       `Rotate ${resolved?.shortName ?? CAPYTORIO_MACHINE_SPECS[m.type].shortName}`,
-      gx,
-      gz,
+      m.gx,
+      m.gz,
       beforeSnap,
       this.snapshotMachineForUndo(m)
     );
@@ -1177,21 +1876,21 @@ export class CapytorioFactoryEngine {
     const rec = RECIPE_BY_ID.get(recipeId);
     if (!rec || rec.station !== 'assembler') return false;
     this.selectedRecipeId = recipeId;
-    const m = this.machines.get(tileKey(gx, gz));
+    const m = this.getMachineAt(gx, gz);
     if (m && m.type === 'assembler') {
       if (m.recipeId !== recipeId) {
         const beforeSnap = this.snapshotMachineForUndo(m);
-        // Refund leftover buffered ingredients into pocket cleanly!
         for (const [k, v] of Object.entries(m.inputBuffer) as Array<[CapytorioItemId, number]>) {
           if (v > 0) this.addPocketItem(k, v);
         }
         m.inputBuffer = {};
         m.craftProgress = 0;
         m.recipeId = recipeId;
+        this.topologyRevision++;
         this.recordHistoryDelta(
           `Set Recipe: ${rec.name}`,
-          gx,
-          gz,
+          m.gx,
+          m.gz,
           beforeSnap,
           this.snapshotMachineForUndo(m)
         );
@@ -1201,10 +1900,252 @@ export class CapytorioFactoryEngine {
     return false;
   }
 
+  public setSplitterConfigAt(
+    gx: number,
+    gz: number,
+    config: {
+      inputPriority?: CapytorioSplitterPriority;
+      outputPriority?: CapytorioSplitterPriority;
+      filterItem?: CapytorioItemId | null;
+    }
+  ): boolean {
+    const m = this.getMachineAt(gx, gz);
+    if (!m || m.type !== 'splitter') return false;
+    const beforeSnap = this.snapshotMachineForUndo(m);
+    if (config.inputPriority !== undefined) {
+      m.splitterInputPriority = config.inputPriority;
+    }
+    if (config.outputPriority !== undefined) {
+      m.splitterOutputPriority = config.outputPriority;
+    }
+    if (config.filterItem !== undefined) {
+      m.splitterFilterItem = config.filterItem;
+      // Factorio convenience: setting a filter with 'none' output priority defaults output priority to 'left'
+      if (config.filterItem && (!m.splitterOutputPriority || m.splitterOutputPriority === 'none')) {
+        m.splitterOutputPriority = 'left';
+      }
+    }
+    this.topologyRevision++;
+    this.recordHistoryDelta(
+      'Configure Splitter',
+      m.gx,
+      m.gz,
+      beforeSnap,
+      this.snapshotMachineForUndo(m)
+    );
+    return true;
+  }
+
+  public setInserterConfigAt(
+    gx: number,
+    gz: number,
+    config: {
+      filterMode?: CapytorioInserterFilterMode;
+      filters?: CapytorioItemId[];
+      stackLimit?: number | null;
+    }
+  ): boolean {
+    const m = this.getMachineAt(gx, gz);
+    if (!m || m.type !== 'inserter') return false;
+    const beforeSnap = this.snapshotMachineForUndo(m);
+    if (config.filterMode !== undefined) {
+      m.inserterFilterMode = config.filterMode;
+    }
+    if (config.filters !== undefined) {
+      const cleaned: CapytorioItemId[] = [];
+      for (let i = 0; i < config.filters.length && cleaned.length < 5; i++) {
+        const fid = config.filters[i];
+        if (fid && !cleaned.includes(fid)) cleaned.push(fid);
+      }
+      m.inserterFilters = cleaned;
+    }
+    if (config.stackLimit !== undefined) {
+      const maxCap = this.getEffectiveInserterMaxStack(m);
+      m.inserterStackLimit =
+        config.stackLimit === null
+          ? null
+          : Math.max(1, Math.min(maxCap, Math.round(config.stackLimit)));
+    }
+    this.topologyRevision++;
+    this.recordHistoryDelta(
+      'Configure Inserter',
+      m.gx,
+      m.gz,
+      beforeSnap,
+      this.snapshotMachineForUndo(m)
+    );
+    return true;
+  }
+
+  public setChestSlotLimitAt(gx: number, gz: number, slotLimit: number | null): boolean {
+    const m = this.getMachineAt(gx, gz);
+    if (!m || m.type !== 'chest') return false;
+    const beforeSnap = this.snapshotMachineForUndo(m);
+    m.chestSlotLimit =
+      slotLimit === null
+        ? null
+        : Math.max(1, Math.min(CAPYTORIO_CHEST_SLOTS, Math.round(slotLimit)));
+    this.topologyRevision++;
+    this.recordHistoryDelta(
+      'Set Chest Limit',
+      m.gx,
+      m.gz,
+      beforeSnap,
+      this.snapshotMachineForUndo(m)
+    );
+    return true;
+  }
+
+  public getEffectiveInserterMaxStack(m: CapytorioMachine): number {
+    const base = this.getInserterStackSize();
+    if (m.variantItemId === 'bulk_inserter') {
+      return Math.max(4, base + 2);
+    }
+    return base;
+  }
+
+  public getEffectiveInserterStack(m: CapytorioMachine): number {
+    const maxCap = this.getEffectiveInserterMaxStack(m);
+    if (typeof m.inserterStackLimit === 'number' && m.inserterStackLimit >= 1) {
+      return Math.min(maxCap, Math.round(m.inserterStackLimit));
+    }
+    return maxCap;
+  }
+
+  public getEffectiveChestCapacity(m: CapytorioMachine): number {
+    const slots =
+      typeof m.chestSlotLimit === 'number' && m.chestSlotLimit >= 1
+        ? Math.min(CAPYTORIO_CHEST_SLOTS, Math.round(m.chestSlotLimit))
+        : CAPYTORIO_CHEST_SLOTS;
+    return slots * CAPYTORIO_CHEST_ITEMS_PER_SLOT;
+  }
+
+  public doesInserterAllowItem(m: CapytorioMachine, item: CapytorioItemId): boolean {
+    const filters = m.inserterFilters;
+    if (!filters || filters.length === 0) return true;
+    const listed = filters.includes(item);
+    return m.inserterFilterMode === 'blacklist' ? !listed : listed;
+  }
+
+  /**
+   * Factorio `Shift + Right-Click` Entity Settings Copy.
+   */
+  public copyEntitySettingsAt(gx: number, gz: number): {
+    ok: boolean;
+    label?: string;
+    reason?: string;
+  } {
+    const m = this.getMachineAt(gx, gz);
+    if (!m) {
+      return { ok: false, reason: 'No configurable building under cursor' };
+    }
+    if (m.type === 'assembler') {
+      const rec = m.recipeId ? RECIPE_BY_ID.get(m.recipeId) : null;
+      const label = rec ? `Assembler · ${rec.name}` : 'Assembler Settings';
+      this.entitySettingsClipboard = {
+        sourceType: 'assembler',
+        sourceLabel: label,
+        recipeId: m.recipeId,
+      };
+      return { ok: true, label };
+    }
+    if (m.type === 'splitter') {
+      const filterName = m.splitterFilterItem
+        ? getCapytorioItemMeta(m.splitterFilterItem).shortName
+        : 'No Filter';
+      const label = `Splitter · ${filterName}`;
+      this.entitySettingsClipboard = {
+        sourceType: 'splitter',
+        sourceLabel: label,
+        splitterInputPriority: m.splitterInputPriority ?? 'none',
+        splitterOutputPriority: m.splitterOutputPriority ?? 'none',
+        splitterFilterItem: m.splitterFilterItem ?? null,
+      };
+      return { ok: true, label };
+    }
+    if (m.type === 'inserter') {
+      const fCount = m.inserterFilters?.length ?? 0;
+      const label =
+        fCount > 0
+          ? `Inserter · ${m.inserterFilterMode === 'blacklist' ? 'Deny' : 'Allow'} ${fCount}`
+          : `Inserter · Stack ${m.inserterStackLimit ?? 'Max'}`;
+      this.entitySettingsClipboard = {
+        sourceType: 'inserter',
+        sourceLabel: label,
+        inserterFilterMode: m.inserterFilterMode ?? 'whitelist',
+        inserterFilters: m.inserterFilters ? [...m.inserterFilters] : [],
+        inserterStackLimit: m.inserterStackLimit ?? null,
+      };
+      return { ok: true, label };
+    }
+    if (m.type === 'chest') {
+      const slots = m.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS;
+      const label = `Chest · ${slots} slots`;
+      this.entitySettingsClipboard = {
+        sourceType: 'chest',
+        sourceLabel: label,
+        chestSlotLimit: m.chestSlotLimit ?? null,
+      };
+      return { ok: true, label };
+    }
+    return { ok: false, reason: `${CAPYTORIO_MACHINE_SPECS[m.type].shortName} has no copyable settings` };
+  }
+
+  /**
+   * Factorio `Shift + Left-Click` Entity Settings Paste.
+   */
+  public pasteEntitySettingsAt(gx: number, gz: number): {
+    ok: boolean;
+    label?: string;
+    reason?: string;
+  } {
+    const clip = this.entitySettingsClipboard;
+    if (!clip) {
+      return { ok: false, reason: 'No entity settings copied yet (Shift+Right-Click a machine)' };
+    }
+    const m = this.getMachineAt(gx, gz);
+    if (!m) {
+      return { ok: false, reason: 'No building under cursor to paste settings onto' };
+    }
+    if (m.type !== clip.sourceType) {
+      return {
+        ok: false,
+        reason: `Copied ${clip.sourceType} settings cannot paste onto ${m.type}`,
+      };
+    }
+    if (m.type === 'assembler' && clip.recipeId) {
+      const applied = this.setAssemblerRecipeAt(m.gx, m.gz, clip.recipeId);
+      return applied
+        ? { ok: true, label: clip.sourceLabel }
+        : { ok: false, reason: 'Recipe is not unlocked yet' };
+    }
+    if (m.type === 'splitter') {
+      this.setSplitterConfigAt(m.gx, m.gz, {
+        inputPriority: clip.splitterInputPriority ?? 'none',
+        outputPriority: clip.splitterOutputPriority ?? 'none',
+        filterItem: clip.splitterFilterItem ?? null,
+      });
+      return { ok: true, label: clip.sourceLabel };
+    }
+    if (m.type === 'inserter') {
+      this.setInserterConfigAt(m.gx, m.gz, {
+        filterMode: clip.inserterFilterMode ?? 'whitelist',
+        filters: clip.inserterFilters ? [...clip.inserterFilters] : [],
+        stackLimit: clip.inserterStackLimit ?? null,
+      });
+      return { ok: true, label: clip.sourceLabel };
+    }
+    if (m.type === 'chest') {
+      this.setChestSlotLimitAt(m.gx, m.gz, clip.chestSlotLimit ?? null);
+      return { ok: true, label: clip.sourceLabel };
+    }
+    return { ok: false, reason: 'Unable to apply settings' };
+  }
+
   public demolishAt(gx: number, gz: number): CapytorioMachineType | null {
-    const key = tileKey(gx, gz);
-    const m = this.machines.get(key);
+    const m = this.getMachineAt(gx, gz);
     if (!m) return null;
+    const anchorKey = tileKey(m.gx, m.gz);
     const beforeSnap = this.snapshotMachineForUndo(m);
     const resolved = resolveCapytorioPlaceableSpec(m.variantItemId ?? m.type);
     // 100% friendly refund of machine/variant item + buffered items + belt items
@@ -1225,8 +2166,9 @@ export class CapytorioFactoryEngine {
     if (m.holdingItem) {
       this.addPocketItem(m.holdingItem, 1);
     }
-    this.machines.delete(key);
-    if (this.inspectedKey === key) this.inspectedKey = null;
+    this.unregisterMachineOccupancy(m);
+    this.machines.delete(anchorKey);
+    if (this.inspectedKey === anchorKey) this.inspectedKey = null;
     if (this.inspectedTile && this.inspectedTile.gx === gx && this.inspectedTile.gz === gz) {
       this.inspectedTile = { gx, gz };
     }
@@ -1235,8 +2177,8 @@ export class CapytorioFactoryEngine {
     this.recomputePowerMetrics();
     this.recordHistoryDelta(
       `Remove ${resolved?.shortName ?? CAPYTORIO_MACHINE_SPECS[m.type].shortName}`,
-      gx,
-      gz,
+      m.gx,
+      m.gz,
       beforeSnap,
       null
     );
@@ -1267,7 +2209,7 @@ export class CapytorioFactoryEngine {
         else if (dx < 0) targetDir = 3;
         this.selectedDir = targetDir;
         if (alignPrevTile) {
-          const prevM = this.machines.get(tileKey(prevPlacedGx, prevPlacedGz));
+          const prevM = this.getMachineAt(prevPlacedGx, prevPlacedGz);
           if (prevM && prevM.type === 'belt' && prevM.dir !== targetDir) {
             const beforePrev = this.snapshotMachineForUndo(prevM);
             prevM.dir = targetDir;
@@ -1283,8 +2225,8 @@ export class CapytorioFactoryEngine {
         }
       }
     }
-    const existing = this.machines.get(tileKey(gx, gz));
-    if (existing) {
+    const fp = getCapytorioToolFootprint(toolOrType, targetDir);
+    if (!this.canFootprintFit(gx, gz, fp.width, fp.height)) {
       return { ok: false, appliedDir: targetDir };
     }
     const res = this.placeMachine(toolOrType, gx, gz, targetDir);
@@ -1303,6 +2245,13 @@ export class CapytorioFactoryEngine {
       baseType: m.type,
       dir: m.dir,
       recipeId: m.recipeId,
+      splitterInputPriority: m.splitterInputPriority,
+      splitterOutputPriority: m.splitterOutputPriority,
+      splitterFilterItem: m.splitterFilterItem,
+      inserterFilterMode: m.inserterFilterMode,
+      inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
+      inserterStackLimit: m.inserterStackLimit,
+      chestSlotLimit: m.chestSlotLimit,
       inputBuffer: { ...m.inputBuffer },
       outputBuffer: { ...m.outputBuffer },
       beltItems: m.beltItems.map((bi) => ({ ...bi })),
@@ -1363,6 +2312,38 @@ export class CapytorioFactoryEngine {
     });
   }
 
+  private applyConfigSnapshotToMachine(
+    m: CapytorioMachine,
+    snap: Pick<
+      CapytorioMachineUndoSnapshot,
+      | 'recipeId'
+      | 'splitterInputPriority'
+      | 'splitterOutputPriority'
+      | 'splitterFilterItem'
+      | 'inserterFilterMode'
+      | 'inserterFilters'
+      | 'inserterStackLimit'
+      | 'chestSlotLimit'
+    >
+  ): void {
+    if (m.type === 'assembler' && snap.recipeId) {
+      m.recipeId = snap.recipeId;
+    }
+    if (m.type === 'splitter') {
+      m.splitterInputPriority = snap.splitterInputPriority ?? 'none';
+      m.splitterOutputPriority = snap.splitterOutputPriority ?? 'none';
+      m.splitterFilterItem = snap.splitterFilterItem ?? null;
+    }
+    if (m.type === 'inserter') {
+      m.inserterFilterMode = snap.inserterFilterMode ?? 'whitelist';
+      m.inserterFilters = snap.inserterFilters ? [...snap.inserterFilters] : [];
+      m.inserterStackLimit = snap.inserterStackLimit ?? null;
+    }
+    if (m.type === 'chest') {
+      m.chestSlotLimit = snap.chestSlotLimit ?? null;
+    }
+  }
+
   private restoreMachineSnapshotFromPocket(snap: CapytorioMachineUndoSnapshot): boolean {
     const key = tileKey(snap.gx, snap.gz);
     const existing = this.machines.get(key);
@@ -1371,21 +2352,32 @@ export class CapytorioFactoryEngine {
         existing.type === snap.baseType &&
         (existing.variantItemId ?? existing.type) === snap.toolId;
       if (sameTool) {
+        this.unregisterMachineOccupancy(existing);
         existing.dir = snap.dir;
-        if (snap.baseType === 'assembler' && snap.recipeId) {
-          existing.recipeId = snap.recipeId;
-        }
+        this.registerMachineOccupancy(existing);
+        this.applyConfigSnapshotToMachine(existing, snap);
         this.topologyRevision++;
         return true;
       }
       this.demolishAt(snap.gx, snap.gz);
     }
 
+    // Clear any overlapping occupants inside target footprint before restoring
+    const snapFp = getCapytorioFootprint(
+      snap.baseType,
+      snap.toolId === snap.baseType ? undefined : snap.toolId,
+      snap.dir
+    );
+    for (let dx = 0; dx < snapFp.width; dx++) {
+      for (let dz = 0; dz < snapFp.height; dz++) {
+        const occ = this.getMachineAt(snap.gx + dx, snap.gz + dz);
+        if (occ) this.demolishAt(occ.gx, occ.gz);
+      }
+    }
+
     const placed = this.placeMachine(snap.toolId, snap.gx, snap.gz, snap.dir, snap.recipeId);
     if (!placed.ok || !placed.machine) return false;
-    if (snap.baseType === 'assembler' && snap.recipeId) {
-      this.setAssemblerRecipeAt(snap.gx, snap.gz, snap.recipeId);
-    }
+    this.applyConfigSnapshotToMachine(placed.machine, snap);
     for (const [k, qty] of Object.entries(snap.inputBuffer) as Array<[CapytorioItemId, number]>) {
       const take = Math.min(qty, this.pocketItems[k] ?? 0);
       if (take > 0) {
@@ -1625,10 +2617,11 @@ export class CapytorioFactoryEngine {
     let maxZ = -Infinity;
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
+      const fp = getCapytorioToolFootprint(e.toolId, e.dir);
       if (e.dx < minX) minX = e.dx;
-      if (e.dx > maxX) maxX = e.dx;
+      if (e.dx + fp.width - 1 > maxX) maxX = e.dx + fp.width - 1;
       if (e.dz < minZ) minZ = e.dz;
-      if (e.dz > maxZ) maxZ = e.dz;
+      if (e.dz + fp.height - 1 > maxZ) maxZ = e.dz + fp.height - 1;
     }
     return {
       width: maxX - minX + 1,
@@ -1640,7 +2633,10 @@ export class CapytorioFactoryEngine {
     entries: ReadonlyArray<CapytorioBlueprintEntry>,
     sourceMode: 'copy' | 'cut'
   ): CapytorioSavedBlueprint {
-    const clonedEntries = entries.map((e) => ({ ...e }));
+    const clonedEntries = entries.map((e) => ({
+      ...e,
+      inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
+    }));
     const bounds = this.computeBlueprintBounds(clonedEntries);
     const saved: CapytorioSavedBlueprint = {
       id: `bp_${Date.now().toString(36)}_${this.nextBlueprintUid++}`,
@@ -1666,7 +2662,10 @@ export class CapytorioFactoryEngine {
     const maxZ = Math.max(gzA, gzB);
     const out: CapytorioMachine[] = [];
     for (const m of this.machines.values()) {
-      if (m.gx >= minX && m.gx <= maxX && m.gz >= minZ && m.gz <= maxZ) {
+      const fp = this.getMachineFootprint(m);
+      const mMaxX = m.gx + fp.width - 1;
+      const mMaxZ = m.gz + fp.height - 1;
+      if (mMaxX >= minX && m.gx <= maxX && mMaxZ >= minZ && m.gz <= maxZ) {
         out.push(m);
       }
     }
@@ -1679,7 +2678,7 @@ export class CapytorioFactoryEngine {
     const n = points.length;
     if (n === 0) return [];
     if (n === 1) {
-      const m = this.machines.get(tileKey(Math.round(points[0].gx), Math.round(points[0].gz)));
+      const m = this.getMachineAt(Math.round(points[0].gx), Math.round(points[0].gz));
       return m ? [m] : [];
     }
     let minX = Infinity;
@@ -1693,16 +2692,16 @@ export class CapytorioFactoryEngine {
       if (pt.gz < minZ) minZ = pt.gz;
       if (pt.gz > maxZ) maxZ = pt.gz;
     }
-    const pad = 0.65;
-    const brushDistSq = 0.54 * 0.54;
+    const pad = 1.15;
+    const brushDistSq = 0.68 * 0.68;
     const out: CapytorioMachine[] = [];
 
     for (const m of this.machines.values()) {
-      const px = m.gx;
-      const pz = m.gz;
+      const fp = this.getMachineFootprint(m);
+      const px = m.gx + (fp.width - 1) * 0.5;
+      const pz = m.gz + (fp.height - 1) * 0.5;
       if (px < minX - pad || px > maxX + pad || pz < minZ - pad || pz > maxZ + pad) continue;
 
-      // 1. Check direct brush proximity to any drawn polyline segment
       let touched = false;
       for (let i = 0; i < n - 1; i++) {
         const ax = points[i].gx;
@@ -1726,7 +2725,6 @@ export class CapytorioFactoryEngine {
         continue;
       }
 
-      // 2. Ray-casting point-in-polygon check (closing last point -> first point)
       if (n >= 3) {
         let inside = false;
         for (let i = 0, j = n - 1; i < n; j = i++) {
@@ -1778,10 +2776,11 @@ export class CapytorioFactoryEngine {
     let maxGz = -Infinity;
     for (let i = 0; i < machines.length; i++) {
       const m = machines[i];
+      const fp = this.getMachineFootprint(m);
       if (m.gx < minGx) minGx = m.gx;
-      if (m.gx > maxGx) maxGx = m.gx;
+      if (m.gx + fp.width - 1 > maxGx) maxGx = m.gx + fp.width - 1;
       if (m.gz < minGz) minGz = m.gz;
-      if (m.gz > maxGz) maxGz = m.gz;
+      if (m.gz + fp.height - 1 > maxGz) maxGz = m.gz + fp.height - 1;
     }
     const anchorGx = Math.round((minGx + maxGx) * 0.5);
     const anchorGz = Math.round((minGz + maxGz) * 0.5);
@@ -1799,20 +2798,16 @@ export class CapytorioFactoryEngine {
         baseType: m.type,
         dir: m.dir,
         recipeId: m.recipeId,
+        splitterInputPriority: m.splitterInputPriority,
+        splitterOutputPriority: m.splitterOutputPriority,
+        splitterFilterItem: m.splitterFilterItem,
+        inserterFilterMode: m.inserterFilterMode,
+        inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
+        inserterStackLimit: m.inserterStackLimit,
+        chestSlotLimit: m.chestSlotLimit,
       });
       if (mode === 'cut') {
-        this.undoCutSnapshot.push({
-          gx: m.gx,
-          gz: m.gz,
-          toolId,
-          baseType: m.type,
-          dir: m.dir,
-          recipeId: m.recipeId,
-          inputBuffer: { ...m.inputBuffer },
-          outputBuffer: { ...m.outputBuffer },
-          beltItems: m.beltItems.map((bi) => ({ ...bi })),
-          holdingItem: m.holdingItem,
-        });
+        this.undoCutSnapshot.push(this.snapshotMachineForUndo(m));
       }
     }
 
@@ -1843,19 +2838,25 @@ export class CapytorioFactoryEngine {
     if (!this.clipboard || this.clipboard.entries.length === 0) return false;
     for (let i = 0; i < this.clipboard.entries.length; i++) {
       const e = this.clipboard.entries[i];
-      const prevDx = e.dx;
-      const prevDz = e.dz;
+      const oldFp = getCapytorioToolFootprint(e.toolId, e.dir);
+      const cx = e.dx + (oldFp.width - 1) * 0.5;
+      const cz = e.dz + (oldFp.height - 1) * 0.5;
+      let ncx: number;
+      let ncz: number;
       if (ccw) {
-        // 90 deg CCW in Capytorio (+X East, +Z South): (dx, dz) -> (dz, -dx)
-        e.dx = prevDz;
-        e.dz = -prevDx;
+        // 90 deg CCW in Capytorio (+X East, +Z South): (cx, cz) -> (cz, -cx)
+        ncx = cz;
+        ncz = -cx;
         e.dir = ((e.dir + 3) & 3) as CapytorioDirection;
       } else {
-        // 90 deg CW in Capytorio (+X East, +Z South): (dx, dz) -> (-dz, dx)
-        e.dx = -prevDz;
-        e.dz = prevDx;
+        // 90 deg CW in Capytorio (+X East, +Z South): (cx, cz) -> (-cz, cx)
+        ncx = -cz;
+        ncz = cx;
         e.dir = ((e.dir + 1) & 3) as CapytorioDirection;
       }
+      const newFp = getCapytorioToolFootprint(e.toolId, e.dir);
+      e.dx = Math.round(ncx - (newFp.width - 1) * 0.5);
+      e.dz = Math.round(ncz - (newFp.height - 1) * 0.5);
     }
     return true;
   }
@@ -1864,10 +2865,17 @@ export class CapytorioFactoryEngine {
     if (!this.clipboard || this.clipboard.entries.length === 0) return false;
     for (let i = 0; i < this.clipboard.entries.length; i++) {
       const e = this.clipboard.entries[i];
-      // Mirror East (+X) <-> West (-X)
-      e.dx = -e.dx;
+      const fp = getCapytorioToolFootprint(e.toolId, e.dir);
+      const cx = e.dx + (fp.width - 1) * 0.5;
+      e.dx = Math.round(-cx - (fp.width - 1) * 0.5);
       if (e.dir === 1) e.dir = 3;
       else if (e.dir === 3) e.dir = 1;
+      if (e.baseType === 'splitter') {
+        if (e.splitterInputPriority === 'left') e.splitterInputPriority = 'right';
+        else if (e.splitterInputPriority === 'right') e.splitterInputPriority = 'left';
+        if (e.splitterOutputPriority === 'left') e.splitterOutputPriority = 'right';
+        else if (e.splitterOutputPriority === 'right') e.splitterOutputPriority = 'left';
+      }
     }
     return true;
   }
@@ -1876,10 +2884,17 @@ export class CapytorioFactoryEngine {
     if (!this.clipboard || this.clipboard.entries.length === 0) return false;
     for (let i = 0; i < this.clipboard.entries.length; i++) {
       const e = this.clipboard.entries[i];
-      // Mirror North (-Z) <-> South (+Z)
-      e.dz = -e.dz;
+      const fp = getCapytorioToolFootprint(e.toolId, e.dir);
+      const cz = e.dz + (fp.height - 1) * 0.5;
+      e.dz = Math.round(-cz - (fp.height - 1) * 0.5);
       if (e.dir === 0) e.dir = 2;
       else if (e.dir === 2) e.dir = 0;
+      if (e.baseType === 'splitter') {
+        if (e.splitterInputPriority === 'left') e.splitterInputPriority = 'right';
+        else if (e.splitterInputPriority === 'right') e.splitterInputPriority = 'left';
+        if (e.splitterOutputPriority === 'left') e.splitterOutputPriority = 'right';
+        else if (e.splitterOutputPriority === 'right') e.splitterOutputPriority = 'left';
+      }
     }
     return true;
   }
@@ -1890,24 +2905,41 @@ export class CapytorioFactoryEngine {
   ): CapytorioBlueprintPlacementCheck[] {
     if (!this.clipboard || this.clipboard.entries.length === 0) return [];
     const remainingStock = new Map<string, number>();
+    const plannedTiles = new Set<string>();
     const results: CapytorioBlueprintPlacementCheck[] = [];
 
     for (let i = 0; i < this.clipboard.entries.length; i++) {
       const entry = this.clipboard.entries[i];
       const gx = originGx + entry.dx;
       const gz = originGz + entry.dz;
+      const fp = getCapytorioToolFootprint(entry.toolId, entry.dir);
       const key = tileKey(gx, gz);
-      const existing = this.machines.get(key);
-      if (existing) {
-        // Allow recipe-only paste onto an existing assembler of matching recipe
-        if (existing.type === 'assembler' && entry.baseType === 'assembler' && entry.recipeId) {
+      const existingAnchor = this.machines.get(key);
+      if (existingAnchor) {
+        if (existingAnchor.type === 'assembler' && entry.baseType === 'assembler' && entry.recipeId) {
           results.push({ entry, gx, gz, valid: true });
         } else {
           results.push({ entry, gx, gz, valid: false, reason: 'occupied' });
         }
         continue;
       }
-      if (entry.baseType === 'drill' && !this.getResourceAt(gx, gz)) {
+
+      let blocked = !this.canFootprintFit(gx, gz, fp.width, fp.height);
+      if (!blocked) {
+        for (let dx = 0; dx < fp.width && !blocked; dx++) {
+          for (let dz = 0; dz < fp.height; dz++) {
+            if (plannedTiles.has(tileKey(gx + dx, gz + dz))) {
+              blocked = true;
+              break;
+            }
+          }
+        }
+      }
+      if (blocked) {
+        results.push({ entry, gx, gz, valid: false, reason: 'occupied' });
+        continue;
+      }
+      if (entry.baseType === 'drill' && !this.findFirstOreInFootprint(gx, gz, fp.width, fp.height)) {
         results.push({ entry, gx, gz, valid: false, reason: 'needs_ore' });
         continue;
       }
@@ -1930,6 +2962,11 @@ export class CapytorioFactoryEngine {
         continue;
       }
       remainingStock.set(stockKey, avail - 1);
+      for (let dx = 0; dx < fp.width; dx++) {
+        for (let dz = 0; dz < fp.height; dz++) {
+          plannedTiles.add(tileKey(gx + dx, gz + dz));
+        }
+      }
       results.push({ entry, gx, gz, valid: true });
     }
     return results;
@@ -2000,11 +3037,13 @@ export class CapytorioFactoryEngine {
         continue;
       }
 
-      const placed = this.placeMachine(entry.toolId, gx, gz, entry.dir);
-      if (placed.ok) {
+      const placed = this.placeMachine(entry.toolId, gx, gz, entry.dir, entry.recipeId);
+      if (placed.ok && placed.machine) {
         placedCount++;
         if (entry.baseType === 'assembler' && entry.recipeId) {
           this.setAssemblerRecipeAt(gx, gz, entry.recipeId);
+        } else if (entry.baseType === 'splitter' || entry.baseType === 'inserter' || entry.baseType === 'chest') {
+          this.applyConfigSnapshotToMachine(placed.machine, entry);
         }
       } else {
         skippedCount++;
@@ -2084,14 +3123,13 @@ export class CapytorioFactoryEngine {
     picked: boolean;
     copiedRecipeId?: CapytorioRecipeId;
   } {
-    const key = tileKey(gx, gz);
-    const existing = this.machines.get(key);
+    const existing = this.getMachineAt(gx, gz);
     if (existing) {
       const toolId = existing.variantItemId ?? existing.type;
       this.selectedTool = toolId;
       this.selectedDir = existing.dir;
-      this.inspectedKey = key;
-      this.inspectedTile = { gx, gz };
+      this.inspectedKey = tileKey(existing.gx, existing.gz);
+      this.inspectedTile = { gx: existing.gx, gz: existing.gz };
       if (existing.type === 'assembler' && existing.recipeId) {
         this.selectedRecipeId = existing.recipeId;
       }
@@ -2111,7 +3149,7 @@ export class CapytorioFactoryEngine {
    * igniting immediately if idle so power output surges from 1.5 MW -> 6.0 MW.
    */
   public insertPocketFuelToGenerator(gx: number, gz: number, maxAmount: number = 5): number {
-    const m = this.machines.get(tileKey(gx, gz));
+    const m = this.getMachineAt(gx, gz);
     if (!m || m.type !== 'generator') return 0;
 
     let loaded = 0;
@@ -2154,11 +3192,11 @@ export class CapytorioFactoryEngine {
    * or fuel from pocket into Furnace, Assembler, Generator, or Lab.
    */
   public insertPocketInputsForMachine(gx: number, gz: number, batches: number = 4): number {
-    const m = this.machines.get(tileKey(gx, gz));
+    const m = this.getMachineAt(gx, gz);
     if (!m) return 0;
 
     if (m.type === 'generator') {
-      return this.insertPocketFuelToGenerator(gx, gz, batches);
+      return this.insertPocketFuelToGenerator(m.gx, m.gz, batches);
     }
 
     let transferred = 0;
@@ -2223,7 +3261,7 @@ export class CapytorioFactoryEngine {
    * Collects all output buffer items (or belt items) from a specific inspected machine into pocket.
    */
   public takeMachineOutputsToPocket(gx: number, gz: number): number {
-    const m = this.machines.get(tileKey(gx, gz));
+    const m = this.getMachineAt(gx, gz);
     if (!m) return 0;
     let taken = 0;
     for (const [k, v] of Object.entries(m.outputBuffer) as Array<[CapytorioItemId, number]>) {
@@ -2242,7 +3280,7 @@ export class CapytorioFactoryEngine {
     }
     if (
       taken > 0 &&
-      (this.inspectedKey === tileKey(gx, gz) ||
+      (this.inspectedKey === tileKey(m.gx, m.gz) ||
         (this.inspectedTile?.gx === gx && this.inspectedTile?.gz === gz))
     ) {
       this.inspectTileAt(gx, gz);
@@ -2259,7 +3297,7 @@ export class CapytorioFactoryEngine {
     let total = 0;
     let source: 'belt' | 'floor' | null = null;
 
-    const m = this.machines.get(tileKey(gx, gz));
+    const m = this.getMachineAt(gx, gz);
     if (m && m.beltItems.length > 0) {
       for (let i = 0; i < m.beltItems.length; i++) {
         const itemId = m.beltItems[i].item;
@@ -2465,9 +3503,11 @@ export class CapytorioFactoryEngine {
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
       if (m.type !== 'chest' && m.type !== 'furnace' && m.type !== 'assembler') continue;
-      const wx = m.gx * CAPYTORIO_TILE_SIZE;
-      const wz = m.gz * CAPYTORIO_TILE_SIZE;
-      if (Math.hypot(wx - heroLocalX, wz - heroLocalZ) <= pickupRadiusMeters) {
+      const fp = this.getMachineFootprint(m);
+      const wx = capytorioMachineCenterLocalX(m.gx, fp.width);
+      const wz = capytorioMachineCenterLocalZ(m.gz, fp.height);
+      const extraRadius = (Math.max(fp.width, fp.height) - 1) * CAPYTORIO_TILE_SIZE * 0.5;
+      if (Math.hypot(wx - heroLocalX, wz - heroLocalZ) <= pickupRadiusMeters + extraRadius) {
         for (const [k, v] of Object.entries(m.outputBuffer) as Array<[CapytorioItemId, number]>) {
           if (v > 0) {
             this.addPocketItem(k, v);
@@ -2519,7 +3559,7 @@ export class CapytorioFactoryEngine {
   public getBeltMomentumAtLocalPos(localX: number, localZ: number, outVzVx: [number, number]): boolean {
     const gx = Math.round(localX / CAPYTORIO_TILE_SIZE);
     const gz = Math.round(localZ / CAPYTORIO_TILE_SIZE);
-    const m = this.machines.get(tileKey(gx, gz));
+    const m = this.getMachineAt(gx, gz);
     if (!m || (m.type !== 'belt' && m.type !== 'splitter')) {
       outVzVx[0] = 0;
       outVzVx[1] = 0;
@@ -2577,7 +3617,41 @@ export class CapytorioFactoryEngine {
     initialProgress?: number,
     isInserterDrop: boolean = false
   ): boolean {
-    if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
+    if (target.type === 'splitter') {
+      const maxSplitterItems = CAPYTORIO_BELT_MAX_ITEMS_PER_TILE * 2;
+      if (target.beltItems.length >= maxSplitterItems) return false;
+      // Enforce splitter input priority (left/right) when prioritized feeder belt has ready items
+      const inPrio = target.splitterInputPriority;
+      if (inPrio === 'left' || inPrio === 'right') {
+        const ports = this.getSplitterPorts(target);
+        const tDx = DIR_DX[target.dir];
+        const tDz = DIR_DZ[target.dir];
+        const prioInGx = (inPrio === 'left' ? ports.leftGx : ports.rightGx) - tDx;
+        const prioInGz = (inPrio === 'left' ? ports.leftGz : ports.rightGz) - tDz;
+        const isFromPrio = fromGx === prioInGx && fromGz === prioInGz;
+        if (!isFromPrio && target.beltItems.length >= 2) {
+          const prioBelt = this.getMachineAt(prioInGx, prioInGz);
+          if (prioBelt && (prioBelt.type === 'belt' || prioBelt.type === 'tunnel' || prioBelt.type === 'splitter')) {
+            for (let pi = 0; pi < prioBelt.beltItems.length; pi++) {
+              if (prioBelt.beltItems[pi].progress >= 0.65) {
+                return false;
+              }
+            }
+          }
+        }
+      }
+      target.beltItems.push({
+        uid: this.nextBeltItemUid++,
+        item,
+        progress: 0.35,
+        lane: preferredLane === 1 ? 1 : 0,
+        squish: 0,
+        edgeProgress: 0,
+      });
+      return true;
+    }
+
+    if (target.type === 'belt' || target.type === 'tunnel') {
       if (target.beltItems.length >= CAPYTORIO_BELT_MAX_ITEMS_PER_TILE) return false;
       const tDx = DIR_DX[target.dir];
       const tDz = DIR_DZ[target.dir];
@@ -2590,7 +3664,7 @@ export class CapytorioFactoryEngine {
       const isLeftSide = relX === -rightDx && relZ === -rightDz;
       const isRightSide = relX === rightDx && relZ === rightDz;
 
-      const targetCurve = target.type === 'belt' ? getBeltCurveShape(this.machines, target) : 'straight';
+      const targetCurve = target.type === 'belt' ? getBeltCurveShape(this.occupancyGrid, target) : 'straight';
       const isCurveEntry =
         (targetCurve === 'curve_from_left' && isLeftSide) ||
         (targetCurve === 'curve_from_right' && isRightSide);
@@ -2656,7 +3730,6 @@ export class CapytorioFactoryEngine {
             return true;
           }
 
-          // Inline drop from a drill / furnace / assembler onto the rear of a belt
           const inlineProg = Math.min(0.18, halfItemProg);
           let blocked = false;
           for (let i = 0; i < target.beltItems.length; i++) {
@@ -2681,9 +3754,6 @@ export class CapytorioFactoryEngine {
           continue;
         }
 
-        // Non-inline drop (inserter, side-loading belt, splitter, or tunnel):
-        // Probe preferred middle drop (0.45) first, then canonical packed rear slots (e.g. 0.375, 0.125)
-        // so lanes compress cleanly up to 100% Factorio capacity (4 per straight lane) without gaps.
         let chosenProgress = -1;
         for (let c = 0; c <= laneCap; c++) {
           let cand: number;
@@ -2726,7 +3796,7 @@ export class CapytorioFactoryEngine {
 
     if (target.type === 'chest') {
       const total = this.countMapValues(target.outputBuffer);
-      if (total >= 120) return false;
+      if (total >= this.getEffectiveChestCapacity(target)) return false;
       target.outputBuffer[item] = (target.outputBuffer[item] ?? 0) + 1;
       return true;
     }
@@ -2848,6 +3918,7 @@ export class CapytorioFactoryEngine {
     if (dt <= 0) return;
     const clampedDt = Math.min(0.1, dt);
     this.ensureMachineList();
+    this.stepCraftingQueue(clampedDt);
 
     // Update fuel timers & recompute power
     let anyFuelChanged = false;
@@ -2884,7 +3955,6 @@ export class CapytorioFactoryEngine {
     const craftRate = this.getCraftSpeedMultiplier() * this.powerEfficiency;
     const beltRate = this.getBeltSpeedTilesPerSec();
     const prodBonus = this.getProductivityBonusFraction();
-    const inserterStack = this.getInserterStackSize();
 
     // Advance belt surface phase strictly 1:1 with simulation item advancement
     this.beltScrollPhase = (this.beltScrollPhase + clampedDt * beltRate) % 1000.0;
@@ -2897,16 +3967,17 @@ export class CapytorioFactoryEngine {
       const mTierMult = m.tierMult ?? 1.0;
       const fGx = m.gx + DIR_DX[m.dir];
       const fGz = m.gz + DIR_DZ[m.dir];
-      const frontTarget = this.machines.get(tileKey(fGx, fGz));
+      const frontTarget = this.getMachineAt(fGx, fGz);
 
       if (m.type === 'drill') {
-        const oreTile = this.getResourceAt(m.gx, m.gz);
+        const fp = this.getMachineFootprint(m);
+        const oreTile = this.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height);
         const bufferedOut = this.countMapValues(m.outputBuffer);
         if (oreTile && bufferedOut < 4) {
           m.craftProgress += (clampedDt * craftRate * mTierMult) / 2.2;
           if (m.craftProgress >= 1.0) {
             m.craftProgress -= 1.0;
-            const mined = this.depleteOreAt(m.gx, m.gz, 1);
+            const mined = this.depleteOreAt(oreTile.gx, oreTile.gz, 1);
             if (mined) {
               m.outputBuffer[mined] = (m.outputBuffer[mined] ?? 0) + 1;
               this.totalProduced += 1;
@@ -2920,10 +3991,15 @@ export class CapytorioFactoryEngine {
             }
           }
         }
-        if (frontTarget && this.countMapValues(m.outputBuffer) > 0) {
+        const eject = this.getMachineFrontEjectTile(m);
+        const ejectTarget = this.getMachineAt(eject.targetGx, eject.targetGz);
+        if (ejectTarget && this.countMapValues(m.outputBuffer) > 0) {
           for (const k in m.outputBuffer) {
             const id = k as CapytorioItemId;
-            if ((m.outputBuffer[id] ?? 0) > 0 && this.tryAcceptItemIntoTarget(frontTarget, id, m.gx, m.gz)) {
+            if (
+              (m.outputBuffer[id] ?? 0) > 0 &&
+              this.tryAcceptItemIntoTarget(ejectTarget, id, eject.edgeGx, eject.edgeGz)
+            ) {
               m.outputBuffer[id] = (m.outputBuffer[id] ?? 1) - 1;
               if (m.outputBuffer[id]! <= 0) delete m.outputBuffer[id];
               break;
@@ -2931,7 +4007,6 @@ export class CapytorioFactoryEngine {
           }
         }
       } else if (m.type === 'furnace') {
-        // Select active smeltable item automatically from recipe.lua smelting entries
         let activeInput: CapytorioItemId | null = null;
         let smeltSpec: { recipeId: CapytorioRecipeId; result: CapytorioItemId; inputCount: number } | undefined;
         for (const k in m.inputBuffer) {
@@ -2965,11 +4040,22 @@ export class CapytorioFactoryEngine {
         } else if (!activeInput) {
           m.craftProgress = 0;
         }
-        // Friendly auto-eject onto front belt or chest
-        if (frontTarget && (frontTarget.type === 'belt' || frontTarget.type === 'splitter' || frontTarget.type === 'chest' || frontTarget.type === 'tunnel')) {
+        // Friendly auto-eject onto front-center belt or chest
+        const eject = this.getMachineFrontEjectTile(m);
+        const ejectTarget = this.getMachineAt(eject.targetGx, eject.targetGz);
+        if (
+          ejectTarget &&
+          (ejectTarget.type === 'belt' ||
+            ejectTarget.type === 'splitter' ||
+            ejectTarget.type === 'chest' ||
+            ejectTarget.type === 'tunnel')
+        ) {
           for (const k in m.outputBuffer) {
             const id = k as CapytorioItemId;
-            if ((m.outputBuffer[id] ?? 0) > 0 && this.tryAcceptItemIntoTarget(frontTarget, id, m.gx, m.gz)) {
+            if (
+              (m.outputBuffer[id] ?? 0) > 0 &&
+              this.tryAcceptItemIntoTarget(ejectTarget, id, eject.edgeGx, eject.edgeGz)
+            ) {
               m.outputBuffer[id] = (m.outputBuffer[id] ?? 1) - 1;
               if (m.outputBuffer[id]! <= 0) delete m.outputBuffer[id];
               break;
@@ -3013,11 +4099,21 @@ export class CapytorioFactoryEngine {
             m.craftProgress = 0;
           }
         }
-        // Friendly auto-eject onto front belt or chest
-        if (frontTarget && (frontTarget.type === 'belt' || frontTarget.type === 'splitter' || frontTarget.type === 'chest' || frontTarget.type === 'tunnel')) {
+        const eject = this.getMachineFrontEjectTile(m);
+        const ejectTarget = this.getMachineAt(eject.targetGx, eject.targetGz);
+        if (
+          ejectTarget &&
+          (ejectTarget.type === 'belt' ||
+            ejectTarget.type === 'splitter' ||
+            ejectTarget.type === 'chest' ||
+            ejectTarget.type === 'tunnel')
+        ) {
           for (const k in m.outputBuffer) {
             const id = k as CapytorioItemId;
-            if ((m.outputBuffer[id] ?? 0) > 0 && this.tryAcceptItemIntoTarget(frontTarget, id, m.gx, m.gz)) {
+            if (
+              (m.outputBuffer[id] ?? 0) > 0 &&
+              this.tryAcceptItemIntoTarget(ejectTarget, id, eject.edgeGx, eject.edgeGz)
+            ) {
               m.outputBuffer[id] = (m.outputBuffer[id] ?? 1) - 1;
               if (m.outputBuffer[id]! <= 0) delete m.outputBuffer[id];
               break;
@@ -3052,7 +4148,7 @@ export class CapytorioFactoryEngine {
         }
       } else if (m.type === 'belt') {
         const tileBeltRate = beltRate * mTierMult;
-        const curveShape = getBeltCurveShape(this.machines, m);
+        const curveShape = getBeltCurveShape(this.occupancyGrid, m);
         // Sort beltItems highest-progress first (<= 8 items, zero-allocation insertion sort)
         for (let a = 1; a < m.beltItems.length; a++) {
           const cur = m.beltItems[a];
@@ -3068,7 +4164,7 @@ export class CapytorioFactoryEngine {
         let frontCurve: CapytorioBeltCurveShape = 'straight';
         let isContinuousBeltFront = false;
         if (frontTarget && frontTarget.type === 'belt') {
-          frontCurve = getBeltCurveShape(this.machines, frontTarget);
+          frontCurve = getBeltCurveShape(this.occupancyGrid, frontTarget);
           const ftDx = DIR_DX[frontTarget.dir];
           const ftDz = DIR_DZ[frontTarget.dir];
           const ftRightDx = -ftDz;
@@ -3206,41 +4302,76 @@ export class CapytorioFactoryEngine {
         }
       } else if (m.type === 'splitter') {
         if (m.beltItems.length > 0) {
-          const leftDir = ((m.dir + 3) & 3) as CapytorioDirection;
-          const rightDir = ((m.dir + 1) & 3) as CapytorioDirection;
-          const dirs: [CapytorioDirection, CapytorioDirection, CapytorioDirection] = [
-            m.dir,
-            leftDir,
-            rightDir,
-          ];
-          const frontItem = m.beltItems[0];
-          let transferred = false;
-          for (let attempt = 0; attempt < 3; attempt++) {
-            const tryDir = dirs[(m.splitterToggle + attempt) % 3];
-            const tgt = this.machines.get(tileKey(m.gx + DIR_DX[tryDir], m.gz + DIR_DZ[tryDir]));
-            if (tgt && this.tryAcceptItemIntoTarget(tgt, frontItem.item, m.gx, m.gz, frontItem.lane)) {
-              m.beltItems.shift();
-              m.splitterToggle = (m.splitterToggle + attempt + 1) % 3;
-              transferred = true;
-              break;
+          const ports = this.getSplitterPorts(m);
+          const leftOut = this.getMachineAt(ports.leftOutGx, ports.leftOutGz);
+          const rightOut = this.getMachineAt(ports.rightOutGx, ports.rightOutGz);
+          const filterItem = m.splitterFilterItem ?? null;
+          const outPrio = m.splitterOutputPriority ?? 'none';
+
+          // Process up to 2 items per step to sustain full dual-belt throughput
+          let dispatches = 0;
+          for (let bi = 0; bi < m.beltItems.length && dispatches < 2; bi++) {
+            const candItem = m.beltItems[bi];
+            let transferred = false;
+
+            if (filterItem) {
+              // Strict Factorio filter routing: matching items go strictly to prioritized output side
+              const filterSideIsRight = outPrio === 'right';
+              const wantsRight =
+                candItem.item === filterItem ? filterSideIsRight : !filterSideIsRight;
+              const tgt = wantsRight ? rightOut : leftOut;
+              const fromGx = wantsRight ? ports.rightGx : ports.leftGx;
+              const fromGz = wantsRight ? ports.rightGz : ports.leftGz;
+              if (tgt && this.tryAcceptItemIntoTarget(tgt, candItem.item, fromGx, fromGz, candItem.lane)) {
+                m.beltItems.splice(bi, 1);
+                bi--;
+                dispatches++;
+                transferred = true;
+              }
+            } else {
+              // Priority or alternating 50/50 split across Left & Right exit ports
+              const tryRightFirst =
+                outPrio === 'right'
+                  ? true
+                  : outPrio === 'left'
+                    ? false
+                    : (m.splitterToggle & 1) === 1;
+              for (let attempt = 0; attempt < 2; attempt++) {
+                const useRight = attempt === 0 ? tryRightFirst : !tryRightFirst;
+                const tgt = useRight ? rightOut : leftOut;
+                const fromGx = useRight ? ports.rightGx : ports.leftGx;
+                const fromGz = useRight ? ports.rightGz : ports.leftGz;
+                if (tgt && this.tryAcceptItemIntoTarget(tgt, candItem.item, fromGx, fromGz, candItem.lane)) {
+                  m.beltItems.splice(bi, 1);
+                  bi--;
+                  dispatches++;
+                  if (outPrio === 'none') {
+                    m.splitterToggle = useRight ? 0 : 1;
+                  }
+                  transferred = true;
+                  break;
+                }
+              }
             }
-          }
-          if (!transferred && m.beltItems[0].progress < 0.7) {
-            m.beltItems[0].progress = Math.min(0.7, m.beltItems[0].progress + clampedDt * beltRate);
+
+            if (!transferred && candItem.progress < 0.7) {
+              candItem.progress = Math.min(0.7, candItem.progress + clampedDt * beltRate * mTierMult);
+            }
           }
         }
       } else if (m.type === 'tunnel') {
         if (m.beltItems.length > 0) {
           const item = m.beltItems[0].item;
-          // Search 1..6 tiles ahead for exit tunnel facing same dir
           let jumped = false;
           for (let dist = 1; dist <= 6; dist++) {
-            const exitM = this.machines.get(
-              tileKey(m.gx + DIR_DX[m.dir] * dist, m.gz + DIR_DZ[m.dir] * dist)
+            const exitM = this.getMachineAt(
+              m.gx + DIR_DX[m.dir] * dist,
+              m.gz + DIR_DZ[m.dir] * dist
             );
             if (exitM && exitM.type === 'tunnel' && exitM.dir === m.dir) {
-              const afterExit = this.machines.get(
-                tileKey(exitM.gx + DIR_DX[m.dir], exitM.gz + DIR_DZ[m.dir])
+              const afterExit = this.getMachineAt(
+                exitM.gx + DIR_DX[m.dir],
+                exitM.gz + DIR_DZ[m.dir]
               );
               if (afterExit && this.tryAcceptItemIntoTarget(afterExit, item, exitM.gx, exitM.gz)) {
                 m.beltItems.shift();
@@ -3258,14 +4389,21 @@ export class CapytorioFactoryEngine {
         const iFwdDz = DIR_DZ[m.dir];
         const iRightDx = -iFwdDz;
         const iRightDz = iFwdDx;
-        const srcGx = m.gx - iFwdDx;
-        const srcGz = m.gz - iFwdDz;
-        const srcM = this.machines.get(tileKey(srcGx, srcGz));
+        const reach = getCapytorioInserterReach(m.variantItemId);
+        const srcGx = m.gx - iFwdDx * reach;
+        const srcGz = m.gz - iFwdDz * reach;
+        const dstGx = m.gx + iFwdDx * reach;
+        const dstGz = m.gz + iFwdDz * reach;
+        const srcM = this.getMachineAt(srcGx, srcGz);
+        const dstTarget = this.getMachineAt(dstGx, dstGz);
+        const dropFromGx = dstGx - iFwdDx;
+        const dropFromGz = dstGz - iFwdDz;
+        const effectiveStack = this.getEffectiveInserterStack(m);
         const swingSpeed = 2.05 * mTierMult * Math.max(0.5, this.powerEfficiency);
         const reachSpeed = 4.6 * mTierMult * Math.max(0.5, this.powerEfficiency);
         const returnSpeed = 2.3 * mTierMult * Math.max(0.5, this.powerEfficiency);
+        const defaultReachDist = CAPYTORIO_TILE_SIZE * (reach - 0.1);
 
-        // Migrate legacy saves seamlessly
         if (!m.inserterPhase) {
           m.inserterPhase = m.holdingItem
             ? 'carrying'
@@ -3275,37 +4413,40 @@ export class CapytorioFactoryEngine {
           m.armExtend = m.holdingItem ? 1.0 : 0;
         }
 
-        // Helper compute drop target in inserter's local coordinates (-Z = forward, +X = right)
-        if (frontTarget && (frontTarget.type === 'belt' || frontTarget.type === 'splitter' || frontTarget.type === 'tunnel')) {
-          const tDx = DIR_DX[frontTarget.dir];
-          const tDz = DIR_DZ[frontTarget.dir];
-          const relX = m.gx - frontTarget.gx;
-          const relZ = m.gz - frontTarget.gz;
+        // Compute drop target in inserter's local coordinates (-Z = forward, +X = right)
+        if (dstTarget && (dstTarget.type === 'belt' || dstTarget.type === 'splitter' || dstTarget.type === 'tunnel')) {
+          const tDx = DIR_DX[dstTarget.dir];
+          const tDz = DIR_DZ[dstTarget.dir];
+          const relX = dropFromGx - dstGx;
+          const relZ = dropFromGz - dstGz;
           const tRightDx = -tDz;
           const tRightDz = tDx;
           const isLeft = relX === -tRightDx && relZ === -tRightDz;
           const isRight = relX === tRightDx && relZ === tRightDz;
           const dropLane: 0 | 1 = isLeft ? 1 : isRight ? 0 : 0;
-          const fCurve = frontTarget.type === 'belt' ? getBeltCurveShape(this.machines, frontTarget) : 'straight';
+          const fCurve = dstTarget.type === 'belt' ? getBeltCurveShape(this.occupancyGrid, dstTarget) : 'straight';
           evalBeltItemLocalPose(fCurve, dropLane, isLeft || isRight ? 0.45 : 0.08, poseScratch);
-          const tgtDx = (frontTarget.gx - m.gx) * CAPYTORIO_TILE_SIZE + tRightDx * poseScratch[0] - tDx * poseScratch[1];
-          const tgtDz = (frontTarget.gz - m.gz) * CAPYTORIO_TILE_SIZE + tRightDz * poseScratch[0] - tDz * poseScratch[1];
+          const tgtDx = (dstGx - m.gx) * CAPYTORIO_TILE_SIZE + tRightDx * poseScratch[0] - tDx * poseScratch[1];
+          const tgtDz = (dstGz - m.gz) * CAPYTORIO_TILE_SIZE + tRightDz * poseScratch[0] - tDz * poseScratch[1];
           m.dropLocalX = iRightDx * tgtDx + iRightDz * tgtDz;
           m.dropLocalZ = -(iFwdDx * tgtDx + iFwdDz * tgtDz);
         } else {
           m.dropLocalX = 0;
-          m.dropLocalZ = -CAPYTORIO_TILE_SIZE * 0.9;
+          m.dropLocalZ = -defaultReachDist;
         }
 
         if (m.inserterPhase === 'idle_pickup') {
           m.armSwing = 0;
           m.armExtend = Math.max(0, (m.armExtend ?? 0) - clampedDt * reachSpeed);
-          if (!m.holdingItem && frontTarget) {
+          if (!m.holdingItem && dstTarget) {
             if (srcM) {
               if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
                 for (let bi = 0; bi < srcM.beltItems.length; bi++) {
                   const candItem = srcM.beltItems[bi];
-                  if (this.wouldMachineAccept(frontTarget, candItem.item)) {
+                  if (
+                    this.doesInserterAllowItem(m, candItem.item) &&
+                    this.wouldMachineAccept(dstTarget, candItem.item)
+                  ) {
                     if (candItem.uid === undefined) candItem.uid = this.nextBeltItemUid++;
                     m.targetBeltUid = candItem.uid;
                     m.pickupLane = candItem.lane === 1 ? 1 : 0;
@@ -3322,11 +4463,15 @@ export class CapytorioFactoryEngine {
               ) {
                 for (const k in srcM.outputBuffer) {
                   const cand = k as CapytorioItemId;
-                  if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
+                  if (
+                    (srcM.outputBuffer[cand] ?? 0) > 0 &&
+                    this.doesInserterAllowItem(m, cand) &&
+                    this.wouldMachineAccept(dstTarget, cand)
+                  ) {
                     m.targetBeltUid = undefined;
                     m.pickupLane = 0;
                     m.pickupLocalX = 0;
-                    m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
+                    m.pickupLocalZ = defaultReachDist;
                     m.inserterPhase = 'reaching';
                     m.armExtend = 0.05;
                     break;
@@ -3334,7 +4479,6 @@ export class CapytorioFactoryEngine {
                 }
               }
             } else if (this.spilledItems.length > 0) {
-              // Empty ground tile behind inserter: pick up spilled belt-end ground items!
               const srcCenterX = srcGx * CAPYTORIO_TILE_SIZE;
               const srcCenterZ = srcGz * CAPYTORIO_TILE_SIZE;
               const halfTile = CAPYTORIO_TILE_SIZE * 0.65;
@@ -3344,9 +4488,10 @@ export class CapytorioFactoryEngine {
                   sp.y <= 0.35 &&
                   Math.abs(sp.lx - srcCenterX) <= halfTile &&
                   Math.abs(sp.lz - srcCenterZ) <= halfTile &&
-                  this.wouldMachineAccept(frontTarget, sp.item)
+                  this.doesInserterAllowItem(m, sp.item) &&
+                  this.wouldMachineAccept(dstTarget, sp.item)
                 ) {
-                  m.targetBeltUid = -sp.uid; // Negative UID tags ground-spilled item
+                  m.targetBeltUid = -sp.uid;
                   m.pickupLane = 0;
                   const deltaX = sp.lx - m.gx * CAPYTORIO_TILE_SIZE;
                   const deltaZ = sp.lz - m.gz * CAPYTORIO_TILE_SIZE;
@@ -3370,7 +4515,7 @@ export class CapytorioFactoryEngine {
           m.armExtend = Math.min(1.0, (m.armExtend ?? 0) + clampedDt * reachSpeed);
           shouldGrabNow = (m.armExtend ?? 0) >= 1.0;
 
-          if (frontTarget) {
+          if (dstTarget) {
             if (srcM) {
               if (srcM.type === 'belt' || srcM.type === 'splitter' || srcM.type === 'tunnel') {
                 let foundIdx = -1;
@@ -3382,7 +4527,11 @@ export class CapytorioFactoryEngine {
                 }
                 if (foundIdx === -1 && srcM.beltItems.length > 0) {
                   for (let bi = 0; bi < srcM.beltItems.length; bi++) {
-                    if (this.wouldMachineAccept(frontTarget, srcM.beltItems[bi].item)) {
+                    const candItem = srcM.beltItems[bi].item;
+                    if (
+                      this.doesInserterAllowItem(m, candItem) &&
+                      this.wouldMachineAccept(dstTarget, candItem)
+                    ) {
                       foundIdx = bi;
                       m.targetBeltUid = srcM.beltItems[bi].uid;
                       break;
@@ -3391,17 +4540,20 @@ export class CapytorioFactoryEngine {
                 }
                 if (foundIdx !== -1) {
                   const bItem = srcM.beltItems[foundIdx];
-                  if (this.wouldMachineAccept(frontTarget, bItem.item)) {
+                  if (
+                    this.doesInserterAllowItem(m, bItem.item) &&
+                    this.wouldMachineAccept(dstTarget, bItem.item)
+                  ) {
                     targetReady = true;
                     m.pickupLane = bItem.lane === 1 ? 1 : 0;
-                    const sCurve = srcM.type === 'belt' ? getBeltCurveShape(this.machines, srcM) : 'straight';
+                    const sCurve = srcM.type === 'belt' ? getBeltCurveShape(this.occupancyGrid, srcM) : 'straight';
                     evalBeltItemLocalPose(sCurve, m.pickupLane, bItem.progress, poseScratch);
                     const sDx = DIR_DX[srcM.dir];
                     const sDz = DIR_DZ[srcM.dir];
                     const sRightDx = -sDz;
                     const sRightDz = sDx;
-                    const itemWorldDeltaX = (srcM.gx - m.gx) * CAPYTORIO_TILE_SIZE + sRightDx * poseScratch[0] - sDx * poseScratch[1];
-                    const itemWorldDeltaZ = (srcM.gz - m.gz) * CAPYTORIO_TILE_SIZE + sRightDz * poseScratch[0] - sDz * poseScratch[1];
+                    const itemWorldDeltaX = (srcGx - m.gx) * CAPYTORIO_TILE_SIZE + sRightDx * poseScratch[0] - sDx * poseScratch[1];
+                    const itemWorldDeltaZ = (srcGz - m.gz) * CAPYTORIO_TILE_SIZE + sRightDz * poseScratch[0] - sDz * poseScratch[1];
                     m.pickupLocalX = iRightDx * itemWorldDeltaX + iRightDz * itemWorldDeltaZ;
                     m.pickupLocalZ = -(iFwdDx * itemWorldDeltaX + iFwdDz * itemWorldDeltaZ);
 
@@ -3418,10 +4570,14 @@ export class CapytorioFactoryEngine {
                 srcM.type === 'chest'
               ) {
                 m.pickupLocalX = 0;
-                m.pickupLocalZ = CAPYTORIO_TILE_SIZE * 0.9;
+                m.pickupLocalZ = defaultReachDist;
                 for (const k in srcM.outputBuffer) {
                   const cand = k as CapytorioItemId;
-                  if ((srcM.outputBuffer[cand] ?? 0) > 0 && this.wouldMachineAccept(frontTarget, cand)) {
+                  if (
+                    (srcM.outputBuffer[cand] ?? 0) > 0 &&
+                    this.doesInserterAllowItem(m, cand) &&
+                    this.wouldMachineAccept(dstTarget, cand)
+                  ) {
                     targetReady = true;
                     if (shouldGrabNow) {
                       grabbedItem = cand;
@@ -3453,7 +4609,8 @@ export class CapytorioFactoryEngine {
                     sp.y <= 0.35 &&
                     Math.abs(sp.lx - srcCenterX) <= halfTile &&
                     Math.abs(sp.lz - srcCenterZ) <= halfTile &&
-                    this.wouldMachineAccept(frontTarget, sp.item)
+                    this.doesInserterAllowItem(m, sp.item) &&
+                    this.wouldMachineAccept(dstTarget, sp.item)
                   ) {
                     foundIdx = si;
                     m.targetBeltUid = -sp.uid;
@@ -3463,7 +4620,10 @@ export class CapytorioFactoryEngine {
               }
               if (foundIdx !== -1) {
                 const sp = this.spilledItems[foundIdx];
-                if (this.wouldMachineAccept(frontTarget, sp.item)) {
+                if (
+                  this.doesInserterAllowItem(m, sp.item) &&
+                  this.wouldMachineAccept(dstTarget, sp.item)
+                ) {
                   targetReady = true;
                   const deltaX = sp.lx - m.gx * CAPYTORIO_TILE_SIZE;
                   const deltaZ = sp.lz - m.gz * CAPYTORIO_TILE_SIZE;
@@ -3495,19 +4655,36 @@ export class CapytorioFactoryEngine {
           } else {
             m.armSwing = Math.min(1.0, m.armSwing + clampedDt * swingSpeed);
             m.armExtend = 1.0;
-            if (m.armSwing >= 1.0 && frontTarget) {
-              if (this.tryAcceptItemIntoTarget(frontTarget, m.holdingItem, m.gx, m.gz, undefined, undefined, true)) {
-                // Bonus stack grab for electric stack inserters from buffer sources
+            if (m.armSwing >= 1.0 && dstTarget) {
+              if (
+                this.tryAcceptItemIntoTarget(
+                  dstTarget,
+                  m.holdingItem,
+                  dropFromGx,
+                  dropFromGz,
+                  undefined,
+                  undefined,
+                  true
+                )
+              ) {
                 if (
-                  inserterStack > 1 &&
+                  effectiveStack > 1 &&
                   srcM &&
-                  (srcM.type === 'chest' || srcM.type === 'furnace' || srcM.type === 'assembler')
+                  (srcM.type === 'chest' || srcM.type === 'furnace' || srcM.type === 'assembler' || srcM.type === 'drill')
                 ) {
-                  for (let extra = 1; extra < inserterStack; extra++) {
+                  for (let extra = 1; extra < effectiveStack; extra++) {
                     const avail = srcM.outputBuffer[m.holdingItem] ?? 0;
                     if (
                       avail > 0 &&
-                      this.tryAcceptItemIntoTarget(frontTarget, m.holdingItem, m.gx, m.gz, undefined, undefined, true)
+                      this.tryAcceptItemIntoTarget(
+                        dstTarget,
+                        m.holdingItem,
+                        dropFromGx,
+                        dropFromGz,
+                        undefined,
+                        undefined,
+                        true
+                      )
                     ) {
                       srcM.outputBuffer[m.holdingItem] = avail - 1;
                       if (avail - 1 <= 0) delete srcM.outputBuffer[m.holdingItem];
@@ -3694,11 +4871,14 @@ export class CapytorioFactoryEngine {
   }
 
   private wouldMachineAccept(target: CapytorioMachine, item: CapytorioItemId): boolean {
-    if (target.type === 'belt' || target.type === 'splitter' || target.type === 'tunnel') {
+    if (target.type === 'splitter') {
+      return target.beltItems.length < CAPYTORIO_BELT_MAX_ITEMS_PER_TILE * 2;
+    }
+    if (target.type === 'belt' || target.type === 'tunnel') {
       return target.beltItems.length < CAPYTORIO_BELT_MAX_ITEMS_PER_TILE;
     }
     if (target.type === 'chest') {
-      return this.countMapValues(target.outputBuffer) < 120;
+      return this.countMapValues(target.outputBuffer) < this.getEffectiveChestCapacity(target);
     }
     if (target.type === 'furnace') {
       return Boolean(getCapytorioSmeltSpec(item)) && (target.inputBuffer[item] ?? 0) < 16;
@@ -3736,9 +4916,9 @@ export class CapytorioFactoryEngine {
   }
 
   public inspectTileAt(gx: number, gz: number): CapytorioTileInspection {
-    const key = tileKey(gx, gz);
-    this.inspectedTile = { gx, gz };
-    this.inspectedKey = this.machines.has(key) ? key : null;
+    const machine = this.getMachineAt(gx, gz);
+    this.inspectedTile = machine ? { gx: machine.gx, gz: machine.gz } : { gx, gz };
+    this.inspectedKey = machine ? tileKey(machine.gx, machine.gz) : null;
     return this.inspectTileSnapshot(gx, gz);
   }
 
@@ -3773,8 +4953,12 @@ export class CapytorioFactoryEngine {
 
   public inspectTileSnapshot(gx: number, gz: number): CapytorioTileInspection {
     const key = tileKey(gx, gz);
-    const machine = this.machines.get(key) ?? null;
-    const oreTile = this.getResourceAt(gx, gz);
+    const machine = this.getMachineAt(gx, gz) ?? null;
+    let oreTile = this.getResourceAt(gx, gz);
+    if (!oreTile && machine && machine.type === 'drill') {
+      const fp = this.getMachineFootprint(machine);
+      oreTile = this.findFirstOreInFootprint(machine.gx, machine.gz, fp.width, fp.height);
+    }
     const hasTree = this.hasTreeAt(gx, gz);
     const spilledItems = this.getSpilledItemsAtTile(gx, gz);
     let spilledTotalCount = 0;
@@ -3785,25 +4969,30 @@ export class CapytorioFactoryEngine {
 
     let machineDetail: CapytorioInspectedMachineDetail | null = null;
     if (machine) {
+      const fp = this.getMachineFootprint(machine);
       const resolved = resolveCapytorioPlaceableSpec(machine.variantItemId ?? machine.type);
       const baseSpec = CAPYTORIO_MACHINE_SPECS[machine.type];
       const tierMult = machine.tierMult ?? resolved?.tierMult ?? 1.0;
       const inputTotal = this.countMapValues(machine.inputBuffer);
       const outputTotal = this.countMapValues(machine.outputBuffer);
       const curveShape =
-        machine.type === 'belt' ? getBeltCurveShape(this.machines, machine) : 'straight';
+        machine.type === 'belt' ? getBeltCurveShape(this.occupancyGrid, machine) : 'straight';
       const leftCap =
         machine.type === 'belt'
           ? getBeltLaneCapacity(curveShape, 0)
-          : machine.type === 'splitter' || machine.type === 'tunnel'
-            ? CAPYTORIO_BELT_ITEMS_PER_LANE
-            : 0;
+          : machine.type === 'splitter'
+            ? CAPYTORIO_BELT_ITEMS_PER_LANE * 2
+            : machine.type === 'tunnel'
+              ? CAPYTORIO_BELT_ITEMS_PER_LANE
+              : 0;
       const rightCap =
         machine.type === 'belt'
           ? getBeltLaneCapacity(curveShape, 1)
-          : machine.type === 'splitter' || machine.type === 'tunnel'
-            ? CAPYTORIO_BELT_ITEMS_PER_LANE
-            : 0;
+          : machine.type === 'splitter'
+            ? CAPYTORIO_BELT_ITEMS_PER_LANE * 2
+            : machine.type === 'tunnel'
+              ? CAPYTORIO_BELT_ITEMS_PER_LANE
+              : 0;
       let leftCount = 0;
       let rightCount = 0;
       const beltTypeMap = new Map<CapytorioItemId, number>();
@@ -3820,6 +5009,10 @@ export class CapytorioFactoryEngine {
       beltItemsByType.sort((a, b) => b.count - a.count || a.item.localeCompare(b.item));
 
       const recipeMeta = machine.recipeId ? RECIPE_BY_ID.get(machine.recipeId) : undefined;
+      const chestCap = machine.type === 'chest' ? this.getEffectiveChestCapacity(machine) : CAPYTORIO_CHEST_MAX_ITEMS;
+      const inserterReach = machine.type === 'inserter' ? getCapytorioInserterReach(machine.variantItemId) : undefined;
+      const inserterMaxStack =
+        machine.type === 'inserter' ? this.getEffectiveInserterMaxStack(machine) : undefined;
 
       let status: CapytorioInspectedMachineDetail['status'] = 'Idle';
       if (machine.type === 'belt' || machine.type === 'splitter' || machine.type === 'tunnel') {
@@ -3833,7 +5026,7 @@ export class CapytorioFactoryEngine {
       } else if (machine.type === 'generator') {
         status = machine.fuelTimer > 0 ? 'Working' : 'No Fuel';
       } else if (machine.type === 'chest') {
-        status = outputTotal >= 120 ? 'Full' : outputTotal > 0 ? 'Working' : 'Idle';
+        status = outputTotal >= chestCap ? 'Full' : outputTotal > 0 ? 'Working' : 'Idle';
       } else if (baseSpec.powerDemandMw > 0 && this.powerEfficiency <= 0.05) {
         status = 'No Power';
       } else if (machine.type === 'drill') {
@@ -3862,6 +5055,8 @@ export class CapytorioFactoryEngine {
       machineDetail = {
         gx: machine.gx,
         gz: machine.gz,
+        width: fp.width,
+        height: fp.height,
         type: machine.type,
         variantItemId: machine.variantItemId,
         name: resolved?.name ?? baseSpec.name,
@@ -3878,6 +5073,23 @@ export class CapytorioFactoryEngine {
         craftProgress: +machine.craftProgress.toFixed(2),
         fuelTimer: +machine.fuelTimer.toFixed(1),
         holdingItem: machine.holdingItem,
+        splitterInputPriority:
+          machine.type === 'splitter' ? (machine.splitterInputPriority ?? 'none') : undefined,
+        splitterOutputPriority:
+          machine.type === 'splitter' ? (machine.splitterOutputPriority ?? 'none') : undefined,
+        splitterFilterItem:
+          machine.type === 'splitter' ? (machine.splitterFilterItem ?? null) : undefined,
+        inserterFilterMode:
+          machine.type === 'inserter' ? (machine.inserterFilterMode ?? 'whitelist') : undefined,
+        inserterFilters:
+          machine.type === 'inserter' ? [...(machine.inserterFilters ?? [])] : undefined,
+        inserterStackLimit:
+          machine.type === 'inserter' ? (machine.inserterStackLimit ?? null) : undefined,
+        inserterMaxStack,
+        inserterReach,
+        chestSlotLimit:
+          machine.type === 'chest' ? (machine.chestSlotLimit ?? null) : undefined,
+        chestCapacityItems: machine.type === 'chest' ? chestCap : undefined,
         inputTotal,
         outputTotal,
         inputBuffer: { ...machine.inputBuffer },
@@ -3924,6 +5136,7 @@ export class CapytorioFactoryEngine {
     if (machineDetail) {
       primaryKind = 'machine';
       title = machineDetail.name;
+      const fpLabel = `${machineDetail.width}×${machineDetail.height}`;
       if (machineDetail.type === 'belt') {
         const shapeLabel =
           machineDetail.beltCurveShape === 'straight'
@@ -3933,20 +5146,31 @@ export class CapytorioFactoryEngine {
               : 'Curved (Right)';
         subtitle = `Logistics · ${shapeLabel} · ${machineDetail.beltSpeedItemsPerSec}/s`;
         actionHint = 'Press [R] to rotate · Click Open to collect items';
+      } else if (machineDetail.type === 'splitter') {
+        const filterLabel = machineDetail.splitterFilterItem
+          ? `Filter ${getCapytorioItemMeta(machineDetail.splitterFilterItem).shortName}`
+          : 'Balanced';
+        subtitle = `${fpLabel} Splitter · ${filterLabel} · ${machineDetail.beltSpeedItemsPerSec}/s`;
+        actionHint = 'Configure priority/filter · Shift+RMB copy · Shift+LMB paste';
       } else if (machineDetail.type === 'drill') {
         subtitle = resourceDetail
-          ? `Mining ${resourceDetail.shortName} · ${machineDetail.tierMult.toFixed(1)}x`
-          : 'Mining Drill · No Resource Below';
-        actionHint = 'Outputs directly onto front belt, chest, or furnace';
+          ? `${fpLabel} Mining ${resourceDetail.shortName} · ${machineDetail.tierMult.toFixed(1)}x`
+          : `${fpLabel} Mining Drill · No Resource Below`;
+        actionHint = 'Outputs directly onto front-center belt, chest, or furnace';
       } else if (machineDetail.type === 'inserter') {
-        subtitle = `Logistics · ${machineDetail.tierMult.toFixed(1)}x swing`;
-        actionHint = 'Picks up behind · Drops in front · [R] Rotate';
+        const reachLabel = machineDetail.inserterReach === 2 ? '2-Tile Reach' : '1-Tile Reach';
+        subtitle = `Logistics · ${reachLabel} · ${machineDetail.tierMult.toFixed(1)}x`;
+        actionHint = 'Picks behind · Drops ahead · Shift+RMB copy · [R] Rotate';
+      } else if (machineDetail.type === 'chest') {
+        const slotsUsed = machineDetail.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS;
+        subtitle = `Storage · ${machineDetail.outputTotal}/${machineDetail.chestCapacityItems ?? CAPYTORIO_CHEST_MAX_ITEMS} · ${slotsUsed}/${CAPYTORIO_CHEST_SLOTS} slots`;
+        actionHint = 'Set red-bar slot cap · Shift+RMB copy · Shift+LMB paste';
       } else if (machineDetail.type === 'generator') {
-        subtitle = `Power · ${machineDetail.powerSupplyMw.toFixed(1)} MW`;
+        subtitle = `${fpLabel} Power · ${machineDetail.powerSupplyMw.toFixed(1)} MW`;
         actionHint = 'Feed Coal or Fresh Orange for 6.0 MW surge';
       } else {
-        subtitle = `Building · ${machineDetail.status}`;
-        actionHint = 'Click Open to manage buffers or recipes';
+        subtitle = `${fpLabel} Building · ${machineDetail.status}`;
+        actionHint = 'Click Open to manage buffers, recipes, or Shift+RMB copy';
       }
     } else if (treeDetail) {
       primaryKind = 'tree';
@@ -3974,9 +5198,9 @@ export class CapytorioFactoryEngine {
     }
 
     return {
-      gx,
-      gz,
-      key,
+      gx: machineDetail ? machineDetail.gx : gx,
+      gz: machineDetail ? machineDetail.gz : gz,
+      key: machineDetail ? tileKey(machineDetail.gx, machineDetail.gz) : key,
       primaryKind,
       title,
       subtitle,
@@ -3994,7 +5218,7 @@ export class CapytorioFactoryEngine {
   public getUiSnapshot(): CapytorioUiSnapshot {
     const inspected = this.inspectedKey ? this.machines.get(this.inspectedKey) ?? null : null;
     const hoveredOre = this.getResourceAt(this.hoveredGx, this.hoveredGz);
-    const hoveredMachine = this.machines.get(tileKey(this.hoveredGx, this.hoveredGz)) ?? null;
+    const hoveredMachine = this.getMachineAt(this.hoveredGx, this.hoveredGz) ?? null;
     const activeTech = this.activeTechId ? TECH_BY_ID.get(this.activeTechId) : null;
     const hoveredTileInfo = this.inspectTileSnapshot(this.hoveredGx, this.hoveredGz);
     const inspectedTile = this.inspectedTile
@@ -4116,7 +5340,27 @@ export class CapytorioFactoryEngine {
         createdAt: bp.createdAt,
         width: bp.width,
         height: bp.height,
-        entries: bp.entries.map((e) => ({ ...e })),
+        entries: bp.entries.map((e) => ({
+          ...e,
+          inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
+        })),
+      })),
+      altModeEnabled: this.altModeEnabled,
+      entitySettingsClipboard: this.entitySettingsClipboard
+        ? {
+            sourceType: this.entitySettingsClipboard.sourceType,
+            sourceLabel: this.entitySettingsClipboard.sourceLabel,
+          }
+        : null,
+      craftingQueue: this.craftingQueue.map((q) => ({
+        uid: q.uid,
+        kind: q.kind,
+        resultId: q.resultId,
+        resultName: q.resultName,
+        remainingCount: q.batchesRemaining * q.resultCountPerBatch,
+        batchesRemaining: q.batchesRemaining,
+        progress: +q.progress.toFixed(2),
+        isIntermediate: q.isIntermediate,
       })),
     };
   }
@@ -4132,6 +5376,13 @@ export class CapytorioFactoryEngine {
         gz: m.gz,
         dir: m.dir,
         recipeId: m.recipeId,
+        splitterInputPriority: m.splitterInputPriority,
+        splitterOutputPriority: m.splitterOutputPriority,
+        splitterFilterItem: m.splitterFilterItem,
+        inserterFilterMode: m.inserterFilterMode,
+        inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
+        inserterStackLimit: m.inserterStackLimit,
+        chestSlotLimit: m.chestSlotLimit,
         inputBuffer: { ...m.inputBuffer },
         outputBuffer: { ...m.outputBuffer },
         beltItems: m.beltItems.map((bi) => ({
@@ -4169,6 +5420,13 @@ export class CapytorioFactoryEngine {
               baseType: e.baseType,
               dir: e.dir,
               recipeId: e.recipeId,
+              splitterInputPriority: e.splitterInputPriority,
+              splitterOutputPriority: e.splitterOutputPriority,
+              splitterFilterItem: e.splitterFilterItem,
+              inserterFilterMode: e.inserterFilterMode,
+              inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
+              inserterStackLimit: e.inserterStackLimit,
+              chestSlotLimit: e.chestSlotLimit,
             })),
           }))
         : undefined;
@@ -4186,6 +5444,7 @@ export class CapytorioFactoryEngine {
       techDelivered: { ...this.techDelivered },
       completedMilestones: Array.from(this.completedMilestones),
       blueprintLibrary: blueprintsOut,
+      altModeEnabled: this.altModeEnabled,
       rocketLaunches: this.rocketLaunches,
       totalProduced: this.totalProduced,
       score: this.score,
@@ -4194,6 +5453,7 @@ export class CapytorioFactoryEngine {
 
   public hydrate(raw: CapytorioSerializedState): void {
     this.machines.clear();
+    this.occupancyGrid.clear();
     this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
     this.harvestedTrees.clear();
@@ -4201,6 +5461,9 @@ export class CapytorioFactoryEngine {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.activeHistoryBatch = null;
+    this.craftingQueue.length = 0;
+    this.entitySettingsClipboard = null;
+    this.altModeEnabled = typeof raw.altModeEnabled === 'boolean' ? raw.altModeEnabled : true;
     this.topologyRevision++;
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
       delete this.pocketItems[k];
@@ -4284,6 +5547,8 @@ export class CapytorioFactoryEngine {
         const sm = raw.machines[i];
         if (!sm || typeof sm.gx !== 'number' || typeof sm.gz !== 'number') continue;
         if (!CAPYTORIO_MACHINE_SPECS[sm.type]) continue;
+        const maxBeltCap =
+          sm.type === 'splitter' ? CAPYTORIO_BELT_MAX_ITEMS_PER_TILE * 2 : CAPYTORIO_BELT_MAX_ITEMS_PER_TILE;
         const machine: CapytorioMachine = {
           id: this.nextMachineId++,
           type: sm.type,
@@ -4301,10 +5566,53 @@ export class CapytorioFactoryEngine {
           inserterPhase: sm.type === 'inserter' ? 'idle_pickup' : undefined,
           holdingItem: null,
           splitterToggle: 0,
+          splitterInputToggle: 0,
+          splitterInputPriority:
+            sm.splitterInputPriority === 'left' || sm.splitterInputPriority === 'right'
+              ? sm.splitterInputPriority
+              : sm.type === 'splitter'
+                ? 'none'
+                : undefined,
+          splitterOutputPriority:
+            sm.splitterOutputPriority === 'left' || sm.splitterOutputPriority === 'right'
+              ? sm.splitterOutputPriority
+              : sm.type === 'splitter'
+                ? 'none'
+                : undefined,
+          splitterFilterItem:
+            sm.type === 'splitter' ? (sm.splitterFilterItem ?? null) : undefined,
+          inserterFilterMode:
+            sm.inserterFilterMode === 'blacklist'
+              ? 'blacklist'
+              : sm.type === 'inserter'
+                ? 'whitelist'
+                : undefined,
+          inserterFilters:
+            sm.type === 'inserter' && Array.isArray(sm.inserterFilters)
+              ? sm.inserterFilters.slice(0, 5)
+              : sm.type === 'inserter'
+                ? []
+                : undefined,
+          inserterStackLimit:
+            sm.type === 'inserter' &&
+            typeof sm.inserterStackLimit === 'number' &&
+            Number.isFinite(sm.inserterStackLimit)
+              ? Math.max(1, Math.min(12, Math.round(sm.inserterStackLimit)))
+              : sm.type === 'inserter'
+                ? null
+                : undefined,
+          chestSlotLimit:
+            sm.type === 'chest' &&
+            typeof sm.chestSlotLimit === 'number' &&
+            Number.isFinite(sm.chestSlotLimit)
+              ? Math.max(1, Math.min(CAPYTORIO_CHEST_SLOTS, Math.round(sm.chestSlotLimit)))
+              : sm.type === 'chest'
+                ? null
+                : undefined,
           inputBuffer: sm.inputBuffer ? { ...sm.inputBuffer } : {},
           outputBuffer: sm.outputBuffer ? { ...sm.outputBuffer } : {},
           beltItems: Array.isArray(sm.beltItems)
-            ? sm.beltItems.slice(0, CAPYTORIO_BELT_MAX_ITEMS_PER_TILE).map((b) => ({
+            ? sm.beltItems.slice(0, maxBeltCap).map((b) => ({
                 uid: this.nextBeltItemUid++,
                 item: b.item,
                 progress: b.progress,
@@ -4318,6 +5626,7 @@ export class CapytorioFactoryEngine {
             : [],
         };
         this.machines.set(tileKey(machine.gx, machine.gz), machine);
+        this.registerMachineOccupancy(machine);
       }
     }
 
@@ -4388,6 +5697,13 @@ export class CapytorioFactoryEngine {
             baseType: e.baseType,
             dir: ((e.dir ?? 1) & 3) as CapytorioDirection,
             recipeId: typeof e.recipeId === 'string' && RECIPE_BY_ID.has(e.recipeId) ? e.recipeId : undefined,
+            splitterInputPriority: e.splitterInputPriority,
+            splitterOutputPriority: e.splitterOutputPriority,
+            splitterFilterItem: e.splitterFilterItem,
+            inserterFilterMode: e.inserterFilterMode,
+            inserterFilters: Array.isArray(e.inserterFilters) ? e.inserterFilters.slice(0, 5) : undefined,
+            inserterStackLimit: e.inserterStackLimit,
+            chestSlotLimit: e.chestSlotLimit,
           });
         }
         if (cleanEntries.length === 0) continue;

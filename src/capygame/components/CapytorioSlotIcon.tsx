@@ -261,6 +261,7 @@ export interface CapytorioSlotTileProps {
   itemShape?: CapytorioItemShape;
   color: string;
   onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   testId?: string;
   recentSlot?: boolean;
   compact?: boolean;
@@ -279,6 +280,7 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
   itemShape = 'crate',
   color,
   onClick,
+  onContextMenu,
   testId,
   recentSlot = false,
   compact = false,
@@ -302,6 +304,7 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
       data-capytorio-recent-slot={recentSlot ? 'true' : undefined}
       title={title ?? label}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       className={`relative select-none rounded-[2px] border flex flex-col items-center justify-center shrink-0 transition-colors overflow-hidden ${
         mini
           ? 'w-9 h-9'

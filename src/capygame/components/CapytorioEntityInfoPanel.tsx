@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   BookOpen,
   ChevronDown,
   ChevronUp,
+  ClipboardPaste,
+  Copy,
   Flame,
   Hammer,
   Package,
@@ -13,11 +15,17 @@ import {
   X,
 } from 'lucide-react';
 import {
+  CAPYTORIO_CHEST_ITEMS_PER_SLOT,
+  CAPYTORIO_CHEST_SLOTS,
+  CAPYTORIO_ITEM_CATALOG,
   getCapytorioItemMeta,
   resolveCapytorioItemShape,
+  type CapytorioItemId,
 } from '../engine/CapytorioData';
 import type {
   CapytorioInspectedMachineDetail,
+  CapytorioInserterFilterMode,
+  CapytorioSplitterPriority,
   CapytorioTileInspection,
 } from '../engine/CapytorioFactoryEngine';
 import { resolvePediaIdFromTileInspection } from '../engine/CapytorioPedia';
@@ -78,6 +86,10 @@ export interface CapytorioEntityInfoPanelProps {
   info: CapytorioTileInspection;
   isPinned: boolean;
   isTopBarVisible: boolean;
+  entitySettingsClipboard?: {
+    sourceType: 'assembler' | 'splitter' | 'inserter' | 'chest';
+    sourceLabel: string;
+  } | null;
   onClearPin: () => void;
   onOpenMachineModal: (gx: number, gz: number) => void;
   onRotateMachineAt: (gx: number, gz: number) => void;
@@ -86,12 +98,34 @@ export interface CapytorioEntityInfoPanelProps {
   onTakeOutputs: (gx: number, gz: number) => void;
   onCollectAllOutputs: () => void;
   onOpenPedia: (entryId: string, contextInfo: CapytorioTileInspection) => void;
+  onCopyEntitySettings?: (gx: number, gz: number) => void;
+  onPasteEntitySettings?: (gx: number, gz: number) => void;
+  onSetSplitterConfig?: (
+    gx: number,
+    gz: number,
+    config: {
+      inputPriority?: CapytorioSplitterPriority;
+      outputPriority?: CapytorioSplitterPriority;
+      filterItem?: CapytorioItemId | null;
+    }
+  ) => void;
+  onSetInserterConfig?: (
+    gx: number,
+    gz: number,
+    config: {
+      filterMode?: CapytorioInserterFilterMode;
+      filters?: CapytorioItemId[];
+      stackLimit?: number | null;
+    }
+  ) => void;
+  onSetChestSlotLimit?: (gx: number, gz: number, slotLimit: number | null) => void;
 }
 
 export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> = ({
   info,
   isPinned,
   isTopBarVisible,
+  entitySettingsClipboard,
   onClearPin,
   onOpenMachineModal,
   onRotateMachineAt,
@@ -100,8 +134,31 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
   onTakeOutputs,
   onCollectAllOutputs,
   onOpenPedia,
+  onCopyEntitySettings,
+  onPasteEntitySettings,
+  onSetSplitterConfig,
+  onSetInserterConfig,
+  onSetChestSlotLimit,
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
+
+  const filterableItems = useMemo(() => {
+    const order: Record<string, number> = {
+      raw: 0,
+      plate: 1,
+      intermediate: 2,
+      science: 3,
+      rocket: 4,
+      building: 5,
+    };
+    return Object.values(CAPYTORIO_ITEM_CATALOG)
+      .slice()
+      .sort(
+        (a, b) =>
+          (order[a.category] ?? 9) - (order[b.category] ?? 9) ||
+          a.name.localeCompare(b.name)
+      );
+  }, []);
 
   const m = info.machine;
   const isBeltLike =
@@ -186,6 +243,18 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
             </span>
           </div>
           <div className="flex items-center gap-[2px] shrink-0">
+            {m.type === 'splitter' && (
+              <button
+                type="button"
+                data-testid="capytorio-info-configure-btn"
+                onClick={() => onOpenMachineModal(m.gx, m.gz)}
+                title="Configure Splitter Priority & Filter"
+                aria-label="Configure Splitter"
+                className={`w-[18px] h-[18px] rounded-[1px] flex items-center justify-center cursor-pointer ${FACTORIO_INFO_BTN_AMBER}`}
+              >
+                <SlidersHorizontal className="w-2.5 h-2.5" />
+              </button>
+            )}
             {m.beltItemCount > 0 && (
               <button
                 type="button"
@@ -228,9 +297,14 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
       if (m.type === 'generator') {
         compactStat = m.fuelTimer > 0 ? `${m.powerSupplyMw.toFixed(1)}MW` : 'No Fuel';
       } else if (m.type === 'inserter') {
-        compactStat = m.holdingItem ? getCapytorioItemMeta(m.holdingItem).shortName : m.status;
+        compactStat = m.holdingItem
+          ? getCapytorioItemMeta(m.holdingItem).shortName
+          : m.inserterReach === 2
+            ? '2-Tile'
+            : m.status;
       } else if (m.type === 'chest') {
-        compactStat = totalStored > 0 ? `${totalStored} stored` : 'Empty';
+        const cap = m.chestCapacityItems ?? CAPYTORIO_CHEST_SLOTS * CAPYTORIO_CHEST_ITEMS_PER_SLOT;
+        compactStat = `${totalStored}/${cap}`;
       } else if (m.status === 'Working') {
         compactStat = `${Math.round(m.craftProgress * 100)}%`;
       }
@@ -450,7 +524,7 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                   </span>
                 </div>
                 <span className="text-[#a3aab7] shrink-0 text-[9px]">
-                  {DIR_LABELS[m.dir] ?? 'E'}
+                  {m.width}×{m.height} · {DIR_LABELS[m.dir] ?? 'E'}
                   {m.type === 'generator'
                     ? ` · ${m.powerSupplyMw.toFixed(1)}MW`
                     : m.powerDemandMw > 0
@@ -535,6 +609,88 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                     })}
                   </div>
                 )}
+
+                {/* Splitter Priority & Output Filter Controls */}
+                {m.type === 'splitter' && onSetSplitterConfig && (
+                  <div className="pt-1 border-t border-[#242730] space-y-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[8.5px] font-mono text-[#9aa0ac]">In Prio</span>
+                      <div className="flex items-center gap-0.5">
+                        {(['left', 'none', 'right'] as const).map((prio) => (
+                          <button
+                            key={prio}
+                            type="button"
+                            data-testid={`capytorio-splitter-in-${prio}`}
+                            onClick={() =>
+                              onSetSplitterConfig(m.gx, m.gz, { inputPriority: prio })
+                            }
+                            className={`h-4 px-1.5 rounded-[1px] text-[8.5px] font-mono cursor-pointer ${
+                              (m.splitterInputPriority ?? 'none') === prio
+                                ? FACTORIO_INFO_BTN_AMBER
+                                : FACTORIO_INFO_BTN
+                            }`}
+                          >
+                            {prio === 'left' ? 'L' : prio === 'right' ? 'R' : '='}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[8.5px] font-mono text-[#9aa0ac]">Out Prio</span>
+                      <div className="flex items-center gap-0.5">
+                        {(['left', 'none', 'right'] as const).map((prio) => (
+                          <button
+                            key={prio}
+                            type="button"
+                            data-testid={`capytorio-splitter-out-${prio}`}
+                            onClick={() =>
+                              onSetSplitterConfig(m.gx, m.gz, { outputPriority: prio })
+                            }
+                            className={`h-4 px-1.5 rounded-[1px] text-[8.5px] font-mono cursor-pointer ${
+                              (m.splitterOutputPriority ?? 'none') === prio
+                                ? FACTORIO_INFO_BTN_AMBER
+                                : FACTORIO_INFO_BTN
+                            }`}
+                          >
+                            {prio === 'left' ? 'L' : prio === 'right' ? 'R' : '='}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <select
+                        data-testid="capytorio-splitter-filter-select"
+                        value={m.splitterFilterItem ?? ''}
+                        onChange={(e) =>
+                          onSetSplitterConfig(m.gx, m.gz, {
+                            filterItem: e.target.value ? e.target.value : null,
+                          })
+                        }
+                        aria-label="Splitter output filter"
+                        className="flex-1 min-w-0 h-5 px-1 rounded-[1px] bg-[#0f1115] border border-[#4a4f5b] text-[8.5px] text-[#e6e8ec] font-mono"
+                      >
+                        <option value="">Filter: None</option>
+                        {filterableItems.map((it) => (
+                          <option key={it.id} value={it.id}>
+                            {it.name}
+                          </option>
+                        ))}
+                      </select>
+                      {m.splitterFilterItem && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSetSplitterConfig(m.gx, m.gz, { filterItem: null })
+                          }
+                          title="Clear filter"
+                          className={`w-5 h-5 rounded-[1px] flex items-center justify-center cursor-pointer ${FACTORIO_INFO_BTN}`}
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -577,11 +733,178 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                 )}
 
                 {m.type === 'inserter' && (
-                  <div className="flex items-center justify-between text-[9px]">
-                    <span className="text-[#9aa0ac]">Holding</span>
-                    <span className="font-mono text-[#ffe4b5] truncate">
-                      {m.holdingItem ? getCapytorioItemMeta(m.holdingItem).shortName : 'Empty'}
-                    </span>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[9px]">
+                      <span className="text-[#9aa0ac]">
+                        Holding · {m.inserterReach === 2 ? '2-Tile' : '1-Tile'}
+                      </span>
+                      <span className="font-mono text-[#ffe4b5] truncate">
+                        {m.holdingItem ? getCapytorioItemMeta(m.holdingItem).shortName : 'Empty'}
+                      </span>
+                    </div>
+
+                    {onSetInserterConfig && (
+                      <div className="pt-1 border-t border-[#242730] space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[8.5px] font-mono text-[#9aa0ac]">Filter</span>
+                          <div className="flex items-center gap-0.5">
+                            {(['whitelist', 'blacklist'] as const).map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                data-testid={`capytorio-inserter-mode-${mode}`}
+                                onClick={() =>
+                                  onSetInserterConfig(m.gx, m.gz, { filterMode: mode })
+                                }
+                                className={`h-4 px-1.5 rounded-[1px] text-[8px] font-mono cursor-pointer ${
+                                  (m.inserterFilterMode ?? 'whitelist') === mode
+                                    ? FACTORIO_INFO_BTN_AMBER
+                                    : FACTORIO_INFO_BTN
+                                }`}
+                              >
+                                {mode === 'whitelist' ? 'Allow' : 'Block'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {(m.inserterFilters ?? []).length > 0 && (
+                          <div className="flex flex-wrap gap-0.5">
+                            {(m.inserterFilters ?? []).map((fid) => {
+                              const meta = getCapytorioItemMeta(fid);
+                              return (
+                                <button
+                                  key={fid}
+                                  type="button"
+                                  onClick={() =>
+                                    onSetInserterConfig(m.gx, m.gz, {
+                                      filters: (m.inserterFilters ?? []).filter((x) => x !== fid),
+                                    })
+                                  }
+                                  title={`Remove ${meta.name}`}
+                                  className="h-4 px-1 rounded-[1px] bg-[#242832] hover:bg-[#3a1a1a] border border-[#4a4f5b] text-[8px] font-mono text-[#e6e8ec] flex items-center gap-0.5 cursor-pointer"
+                                >
+                                  <span>{meta.shortName}</span>
+                                  <X className="w-2 h-2 text-[#f2857c]" />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {(m.inserterFilters ?? []).length < 5 && (
+                          <select
+                            data-testid="capytorio-inserter-filter-add"
+                            value=""
+                            onChange={(e) => {
+                              const nextId = e.target.value;
+                              if (!nextId) return;
+                              const cur = m.inserterFilters ?? [];
+                              if (!cur.includes(nextId)) {
+                                onSetInserterConfig(m.gx, m.gz, {
+                                  filters: [...cur, nextId].slice(0, 5),
+                                });
+                              }
+                            }}
+                            aria-label="Add inserter filter item"
+                            className="w-full h-5 px-1 rounded-[1px] bg-[#0f1115] border border-[#4a4f5b] text-[8.5px] text-[#e6e8ec] font-mono"
+                          >
+                            <option value="">+ Add filter item...</option>
+                            {filterableItems.map((it) => (
+                              <option key={it.id} value={it.id}>
+                                {it.name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+
+                        <div className="flex items-center justify-between gap-1 font-mono tabular-nums">
+                          <span className="text-[8.5px] text-[#9aa0ac]">Stack</span>
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const maxS = m.inserterMaxStack ?? 4;
+                                const cur = m.inserterStackLimit ?? maxS;
+                                onSetInserterConfig(m.gx, m.gz, {
+                                  stackLimit: Math.max(1, cur - 1),
+                                });
+                              }}
+                              className={`w-4 h-4 rounded-[1px] text-[9px] flex items-center justify-center cursor-pointer ${FACTORIO_INFO_BTN}`}
+                            >
+                              -
+                            </button>
+                            <span
+                              data-testid="capytorio-inserter-stack-val"
+                              className="px-1 text-[8.5px] text-[#f4b054] font-bold"
+                            >
+                              {m.inserterStackLimit === null || m.inserterStackLimit === undefined
+                                ? `Auto (${m.inserterMaxStack ?? 1})`
+                                : `${m.inserterStackLimit}/${m.inserterMaxStack ?? 1}`}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const maxS = m.inserterMaxStack ?? 4;
+                                const cur = m.inserterStackLimit ?? maxS;
+                                const next = cur + 1;
+                                onSetInserterConfig(m.gx, m.gz, {
+                                  stackLimit: next >= maxS ? null : next,
+                                });
+                              }}
+                              className={`w-4 h-4 rounded-[1px] text-[9px] flex items-center justify-center cursor-pointer ${FACTORIO_INFO_BTN}`}
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {m.type === 'chest' && onSetChestSlotLimit && (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between font-mono tabular-nums text-[8.5px]">
+                      <span className="text-[#9aa0ac]">Slot Limit (Red Bar)</span>
+                      <span
+                        data-testid="capytorio-chest-slot-limit-val"
+                        className="text-[#f4b054] font-bold"
+                      >
+                        {m.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS}/{CAPYTORIO_CHEST_SLOTS} ·{' '}
+                        {m.chestCapacityItems ??
+                          CAPYTORIO_CHEST_SLOTS * CAPYTORIO_CHEST_ITEMS_PER_SLOT}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-6 gap-0.5">
+                      {Array.from({ length: CAPYTORIO_CHEST_SLOTS }, (_, idx) => {
+                        const slotNum = idx + 1;
+                        const activeLimit = m.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS;
+                        const locked = slotNum > activeLimit;
+                        return (
+                          <button
+                            key={slotNum}
+                            type="button"
+                            data-testid={`capytorio-chest-slot-${slotNum}`}
+                            onClick={() =>
+                              onSetChestSlotLimit(
+                                m.gx,
+                                m.gz,
+                                slotNum === CAPYTORIO_CHEST_SLOTS ? null : slotNum
+                              )
+                            }
+                            title={`Allow up to ${slotNum} slots (${slotNum * CAPYTORIO_CHEST_ITEMS_PER_SLOT} items)`}
+                            className={`h-4 rounded-[1px] text-[8px] font-mono tabular-nums cursor-pointer border ${
+                              locked
+                                ? 'bg-[#451414] border-[#b91c1c] text-[#fca5a5]'
+                                : 'bg-[#252932] border-[#4a4f5b] text-[#cbd5e1] hover:border-[#f4b054]'
+                            }`}
+                          >
+                            {locked ? '×' : slotNum}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 
@@ -692,6 +1015,47 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                 })}
               </div>
             )}
+
+            {/* Compact Entity Settings Copy/Paste Bar */}
+            {m &&
+              (m.type === 'assembler' ||
+                m.type === 'splitter' ||
+                m.type === 'inserter' ||
+                m.type === 'chest') &&
+              onCopyEntitySettings &&
+              onPasteEntitySettings && (
+                <div className="px-1.5 py-1 bg-[#14161a] flex items-center gap-1">
+                  <button
+                    type="button"
+                    data-testid="capytorio-info-copy-settings-btn"
+                    onClick={() => onCopyEntitySettings(m.gx, m.gz)}
+                    title="Copy entity settings [Shift + Right-Click]"
+                    className={`flex-1 h-5 px-1.5 rounded-[1px] text-[8.5px] font-mono cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap ${FACTORIO_INFO_BTN}`}
+                  >
+                    <Copy className="w-2.5 h-2.5 shrink-0" />
+                    <span>Copy S</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="capytorio-info-paste-settings-btn"
+                    disabled={entitySettingsClipboard?.sourceType !== m.type}
+                    onClick={() => onPasteEntitySettings(m.gx, m.gz)}
+                    title={
+                      entitySettingsClipboard?.sourceType === m.type
+                        ? `Paste ${entitySettingsClipboard.sourceLabel} [Shift + Left-Click]`
+                        : 'Copy settings from a matching building first [Shift + RMB]'
+                    }
+                    className={`flex-1 h-5 px-1.5 rounded-[1px] text-[8.5px] font-mono flex items-center justify-center gap-1 whitespace-nowrap ${
+                      entitySettingsClipboard?.sourceType === m.type
+                        ? `cursor-pointer ${FACTORIO_INFO_BTN_AMBER}`
+                        : 'opacity-45 cursor-not-allowed bg-[#1f2228] border border-[#343842] text-[#7a818f]'
+                    }`}
+                  >
+                    <ClipboardPaste className="w-2.5 h-2.5 shrink-0" />
+                    <span>Paste S</span>
+                  </button>
+                </div>
+              )}
 
             {/* Compact Action Strip */}
             {(m || info.resource || info.tree || info.spilledTotalCount > 0) && (

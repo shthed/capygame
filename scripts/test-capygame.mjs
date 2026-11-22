@@ -1842,11 +1842,11 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     mgr.heroLocalPos.set(0, 0, 10);
     mgr.resetDachshundTrail();
 
-    // Place a complete mini-factory: Coal Generator + Drill on NW Iron Ore (-5, -5) + Belt + Inserter + Furnace
-    const drillPlaced = mgr.capytorioEngine.placeMachine('drill', -5, -5, 1); // Mines Iron Ore -> East (-4,-5)
-    const beltPlaced = mgr.capytorioEngine.placeMachine('belt', -4, -5, 1);
+    // Place a complete mini-factory: 3x3 Drill on NW Iron Ore (-6, -6) -> Belt (-3, -5) + 3x3 Generator (0,-2) + 3x3 Lab (4,-2)
+    const drillPlaced = mgr.capytorioEngine.placeMachine('drill', -6, -6, 1); // Mines Iron Ore -> East (-3,-5)
+    const beltPlaced = mgr.capytorioEngine.placeMachine('belt', -3, -5, 1);
     const genPlaced = mgr.capytorioEngine.placeMachine('generator', 0, -2, 1);
-    const labPlaced = mgr.capytorioEngine.placeMachine('lab', 2, -2, 1);
+    const labPlaced = mgr.capytorioEngine.placeMachine('lab', 4, -2, 1);
     for (let s = 0; s < 90; s++) mgr.tick(0.05);
     const snapAfterAutomation = mgr.getCapytorioSnapshot();
     const craftgearOk = mgr.pocketCraftCapytorioRecipe('iron_gear');

@@ -190,14 +190,16 @@ import {
   CapytorioFactoryEngine,
   capytorioGridToWorldX,
   capytorioGridToWorldZ,
+  getCapytorioPlacementAnchor,
   resolveCapytorioPlaceableSpec,
-  tileKey as capytorioTileKey,
   worldToCapytorioGridX,
   worldToCapytorioGridZ,
   type CapytorioClipboardToolState,
+  type CapytorioInserterFilterMode,
   type CapytorioSavedBlueprint,
   type CapytorioSelectionShape,
   type CapytorioSerializedState,
+  type CapytorioSplitterPriority,
   type CapytorioStepCallbacks,
   type CapytorioTileInspection,
   type CapytorioUiSnapshot,
@@ -4995,7 +4997,7 @@ export class PlayStyleManager {
     ) {
       const mode: 'copy' | 'cut' =
         this.capytorioEngine.clipboardToolState === 'select_cut' ? 'cut' : 'copy';
-      const tapMachine = this.capytorioEngine.machines.get(capytorioTileKey(gx, gz));
+      const tapMachine = this.capytorioEngine.getMachineAt(gx, gz);
       if (tapMachine) {
         const res = this.capytorioEngine.captureBlueprint([tapMachine], mode);
         if (res.count > 0) {
@@ -5020,14 +5022,15 @@ export class PlayStyleManager {
     }
 
     const tool = this.capytorioEngine.selectedTool;
-    const key = capytorioTileKey(gx, gz);
-    const existing = this.capytorioEngine.machines.get(key);
+    const existing = this.capytorioEngine.getMachineAt(gx, gz);
     const isConfigurableMachine = (mType: CapytorioMachineType): boolean =>
       mType === 'furnace' ||
       mType === 'assembler' ||
       mType === 'generator' ||
       mType === 'lab' ||
-      mType === 'chest';
+      mType === 'chest' ||
+      mType === 'splitter' ||
+      mType === 'inserter';
 
     if (tool === 'demolish') {
       const removed = this.capytorioEngine.demolishAt(gx, gz);
@@ -5118,7 +5121,18 @@ export class PlayStyleManager {
       }
     }
 
-    const res = this.capytorioEngine.placeMachine(tool, gx, gz, this.capytorioEngine.selectedDir);
+    const anchor = getCapytorioPlacementAnchor(
+      gx,
+      gz,
+      tool,
+      this.capytorioEngine.selectedDir
+    );
+    const res = this.capytorioEngine.placeMachine(
+      tool,
+      existing ? existing.gx : anchor.gx,
+      existing ? existing.gz : anchor.gz,
+      this.capytorioEngine.selectedDir
+    );
     if (res.ok) {
       AudioService.playBrickHit(1.18);
       this.vfxEngine?.emitBurst(
@@ -5538,10 +5552,16 @@ export class PlayStyleManager {
       return { placed: false, gx, gz, tool };
     }
 
-    const res = this.capytorioEngine.placeMachineDuringDrag(
-      tool,
+    const anchor = getCapytorioPlacementAnchor(
       gx,
       gz,
+      tool,
+      this.capytorioEngine.selectedDir
+    );
+    const res = this.capytorioEngine.placeMachineDuringDrag(
+      tool,
+      anchor.gx,
+      anchor.gz,
       prevPlacedGx,
       prevPlacedGz,
       alignPrevTile
@@ -5559,9 +5579,9 @@ export class PlayStyleManager {
       );
       this.markCapytorioDirty();
       this.emitTelemetry();
-      return { placed: true, gx, gz, tool };
+      return { placed: true, gx: anchor.gx, gz: anchor.gz, tool };
     }
-    return { placed: false, gx, gz, tool };
+    return { placed: false, gx: anchor.gx, gz: anchor.gz, tool };
   }
 
   public handleCapytorioDragDemolish(ndcX: number, ndcY: number): boolean {
@@ -5649,6 +5669,148 @@ export class PlayStyleManager {
       this.emitTelemetry();
     }
     return res;
+  }
+
+  public toggleCapytorioAltMode(): boolean {
+    const next = this.capytorioEngine.toggleAltMode();
+    AudioService.playCoin();
+    this.markCapytorioDirty();
+    return next;
+  }
+
+  public copyCapytorioEntitySettingsAtTile(
+    gx: number,
+    gz: number
+  ): { ok: boolean; label?: string; reason?: string } {
+    const res = this.capytorioEngine.copyEntitySettingsAt(gx, gz);
+    if (res.ok) {
+      AudioService.playCoin();
+      this.emitCapytorioSnapshot();
+    }
+    return res;
+  }
+
+  public pasteCapytorioEntitySettingsAtTile(
+    gx: number,
+    gz: number
+  ): { ok: boolean; label?: string; reason?: string } {
+    const res = this.capytorioEngine.pasteEntitySettingsAt(gx, gz);
+    if (res.ok) {
+      AudioService.playBrickHit(1.15);
+      this.markCapytorioDirty();
+    } else {
+      AudioService.playSplash();
+    }
+    return res;
+  }
+
+  public copyCapytorioEntitySettingsAtNdc(
+    ndcX: number,
+    ndcY: number
+  ): { ok: boolean; label?: string; reason?: string } {
+    const hit = this.raycastCapytorioGridFloat(ndcX, ndcY);
+    const gx = hit ? hit.gx : this.capytorioEngine.hoveredGx;
+    const gz = hit ? hit.gz : this.capytorioEngine.hoveredGz;
+    this.capytorioEngine.hoveredGx = gx;
+    this.capytorioEngine.hoveredGz = gz;
+    return this.copyCapytorioEntitySettingsAtTile(gx, gz);
+  }
+
+  public pasteCapytorioEntitySettingsAtNdc(
+    ndcX: number,
+    ndcY: number
+  ): { ok: boolean; label?: string; reason?: string } {
+    const hit = this.raycastCapytorioGridFloat(ndcX, ndcY);
+    const gx = hit ? hit.gx : this.capytorioEngine.hoveredGx;
+    const gz = hit ? hit.gz : this.capytorioEngine.hoveredGz;
+    this.capytorioEngine.hoveredGx = gx;
+    this.capytorioEngine.hoveredGz = gz;
+    return this.pasteCapytorioEntitySettingsAtTile(gx, gz);
+  }
+
+  public setCapytorioSplitterConfig(
+    gx: number,
+    gz: number,
+    config: {
+      inputPriority?: CapytorioSplitterPriority;
+      outputPriority?: CapytorioSplitterPriority;
+      filterItem?: CapytorioItemId | null;
+    }
+  ): boolean {
+    const ok = this.capytorioEngine.setSplitterConfigAt(gx, gz, config);
+    if (ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    }
+    return ok;
+  }
+
+  public setCapytorioInserterConfig(
+    gx: number,
+    gz: number,
+    config: {
+      filterMode?: CapytorioInserterFilterMode;
+      filters?: CapytorioItemId[];
+      stackLimit?: number | null;
+    }
+  ): boolean {
+    const ok = this.capytorioEngine.setInserterConfigAt(gx, gz, config);
+    if (ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    }
+    return ok;
+  }
+
+  public setCapytorioChestSlotLimit(
+    gx: number,
+    gz: number,
+    slotLimit: number | null
+  ): boolean {
+    const ok = this.capytorioEngine.setChestSlotLimitAt(gx, gz, slotLimit);
+    if (ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    }
+    return ok;
+  }
+
+  public enqueueCapytorioPocketCraft(
+    recipeId: CapytorioRecipeId,
+    batches: number = 1
+  ): { ok: boolean; queuedBatches: number; reason?: string } {
+    const res = this.capytorioEngine.enqueuePocketCraft(recipeId, batches);
+    if (res.ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    } else {
+      AudioService.playSplash();
+    }
+    return res;
+  }
+
+  public enqueueCapytorioMachineCraft(
+    type: CapytorioMachineType,
+    count: number = 1
+  ): { ok: boolean; queuedCount: number; reason?: string } {
+    const res = this.capytorioEngine.enqueueMachineCraft(type, count);
+    if (res.ok) {
+      AudioService.playCoin();
+      this.markCapytorioDirty();
+    } else {
+      AudioService.playSplash();
+    }
+    return { ok: res.ok, queuedCount: res.queuedBatches };
+  }
+
+  public cancelCapytorioCraftQueueItem(uid: number): boolean {
+    const res = this.capytorioEngine.cancelCraftQueueItem(uid);
+    if (res.ok) {
+      AudioService.playBrickHit(0.88);
+      this.markCapytorioDirty();
+    }
+    return res.ok;
   }
 
   // ============================================================================

@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   Check,
   ClipboardPaste,
   Copy,
+  Eye,
   Flame,
   FlipHorizontal2,
   FlipVertical2,
@@ -21,6 +22,8 @@ import {
   X,
 } from 'lucide-react';
 import {
+  CAPYTORIO_CHEST_ITEMS_PER_SLOT,
+  CAPYTORIO_CHEST_SLOTS,
   CAPYTORIO_HOTBAR_ORDER,
   CAPYTORIO_ITEM_CATALOG,
   CAPYTORIO_MACHINE_SPECS,
@@ -33,6 +36,7 @@ import {
   resetCustomCapytorioLuaSources,
   resolveCapytorioItemShape,
   setCustomCapytorioLuaSources,
+  type CapytorioItemId,
   type CapytorioLuaCatalogInfo,
   type CapytorioMachineType,
   type CapytorioRecipeGroup,
@@ -43,8 +47,10 @@ import {
   MAX_CAPYTORIO_BLUEPRINT_LIBRARY,
   resolveCapytorioPlaceableSpec,
   type CapytorioClipboardToolState,
+  type CapytorioInserterFilterMode,
   type CapytorioSavedBlueprint,
   type CapytorioSelectionShape,
+  type CapytorioSplitterPriority,
   type CapytorioTileInspection,
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
@@ -106,14 +112,37 @@ export interface CapytorioHudProps {
   onCollectAllOutputs: () => void;
   onFeedScience: () => void;
   onLaunchRocket: () => void;
-  onCraftMachine: (mType: CapytorioMachineType) => void;
+  onCraftMachine: (mType: CapytorioMachineType, count?: number) => void;
   onCraftRecipe: (recipeId: string, count: number, autoEquipResult?: boolean) => void;
+  onCancelCraftQueueItem: (uid: number) => void;
   onSelectTech: (techId: CapytorioTechId) => void;
   onFuelGenerator: (gx: number, gz: number) => void;
   onInsertInputs: (gx: number, gz: number) => void;
   onTakeOutputs: (gx: number, gz: number) => void;
   onRotateMachineAt: (gx: number, gz: number) => void;
   onSelectAssemblerRecipe: (recipeId: CapytorioRecipeId) => void;
+  onToggleAltMode: () => void;
+  onCopyEntitySettings: (gx: number, gz: number) => void;
+  onPasteEntitySettings: (gx: number, gz: number) => void;
+  onSetSplitterConfig: (
+    gx: number,
+    gz: number,
+    config: {
+      inputPriority?: CapytorioSplitterPriority;
+      outputPriority?: CapytorioSplitterPriority;
+      filterItem?: CapytorioItemId | null;
+    }
+  ) => void;
+  onSetInserterConfig: (
+    gx: number,
+    gz: number,
+    config: {
+      filterMode?: CapytorioInserterFilterMode;
+      filters?: CapytorioItemId[];
+      stackLimit?: number | null;
+    }
+  ) => void;
+  onSetChestSlotLimit: (gx: number, gz: number, slotLimit: number | null) => void;
   showToast: (msg: string) => void;
 }
 
@@ -278,14 +307,38 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   onLaunchRocket,
   onCraftMachine,
   onCraftRecipe,
+  onCancelCraftQueueItem,
   onSelectTech,
   onFuelGenerator,
   onInsertInputs,
   onTakeOutputs,
   onRotateMachineAt,
   onSelectAssemblerRecipe,
+  onToggleAltMode,
+  onCopyEntitySettings,
+  onPasteEntitySettings,
+  onSetSplitterConfig,
+  onSetInserterConfig,
+  onSetChestSlotLimit,
   showToast,
 }) => {
+  const filterableItems = useMemo(() => {
+    const order: Record<string, number> = {
+      raw: 0,
+      plate: 1,
+      intermediate: 2,
+      science: 3,
+      rocket: 4,
+      building: 5,
+    };
+    return Object.values(CAPYTORIO_ITEM_CATALOG)
+      .slice()
+      .sort(
+        (a, b) =>
+          (order[a.category] ?? 9) - (order[b.category] ?? 9) ||
+          a.name.localeCompare(b.name)
+      );
+  }, []);
   const recipeLuaInputRef = useRef<HTMLInputElement | null>(null);
   const techLuaInputRef = useRef<HTMLInputElement | null>(null);
   const invSearchInputRef = useRef<HTMLInputElement | null>(null);
@@ -469,7 +522,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                 : 'Nothing to redo [Ctrl+Y]'
             }
             aria-label="Redo building action"
-            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap ${
+            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
               snap.history.canRedo
                 ? `${FACTORIO_BTN_IDLE} cursor-pointer`
                 : 'bg-[#202228] border border-[#323640] text-[#5c6270] cursor-not-allowed'
@@ -477,6 +530,24 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
           >
             <Redo2 className="w-3 h-3 shrink-0" />
             <span>Redo</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="capytorio-alt-mode-btn"
+            aria-pressed={snap.altModeEnabled}
+            onClick={onToggleAltMode}
+            title={
+              snap.altModeEnabled
+                ? 'Alt-Mode ON — Tap [Alt] to hide 3D recipe/filter overlays'
+                : 'Alt-Mode OFF — Tap [Alt] to show 3D recipe/filter overlays'
+            }
+            className={`h-6 px-2 rounded-[2px] text-[10px] font-mono font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0 ${
+              snap.altModeEnabled ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+            }`}
+          >
+            <Eye className="w-3 h-3 shrink-0" />
+            <span>Alt</span>
           </button>
         </div>
       </div>
@@ -875,7 +946,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                               mini
                               testId={`capytorio-craft-machine-${mType}`}
                               label={spec.shortName}
-                              title={`Craft +1 ${spec.name} (${costLabel}) · Alt+Click Pedia`}
+                              title={`Craft ${spec.name} (${costLabel}) · L-Click ×1 · R-Click ×5 · Shift+Click All · Alt+Click Pedia`}
                               count="×1"
                               selected={selectedCraftMachineType === mType}
                               accent={canAffordMachine ? 'craftable' : 'missing'}
@@ -888,7 +959,12 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                                   return;
                                 }
                                 setSelectedCraftMachineType(mType);
-                                onCraftMachine(mType);
+                                onCraftMachine(mType, e.shiftKey ? 9999 : 1);
+                              }}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                setSelectedCraftMachineType(mType);
+                                onCraftMachine(mType, 5);
                               }}
                             />
                           );
@@ -1001,7 +1077,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                                 mini
                                 testId={`capytorio-craft-machine-${mType}`}
                                 label={spec.shortName}
-                                title={`Craft +1 ${spec.name} (${costLabel}) · Alt+Click Pedia`}
+                                title={`Craft ${spec.name} (${costLabel}) · L-Click ×1 · R-Click ×5 · Shift All · Alt+Click Pedia`}
                                 count="×1"
                                 selected={selectedCraftMachineType === mType}
                                 accent={canAffordMachine ? 'craftable' : 'missing'}
@@ -1014,7 +1090,12 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                                     return;
                                   }
                                   setSelectedCraftMachineType(mType);
-                                  onCraftMachine(mType);
+                                  onCraftMachine(mType, e.shiftKey ? 9999 : 1);
+                                }}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  setSelectedCraftMachineType(mType);
+                                  onCraftMachine(mType, 5);
                                 }}
                               />
                             );
@@ -1034,7 +1115,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                               mini
                               testId={`capytorio-craft-recipe-${rec.id}`}
                               label={outMeta.shortName}
-                              title={`${rec.name} (×${rec.resultCount}) — Click craft 1 · Alt+Click Pedia`}
+                              title={`${rec.name} (×${rec.resultCount}) · L-Click ×1 · R-Click ×5 · Shift All · Alt+Click Pedia`}
                               count={`×${rec.resultCount}`}
                               selected={isSelected}
                               accent={canAfford ? 'craftable' : 'missing'}
@@ -1048,7 +1129,12 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                                   return;
                                 }
                                 setSelectedCraftRecipeId(rec.id);
-                                onCraftRecipe(rec.id, 1, true);
+                                onCraftRecipe(rec.id, e.shiftKey ? 9999 : 1, true);
+                              }}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                setSelectedCraftRecipeId(rec.id);
+                                onCraftRecipe(rec.id, 5, false);
                               }}
                             />
                           );
@@ -1089,13 +1175,29 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                             );
                           })}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => onCraftMachine(selectedCraftMachineType)}
-                          className={`px-2.5 py-1 rounded-[2px] font-mono cursor-pointer shrink-0 ${FACTORIO_BTN_ACTIVE}`}
-                        >
-                          Craft 1
-                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onCraftMachine(selectedCraftMachineType, 1)}
+                            className="px-2.5 py-1 rounded-[2px] bg-[#243426] hover:bg-[#2f4532] border border-[#45b649]/75 text-[#86ef92] font-mono font-semibold cursor-pointer"
+                          >
+                            Craft 1
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onCraftMachine(selectedCraftMachineType, 5)}
+                            className={`px-2.5 py-1 rounded-[2px] font-mono cursor-pointer ${FACTORIO_BTN_ACTIVE}`}
+                          >
+                            ×5
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onCraftMachine(selectedCraftMachineType, 9999)}
+                            className={`px-2 py-1 rounded-[2px] font-mono cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                          >
+                            All
+                          </button>
+                        </div>
                       </div>
                     );
                   })()}
@@ -1136,6 +1238,13 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                           className={`px-2.5 py-1 rounded-[2px] font-mono cursor-pointer ${FACTORIO_BTN_ACTIVE}`}
                         >
                           Craft 5
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onCraftRecipe(detailRecipe.id, 9999, false)}
+                          className={`px-2 py-1 rounded-[2px] font-mono cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                        >
+                          All
                         </button>
                       </div>
                     </div>
@@ -1528,6 +1637,229 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       </div>
                     )}
 
+                    {/* Logistics & Storage Configuration Controls (Splitter / Inserter / Chest) */}
+                    {inspectedTile?.machine?.type === 'splitter' && (
+                      <div className="p-2 rounded-[2px] bg-[#121417] border border-[#282b33] space-y-2 text-[10px]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-mono text-[#9aa0ac]">Input Priority</span>
+                          <div className="flex items-center gap-1">
+                            {(['left', 'none', 'right'] as const).map((prio) => (
+                              <button
+                                key={prio}
+                                type="button"
+                                onClick={() =>
+                                  onSetSplitterConfig(inspected.gx, inspected.gz, {
+                                    inputPriority: prio,
+                                  })
+                                }
+                                className={`px-2 py-0.5 rounded-[2px] font-mono cursor-pointer ${
+                                  (inspectedTile.machine?.splitterInputPriority ?? 'none') === prio
+                                    ? FACTORIO_BTN_ACTIVE
+                                    : FACTORIO_BTN_IDLE
+                                }`}
+                              >
+                                {prio === 'left' ? 'Left' : prio === 'right' ? 'Right' : 'Balanced'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-mono text-[#9aa0ac]">Output Priority</span>
+                          <div className="flex items-center gap-1">
+                            {(['left', 'none', 'right'] as const).map((prio) => (
+                              <button
+                                key={prio}
+                                type="button"
+                                onClick={() =>
+                                  onSetSplitterConfig(inspected.gx, inspected.gz, {
+                                    outputPriority: prio,
+                                  })
+                                }
+                                className={`px-2 py-0.5 rounded-[2px] font-mono cursor-pointer ${
+                                  (inspectedTile.machine?.splitterOutputPriority ?? 'none') === prio
+                                    ? FACTORIO_BTN_ACTIVE
+                                    : FACTORIO_BTN_IDLE
+                                }`}
+                              >
+                                {prio === 'left' ? 'Left' : prio === 'right' ? 'Right' : 'Balanced'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[#9aa0ac] shrink-0">Output Filter</span>
+                          <select
+                            value={inspectedTile.machine.splitterFilterItem ?? ''}
+                            onChange={(e) =>
+                              onSetSplitterConfig(inspected.gx, inspected.gz, {
+                                filterItem: e.target.value ? e.target.value : null,
+                              })
+                            }
+                            className="flex-1 min-w-0 h-6 px-1.5 rounded-[2px] bg-[#0e1013] border border-[#4a4f5b] text-[10px] font-mono text-[#e6e8ec]"
+                          >
+                            <option value="">None (Balanced Output)</option>
+                            {filterableItems.map((it) => (
+                              <option key={it.id} value={it.id}>
+                                {it.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {inspectedTile?.machine?.type === 'inserter' && (
+                      <div className="p-2 rounded-[2px] bg-[#121417] border border-[#282b33] space-y-2 text-[10px]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-mono text-[#9aa0ac]">
+                            Filter Mode ·{' '}
+                            {inspectedTile.machine.inserterReach === 2 ? '2-Tile Reach' : '1-Tile Reach'}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {(['whitelist', 'blacklist'] as const).map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() =>
+                                  onSetInserterConfig(inspected.gx, inspected.gz, { filterMode: mode })
+                                }
+                                className={`px-2 py-0.5 rounded-[2px] font-mono cursor-pointer ${
+                                  (inspectedTile.machine?.inserterFilterMode ?? 'whitelist') === mode
+                                    ? FACTORIO_BTN_ACTIVE
+                                    : FACTORIO_BTN_IDLE
+                                }`}
+                              >
+                                {mode === 'whitelist' ? 'Whitelist' : 'Blacklist'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {(inspectedTile.machine.inserterFilters ?? []).map((fid) => (
+                            <button
+                              key={fid}
+                              type="button"
+                              onClick={() =>
+                                onSetInserterConfig(inspected.gx, inspected.gz, {
+                                  filters: (inspectedTile.machine?.inserterFilters ?? []).filter(
+                                    (x) => x !== fid
+                                  ),
+                                })
+                              }
+                              className="px-1.5 py-0.5 rounded-[2px] bg-[#242832] hover:bg-[#3a1a1a] border border-[#4a4f5b] font-mono text-[10px] text-[#e6e8ec] flex items-center gap-1 cursor-pointer"
+                            >
+                              <span>{getCapytorioItemMeta(fid).shortName}</span>
+                              <X className="w-2.5 h-2.5 text-[#f2857c]" />
+                            </button>
+                          ))}
+                          {(inspectedTile.machine.inserterFilters ?? []).length < 5 && (
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (!val) return;
+                                const cur = inspectedTile.machine?.inserterFilters ?? [];
+                                if (!cur.includes(val)) {
+                                  onSetInserterConfig(inspected.gx, inspected.gz, {
+                                    filters: [...cur, val].slice(0, 5),
+                                  });
+                                }
+                              }}
+                              className="h-6 px-1.5 rounded-[2px] bg-[#0e1013] border border-[#4a4f5b] text-[10px] font-mono text-[#e6e8ec]"
+                            >
+                              <option value="">+ Add Filter...</option>
+                              {filterableItems.map((it) => (
+                                <option key={it.id} value={it.id}>
+                                  {it.name}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between gap-2 font-mono tabular-nums">
+                          <span className="text-[#9aa0ac]">Stack Size Override</span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const maxS = inspectedTile.machine?.inserterMaxStack ?? 4;
+                                const cur = inspectedTile.machine?.inserterStackLimit ?? maxS;
+                                onSetInserterConfig(inspected.gx, inspected.gz, {
+                                  stackLimit: Math.max(1, cur - 1),
+                                });
+                              }}
+                              className={`w-6 h-6 rounded-[2px] cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                            >
+                              -
+                            </button>
+                            <span className="px-2 text-[#f4b054] font-bold">
+                              {inspectedTile.machine.inserterStackLimit === null ||
+                              inspectedTile.machine.inserterStackLimit === undefined
+                                ? `Auto (${inspectedTile.machine.inserterMaxStack ?? 1})`
+                                : `${inspectedTile.machine.inserterStackLimit} / ${inspectedTile.machine.inserterMaxStack ?? 1}`}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const maxS = inspectedTile.machine?.inserterMaxStack ?? 4;
+                                const cur = inspectedTile.machine?.inserterStackLimit ?? maxS;
+                                const next = cur + 1;
+                                onSetInserterConfig(inspected.gx, inspected.gz, {
+                                  stackLimit: next >= maxS ? null : next,
+                                });
+                              }}
+                              className={`w-6 h-6 rounded-[2px] cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {inspectedTile?.machine?.type === 'chest' && (
+                      <div className="p-2 rounded-[2px] bg-[#121417] border border-[#282b33] space-y-1.5 text-[10px]">
+                        <div className="flex items-center justify-between font-mono tabular-nums">
+                          <span className="text-[#9aa0ac]">Chest Slot Limit (Red Bar)</span>
+                          <span className="text-[#f4b054] font-bold">
+                            {inspectedTile.machine.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS}/
+                            {CAPYTORIO_CHEST_SLOTS} slots ·{' '}
+                            {inspectedTile.machine.chestCapacityItems ??
+                              CAPYTORIO_CHEST_SLOTS * CAPYTORIO_CHEST_ITEMS_PER_SLOT}{' '}
+                            max
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
+                          {Array.from({ length: CAPYTORIO_CHEST_SLOTS }, (_, idx) => {
+                            const slotNum = idx + 1;
+                            const activeLimit =
+                              inspectedTile.machine?.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS;
+                            const locked = slotNum > activeLimit;
+                            return (
+                              <button
+                                key={slotNum}
+                                type="button"
+                                onClick={() =>
+                                  onSetChestSlotLimit(
+                                    inspected.gx,
+                                    inspected.gz,
+                                    slotNum === CAPYTORIO_CHEST_SLOTS ? null : slotNum
+                                  )
+                                }
+                                className={`h-6 rounded-[2px] font-mono tabular-nums cursor-pointer border ${
+                                  locked
+                                    ? 'bg-[#451414] border-[#b91c1c] text-[#fca5a5]'
+                                    : 'bg-[#252932] border-[#4a4f5b] text-[#e2e8f0] hover:border-[#f4b054]'
+                                }`}
+                              >
+                                {locked ? '×' : slotNum}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Action Controls */}
                     <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
                       {inspected.type === 'generator' && (
@@ -1564,6 +1896,34 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                         >
                           Take Outputs ({inspected.outputTotal + inspected.beltItemCount})
                         </button>
+                      )}
+
+                      {(inspected.type === 'assembler' ||
+                        inspected.type === 'splitter' ||
+                        inspected.type === 'inserter' ||
+                        inspected.type === 'chest') && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onCopyEntitySettings(inspected.gx, inspected.gz)}
+                            title="Copy entity settings [Shift + Right-Click]"
+                            className={`px-2.5 py-1 rounded-[2px] font-mono cursor-pointer flex items-center gap-1 ${FACTORIO_BTN_IDLE}`}
+                          >
+                            <Copy className="w-3 h-3 shrink-0" />
+                            <span>Copy Settings</span>
+                          </button>
+                          {snap.entitySettingsClipboard?.sourceType === inspected.type && (
+                            <button
+                              type="button"
+                              onClick={() => onPasteEntitySettings(inspected.gx, inspected.gz)}
+                              title="Paste entity settings [Shift + Left-Click]"
+                              className={`px-2.5 py-1 rounded-[2px] font-mono cursor-pointer flex items-center gap-1 ${FACTORIO_BTN_ACTIVE}`}
+                            >
+                              <ClipboardPaste className="w-3 h-3 shrink-0" />
+                              <span>Paste Settings</span>
+                            </button>
+                          )}
+                        </>
                       )}
 
                       <button
@@ -1862,6 +2222,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
           info={activeInfoTarget}
           isPinned={isInfoPinned}
           isTopBarVisible={isTopBarVisible}
+          entitySettingsClipboard={snap.entitySettingsClipboard}
           onClearPin={onClearInspection}
           onOpenMachineModal={(gx, gz) => {
             onInspectTileAt(gx, gz);
@@ -1873,7 +2234,91 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
           onTakeOutputs={onTakeOutputs}
           onCollectAllOutputs={onCollectAllOutputs}
           onOpenPedia={(nextId, ctx) => onOpenPedia(nextId, ctx)}
+          onCopyEntitySettings={onCopyEntitySettings}
+          onPasteEntitySettings={onPasteEntitySettings}
+          onSetSplitterConfig={onSetSplitterConfig}
+          onSetInserterConfig={onSetInserterConfig}
+          onSetChestSlotLimit={onSetChestSlotLimit}
         />
+      )}
+
+      {/* BOTTOM-LEFT REAL-TIME HAND-CRAFTING QUEUE STRIP (Factorio style, click to cancel & refund) */}
+      {snap.craftingQueue.length > 0 && (
+        <div
+          data-testid="capytorio-craft-queue"
+          aria-label="Hand-Crafting Queue"
+          className="fixed bottom-[56px] left-2 z-30 pointer-events-auto max-w-[calc(100vw-24px)]"
+        >
+          <div className={`${FACTORIO_PANEL_FRAME} p-1 flex items-center gap-1 overflow-x-auto no-scrollbar`}>
+            {snap.craftingQueue.slice(0, 8).map((q, idx) => {
+              const isMachine = q.kind === 'machine';
+              const machineSpec = isMachine
+                ? CAPYTORIO_MACHINE_SPECS[q.resultId as CapytorioMachineType]
+                : null;
+              const placeable = !isMachine
+                ? CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[q.resultId]
+                : undefined;
+              const meta = !isMachine ? getCapytorioItemMeta(q.resultId) : null;
+              const shape = meta
+                ? meta.shape ?? resolveCapytorioItemShape(meta.id, meta.category)
+                : 'crate';
+              const color = machineSpec
+                ? hexToCss(machineSpec.colorHex)
+                : placeable?.tintHex
+                  ? hexToCss(placeable.tintHex)
+                  : meta?.cssColor ?? '#f4b054';
+              const pct = idx === 0 ? Math.max(0, Math.min(100, Math.round(q.progress * 100))) : 0;
+              return (
+                <button
+                  key={q.uid}
+                  type="button"
+                  data-testid={`capytorio-craft-queue-item-${q.resultId}`}
+                  onClick={() => onCancelCraftQueueItem(q.uid)}
+                  title={`${q.resultName} ×${q.remainingCount}${q.isIntermediate ? ' (Auto-Intermediate)' : ''} — Click to cancel & refund`}
+                  className={`relative w-9 h-9 rounded-[2px] border flex items-center justify-center shrink-0 cursor-pointer overflow-hidden ${
+                    idx === 0
+                      ? 'bg-[#2a2419] border-[#e58926]'
+                      : q.isIntermediate
+                        ? 'bg-[#171e26] border-[#38bdf8]/65 hover:border-[#ef4444]'
+                        : 'bg-[#171a1f] border-[#4a4f5b] hover:border-[#ef4444]'
+                  }`}
+                >
+                  {idx === 0 && (
+                    <div
+                      className="absolute bottom-0 left-0 right-0 bg-[#45b649]/35 pointer-events-none"
+                      style={{ height: `${pct}%` }}
+                    />
+                  )}
+                  <div className="relative z-10 pointer-events-none">
+                    {isMachine && machineSpec ? (
+                      <CapytorioMachineIcon
+                        machineType={q.resultId as CapytorioMachineType}
+                        color={color}
+                        size={28}
+                      />
+                    ) : placeable ? (
+                      <CapytorioMachineIcon
+                        machineType={placeable.baseType}
+                        color={color}
+                        size={28}
+                      />
+                    ) : (
+                      <CapytorioItemIcon shape={shape} color={color} size={28} />
+                    )}
+                  </div>
+                  <span className="z-20 absolute bottom-0 right-0 px-[2px] bg-[#111317]/85 font-mono tabular-nums font-bold text-[8.5px] leading-[1.05] text-[#f4f6f9]">
+                    {q.remainingCount}
+                  </span>
+                </button>
+              );
+            })}
+            {snap.craftingQueue.length > 8 && (
+              <span className="px-1 font-mono tabular-nums text-[9px] text-[#9aa0ac]">
+                +{snap.craftingQueue.length - 8}
+              </span>
+            )}
+          </div>
+        </div>
       )}
 
       {/* CONTEXTUAL CUT / COPY / PASTE SUB-BAR (Visible ONLY when Copy/Paste tool is active) */}

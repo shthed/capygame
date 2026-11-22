@@ -1,11 +1,15 @@
 import * as THREE from 'three';
 import {
+  CAPYTORIO_CHEST_SLOTS,
   CAPYTORIO_ITEM_SHAPES,
   CAPYTORIO_MACHINE_SPECS,
   CAPYTORIO_TILE_SIZE,
   CAPYTORIO_WORLD_ORIGIN_X,
   CAPYTORIO_WORLD_ORIGIN_Z,
+  RECIPE_BY_ID,
+  getCapytorioInserterReach,
   getCapytorioItemMeta,
+  getCapytorioSmeltSpec,
   resolveCapytorioItemShape,
   type CapytorioDirection,
   type CapytorioItemShape,
@@ -17,11 +21,16 @@ import {
   DIR_DZ,
   capytorioGridToWorldX,
   capytorioGridToWorldZ,
+  capytorioMachineCenterWorldX,
+  capytorioMachineCenterWorldZ,
   evalBeltItemLocalPose,
   getBeltCurveShape,
+  getCapytorioPlacementAnchor,
+  getCapytorioToolFootprint,
   resolveCapytorioPlaceableSpec,
   tileKey,
   type CapytorioBlueprintEntry,
+  type CapytorioMachine,
 } from './CapytorioFactoryEngine';
 
 const MAX_ORE_INSTANCES = 1024;
@@ -30,11 +39,13 @@ const MAX_CURVED_BELT_INSTANCES = 600;
 const MAX_SHAPE_ITEM_INSTANCES = 2048;
 const MAX_TREE_INSTANCES = 512;
 const MAX_BLUEPRINT_GHOST_TILES = 256;
+const MAX_ALT_MODE_SPRITES = 256;
 const MAX_VISIBLE_RADIUS_TILES = 22;
 const BELT_SURFACE_Y = 0.145;
 const INSERTER_UPPER_ARM_LEN = 1.65;
 const INSERTER_FOREARM_LEN = 1.70;
 const INSERTER_SHOULDER_Y = 0.60;
+const LONG_INSERTER_REACH_SCALE = 1.66;
 
 // Module-scoped zero-allocation math helpers
 const _dummy = new THREE.Object3D();
@@ -68,6 +79,44 @@ const _shapeCounts: Record<CapytorioItemShape, number> = {
   fruit: 0,
   crate: 0,
 };
+
+const _scaleScratch: [number, number, number] = [1, 1, 1];
+const _altBadgeScratch = {
+  key: '',
+  label: '',
+  sub: '',
+  accent: '#38bdf8',
+  warn: false,
+};
+
+function resolveMachineVisualScale(
+  type: CapytorioMachineType,
+  width: number,
+  height: number,
+  out: [number, number, number]
+): void {
+  if (type === 'splitter') {
+    // Splitter mesh is constructed natively at 2x1 local proportions
+    out[0] = 1.0;
+    out[1] = 1.0;
+    out[2] = 1.0;
+    return;
+  }
+  const span = Math.max(width, height);
+  if (span >= 3) {
+    out[0] = 2.86;
+    out[1] = 1.72;
+    out[2] = 2.86;
+  } else if (span === 2) {
+    out[0] = 1.92;
+    out[1] = 1.44;
+    out[2] = 1.92;
+  } else {
+    out[0] = 1.0;
+    out[1] = 1.0;
+    out[2] = 1.0;
+  }
+}
 
 function dirToRotY(dir: CapytorioDirection): number {
   return -dir * (Math.PI * 0.5);
@@ -621,6 +670,12 @@ export class Capytorio3DRenderer {
   private bpTileMat: THREE.MeshBasicMaterial;
   private blueprintTileInstanced: THREE.InstancedMesh;
   private blueprintArrowInstanced: THREE.InstancedMesh;
+
+  // Pooled 3D Alt-Mode sprite badges (zero per-frame allocations)
+  private readonly altModeRoot = new THREE.Group();
+  private readonly altModeSpritePool: THREE.Sprite[] = [];
+  private readonly altModeMatCache = new Map<string, THREE.SpriteMaterial>();
+  private readonly altModeTexCache = new Map<string, THREE.CanvasTexture>();
 
   // Shared geometries, textures & materials for composite machines
   private sharedMaterials: THREE.Material[] = [];
@@ -1268,6 +1323,10 @@ export class Capytorio3DRenderer {
     this.ghostRoot.userData.ignoreCameraFade = true;
     this.root.add(this.ghostRoot);
 
+    this.altModeRoot.name = 'CapytorioAltModeRoot';
+    this.altModeRoot.userData.ignoreCameraFade = true;
+    this.root.add(this.altModeRoot);
+
     this.sharedGeometries.push(ghostPlateGeo, arrowGeo, ringGeo, bpTileGeo, bpArrowGeo);
     this.sharedMaterials.push(
       this.cursorFrameMat,
@@ -1281,6 +1340,284 @@ export class Capytorio3DRenderer {
       this.ghostBeltDeckValidMat,
       this.ghostBeltDeckInvalidMat
     );
+  }
+
+  private getOrCreateAltModeSprite(idx: number): THREE.Sprite {
+    while (this.altModeSpritePool.length <= idx) {
+      const sprite = new THREE.Sprite();
+      sprite.visible = false;
+      sprite.renderOrder = 12;
+      sprite.userData.ignoreCameraFade = true;
+      this.altModeRoot.add(sprite);
+      this.altModeSpritePool.push(sprite);
+    }
+    return this.altModeSpritePool[idx];
+  }
+
+  private getAltModeMaterial(
+    key: string,
+    label: string,
+    sub: string,
+    accentCss: string,
+    isWarn: boolean
+  ): THREE.SpriteMaterial {
+    const existing = this.altModeMatCache.get(key);
+    if (existing) return existing;
+
+    let tex: THREE.CanvasTexture | null = null;
+    if (typeof document !== 'undefined') {
+      const canvas = document.createElement('canvas');
+      canvas.width = 160;
+      canvas.height = 160;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, 160, 160);
+        // Dark crisp chamfered Factorio industrial plate
+        const pad = 10;
+        const w = 140;
+        const h = 140;
+        const r = 18;
+        ctx.beginPath();
+        ctx.moveTo(pad + r, pad);
+        ctx.lineTo(pad + w - r, pad);
+        ctx.quadraticCurveTo(pad + w, pad, pad + w, pad + r);
+        ctx.lineTo(pad + w, pad + h - r);
+        ctx.quadraticCurveTo(pad + w, pad + h, pad + w - r, pad + h);
+        ctx.lineTo(pad + r, pad + h);
+        ctx.quadraticCurveTo(pad, pad + h, pad, pad + h - r);
+        ctx.lineTo(pad, pad + r);
+        ctx.quadraticCurveTo(pad, pad, pad + r, pad);
+        ctx.closePath();
+
+        ctx.fillStyle = isWarn ? 'rgba(69, 10, 10, 0.90)' : 'rgba(15, 23, 42, 0.88)';
+        ctx.fill();
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = accentCss;
+        ctx.stroke();
+
+        // Accent color badge disc / top stripe
+        ctx.fillStyle = accentCss;
+        if (isWarn) {
+          ctx.beginPath();
+          ctx.moveTo(80, 26);
+          ctx.lineTo(106, 70);
+          ctx.lineTo(54, 70);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#0f172a';
+          ctx.font = 'bold 30px ui-monospace, SFMono-Regular, Menlo, monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('!', 80, 56);
+        } else {
+          ctx.beginPath();
+          ctx.arc(80, 54, 22, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+        }
+
+        // Primary short label
+        ctx.fillStyle = '#f8fafc';
+        ctx.font = 'bold 28px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label.slice(0, 7), 80, sub ? 98 : 106);
+
+        // Optional subline (priority/reach/cap/filter mode)
+        if (sub) {
+          ctx.fillStyle = accentCss;
+          ctx.font = 'bold 21px ui-monospace, SFMono-Regular, Menlo, monospace';
+          ctx.fillText(sub.slice(0, 9), 80, 128);
+        }
+
+        tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.needsUpdate = true;
+        this.altModeTexCache.set(key, tex);
+      }
+    }
+
+    const mat = new THREE.SpriteMaterial({
+      map: tex ?? null,
+      color: tex ? 0xffffff : 0xf8fafc,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.altModeMatCache.set(key, mat);
+    return mat;
+  }
+
+  private fillAltModeBadge(engine: CapytorioFactoryEngine, m: CapytorioMachine): boolean {
+    const baseSpec = CAPYTORIO_MACHINE_SPECS[m.type];
+    // High-priority operational alerts
+    if (baseSpec.powerDemandMw > 0 && engine.powerEfficiency <= 0.05) {
+      _altBadgeScratch.key = 'warn:nopwr';
+      _altBadgeScratch.label = 'NO PWR';
+      _altBadgeScratch.sub = '0%';
+      _altBadgeScratch.accent = '#ef4444';
+      _altBadgeScratch.warn = true;
+      return true;
+    }
+    if (m.type === 'generator' && m.fuelTimer <= 0) {
+      _altBadgeScratch.key = 'warn:nofuel';
+      _altBadgeScratch.label = 'NO FUEL';
+      _altBadgeScratch.sub = 'COAL';
+      _altBadgeScratch.accent = '#f59e0b';
+      _altBadgeScratch.warn = true;
+      return true;
+    }
+    if (m.type === 'drill') {
+      const fp = engine.getMachineFootprint(m);
+      const ore = engine.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height);
+      if (!ore) {
+        _altBadgeScratch.key = 'warn:noore';
+        _altBadgeScratch.label = 'NO ORE';
+        _altBadgeScratch.sub = 'EMPTY';
+        _altBadgeScratch.accent = '#f59e0b';
+        _altBadgeScratch.warn = true;
+        return true;
+      }
+      const meta = getCapytorioItemMeta(ore.resource);
+      _altBadgeScratch.key = `drill:${ore.resource}`;
+      _altBadgeScratch.label = meta.shortName.toUpperCase();
+      _altBadgeScratch.sub = 'MINE';
+      _altBadgeScratch.accent = meta.cssColor;
+      _altBadgeScratch.warn = false;
+      return true;
+    }
+    if (m.type === 'assembler' && m.recipeId) {
+      const rec = RECIPE_BY_ID.get(m.recipeId);
+      if (rec) {
+        const meta = getCapytorioItemMeta(rec.result);
+        _altBadgeScratch.key = `asm:${m.recipeId}`;
+        _altBadgeScratch.label = meta.shortName.toUpperCase();
+        _altBadgeScratch.sub = `×${rec.resultCount}`;
+        _altBadgeScratch.accent = meta.cssColor;
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+    }
+    if (m.type === 'furnace') {
+      let outItem: string | null = null;
+      for (const k in m.outputBuffer) {
+        if ((m.outputBuffer[k] ?? 0) > 0) {
+          outItem = k;
+          break;
+        }
+      }
+      if (!outItem) {
+        for (const k in m.inputBuffer) {
+          if ((m.inputBuffer[k] ?? 0) > 0) {
+            const spec = getCapytorioSmeltSpec(k);
+            if (spec) {
+              outItem = spec.result;
+              break;
+            }
+          }
+        }
+      }
+      if (outItem) {
+        const meta = getCapytorioItemMeta(outItem);
+        _altBadgeScratch.key = `furn:${outItem}`;
+        _altBadgeScratch.label = meta.shortName.toUpperCase();
+        _altBadgeScratch.sub = 'SMELT';
+        _altBadgeScratch.accent = meta.cssColor;
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      return false;
+    }
+    if (m.type === 'splitter') {
+      const inP = m.splitterInputPriority ?? 'none';
+      const outP = m.splitterOutputPriority ?? 'none';
+      const filt = m.splitterFilterItem ?? null;
+      if (!filt && inP === 'none' && outP === 'none') return false;
+      const inTag = inP === 'left' ? 'IL' : inP === 'right' ? 'IR' : '';
+      const outTag = outP === 'left' ? 'OL' : outP === 'right' ? 'OR' : filt ? 'OL' : '';
+      const sub = `${inTag}${inTag && outTag ? ' ' : ''}${outTag}`.trim() || 'SPLIT';
+      if (filt) {
+        const meta = getCapytorioItemMeta(filt);
+        _altBadgeScratch.key = `split:${filt}:${sub}`;
+        _altBadgeScratch.label = meta.shortName.toUpperCase();
+        _altBadgeScratch.sub = sub;
+        _altBadgeScratch.accent = meta.cssColor;
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      _altBadgeScratch.key = `split:prio:${sub}`;
+      _altBadgeScratch.label = 'PRIO';
+      _altBadgeScratch.sub = sub;
+      _altBadgeScratch.accent = '#facc15';
+      _altBadgeScratch.warn = false;
+      return true;
+    }
+    if (m.type === 'inserter') {
+      const filters = m.inserterFilters;
+      const hasFilters = Boolean(filters && filters.length > 0);
+      const reach = getCapytorioInserterReach(m.variantItemId);
+      const stackLim = m.inserterStackLimit ?? null;
+      if (!hasFilters && reach < 2 && stackLim === null) return false;
+      if (hasFilters && filters) {
+        const mode = m.inserterFilterMode === 'blacklist' ? 'BLK' : 'FLT';
+        const meta = getCapytorioItemMeta(filters[0]);
+        const extra = filters.length > 1 ? `+${filters.length - 1}` : stackLim ? `×${stackLim}` : '';
+        _altBadgeScratch.key = `ins:${mode}:${filters[0]}:${extra}`;
+        _altBadgeScratch.label = meta.shortName.toUpperCase();
+        _altBadgeScratch.sub = `${mode}${extra ? ` ${extra}` : ''}`;
+        _altBadgeScratch.accent = m.inserterFilterMode === 'blacklist' ? '#f87171' : meta.cssColor;
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      const label = reach === 2 ? 'LONG' : `STK ${stackLim}`;
+      const sub = reach === 2 && stackLim ? `2T ×${stackLim}` : reach === 2 ? '2-TILE' : 'CAP';
+      _altBadgeScratch.key = `ins:${label}:${sub}`;
+      _altBadgeScratch.label = label;
+      _altBadgeScratch.sub = sub;
+      _altBadgeScratch.accent = reach === 2 ? '#ef4444' : '#38bdf8';
+      _altBadgeScratch.warn = false;
+      return true;
+    }
+    if (m.type === 'chest') {
+      let topItem: string | null = null;
+      let topCount = 0;
+      for (const k in m.outputBuffer) {
+        const c = m.outputBuffer[k] ?? 0;
+        if (c > topCount) {
+          topCount = c;
+          topItem = k;
+        }
+      }
+      const limit = m.chestSlotLimit ?? null;
+      if (!topItem && limit === null) return false;
+      if (topItem) {
+        const meta = getCapytorioItemMeta(topItem);
+        const capTag = limit !== null ? `${limit}/${CAPYTORIO_CHEST_SLOTS}` : 'BOX';
+        _altBadgeScratch.key = `chest:${topItem}:${capTag}`;
+        _altBadgeScratch.label = meta.shortName.toUpperCase();
+        _altBadgeScratch.sub = capTag;
+        _altBadgeScratch.accent = meta.cssColor;
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      _altBadgeScratch.key = `chest:cap:${limit}`;
+      _altBadgeScratch.label = 'CAP';
+      _altBadgeScratch.sub = `${limit}/${CAPYTORIO_CHEST_SLOTS}`;
+      _altBadgeScratch.accent = '#ef4444';
+      _altBadgeScratch.warn = false;
+      return true;
+    }
+    if (m.type === 'lab') {
+      _altBadgeScratch.key = 'lab:sci';
+      _altBadgeScratch.label = 'LAB';
+      _altBadgeScratch.sub = 'TECH';
+      _altBadgeScratch.accent = '#a855f7';
+      _altBadgeScratch.warn = false;
+      return true;
+    }
+    return false;
   }
 
   private buildLandingBeaconLandmark(): void {
@@ -1414,9 +1751,14 @@ export class Capytorio3DRenderer {
     g.userData.__occluderRoot = g;
     g.userData.ignoreCameraFade = true;
 
-    // Base chassis plinth sitting flush on y = 0 (shared geometry across every machine!)
+    // Base chassis plinth sitting flush on y = 0 (2x1 wide plinth for splitters, 1x1 unit scaled by footprint otherwise)
     const plinth = new THREE.Mesh(
-      this.getCachedMachineGeo('plinth', () => new THREE.BoxGeometry(2.05, 0.24, 2.05)),
+      type === 'splitter'
+        ? this.getCachedMachineGeo(
+            'plinth_splitter_2x1',
+            () => new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 2 - 0.28, 0.24, CAPYTORIO_TILE_SIZE - 0.16)
+          )
+        : this.getCachedMachineGeo('plinth', () => new THREE.BoxGeometry(2.05, 0.24, 2.05)),
       this.matSteelDark
     );
     plinth.position.y = 0.12;
@@ -1597,6 +1939,7 @@ export class Capytorio3DRenderer {
       g.userData.shoulderPivot = shoulderPivot;
       g.userData.elbowPivot = elbowPivot;
       g.userData.wristPivot = wristPivot;
+      g.userData.heldMount = heldMount;
       g.userData.heldMeshesByShape = heldMeshesByShape;
       g.userData.lastHeldColorHex = 0xffffff;
     } else if (type === 'furnace') {
@@ -1761,34 +2104,53 @@ export class Capytorio3DRenderer {
       g.add(dome);
       g.userData.spinPart = core;
     } else if (type === 'splitter') {
-      const passDeck = new THREE.Mesh(
-        this.getCachedMachineGeo(
-          'split_deck',
-          () => new THREE.BoxGeometry(2.16, 0.14, CAPYTORIO_TILE_SIZE + 0.02)
-        ),
-        this.matSteelDark
+      // True classic Factorio 2x1 dual-lane belt splitter
+      const halfSpan = CAPYTORIO_TILE_SIZE * 0.5;
+      const laneDeckGeo = this.getCachedMachineGeo(
+        'split_lane_deck_2x1',
+        () => new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 0.86, 0.14, CAPYTORIO_TILE_SIZE + 0.02)
       );
-      passDeck.position.y = 0.07;
-      passDeck.receiveShadow = true;
-      g.add(passDeck);
+      const deckL = new THREE.Mesh(laneDeckGeo, this.matSteelDark);
+      deckL.position.set(-halfSpan, 0.07, 0);
+      deckL.receiveShadow = true;
+      g.add(deckL);
+
+      const deckR = new THREE.Mesh(laneDeckGeo, this.matSteelDark);
+      deckR.position.set(halfSpan, 0.07, 0);
+      deckR.receiveShadow = true;
+      g.add(deckR);
 
       const bridge = new THREE.Mesh(
-        this.getCachedMachineGeo('split_bridge', () => new THREE.BoxGeometry(2.14, 0.62, 1.25)),
+        this.getCachedMachineGeo(
+          'split_bridge_2x1',
+          () => new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 2 - 0.24, 0.66, 1.32)
+        ),
         accentMat
       );
-      bridge.position.y = 0.54;
+      bridge.position.y = 0.56;
       bridge.castShadow = true;
       bridge.receiveShadow = true;
       g.add(bridge);
       accentMeshes.push(bridge);
 
-      const dial = new THREE.Mesh(
-        this.getCachedMachineGeo('split_dial', () => new THREE.ConeGeometry(0.42, 0.45, 4)),
-        this.matHazardYellow
+      const centerDivider = new THREE.Mesh(
+        this.getCachedMachineGeo('split_divider', () => new THREE.BoxGeometry(0.28, 0.78, 1.56)),
+        this.matSteelLight
       );
-      dial.rotation.x = -Math.PI * 0.5;
-      dial.position.set(0, 0.98, -0.15);
-      g.add(dial);
+      centerDivider.position.set(0, 0.52, 0);
+      centerDivider.castShadow = true;
+      g.add(centerDivider);
+
+      const dialGeo = this.getCachedMachineGeo('split_dial', () => new THREE.ConeGeometry(0.36, 0.48, 4));
+      const dialL = new THREE.Mesh(dialGeo, this.matHazardYellow);
+      dialL.rotation.x = -Math.PI * 0.5;
+      dialL.position.set(-halfSpan, 1.0, -0.15);
+      g.add(dialL);
+
+      const dialR = new THREE.Mesh(dialGeo, this.matHazardYellow);
+      dialR.rotation.x = -Math.PI * 0.5;
+      dialR.position.set(halfSpan, 1.0, -0.15);
+      g.add(dialR);
     } else if (type === 'tunnel') {
       const passDeck = new THREE.Mesh(
         this.getCachedMachineGeo(
@@ -2031,7 +2393,7 @@ export class Capytorio3DRenderer {
       if (bp) {
         return bp.dir === expectedDir;
       }
-      const world = engine.machines.get(key);
+      const world = engine.occupancyGrid.get(key);
       if (!world) return false;
       return (
         (world.type === 'belt' || world.type === 'splitter' || world.type === 'tunnel') &&
@@ -2148,7 +2510,7 @@ export class Capytorio3DRenderer {
                 _color.setHex(meta.colorHex).multiplyScalar(0.55);
                 this.orePlateInstanced.setColorAt(oreCount, _color);
 
-                const hasDrill = engine.machines.get(tileKey(gx, gz))?.type === 'drill';
+                const hasDrill = engine.getMachineAt(gx, gz)?.type === 'drill';
                 const crystalScale = (hasDrill ? 0.55 : 0.78 + h * 0.45) * subPixelShrink;
                 _dummy.position.set(
                   wx + (h - 0.5) * 0.5,
@@ -2262,10 +2624,14 @@ export class Capytorio3DRenderer {
     );
     const beltHalfSpanX = CAPYTORIO_TILE_SIZE * 0.88 * 0.5 - 0.055; // 1.045m from tile center
     const renderItemsAtScale = altitudeRadius <= 1800;
+    const showAltMode = engine.altModeEnabled && altitudeRadius <= 420;
+    this.altModeRoot.visible = showAltMode;
+    let altSpriteCount = 0;
 
     for (const [k, m] of engine.machines) {
-      const wx = capytorioGridToWorldX(m.gx);
-      const wz = capytorioGridToWorldZ(m.gz);
+      const fp = engine.getMachineFootprint(m);
+      const wx = capytorioMachineCenterWorldX(m.gx, fp.width);
+      const wz = capytorioMachineCenterWorldZ(m.gz, fp.height);
       if (Math.abs(wx - camX) > maxVisibleMeters || Math.abs(wz - camZ) > maxVisibleMeters) {
         continue;
       }
@@ -2275,7 +2641,7 @@ export class Capytorio3DRenderer {
       const rightDx = -fwdDz;
       const rightDz = fwdDx;
       const rotY = dirToRotY(m.dir);
-      const curveShape = m.type === 'belt' ? getBeltCurveShape(engine.machines, m) : 'straight';
+      const curveShape = m.type === 'belt' ? getBeltCurveShape(engine.occupancyGrid, m) : 'straight';
 
       if (m.type === 'belt') {
         const tierMult = m.tierMult ?? 1.0;
@@ -2330,14 +2696,14 @@ export class Capytorio3DRenderer {
           }
 
           // Check perpendicular neighbors feeding into left or right side of this straight/T-junction belt
-          const leftNb = engine.machines.get(tileKey(m.gx - rightDx, m.gz - rightDz));
+          const leftNb = engine.getMachineAt(m.gx - rightDx, m.gz - rightDz);
           const leftFeed = Boolean(
             leftNb &&
               (leftNb.type === 'belt' || leftNb.type === 'splitter' || leftNb.type === 'tunnel' || leftNb.type === 'drill') &&
               DIR_DX[leftNb.dir] === rightDx &&
               DIR_DZ[leftNb.dir] === rightDz
           );
-          const rightNb = engine.machines.get(tileKey(m.gx + rightDx, m.gz + rightDz));
+          const rightNb = engine.getMachineAt(m.gx + rightDx, m.gz + rightDz);
           const rightFeed = Boolean(
             rightNb &&
               (rightNb.type === 'belt' || rightNb.type === 'splitter' || rightNb.type === 'tunnel' || rightNb.type === 'drill') &&
@@ -2392,9 +2758,14 @@ export class Capytorio3DRenderer {
           this.root.add(group);
         }
 
+        resolveMachineVisualScale(m.type, fp.width, fp.height, _scaleScratch);
         group.position.set(wx, 0, wz);
         group.rotation.y = rotY;
-        group.scale.setScalar(subPixelShrink);
+        group.scale.set(
+          _scaleScratch[0] * subPixelShrink,
+          _scaleScratch[1] * subPixelShrink,
+          _scaleScratch[2] * subPixelShrink
+        );
         const accentMeshes = group.userData.accentMeshes as THREE.Mesh[] | undefined;
         if (accentMeshes && accentMeshes.length > 0) {
           const tint = m.variantItemId
@@ -2447,29 +2818,38 @@ export class Capytorio3DRenderer {
           const shoulderPivot = group.userData.shoulderPivot as THREE.Object3D | undefined;
           const elbowPivot = group.userData.elbowPivot as THREE.Object3D | undefined;
           const wristPivot = group.userData.wristPivot as THREE.Object3D | undefined;
+          const heldMount = group.userData.heldMount as THREE.Object3D | undefined;
+          const reachTiles = getCapytorioInserterReach(m.variantItemId);
+          const reachScale = reachTiles === 2 ? LONG_INSERTER_REACH_SCALE : 1.0;
+          turret.scale.setScalar(reachScale);
+          if (heldMount) {
+            heldMount.scale.setScalar(1.0 / reachScale);
+          }
 
           // Compute exact world-local target (tgtX, yWrist, tgtZ) in inserter's local space (-Z forward)
           const phase = m.inserterPhase ?? (m.holdingItem ? 'carrying' : m.armSwing > 0.01 ? 'returning' : 'idle_pickup');
+          const defaultDist = reachTiles * CAPYTORIO_TILE_SIZE - 0.15;
+          const idleDist = 1.45 * reachScale;
           const px = m.pickupLocalX ?? 0;
-          const pz = m.pickupLocalZ ?? 2.35;
+          const pz = m.pickupLocalZ ?? defaultDist;
           const dx = m.dropLocalX ?? 0;
-          const dz = m.dropLocalZ ?? -2.35;
+          const dz = m.dropLocalZ ?? -defaultDist;
 
           let tgtX = 0;
-          let tgtZ = 1.45;
-          let yWrist = 0.96;
+          let tgtZ = idleDist;
+          let yWrist = 0.96 + (reachScale - 1.0) * 0.45;
 
           if (phase === 'idle_pickup') {
             const relax = 1.0 - (m.armExtend ?? 0);
             tgtX = px * (1 - relax);
-            tgtZ = 1.45 + (pz - 1.45) * (1 - relax);
-            yWrist = 0.96 - (1 - relax) * 0.54;
+            tgtZ = idleDist + (pz - idleDist) * (1 - relax);
+            yWrist = (0.96 + (reachScale - 1.0) * 0.45) - (1 - relax) * 0.54;
           } else if (phase === 'reaching') {
             const eRaw = m.armExtend ?? 0;
             const e = eRaw * eRaw * (3 - 2 * eRaw);
             tgtX = px * e;
-            tgtZ = 1.45 + (pz - 1.45) * e;
-            yWrist = 0.96 + (0.40 - 0.96) * e;
+            tgtZ = idleDist + (pz - idleDist) * e;
+            yWrist = (0.96 + (reachScale - 1.0) * 0.45) + (0.40 - (0.96 + (reachScale - 1.0) * 0.45)) * e;
           } else if (phase === 'carrying') {
             const s = m.armSwing < 0 ? 0 : m.armSwing > 1 ? 1 : m.armSwing;
             const aStart = Math.atan2(-px, -pz);
@@ -2483,29 +2863,30 @@ export class Capytorio3DRenderer {
             const curRad = rStart + (rEnd - rStart) * s;
             tgtX = -Math.sin(curAng) * curRad;
             tgtZ = -Math.cos(curAng) * curRad;
-            yWrist = 0.40 + Math.sin(s * Math.PI) * 0.72;
+            yWrist = 0.40 + Math.sin(s * Math.PI) * (0.72 * reachScale);
           } else {
             // 'returning': sweep smoothly from drop (1) back to idle hover (0) empty
             const s = m.armSwing < 0 ? 0 : m.armSwing > 1 ? 1 : m.armSwing;
-            const aStart = Math.atan2(0, -1.45);
+            const aStart = Math.atan2(0, -idleDist);
             const aEnd = Math.atan2(-dx, -dz);
             let da = aEnd - aStart;
             while (da > Math.PI) da -= Math.PI * 2;
             while (da < -Math.PI) da += Math.PI * 2;
-            const rStart = 1.45;
+            const rStart = idleDist;
             const rEnd = Math.hypot(dx, dz);
             const curAng = aStart + da * s;
             const curRad = rStart + (rEnd - rStart) * s;
             tgtX = -Math.sin(curAng) * curRad;
             tgtZ = -Math.cos(curAng) * curRad;
-            yWrist = 0.40 + Math.sin(s * Math.PI) * 0.48 + (1 - s) * 0.56;
+            yWrist = 0.40 + Math.sin(s * Math.PI) * (0.48 * reachScale) + (1 - s) * 0.56;
           }
 
           turret.rotation.y = Math.atan2(-tgtX, -tgtZ);
 
           if (shoulderPivot && elbowPivot && wristPivot) {
-            const rTarget = Math.max(0.45, Math.min(3.26, Math.hypot(tgtX, tgtZ)));
-            const dy = yWrist - INSERTER_SHOULDER_Y;
+            const shoulderWorldY = 0.38 + 0.22 * reachScale;
+            const rTarget = Math.max(0.45, Math.min(3.26, Math.hypot(tgtX, tgtZ) / reachScale));
+            const dy = (yWrist - shoulderWorldY) / reachScale;
             const dist = Math.min(3.28, Math.max(0.35, Math.hypot(rTarget, dy)));
             const l1 = INSERTER_UPPER_ARM_LEN;
             const l2 = INSERTER_FOREARM_LEN;
@@ -2555,7 +2936,31 @@ export class Capytorio3DRenderer {
         }
       }
 
-      // Render rigid 1:1 items riding along straight or concentric curved arc lanes (zero shape distortion)
+      // 3D Alt-Mode pooled badge sprite (zero per-frame allocations)
+      if (showAltMode && m.type !== 'belt' && altSpriteCount < MAX_ALT_MODE_SPRITES) {
+        if (this.fillAltModeBadge(engine, m)) {
+          const sprite = this.getOrCreateAltModeSprite(altSpriteCount);
+          const mat = this.getAltModeMaterial(
+            _altBadgeScratch.key,
+            _altBadgeScratch.label,
+            _altBadgeScratch.sub,
+            _altBadgeScratch.accent,
+            _altBadgeScratch.warn
+          );
+          if (sprite.material !== mat) {
+            sprite.material = mat;
+          }
+          const span = Math.max(fp.width, fp.height);
+          const badgeY = span >= 3 ? 3.55 : span === 2 ? 2.85 : m.type === 'splitter' ? 1.85 : 1.75;
+          const badgeSize = (span >= 3 ? 2.15 : span === 2 ? 1.72 : 1.28) * subPixelShrink;
+          sprite.position.set(wx, badgeY, wz);
+          sprite.scale.set(badgeSize, badgeSize, 1);
+          sprite.visible = true;
+          altSpriteCount++;
+        }
+      }
+
+      // Render rigid 1:1 items riding along straight, curved, or 2x1 splitter lanes (zero shape distortion)
       if (renderItemsAtScale && m.beltItems.length > 0) {
         for (let bi = 0; bi < m.beltItems.length; bi++) {
           const bItem = m.beltItems[bi];
@@ -2565,11 +2970,20 @@ export class Capytorio3DRenderer {
           if (idx >= MAX_SHAPE_ITEM_INSTANCES) continue;
 
           const lane: 0 | 1 = bItem.lane === 1 ? 1 : 0;
-          evalBeltItemLocalPose(curveShape, lane, bItem.progress, _itemPoseScratch);
           const edge = bItem.edgeProgress ?? 0;
-          const localX = _itemPoseScratch[0];
-          const localZ = _itemPoseScratch[1] - edge * 0.42;
-          const tangentYaw = _itemPoseScratch[2];
+          let localX: number;
+          let localZ: number;
+          let tangentYaw: number;
+          if (m.type === 'splitter') {
+            localX = (lane === 1 ? 1 : -1) * (CAPYTORIO_TILE_SIZE * 0.5);
+            localZ = (0.5 - bItem.progress) * CAPYTORIO_TILE_SIZE - edge * 0.42;
+            tangentYaw = 0;
+          } else {
+            evalBeltItemLocalPose(curveShape, lane, bItem.progress, _itemPoseScratch);
+            localX = _itemPoseScratch[0];
+            localZ = _itemPoseScratch[1] - edge * 0.42;
+            tangentYaw = _itemPoseScratch[2];
+          }
 
           const worldX = wx + rightDx * localX - fwdDx * localZ;
           const worldZ = wz + rightDz * localX - fwdDz * localZ;
@@ -2587,6 +3001,11 @@ export class Capytorio3DRenderer {
           _shapeCounts[shape] = idx + 1;
         }
       }
+    }
+
+    // Hide unused pooled Alt-Mode sprites
+    for (let i = altSpriteCount; i < this.altModeSpritePool.length; i++) {
+      this.altModeSpritePool[i].visible = false;
     }
 
     // Render spilled belt-end items tumbling and resting on the Capytorio meadow (rigid uniform scale, 0 extra draw calls)
@@ -2686,30 +3105,52 @@ export class Capytorio3DRenderer {
       engine.clipboardToolState === 'select_copy' || engine.clipboardToolState === 'select_cut';
 
     this.cursorGroup.visible = showCursorAndRing && !isPasteMode;
-    const hWx = capytorioGridToWorldX(engine.hoveredGx);
-    const hWz = capytorioGridToWorldZ(engine.hoveredGz);
-    this.cursorGroup.position.set(hWx, 0.01, hWz);
-    this.cursorGroup.rotation.y = dirToRotY(engine.selectedDir);
-    if (isSelectMode) {
-      const isCut = engine.clipboardToolState === 'select_cut';
-      this.cursorFrameMat.color.setHex(isCut ? 0xf97316 : 0x38bdf8);
-      this.cursorFrameMat.emissive.setHex(isCut ? 0xc2410c : 0x0284c7);
-      this.ghostArrowMesh.visible = false;
-    } else if (engine.selectedTool === 'demolish') {
-      this.cursorFrameMat.color.setHex(0xef4444);
-      this.cursorFrameMat.emissive.setHex(0xdc2626);
-      this.ghostArrowMesh.visible = false;
-    } else if (engine.selectedTool === 'mine') {
-      this.cursorFrameMat.color.setHex(0xfacc15);
-      this.cursorFrameMat.emissive.setHex(0xca8a04);
+    if (isSelectMode || engine.selectedTool === 'demolish' || engine.selectedTool === 'mine') {
+      const hWx = capytorioGridToWorldX(engine.hoveredGx);
+      const hWz = capytorioGridToWorldZ(engine.hoveredGz);
+      this.cursorGroup.position.set(hWx, 0.01, hWz);
+      this.cursorGroup.rotation.y = 0;
+      this.ghostBodyMesh.scale.set(1, 1, 1);
+      if (isSelectMode) {
+        const isCut = engine.clipboardToolState === 'select_cut';
+        this.cursorFrameMat.color.setHex(isCut ? 0xf97316 : 0x38bdf8);
+        this.cursorFrameMat.emissive.setHex(isCut ? 0xc2410c : 0x0284c7);
+      } else if (engine.selectedTool === 'demolish') {
+        this.cursorFrameMat.color.setHex(0xef4444);
+        this.cursorFrameMat.emissive.setHex(0xdc2626);
+      } else {
+        this.cursorFrameMat.color.setHex(0xfacc15);
+        this.cursorFrameMat.emissive.setHex(0xca8a04);
+      }
       this.ghostArrowMesh.visible = false;
     } else {
       const resolvedGhost = resolveCapytorioPlaceableSpec(engine.selectedTool);
+      const fp = getCapytorioToolFootprint(engine.selectedTool, engine.selectedDir);
+      const anchor = getCapytorioPlacementAnchor(
+        engine.hoveredGx,
+        engine.hoveredGz,
+        engine.selectedTool,
+        engine.selectedDir
+      );
+      const hWx = capytorioMachineCenterWorldX(anchor.gx, fp.width);
+      const hWz = capytorioMachineCenterWorldZ(anchor.gz, fp.height);
+      this.cursorGroup.position.set(hWx, 0.01, hWz);
+      this.cursorGroup.rotation.y = 0;
+      this.ghostBodyMesh.scale.set(fp.width, 1, fp.height);
+      const arrowOffset = Math.max(fp.width, fp.height) * CAPYTORIO_TILE_SIZE * 0.28;
+      this.ghostArrowMesh.position.set(
+        DIR_DX[engine.selectedDir] * arrowOffset,
+        0.48,
+        DIR_DZ[engine.selectedDir] * arrowOffset
+      );
+      this.ghostArrowMesh.rotation.y = dirToRotY(engine.selectedDir);
+      const fits = engine.canFootprintFit(anchor.gx, anchor.gz, fp.width, fp.height);
       const validDrill =
         resolvedGhost?.baseType !== 'drill' ||
-        engine.getResourceAt(engine.hoveredGx, engine.hoveredGz) !== null;
-      this.cursorFrameMat.color.setHex(validDrill ? 0x22c55e : 0xef4444);
-      this.cursorFrameMat.emissive.setHex(validDrill ? 0x16a34a : 0xb91c1c);
+        engine.findFirstOreInFootprint(anchor.gx, anchor.gz, fp.width, fp.height) !== null;
+      const validPlace = fits && validDrill;
+      this.cursorFrameMat.color.setHex(validPlace ? 0x22c55e : 0xef4444);
+      this.cursorFrameMat.emissive.setHex(validPlace ? 0x16a34a : 0xb91c1c);
       this.ghostArrowMesh.visible = true;
     }
 
@@ -2735,7 +3176,7 @@ export class Capytorio3DRenderer {
       const anchorGx = engine.pasteAnchor ? engine.pasteAnchor.gx : engine.hoveredGx;
       const anchorGz = engine.pasteAnchor ? engine.pasteAnchor.gz : engine.hoveredGz;
 
-      // First pass: index belt-compatible blueprint entries for curved ghost belt detection
+      // First pass: index belt-compatible blueprint entries (including all tiles of 2x1 splitters)
       for (let i = 0; i < entries.length && i < MAX_BLUEPRINT_GHOST_TILES; i++) {
         const entry = entries[i];
         if (
@@ -2743,7 +3184,12 @@ export class Capytorio3DRenderer {
           entry.baseType === 'splitter' ||
           entry.baseType === 'tunnel'
         ) {
-          _ghostBeltLookup.set(tileKey(anchorGx + entry.dx, anchorGz + entry.dz), entry);
+          const efp = getCapytorioToolFootprint(entry.toolId, entry.dir);
+          for (let ox = 0; ox < efp.width; ox++) {
+            for (let oz = 0; oz < efp.height; oz++) {
+              _ghostBeltLookup.set(tileKey(anchorGx + entry.dx + ox, anchorGz + entry.dz + oz), entry);
+            }
+          }
         }
       }
 
@@ -2751,15 +3197,25 @@ export class Capytorio3DRenderer {
         const entry = entries[i];
         const gx = anchorGx + entry.dx;
         const gz = anchorGz + entry.dz;
+        const efp = getCapytorioToolFootprint(entry.toolId, entry.dir);
         const existingAt = engine.machines.get(tileKey(gx, gz));
         let valid = true;
-        if (existingAt) {
-          valid =
-            entry.baseType === 'assembler' &&
-            existingAt.type === 'assembler' &&
-            entry.recipeId !== undefined;
+        if (
+          existingAt &&
+          existingAt.type === entry.baseType &&
+          (entry.baseType === 'assembler' ||
+            entry.baseType === 'splitter' ||
+            entry.baseType === 'inserter' ||
+            entry.baseType === 'chest')
+        ) {
+          valid = true;
+        } else if (!engine.canFootprintFit(gx, gz, efp.width, efp.height)) {
+          valid = false;
         } else {
-          if (entry.baseType === 'drill' && !engine.getResourceAt(gx, gz)) {
+          if (
+            entry.baseType === 'drill' &&
+            !engine.findFirstOreInFootprint(gx, gz, efp.width, efp.height)
+          ) {
             valid = false;
           } else {
             const spec = resolveCapytorioPlaceableSpec(entry.toolId);
@@ -2779,11 +3235,11 @@ export class Capytorio3DRenderer {
             }
           }
         }
-        const wx = capytorioGridToWorldX(gx);
-        const wz = capytorioGridToWorldZ(gz);
+        const wx = capytorioMachineCenterWorldX(gx, efp.width);
+        const wz = capytorioMachineCenterWorldZ(gz, efp.height);
         _dummy.position.set(wx, 0.03, wz);
         _dummy.rotation.set(0, 0, 0);
-        _dummy.scale.set(1, 1, 1);
+        _dummy.scale.set(efp.width, 1, efp.height);
         _dummy.updateMatrix();
         this.blueprintTileInstanced.setMatrixAt(bpTileCount, _dummy.matrix);
         _color.setHex(valid ? 0x22c55e : 0xef4444);
@@ -2791,9 +3247,14 @@ export class Capytorio3DRenderer {
         bpTileCount++;
 
         const ghostGroup = this.acquireGhostGroup(entry.baseType);
+        resolveMachineVisualScale(entry.baseType, efp.width, efp.height, _scaleScratch);
         ghostGroup.position.set(wx, 0, wz);
         ghostGroup.rotation.set(0, dirToRotY(entry.dir), 0);
-        ghostGroup.scale.set(subPixelShrink, subPixelShrink, subPixelShrink);
+        ghostGroup.scale.set(
+          _scaleScratch[0] * subPixelShrink,
+          _scaleScratch[1] * subPixelShrink,
+          _scaleScratch[2] * subPixelShrink
+        );
         if (entry.baseType === 'belt') {
           const shape = this.getGhostBeltCurveShape(gx, gz, entry.dir, engine);
           const variants = ghostGroup.userData.beltVariants as
@@ -2815,11 +3276,12 @@ export class Capytorio3DRenderer {
         if (bpTileCount >= MAX_BLUEPRINT_GHOST_TILES) return;
         const m = engine.machines.get(key);
         if (!m) return;
-        const wx = capytorioGridToWorldX(m.gx);
-        const wz = capytorioGridToWorldZ(m.gz);
+        const mfp = engine.getMachineFootprint(m);
+        const wx = capytorioMachineCenterWorldX(m.gx, mfp.width);
+        const wz = capytorioMachineCenterWorldZ(m.gz, mfp.height);
         _dummy.position.set(wx, 0.08, wz);
         _dummy.rotation.set(0, 0, 0);
-        _dummy.scale.set(1, 1, 1);
+        _dummy.scale.set(mfp.width, 1, mfp.height);
         _dummy.updateMatrix();
         this.blueprintTileInstanced.setMatrixAt(bpTileCount, _dummy.matrix);
         _color.setHex(selColor);
@@ -2847,7 +3309,7 @@ export class Capytorio3DRenderer {
       this.blueprintArrowInstanced.instanceColor.needsUpdate = true;
     }
 
-    // 5. Universal Inspected Tile / Entity Selection Halo
+    // 5. Universal Inspected Tile / Entity Selection Halo (scaled to multi-tile footprint)
     if (showCursorAndRing) {
       let inspGx: number | null = null;
       let inspGz: number | null = null;
@@ -2862,12 +3324,29 @@ export class Capytorio3DRenderer {
         }
       }
       if (inspGx !== null && inspGz !== null) {
-        this.inspectRingMesh.visible = true;
-        this.inspectRingMesh.position.set(
-          capytorioGridToWorldX(inspGx),
-          0.05,
-          capytorioGridToWorldZ(inspGz)
-        );
+        const inspMachine = engine.getMachineAt(inspGx, inspGz);
+        if (inspMachine) {
+          const ifp = engine.getMachineFootprint(inspMachine);
+          this.inspectRingMesh.visible = true;
+          this.inspectRingMesh.position.set(
+            capytorioMachineCenterWorldX(inspMachine.gx, ifp.width),
+            0.05,
+            capytorioMachineCenterWorldZ(inspMachine.gz, ifp.height)
+          );
+          this.inspectRingMesh.scale.set(
+            ifp.width >= 2 ? ifp.width * 0.94 : 1,
+            1,
+            ifp.height >= 2 ? ifp.height * 0.94 : 1
+          );
+        } else {
+          this.inspectRingMesh.visible = true;
+          this.inspectRingMesh.position.set(
+            capytorioGridToWorldX(inspGx),
+            0.05,
+            capytorioGridToWorldZ(inspGz)
+          );
+          this.inspectRingMesh.scale.set(1, 1, 1);
+        }
       } else {
         this.inspectRingMesh.visible = false;
       }
@@ -2886,6 +3365,11 @@ export class Capytorio3DRenderer {
     for (let i = 0; i < this.sharedTextures.length; i++) {
       this.sharedTextures[i].dispose();
     }
+    this.altModeMatCache.forEach((mat) => mat.dispose());
+    this.altModeTexCache.forEach((tex) => tex.dispose());
+    this.altModeMatCache.clear();
+    this.altModeTexCache.clear();
+    this.altModeSpritePool.length = 0;
     this.activeMachineGroups.clear();
     this.inactivePoolByType.clear();
     this.ghostPoolByType.clear();

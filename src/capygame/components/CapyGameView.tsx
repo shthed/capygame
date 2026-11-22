@@ -738,6 +738,8 @@ export const CapyGameView: React.FC = () => {
     pinchDist: null,
   });
 
+  const altTapCandidateRef = useRef<boolean>(false);
+
   const capytorioDragRef = useRef<{
     active: boolean;
     mode:
@@ -747,6 +749,8 @@ export const CapyGameView: React.FC = () => {
       | 'select_lasso'
       | 'position_blueprint'
       | 'open_pedia'
+      | 'copy_settings'
+      | 'paste_settings'
       | 'none';
     clipMode: 'copy' | 'cut';
     placedAny: boolean;
@@ -1388,6 +1392,14 @@ export const CapyGameView: React.FC = () => {
           !menuOpenRef.current &&
           !firstRunSetupOpenRef.current;
 
+        if (e.key === 'Alt') {
+          if (inCapytorioActive && !e.repeat && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            altTapCandidateRef.current = true;
+          }
+          return;
+        }
+        altTapCandidateRef.current = false;
+
         if ((e.key === 'Shift' || (key === 'q' && !inCapytorioActive)) && !e.repeat) {
           managerRef.current.triggerDash();
         }
@@ -1592,6 +1604,22 @@ export const CapyGameView: React.FC = () => {
 
       const handleKeyUp = (e: KeyboardEvent) => {
         if (!managerRef.current) return;
+        if (e.key === 'Alt') {
+          if (altTapCandidateRef.current) {
+            altTapCandidateRef.current = false;
+            const inCapytorioActive =
+              managerRef.current.currentMode === 'capytorio' &&
+              managerRef.current.cosmicStage === 'playing' &&
+              !modalOpenRef.current &&
+              !menuOpenRef.current &&
+              !firstRunSetupOpenRef.current;
+            if (inCapytorioActive) {
+              const nextAlt = managerRef.current.toggleCapytorioAltMode();
+              showToast(nextAlt ? 'Alt-Mode ON — 3D Machine Icons' : 'Alt-Mode OFF');
+            }
+          }
+          return;
+        }
         const key = e.key.toLowerCase();
         if (key === 'w' || key === 'arrowup' || key === 's' || key === 'arrowdown') {
           managerRef.current.moveInput.z = 0;
@@ -1599,6 +1627,10 @@ export const CapyGameView: React.FC = () => {
         if (key === 'a' || key === 'arrowleft' || key === 'd' || key === 'arrowright') {
           managerRef.current.moveInput.x = 0;
         }
+      };
+
+      const handleWindowPointerDown = () => {
+        altTapCandidateRef.current = false;
       };
 
       const handleWindowMouseMove = (e: MouseEvent) => {
@@ -1648,6 +1680,7 @@ export const CapyGameView: React.FC = () => {
       };
 
       const handleWindowBlur = () => {
+        altTapCandidateRef.current = false;
         if (isFreeMouselookRef.current) {
           setFreeMouselookActive(false);
         }
@@ -1693,6 +1726,7 @@ export const CapyGameView: React.FC = () => {
       window.addEventListener('resize', handleResize);
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('keyup', handleKeyUp);
+      window.addEventListener('pointerdown', handleWindowPointerDown, true);
       window.addEventListener('mousemove', handleWindowMouseMove);
       window.addEventListener('blur', handleWindowBlur);
       document.addEventListener('pointerlockchange', handlePointerLockChange);
@@ -1713,6 +1747,7 @@ export const CapyGameView: React.FC = () => {
         window.removeEventListener('resize', handleResize);
         window.removeEventListener('keydown', handleKeyDown);
         window.removeEventListener('keyup', handleKeyUp);
+        window.removeEventListener('pointerdown', handleWindowPointerDown, true);
         window.removeEventListener('mousemove', handleWindowMouseMove);
         window.removeEventListener('blur', handleWindowBlur);
         document.removeEventListener('pointerlockchange', handlePointerLockChange);
@@ -1780,12 +1815,33 @@ export const CapyGameView: React.FC = () => {
 
       // Alt + Left-Click anywhere opens Capytoriopedia directly on the clicked tile/entity
       if (e.button === 0 && e.altKey) {
+        altTapCandidateRef.current = false;
         e.preventDefault();
         capytorioDragRef.current.active = true;
         capytorioDragRef.current.mode = 'open_pedia';
         capytorioDragRef.current.originNdcX = ndcX;
         capytorioDragRef.current.originNdcY = ndcY;
         return;
+      }
+
+      // Factorio Shift + Right-Click copies entity settings; Shift + Left-Click pastes entity settings
+      if (clipState === 'off' && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        if (e.button === 2) {
+          e.preventDefault();
+          capytorioDragRef.current.active = true;
+          capytorioDragRef.current.mode = 'copy_settings';
+          capytorioDragRef.current.originNdcX = ndcX;
+          capytorioDragRef.current.originNdcY = ndcY;
+          return;
+        }
+        if (e.button === 0) {
+          e.preventDefault();
+          capytorioDragRef.current.active = true;
+          capytorioDragRef.current.mode = 'paste_settings';
+          capytorioDragRef.current.originNdcX = ndcX;
+          capytorioDragRef.current.originNdcY = ndcY;
+          return;
+        }
       }
 
       // Paste mode: tap or drag on canvas positions & locks the transparent 3D blueprint ghost (BOTH mouse & touch)
@@ -2109,6 +2165,36 @@ export const CapyGameView: React.FC = () => {
       const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
       const res = managerRef.current.openCapytorioPediaAtNdc(ndcX, ndcY);
       openCapytorioPedia(res.pediaId, res.info);
+      setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+      return;
+    }
+
+    if (wasCapytorioPress && dragMode === 'copy_settings' && managerRef.current) {
+      g.pointerId = null;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+      const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
+      const res = managerRef.current.copyCapytorioEntitySettingsAtNdc(ndcX, ndcY);
+      showToast(
+        res.ok
+          ? `Copied settings: ${res.label ?? 'Entity'}`
+          : res.reason ?? 'Click a configurable machine to copy settings'
+      );
+      setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+      return;
+    }
+
+    if (wasCapytorioPress && dragMode === 'paste_settings' && managerRef.current) {
+      g.pointerId = null;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+      const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
+      const res = managerRef.current.pasteCapytorioEntitySettingsAtNdc(ndcX, ndcY);
+      showToast(
+        res.ok
+          ? `Pasted settings: ${res.label ?? 'Entity'}`
+          : res.reason ?? 'No matching copied settings to paste'
+      );
       setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
       return;
     }
@@ -6774,34 +6860,44 @@ export const CapyGameView: React.FC = () => {
                 showToast(res.reason);
               }
             }}
-            onCraftMachine={(mType) => {
+            onCraftMachine={(mType, count = 1) => {
               const spec = CAPYTORIO_MACHINE_SPECS[mType];
-              const ok = managerRef.current?.craftCapytorioMachine(mType) ?? false;
-              if (ok) {
-                showToast(`Crafted +1 ${spec.name}`);
+              const res = managerRef.current?.enqueueCapytorioMachineCraft(mType, count);
+              if (res?.ok) {
+                showToast(
+                  res.queuedCount > 1
+                    ? `Queued ${res.queuedCount}× ${spec.name}`
+                    : `Queued +1 ${spec.name}`
+                );
               } else {
                 const costLabel = Object.entries(spec.craftCost)
                   .map(([id, amt]) => `${amt} ${getCapytorioItemMeta(id).shortName}`)
                   .join(' · ');
-                showToast(`Need ${costLabel}`);
+                showToast(res?.reason ?? `Need ${costLabel}`);
               }
             }}
             onCraftRecipe={(recipeId, count, autoEquipResult = false) => {
               const rec = CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
-              const ok = managerRef.current?.pocketCraftCapytorioRecipe(recipeId, count) ?? false;
-              if (ok && rec) {
+              const res = managerRef.current?.enqueueCapytorioPocketCraft(recipeId, count);
+              if (res?.ok && rec) {
                 const outMeta = getCapytorioItemMeta(rec.result);
                 if (autoEquipResult && CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result]) {
                   lastCapytorioMachineRef.current = rec.result;
                   managerRef.current?.setCapytorioTool(rec.result, true);
                 }
                 showToast(
-                  count > 1
-                    ? `Crafted up to ${count}x ${outMeta.name}`
-                    : `Crafted +${rec.resultCount} ${outMeta.name}`
+                  res.queuedBatches > 1
+                    ? `Queued ${res.queuedBatches}× ${outMeta.name}`
+                    : `Queued +${rec.resultCount} ${outMeta.name}`
                 );
               } else if (!autoEquipResult) {
-                showToast('Missing required ingredients in Inventory');
+                showToast(res?.reason ?? 'Missing required ingredients in Inventory');
+              }
+            }}
+            onCancelCraftQueueItem={(uid) => {
+              const ok = managerRef.current?.cancelCapytorioCraftQueueItem(uid) ?? false;
+              if (ok) {
+                showToast('Cancelled craft · 100% ingredients refunded');
               }
             }}
             onSelectTech={(techId) => {
@@ -6844,6 +6940,35 @@ export const CapyGameView: React.FC = () => {
               managerRef.current?.setCapytorioAssemblerRecipe(recipeId);
               const rec = CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
               showToast(`Assembler Recipe: ${rec?.name ?? recipeId}`);
+            }}
+            onToggleAltMode={() => {
+              const nextAlt = managerRef.current?.toggleCapytorioAltMode() ?? true;
+              showToast(nextAlt ? 'Alt-Mode ON — 3D Machine Icons' : 'Alt-Mode OFF');
+            }}
+            onCopyEntitySettings={(gx, gz) => {
+              const res = managerRef.current?.copyCapytorioEntitySettingsAtTile(gx, gz);
+              showToast(
+                res?.ok
+                  ? `Copied settings: ${res.label ?? 'Entity'}`
+                  : res?.reason ?? 'No configurable settings to copy'
+              );
+            }}
+            onPasteEntitySettings={(gx, gz) => {
+              const res = managerRef.current?.pasteCapytorioEntitySettingsAtTile(gx, gz);
+              showToast(
+                res?.ok
+                  ? `Pasted settings: ${res.label ?? 'Entity'}`
+                  : res?.reason ?? 'No matching copied settings to paste'
+              );
+            }}
+            onSetSplitterConfig={(gx, gz, config) => {
+              managerRef.current?.setCapytorioSplitterConfig(gx, gz, config);
+            }}
+            onSetInserterConfig={(gx, gz, config) => {
+              managerRef.current?.setCapytorioInserterConfig(gx, gz, config);
+            }}
+            onSetChestSlotLimit={(gx, gz, slotLimit) => {
+              managerRef.current?.setCapytorioChestSlotLimit(gx, gz, slotLimit);
             }}
             showToast={showToast}
           />

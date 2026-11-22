@@ -200,30 +200,31 @@ test('Capytorio hand-mining, full Drill -> Belt -> Furnace -> Chest automation, 
   const badDrill = engine.placeMachine('drill', 0, 0, 1);
   assert.equal(badDrill.ok, false);
 
-  // Build Drill at (-5,-5) facing East (+X) -> Belt (-4,-5) -> Belt (-3,-5) -> Furnace (-2,-5) -> Chest (-1,-5)
-  assert.equal(engine.placeMachine('drill', -5, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('belt', -4, -5, 1).ok, true);
+  // Build 3x3 Drill at (-6,-6) facing East (+X) -> ejects at (-3,-5)
+  // -> Belt (-3,-5) -> Belt (-2,-5) -> 2x2 Furnace (-1,-5) -> Chest (1,-5)
+  assert.equal(engine.placeMachine('drill', -6, -6, 1).ok, true);
   assert.equal(engine.placeMachine('belt', -3, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('furnace', -2, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('chest', -1, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('generator', 0, -4, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', -2, -5, 1).ok, true);
+  assert.equal(engine.placeMachine('furnace', -1, -5, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', 1, -5, 1).ok, true);
+  assert.equal(engine.placeMachine('generator', 2, -6, 1).ok, true);
 
   // Clicking an existing belt rotates it instead of erroring
-  const rotateRes = engine.placeMachine('belt', -4, -5, 1);
+  const rotateRes = engine.placeMachine('belt', -3, -5, 1);
   assert.equal(rotateRes.ok, true);
   assert.equal(rotateRes.machine?.dir, 2);
   // Rotate 3 more times back to East (1)
-  engine.rotateMachineAt(-4, -5);
-  engine.rotateMachineAt(-4, -5);
-  engine.rotateMachineAt(-4, -5);
-  assert.equal(engine.machines.get(tileKey(-4, -5))?.dir, 1);
+  engine.rotateMachineAt(-3, -5);
+  engine.rotateMachineAt(-3, -5);
+  engine.rotateMachineAt(-3, -5);
+  assert.equal(engine.machines.get(tileKey(-3, -5))?.dir, 1);
 
   // Simulate 16 seconds of factory execution
   for (let i = 0; i < 320; i++) {
     engine.step(0.05);
   }
 
-  const chest = engine.machines.get(tileKey(-1, -5));
+  const chest = engine.machines.get(tileKey(1, -5));
   assert.ok(chest, 'chest exists');
   assert.ok((chest.outputBuffer.iron_plate ?? 0) >= 1, 'smelted iron plates arrived in chest');
   assert.ok(engine.getTotalProduced() >= 2);
@@ -231,15 +232,15 @@ test('Capytorio hand-mining, full Drill -> Belt -> Furnace -> Chest automation, 
 
   // Auto-collect nearby chest empties plates into pocket
   const collected = engine.collectFromNearbyChestsAndOutputs(
-    (-1) * CAPYTORIO_TILE_SIZE,
+    1 * CAPYTORIO_TILE_SIZE,
     (-5) * CAPYTORIO_TILE_SIZE
   );
   assert.ok(collected >= 1);
   assert.ok(engine.getPocketItemCount('iron_plate') > 24);
 
-  // Demolish returns the furnace to pocket cleanly
+  // Demolish returns the furnace to pocket cleanly (works from any sub-tile!)
   const prevFurnaces = engine.getPocketMachineCount('furnace');
-  assert.equal(engine.demolishAt(-2, -5), 'furnace');
+  assert.equal(engine.demolishAt(0, -4), 'furnace');
   assert.equal(engine.getPocketMachineCount('furnace'), prevFurnaces + 1);
 });
 
@@ -247,14 +248,13 @@ test('Capytorio Splitters, Underground Tunnels, Smart Inserters, Labs & Tech Unl
   const engine = new CapytorioFactoryEngine();
   const completedTechs: string[] = [];
 
-  // Test Splitter round-robin & Tunnel jump across 3 tiles
+  // Test 2x1 (1x2 East-facing) Splitter dual-lane round-robin & Tunnel jump across 3 tiles
   assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
   assert.equal(engine.placeMachine('tunnel', 1, 0, 1).ok, true);
   assert.equal(engine.placeMachine('tunnel', 4, 0, 1).ok, true);
   assert.equal(engine.placeMachine('splitter', 5, 0, 1).ok, true);
   assert.equal(engine.placeMachine('chest', 6, 0, 1).ok, true);
-  assert.equal(engine.placeMachine('chest', 5, -1, 0).ok, true);
-  assert.equal(engine.placeMachine('chest', 5, 1, 2).ok, true);
+  assert.equal(engine.placeMachine('chest', 6, 1, 1).ok, true);
 
   // Seed 6 copper ores onto belt (0,0) and step
   for (let n = 0; n < 6; n++) {
@@ -264,24 +264,24 @@ test('Capytorio Splitters, Underground Tunnels, Smart Inserters, Labs & Tech Unl
       engine.step(0.05);
     }
   }
-  const cE = engine.machines.get(tileKey(6, 0))!.outputBuffer.copper_ore ?? 0;
-  const cN = engine.machines.get(tileKey(5, -1))!.outputBuffer.copper_ore ?? 0;
-  const cS = engine.machines.get(tileKey(5, 1))!.outputBuffer.copper_ore ?? 0;
-  assert.equal(cE + cN + cS, 6, 'all items jumped tunnel and split evenly');
-  assert.ok(cE >= 1 && cN >= 1 && cS >= 1, 'round-robin splitter hits all 3 outputs');
+  const cLeft = engine.machines.get(tileKey(6, 0))!.outputBuffer.copper_ore ?? 0;
+  const cRight = engine.machines.get(tileKey(6, 1))!.outputBuffer.copper_ore ?? 0;
+  assert.equal(cLeft + cRight, 6, 'all items jumped tunnel and split evenly across 2x1 outputs');
+  assert.equal(cLeft, 3, 'left output lane gets 3 items');
+  assert.equal(cRight, 3, 'right output lane gets 3 items');
 
-  // Power with Generator + Coal so Assembler + Inserter + Lab run at full efficiency
-  assert.equal(engine.placeMachine('generator', -2, 3, 1).ok, true);
-  engine.machines.get(tileKey(-2, 3))!.inputBuffer.coal = 4;
+  // Power with 3x3 Generator + Coal so 3x3 Assembler + Inserter + 3x3 Lab run at full efficiency
+  assert.equal(engine.placeMachine('generator', -7, 3, 1).ok, true);
+  engine.machines.get(tileKey(-7, 3))!.inputBuffer.coal = 4;
 
-  // Test Assembler -> Inserter -> Lab -> Automation I completion
-  assert.equal(engine.placeMachine('assembler', -1, 3, 1, 'automation_science').ok, true);
-  const asm = engine.machines.get(tileKey(-1, 3))!;
+  // Test 3x3 Assembler (-3,3.. -1,5) -> Inserter (0,4) -> 3x3 Lab (1,3.. 3,5) -> Automation I completion
+  assert.equal(engine.placeMachine('assembler', -3, 3, 1, 'automation_science').ok, true);
+  const asm = engine.machines.get(tileKey(-3, 3))!;
   asm.inputBuffer.copper_plate = 8;
   asm.inputBuffer.iron_gear = 8;
 
-  // Inserter picking from Assembler (-1,3) into Lab (1,3)
-  assert.equal(engine.placeMachine('inserter', 0, 3, 1).ok, true);
+  // Inserter picking from Assembler sub-tile (-1,4) into Lab sub-tile (1,4)
+  assert.equal(engine.placeMachine('inserter', 0, 4, 1).ok, true);
   assert.equal(engine.placeMachine('lab', 1, 3, 1).ok, true);
 
   const callbacks = {
@@ -347,10 +347,10 @@ test('Capytorio drag belt-painting aligns corners, pipette samples recipes, manu
   assert.equal(engine.powerSupplyMw, 6.0);
   assert.ok((engine.machines.get(tileKey(4, 0))?.fuelTimer ?? 0) > 0);
 
-  // 3. Place Assembler with 'copper_cable', test Smart Pipette [Q], manual Load Inputs [F], & Take Outputs
-  assert.equal(engine.placeMachine('assembler', 6, 0, 2, 'copper_cable').ok, true);
+  // 3. Place 3x3 Assembler at (8, 0) with 'copper_cable', test Smart Pipette [Q], manual Load Inputs [F], & Take Outputs
+  assert.equal(engine.placeMachine('assembler', 8, 0, 2, 'copper_cable').ok, true);
   engine.selectedTool = 'mine';
-  const pick = engine.pipetteAt(6, 0);
+  const pick = engine.pipetteAt(9, 1); // Sub-tile inside 3x3 assembler!
   assert.equal(pick.picked, true);
   assert.equal(pick.tool, 'assembler');
   assert.equal(engine.selectedRecipeId, 'copper_cable');
@@ -359,10 +359,10 @@ test('Capytorio drag belt-painting aligns corners, pipette samples recipes, manu
   assert.equal(emptyPick.picked, false);
   assert.equal(engine.selectedTool, 'mine');
 
-  const movedIn = engine.insertPocketInputsForMachine(6, 0, 2);
+  const movedIn = engine.insertPocketInputsForMachine(8, 0, 2);
   assert.equal(movedIn, 2);
   for (let i = 0; i < 60; i++) engine.step(0.05);
-  const takenOut = engine.takeMachineOutputsToPocket(6, 0);
+  const takenOut = engine.takeMachineOutputsToPocket(8, 0);
   assert.ok(takenOut >= 2);
   assert.ok(engine.getPocketItemCount('copper_cable') >= 2);
 
@@ -849,11 +849,11 @@ test('Capytorio3DRenderer: low-profile machines are immune to camera-fade, share
 
   const rev0 = engine.topologyRevision;
   assert.equal(engine.placeMachine('furnace', 0, 0, 1).ok, true);
-  assert.equal(engine.placeMachine('furnace', 0, 1, 1).ok, true);
   assert.equal(engine.placeMachine('furnace', 0, 2, 1).ok, true);
+  assert.equal(engine.placeMachine('furnace', 0, 4, 1).ok, true);
   assert.equal(engine.placeMachine('inserter', -1, 0, 1).ok, true);
-  assert.equal(engine.placeMachine('inserter', -1, 1, 1).ok, true);
-  assert.equal(engine.placeMachine('inserter', 1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', -1, 2, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', 2, 0, 1).ok, true);
   assert.ok(engine.topologyRevision >= rev0 + 6, 'topologyRevision increments on each placement');
 
   const revBeforeRotate = engine.topologyRevision;
@@ -1221,14 +1221,15 @@ test('Blueprint Library remembers last 100 Cut/Copy selections, persists across 
   assert.equal(engine.placeMachine('furnace', 2, 1, 3).ok, true);
 
   // 1. Copy saves to library and remains remembered even after clearClipboard (Esc)
-  const all = engine.selectMachinesInBox(0, 0, 2, 1);
+  // Furnace at (2,1) is 2x2 (x: 2..3, z: 1..2), so bounding box is width=4, height=3
+  const all = engine.selectMachinesInBox(0, 0, 3, 2);
   assert.equal(all.length, 4);
   engine.captureBlueprint(all, 'copy');
   assert.equal(engine.blueprintLibrary.length, 1);
   const firstBpId = engine.blueprintLibrary[0].id;
   assert.equal(engine.blueprintLibrary[0].sourceMode, 'copy');
-  assert.equal(engine.blueprintLibrary[0].width, 3);
-  assert.equal(engine.blueprintLibrary[0].height, 2);
+  assert.equal(engine.blueprintLibrary[0].width, 4);
+  assert.equal(engine.blueprintLibrary[0].height, 3);
 
   engine.clearClipboard();
   assert.equal(engine.clipboardToolState, 'off');
@@ -1240,28 +1241,38 @@ test('Blueprint Library remembers last 100 Cut/Copy selections, persists across 
   assert.equal(engine.clipboardToolState, 'paste');
   assert.equal(engine.clipboard?.entries.length, 4);
 
-  // 2. Flip Horizontal: dx -> -dx, dir 1 <-> 3, dir 0/2 unchanged
-  const beforeFlipH = engine.clipboard!.entries.map((e) => ({ dx: e.dx, dz: e.dz, dir: e.dir }));
+  // 2. Flip Horizontal: center-preserving multi-tile mirror (dx -> -dx - (w-1)), dir 1 <-> 3, dir 0/2 unchanged
+  const beforeFlipH = engine.clipboard!.entries.map((e) => ({
+    dx: e.dx,
+    dz: e.dz,
+    dir: e.dir,
+    w: e.baseType === 'furnace' ? 2 : 1,
+  }));
   assert.equal(engine.flipBlueprintHorizontal(), true);
   const afterFlipH = engine.clipboard!.entries;
   for (let i = 0; i < beforeFlipH.length; i++) {
     const a = beforeFlipH[i];
     const entry = afterFlipH[i];
-    assert.equal(entry.dx, -a.dx, 'Flip H negates dx');
+    assert.equal(entry.dx, -a.dx - (a.w - 1), 'Flip H mirrors multi-tile center cleanly');
     assert.equal(entry.dz, a.dz, 'Flip H preserves dz');
     const expectedDir = a.dir === 1 ? 3 : a.dir === 3 ? 1 : a.dir;
     assert.equal(entry.dir, expectedDir, 'Flip H mirrors East <-> West');
   }
 
-  // Flip Vertical: dz -> -dz, dir 0 <-> 2, dir 1/3 unchanged
-  const beforeFlipV = engine.clipboard!.entries.map((e) => ({ dx: e.dx, dz: e.dz, dir: e.dir }));
+  // Flip Vertical: center-preserving multi-tile mirror (dz -> -dz - (h-1)), dir 0 <-> 2, dir 1/3 unchanged
+  const beforeFlipV = engine.clipboard!.entries.map((e) => ({
+    dx: e.dx,
+    dz: e.dz,
+    dir: e.dir,
+    h: e.baseType === 'furnace' ? 2 : 1,
+  }));
   assert.equal(engine.flipBlueprintVertical(), true);
   const afterFlipV = engine.clipboard!.entries;
   for (let i = 0; i < beforeFlipV.length; i++) {
     const a = beforeFlipV[i];
     const entry = afterFlipV[i];
     assert.equal(entry.dx, a.dx, 'Flip V preserves dx');
-    assert.equal(entry.dz, -a.dz, 'Flip V negates dz');
+    assert.equal(entry.dz, -a.dz - (a.h - 1), 'Flip V mirrors multi-tile center cleanly');
     const expectedDir = a.dir === 0 ? 2 : a.dir === 2 ? 0 : a.dir;
     assert.equal(entry.dir, expectedDir, 'Flip V mirrors North <-> South');
   }
@@ -1438,17 +1449,18 @@ test('Capytorio Undo/Redo covers place, rotate, recipe, demolish, cut, and atomi
   assert.equal(engine.machines.get(tileKey(0, 0))?.dir, 2);
   assert.equal(engine.machines.get(tileKey(0, 0))?.recipeId, 'copper_cable');
 
-  // 4. Build 3-tile cluster, Copy, position ghost anchor at (6, 6), move hover away to (-9, -9),
-  //    then place via pasteBlueprintAtAnchor() -> stamps at locked (6, 6), NOT (-9, -9)!
-  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
-  assert.equal(engine.placeMachine('inserter', 1, 1, 2).ok, true);
-  const cluster = engine.selectMachinesInBox(0, 0, 1, 1);
+  // 4. Build 3-building cluster (3x3 Assembler at 0,0 + Belt at 3,0 + Inserter at 3,1), Copy,
+  //    position ghost anchor at (8, 8), move hover away to (-9, -9),
+  //    then place via pasteBlueprintAtAnchor() -> stamps at locked (8, 8), NOT (-9, -9)!
+  assert.equal(engine.placeMachine('belt', 3, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', 3, 1, 2).ok, true);
+  const cluster = engine.selectMachinesInBox(0, 0, 3, 2);
   assert.equal(cluster.length, 3);
   engine.captureBlueprint(cluster, 'copy');
 
-  // Position and lock ghost at (6, 6)
-  engine.setBlueprintAnchor(6, 6);
-  assert.deepEqual(engine.getUiSnapshot().clipboard.pasteAnchor, { gx: 6, gz: 6 });
+  // Position and lock ghost at (8, 8)
+  engine.setBlueprintAnchor(8, 8);
+  assert.deepEqual(engine.getUiSnapshot().clipboard.pasteAnchor, { gx: 8, gz: 8 });
 
   // Simulate moving pointer down toward the HUD Place button (changes hoveredGx/hoveredGz)
   engine.hoveredGx = -9;
@@ -1460,12 +1472,12 @@ test('Capytorio Undo/Redo covers place, rotate, recipe, demolish, cut, and atomi
 
   const anchorPaste = engine.pasteBlueprintAtAnchor();
   assert.equal(anchorPaste.placedCount, 3, 'All 3 blueprint buildings placed via Place button');
-  assert.equal(anchorPaste.anchorGx, 6);
-  assert.equal(anchorPaste.anchorGz, 6);
+  assert.equal(anchorPaste.anchorGx, 8);
+  assert.equal(anchorPaste.anchorGz, 8);
   assert.equal(engine.machines.has(tileKey(-9, -9)), false, 'Did NOT stamp at drifted hover coords');
 
   const pastedNearAnchor = Array.from(engine.machines.values()).filter((m) => m.gx >= 5 && m.gz >= 5);
-  assert.equal(pastedNearAnchor.length, 3, 'All 3 buildings stamped around locked anchor (6, 6)');
+  assert.equal(pastedNearAnchor.length, 3, 'All 3 buildings stamped around locked anchor (8, 8)');
   const pastedAsm = pastedNearAnchor.find((m) => m.type === 'assembler');
   assert.equal(pastedAsm?.recipeId, 'copper_cable', 'Pasted assembler preserved recipe');
 
@@ -1513,10 +1525,10 @@ test('Partial cut-paste keeps unplaced blueprint entries & Undo Cut intact until
   assert.equal(engine.clipboardToolState, 'paste');
   assert.equal(engine.clipboard?.entries.length, 4);
 
-  // Occupy 3 of the 4 destination tiles around (0, 6) so only 1 slot fits cleanly
-  assert.equal(engine.placeMachine('furnace', -2, 6, 0).ok, true);
-  assert.equal(engine.placeMachine('furnace', -1, 6, 0).ok, true);
-  assert.equal(engine.placeMachine('furnace', 0, 6, 0).ok, true);
+  // Occupy 3 of the 4 destination tiles around (0, 6) with 1x1 chests so only 1 slot fits cleanly
+  assert.equal(engine.placeMachine('chest', -2, 6, 0).ok, true);
+  assert.equal(engine.placeMachine('chest', -1, 6, 0).ok, true);
+  assert.equal(engine.placeMachine('chest', 0, 6, 0).ok, true);
   // Tile (1, 6) is open -> 1 belt places, 3 are skipped!
   const partialRes = engine.pasteBlueprintAt(0, 6);
   assert.equal(partialRes.placedCount, 1);
@@ -1539,8 +1551,8 @@ test('Partial cut-paste keeps unplaced blueprint entries & Undo Cut intact until
     assert.equal(engine.placeMachine('belt', x, 0, 1).ok, true);
   }
   engine.captureBlueprint(engine.selectMachinesInBox(0, 0, 2, 0), 'cut');
-  assert.equal(engine.placeMachine('furnace', -1, 5, 0).ok, true);
-  assert.equal(engine.placeMachine('furnace', 0, 5, 0).ok, true);
+  assert.equal(engine.placeMachine('chest', -1, 5, 0).ok, true);
+  assert.equal(engine.placeMachine('chest', 0, 5, 0).ok, true);
 
   const partial2 = engine.pasteBlueprintAt(0, 5);
   assert.equal(partial2.placedCount, 1);
@@ -1718,11 +1730,301 @@ test('CapytorioPedia resolves machines, variants, ores, trees, beacon, terrain, 
   assert.ok(techEntry.unlockedRecipesForTech.length >= 1, 'Tech entry lists unlocked recipes');
 });
 
+test('Classic multi-tile footprints (3x3, 2x2, 2x1/1x2): O(1) occupancy lookup, collision guard, splitter rotation, and 3-inserter perimeter loading', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
 
+  // 1. Place 3x3 Assembler at (0,0) -> covers x:0..2, z:0..2
+  assert.equal(engine.placeMachine('assembler', 0, 0, 0, 'electronic_circuit').ok, true);
+  const asm = engine.machines.get(tileKey(0, 0))!;
+  const asmFp = engine.getMachineFootprint(asm);
+  assert.equal(asmFp.width, 3);
+  assert.equal(asmFp.height, 3);
 
+  // Every sub-tile resolves to the same assembler instance via getMachineAt()
+  for (let dx = 0; dx < 3; dx++) {
+    for (let dz = 0; dz < 3; dz++) {
+      assert.equal(engine.getMachineAt(dx, dz), asm, `Sub-tile (${dx},${dz}) resolves to 3x3 assembler`);
+    }
+  }
+  // Collision rejection on any overlapping sub-tile
+  assert.equal(engine.placeMachine('belt', 2, 2, 1).ok, false, 'Cannot place belt inside 3x3 sub-tile');
+  assert.equal(engine.placeMachine('furnace', 1, 2, 0).ok, false, 'Cannot place 2x2 furnace overlapping 3x3 corner');
 
+  // 2. Perimeter loading: 3 inserters along the West edge (-1,0), (-1,1), (-1,2) all feed into the single 3x3 Assembler!
+  assert.equal(engine.placeMachine('chest', -2, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', -2, 1, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', -2, 2, 1).ok, true);
+  engine.machines.get(tileKey(-2, 0))!.outputBuffer.iron_plate = 4;
+  engine.machines.get(tileKey(-2, 1))!.outputBuffer.copper_cable = 6;
+  engine.machines.get(tileKey(-2, 2))!.outputBuffer.copper_cable = 6;
 
+  assert.equal(engine.placeMachine('inserter', -1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', -1, 1, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', -1, 2, 1).ok, true);
+  // Power generator nearby
+  assert.equal(engine.placeMachine('generator', 6, 0, 0).ok, true);
+  engine.machines.get(tileKey(6, 0))!.inputBuffer.coal = 4;
 
+  for (let i = 0; i < 160; i++) engine.step(0.05);
+  assert.ok(
+    (asm.outputBuffer.electronic_circuit ?? 0) >= 1,
+    'Multiple side-by-side inserters along 3x3 perimeter feed ingredients into the same assembler'
+  );
 
+  // 3. 2x1 Splitter rotates to 1x2 when facing East, and rejects rotation when blocked
+  assert.equal(engine.placeMachine('splitter', 0, 6, 0).ok, true); // North -> 2x1: (0,6) & (1,6)
+  const sp = engine.machines.get(tileKey(0, 6))!;
+  assert.equal(engine.getMachineFootprint(sp).width, 2);
+  assert.equal(engine.getMachineFootprint(sp).height, 1);
+  assert.equal(engine.getMachineAt(1, 6), sp);
+  assert.equal(engine.getMachineAt(0, 7), undefined);
 
+  // Rotate to East (dir=1) -> 1x2: (0,6) & (0,7)
+  assert.equal(engine.rotateMachineAt(0, 6), 1);
+  assert.equal(engine.getMachineFootprint(sp).width, 1);
+  assert.equal(engine.getMachineFootprint(sp).height, 2);
+  assert.equal(engine.getMachineAt(0, 7), sp);
+  assert.equal(engine.getMachineAt(1, 6), undefined);
 
+  // Block (1,6) with a chest -> rotating back to South (2x1) is rejected cleanly!
+  assert.equal(engine.placeMachine('chest', 1, 6, 0).ok, true);
+  assert.equal(engine.rotateMachineAt(0, 6), null, '2x1 splitter refuses rotation into occupied tile');
+  assert.equal(sp.dir, 1);
+});
+
+test('2x1 Splitter Output Filter, Output Priority, and Input Priority route items deterministically', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  // Place East-facing 1x2 Splitter at (2, 0) -> covers (2,0) [Left] & (2,1) [Right]
+  // Inputs: belts at (1,0) & (1,1). Outputs: chests at (3,0) [Left] & (3,1) [Right]
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 1, 1).ok, true);
+  assert.equal(engine.placeMachine('splitter', 2, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', 3, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', 3, 1, 1).ok, true);
+
+  // 1. Output Filter: filter iron_ore to Left output (3,0); all other items strictly go Right (3,1)
+  assert.equal(
+    engine.setSplitterConfigAt(2, 0, { outputPriority: 'left', filterItem: 'iron_ore' }),
+    true
+  );
+
+  for (let i = 0; i < 4; i++) {
+    engine.machines.get(tileKey(1, 0))!.beltItems.push({ item: 'iron_ore', lane: 0, progress: 0.99 });
+    engine.machines.get(tileKey(1, 1))!.beltItems.push({ item: 'copper_ore', lane: 1, progress: 0.99 });
+    for (let s = 0; s < 35; s++) engine.step(0.05);
+  }
+
+  const leftChest = engine.machines.get(tileKey(3, 0))!;
+  const rightChest = engine.machines.get(tileKey(3, 1))!;
+  assert.equal(leftChest.outputBuffer.iron_ore ?? 0, 4, 'Filtered iron_ore strictly exits Left');
+  assert.equal(leftChest.outputBuffer.copper_ore ?? 0, 0, 'Non-matching copper_ore never enters filtered Left lane');
+  assert.equal(rightChest.outputBuffer.copper_ore ?? 0, 4, 'Non-matching copper_ore strictly exits Right');
+  assert.equal(rightChest.outputBuffer.iron_ore ?? 0, 0, 'Filtered iron_ore never spills to Right while Left is open');
+
+  // 2. Output Priority (no filter): priority='right' routes everything to Right until full
+  leftChest.outputBuffer = {};
+  rightChest.outputBuffer = {};
+  assert.equal(
+    engine.setSplitterConfigAt(2, 0, { outputPriority: 'right', filterItem: null }),
+    true
+  );
+  for (let i = 0; i < 4; i++) {
+    engine.machines.get(tileKey(1, 0))!.beltItems.push({ item: 'coal', lane: 0, progress: 0.99 });
+    for (let s = 0; s < 35; s++) engine.step(0.05);
+  }
+  assert.equal(rightChest.outputBuffer.coal ?? 0, 4, 'Output priority Right receives all items when clear');
+  assert.equal(leftChest.outputBuffer.coal ?? 0, 0);
+});
+
+test('Inserter Whitelist/Blacklist Filters, Stack Size Limit, Long-Handed 2-Tile Reach, and Chest Red-Bar Slot Cap', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+  assert.equal(engine.placeMachine('generator', 10, 10, 0).ok, true);
+  engine.machines.get(tileKey(10, 10))!.inputBuffer.coal = 10;
+
+  // 1. Whitelist Filter + Stack Size Limit
+  assert.equal(engine.placeMachine('chest', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', 1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', 2, 0, 1).ok, true);
+  const srcChest = engine.machines.get(tileKey(0, 0))!;
+  const dstChest = engine.machines.get(tileKey(2, 0))!;
+  srcChest.outputBuffer.iron_ore = 10;
+  srcChest.outputBuffer.copper_ore = 10;
+
+  assert.equal(
+    engine.setInserterConfigAt(1, 0, { filterMode: 'whitelist', filters: ['copper_ore'], stackLimit: 1 }),
+    true
+  );
+  for (let s = 0; s < 120; s++) engine.step(0.05);
+  assert.ok((dstChest.outputBuffer.copper_ore ?? 0) >= 2, 'Whitelisted copper_ore transferred');
+  assert.equal(dstChest.outputBuffer.iron_ore ?? 0, 0, 'Non-whitelisted iron_ore ignored');
+
+  // Switch to Blacklist copper_ore -> now moves iron_ore only
+  dstChest.outputBuffer = {};
+  assert.equal(
+    engine.setInserterConfigAt(1, 0, { filterMode: 'blacklist', filters: ['copper_ore'] }),
+    true
+  );
+  for (let s = 0; s < 120; s++) engine.step(0.05);
+  assert.ok((dstChest.outputBuffer.iron_ore ?? 0) >= 2, 'Non-blacklisted iron_ore transferred');
+  assert.equal(dstChest.outputBuffer.copper_ore ?? 0, 0, 'Blacklisted copper_ore blocked');
+
+  // 2. Long-Handed Inserter true 2-tile reach (skips intermediate belt tiles at x=1 and x=3!)
+  engine.addPocketItem('long_handed_inserter', 2);
+  assert.equal(engine.placeMachine('chest', 0, 4, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 4, 0).ok, true);
+  assert.equal(engine.placeMachine('long_handed_inserter', 2, 4, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 3, 4, 0).ok, true);
+  assert.equal(engine.placeMachine('chest', 4, 4, 1).ok, true);
+
+  engine.machines.get(tileKey(0, 4))!.outputBuffer.iron_plate = 6;
+  const farDst = engine.machines.get(tileKey(4, 4))!;
+  for (let s = 0; s < 120; s++) engine.step(0.05);
+  assert.ok(
+    (farDst.outputBuffer.iron_plate ?? 0) >= 2,
+    'Long-handed inserter reaches 2 tiles behind (0,4) and drops 2 tiles ahead (4,4) over intermediate belts'
+  );
+
+  // 3. Chest Red-Bar Slot Limit: 1 slot = 10 items max
+  assert.equal(engine.placeMachine('chest', 0, 7, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', 1, 7, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', 2, 7, 1).ok, true);
+  engine.machines.get(tileKey(0, 7))!.outputBuffer.stone = 50;
+  assert.equal(engine.setChestSlotLimitAt(2, 7, 1), true); // 1 slot = 10 items
+  const cappedChest = engine.machines.get(tileKey(2, 7))!;
+
+  for (let s = 0; s < 600; s++) engine.step(0.05);
+  assert.equal(cappedChest.outputBuffer.stone ?? 0, 10, 'Red-bar 1-slot limit caps chest strictly at 10 items');
+});
+
+test('Entity Settings Copy & Paste (Shift+RClick / Shift+LClick) works for assemblers, splitters, inserters, and chests with Undo/Redo', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  // Assembler recipe copy/paste
+  assert.equal(engine.placeMachine('assembler', 0, 0, 0, 'copper_cable').ok, true);
+  assert.equal(engine.placeMachine('assembler', 4, 0, 0, 'iron_gear').ok, true);
+  const copyAsm = engine.copyEntitySettingsAt(1, 1); // Sub-tile copy
+  assert.equal(copyAsm.ok, true);
+  const pasteAsm = engine.pasteEntitySettingsAt(5, 1); // Sub-tile paste
+  assert.equal(pasteAsm.ok, true);
+  assert.equal(engine.machines.get(tileKey(4, 0))?.recipeId, 'copper_cable');
+
+  // Undo reverts pasted settings cleanly
+  assert.equal(engine.undoLastAction().ok, true);
+  assert.equal(engine.machines.get(tileKey(4, 0))?.recipeId, 'iron_gear');
+  assert.equal(engine.redoLastAction().ok, true);
+  assert.equal(engine.machines.get(tileKey(4, 0))?.recipeId, 'copper_cable');
+
+  // Splitter filter & priority copy/paste
+  assert.equal(engine.placeMachine('splitter', 0, 5, 0).ok, true);
+  assert.equal(engine.placeMachine('splitter', 4, 5, 0).ok, true);
+  engine.setSplitterConfigAt(0, 5, {
+    inputPriority: 'left',
+    outputPriority: 'right',
+    filterItem: 'iron_plate',
+  });
+  assert.equal(engine.copyEntitySettingsAt(0, 5).ok, true);
+  assert.equal(engine.pasteEntitySettingsAt(4, 5).ok, true);
+  const sp2 = engine.machines.get(tileKey(4, 5))!;
+  assert.equal(sp2.splitterInputPriority, 'left');
+  assert.equal(sp2.splitterOutputPriority, 'right');
+  assert.equal(sp2.splitterFilterItem, 'iron_plate');
+
+  // Chest red-bar slot limit copy/paste
+  assert.equal(engine.placeMachine('chest', 0, 8, 0).ok, true);
+  assert.equal(engine.placeMachine('chest', 2, 8, 0).ok, true);
+  engine.setChestSlotLimitAt(0, 8, 3);
+  assert.equal(engine.copyEntitySettingsAt(0, 8).ok, true);
+  assert.equal(engine.pasteEntitySettingsAt(2, 8).ok, true);
+  assert.equal(engine.machines.get(tileKey(2, 8))?.chestSlotLimit, 3);
+});
+
+test('Real-time recursive hand-crafting queue auto-queues intermediates, completes on step(), and refunds 100% on cancel', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  // Isolate pocket inventory via public hydrate() so automation_science MUST recursively craft iron_gear
+  const baseState = engine.serialize();
+  baseState.pocketItems = { iron_plate: 20, copper_plate: 10 };
+  engine.hydrate(baseState);
+
+  const ironInit = engine.getPocketItemCount('iron_plate');
+  const copperInit = engine.getPocketItemCount('copper_plate');
+  assert.equal(ironInit, 20);
+  assert.equal(copperInit, 10);
+
+  // Queue 1x Automation Science Pack (needs 1 copper_plate + 1 iron_gear; iron_gear needs 2 iron_plate)
+  const qRes = engine.enqueuePocketCraft('automation_science', 1);
+  assert.equal(qRes.ok, true, 'Recursive craft succeeds using raw iron plates for intermediate gear');
+  assert.equal(engine.craftingQueue.length, 2, 'Intermediate iron_gear queued before automation_science');
+  assert.equal(engine.craftingQueue[0].resultId, 'iron_gear');
+  assert.equal(engine.craftingQueue[1].resultId, 'automation_science');
+  assert.equal(engine.getPocketItemCount('iron_plate'), ironInit - 2, '2 iron plates reserved upfront');
+  assert.equal(engine.getPocketItemCount('copper_plate'), copperInit - 1, '1 copper plate reserved upfront');
+
+  // Step until queue drains completely
+  for (let i = 0; i < 200; i++) engine.step(0.05);
+  assert.equal(engine.craftingQueue.length, 0);
+  assert.equal(engine.getPocketItemCount('automation_science'), 1, 'Completed science pack added to pocket');
+
+  // Queue 2 independent orders (4 queue items: 2x [gear -> science]) and cancel each order
+  const ironBefore = engine.getPocketItemCount('iron_plate');
+  const copperBefore = engine.getPocketItemCount('copper_plate');
+  const q2 = engine.enqueuePocketCraft('automation_science', 2);
+  assert.equal(q2.ok, true);
+  assert.equal(engine.craftingQueue.length, 4);
+  assert.equal(engine.getPocketItemCount('iron_plate'), ironBefore - 4);
+  assert.equal(engine.getPocketItemCount('copper_plate'), copperBefore - 2);
+
+  // Cancel first order (gear#1 + science#1) -> leaves second order intact
+  const cancel1 = engine.cancelCraftQueueItem(engine.craftingQueue[0].uid);
+  assert.equal(cancel1.ok, true);
+  assert.equal(cancel1.cancelledCount, 2);
+  assert.equal(engine.craftingQueue.length, 2);
+  assert.equal(engine.getPocketItemCount('iron_plate'), ironBefore - 2);
+
+  // Cancel second order -> queue drains & 100% of raw ingredients are refunded!
+  const cancel2 = engine.cancelCraftQueueItem(engine.craftingQueue[0].uid);
+  assert.equal(cancel2.ok, true);
+  assert.equal(cancel2.cancelledCount, 2);
+  assert.equal(engine.craftingQueue.length, 0);
+  assert.equal(engine.getPocketItemCount('iron_plate'), ironBefore, '100% iron plates refunded on cancel');
+  assert.equal(engine.getPocketItemCount('copper_plate'), copperBefore, '100% copper plates refunded on cancel');
+});
+
+test('Capytorio3DRenderer centers multi-tile models cleanly and syncs Alt-Mode overlay sprites without leaks', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  assert.equal(engine.placeMachine('assembler', 0, 0, 0, 'iron_gear').ok, true);
+  assert.equal(engine.placeMachine('furnace', 4, 0, 0).ok, true);
+  assert.equal(engine.placeMachine('splitter', 0, 4, 0).ok, true);
+  engine.setSplitterConfigAt(0, 4, { outputPriority: 'left', filterItem: 'iron_ore' });
+
+  const renderer = new Capytorio3DRenderer();
+  try {
+    // Alt-Mode defaults to ON
+    assert.equal(engine.altModeEnabled, true);
+    renderer.sync(engine, CAPYTORIO_WORLD_ORIGIN_X, CAPYTORIO_WORLD_ORIGIN_Z, 0.016, 1.0, true, 28);
+
+    const altRoot = renderer.root.getObjectByName('CapytorioAltModeRoot');
+    assert.ok(altRoot, 'Alt-Mode sprite root exists in 3D scene');
+    assert.equal(altRoot.visible, true);
+
+    // Toggle Alt-Mode OFF -> hides overlay cleanly
+    assert.equal(engine.toggleAltMode(), false);
+    renderer.sync(engine, CAPYTORIO_WORLD_ORIGIN_X, CAPYTORIO_WORLD_ORIGIN_Z, 0.016, 1.1, true, 28);
+    assert.equal(altRoot.visible, false, 'Alt-Mode overlay hides when toggled OFF');
+
+    // Toggle back ON
+    assert.equal(engine.toggleAltMode(), true);
+    renderer.sync(engine, CAPYTORIO_WORLD_ORIGIN_X, CAPYTORIO_WORLD_ORIGIN_Z, 0.016, 1.2, true, 28);
+    assert.equal(altRoot.visible, true);
+  } finally {
+    renderer.dispose();
+  }
+});

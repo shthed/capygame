@@ -113,6 +113,78 @@ export const CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE: Record<string, CapytorioPlacea
   rocket_silo: { baseType: 'assembler', tierMult: 2.0, tintHex: 0xf59e0b },
 };
 
+export interface CapytorioFootprint {
+  /** Tile span along X (+East) */
+  width: number;
+  /** Tile span along Z (+South) */
+  height: number;
+}
+
+export const CAPYTORIO_CHEST_SLOTS = 12;
+export const CAPYTORIO_CHEST_ITEMS_PER_SLOT = 10;
+export const CAPYTORIO_CHEST_MAX_ITEMS = CAPYTORIO_CHEST_SLOTS * CAPYTORIO_CHEST_ITEMS_PER_SLOT;
+
+/**
+ * Returns the canonical North/South (dir 0 or 2) tile footprint for a machine or placeable variant.
+ * Classic Factorio proportions:
+ * - 1x1: Transport Belts, Underground Tunnels, Inserters, Chests, Poles, Walls
+ * - 2x1: Belt Splitters (dual-belt width; rotates to 1x2 when facing East/West)
+ * - 2x2: Furnaces (Stone / Steel / Electric), Burner Mining Drill, Boiler, Accumulator
+ * - 3x3: Electric Mining Drill, Assembling Machines, Science Labs, Generators, Solar, Nuclear, Rocket Silo
+ */
+export function getCapytorioBaseFootprint(
+  baseType: CapytorioMachineType,
+  variantItemId?: string
+): CapytorioFootprint {
+  if (
+    variantItemId === 'burner_mining_drill' ||
+    variantItemId === 'boiler' ||
+    variantItemId === 'accumulator'
+  ) {
+    return { width: 2, height: 2 };
+  }
+  switch (baseType) {
+    case 'splitter':
+      return { width: 2, height: 1 };
+    case 'furnace':
+      return { width: 2, height: 2 };
+    case 'drill':
+    case 'assembler':
+    case 'lab':
+    case 'generator':
+      return { width: 3, height: 3 };
+    case 'belt':
+    case 'tunnel':
+    case 'inserter':
+    case 'chest':
+    default:
+      return { width: 1, height: 1 };
+  }
+}
+
+/**
+ * Returns the world-grid (X width, Z height) footprint for a machine facing `dir`.
+ * Non-square machines (such as 2x1 Belt Splitters) swap width/height when facing East (1) or West (3).
+ */
+export function getCapytorioFootprint(
+  baseType: CapytorioMachineType,
+  variantItemId?: string,
+  dir: CapytorioDirection = 0
+): CapytorioFootprint {
+  const base = getCapytorioBaseFootprint(baseType, variantItemId);
+  if ((dir === 1 || dir === 3) && base.width !== base.height) {
+    return { width: base.height, height: base.width };
+  }
+  return base;
+}
+
+/**
+ * Returns pickup/drop tile reach for an inserter variant (2 tiles for Long-Handed Inserter, 1 otherwise).
+ */
+export function getCapytorioInserterReach(variantItemId?: string): 1 | 2 {
+  return variantItemId === 'long_handed_inserter' ? 2 : 1;
+}
+
 export interface CapytorioMachineSpec {
   type: CapytorioMachineType;
   hotkey: string;
