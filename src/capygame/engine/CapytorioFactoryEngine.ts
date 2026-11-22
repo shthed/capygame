@@ -20,6 +20,8 @@ import {
 } from './CapytorioData';
 
 export const MAX_RECENT_CAPYTORIO_TOOLS = 10;
+export const MAX_CAPYTORIO_BLUEPRINT_LIBRARY = 100;
+export const MAX_CAPYTORIO_UNDO_HISTORY = 100;
 
 export type CapytorioPlaceableToolId = CapytorioMachineType | CapytorioItemId;
 
@@ -191,6 +193,7 @@ export interface CapytorioSerializedState {
   activeTechId: CapytorioTechId | null;
   techDelivered: Partial<Record<CapytorioItemId, number>>;
   completedMilestones?: string[];
+  blueprintLibrary?: CapytorioSavedBlueprint[];
   rocketLaunches: number;
   totalProduced: number;
   score: number;
@@ -282,10 +285,22 @@ export interface CapytorioBlueprintEntry {
   recipeId?: CapytorioRecipeId;
 }
 
+export interface CapytorioSavedBlueprint {
+  id: string;
+  label: string;
+  sourceMode: 'copy' | 'cut';
+  createdAt: number;
+  width: number;
+  height: number;
+  entries: CapytorioBlueprintEntry[];
+}
+
 export interface CapytorioBlueprintClipboard {
   mode: 'copy' | 'cut';
   entries: CapytorioBlueprintEntry[];
   canUndoCut: boolean;
+  blueprintId?: string | null;
+  label?: string;
 }
 
 export interface CapytorioBlueprintPlacementCheck {
@@ -294,6 +309,31 @@ export interface CapytorioBlueprintPlacementCheck {
   gz: number;
   valid: boolean;
   reason?: 'occupied' | 'needs_ore' | 'no_stock';
+}
+
+export interface CapytorioMachineUndoSnapshot {
+  gx: number;
+  gz: number;
+  toolId: string;
+  baseType: CapytorioMachineType;
+  dir: CapytorioDirection;
+  recipeId?: CapytorioRecipeId;
+  inputBuffer: Partial<Record<CapytorioItemId, number>>;
+  outputBuffer: Partial<Record<CapytorioItemId, number>>;
+  beltItems: CapytorioBeltItem[];
+  holdingItem: CapytorioItemId | null;
+}
+
+export interface CapytorioTileDelta {
+  gx: number;
+  gz: number;
+  before: CapytorioMachineUndoSnapshot | null;
+  after: CapytorioMachineUndoSnapshot | null;
+}
+
+export interface CapytorioHistoryEntry {
+  label: string;
+  deltas: CapytorioTileDelta[];
 }
 
 export interface CapytorioUiSnapshot {
@@ -357,7 +397,21 @@ export interface CapytorioUiSnapshot {
     count: number;
     canUndoCut: boolean;
     previewCount: number;
+    activeBlueprintId: string | null;
+    activeBlueprintLabel: string | null;
+    libraryCount: number;
+    hasRememberedSelection: boolean;
+    pasteAnchor: { gx: number; gz: number } | null;
   };
+  history: {
+    canUndo: boolean;
+    canRedo: boolean;
+    undoCount: number;
+    redoCount: number;
+    nextUndoLabel: string | null;
+    nextRedoLabel: string | null;
+  };
+  blueprintLibrary: CapytorioSavedBlueprint[];
 }
 
 export interface CapytorioStepCallbacks {
@@ -658,23 +712,22 @@ export class CapytorioFactoryEngine {
   public inspectedKey: string | null = null;
   public inspectedTile: { gx: number; gz: number } | null = null;
 
-  // Multi-building Cut / Copy / Paste Blueprint Clipboard state
+  // Multi-building Cut / Copy / Paste Blueprint Clipboard & 100-entry Blueprint Library
   public clipboardToolState: CapytorioClipboardToolState = 'off';
   public selectionShape: CapytorioSelectionShape = 'box';
   public clipboard: CapytorioBlueprintClipboard | null = null;
+  public pasteAnchor: { gx: number; gz: number } | null = null;
+  public blueprintLibrary: CapytorioSavedBlueprint[] = [];
+  public activeBlueprintId: string | null = null;
+  private nextBlueprintUid = 1;
   public readonly previewSelectedKeys = new Set<string>();
-  private undoCutSnapshot: Array<{
-    gx: number;
-    gz: number;
-    toolId: string;
-    baseType: CapytorioMachineType;
-    dir: CapytorioDirection;
-    recipeId?: CapytorioRecipeId;
-    inputBuffer: Partial<Record<CapytorioItemId, number>>;
-    outputBuffer: Partial<Record<CapytorioItemId, number>>;
-    beltItems: CapytorioBeltItem[];
-    holdingItem: CapytorioItemId | null;
-  }> = [];
+  private undoCutSnapshot: CapytorioMachineUndoSnapshot[] = [];
+
+  // Full building action Undo / Redo history stack
+  private undoStack: CapytorioHistoryEntry[] = [];
+  private redoStack: CapytorioHistoryEntry[] = [];
+  private activeHistoryBatch: { label: string; deltas: CapytorioTileDelta[] } | null = null;
+  private isReplayingHistory = false;
 
   // Power metrics (zero-allocation cached scalars updated every step)
   public powerSupplyMw = 0;
@@ -735,8 +788,14 @@ export class CapytorioFactoryEngine {
     this.inspectedTile = null;
     this.clipboardToolState = 'off';
     this.clipboard = null;
+    this.pasteAnchor = null;
+    this.blueprintLibrary = [];
+    this.activeBlueprintId = null;
     this.previewSelectedKeys.clear();
     this.undoCutSnapshot.length = 0;
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.activeHistoryBatch = null;
     this.selectedTool = 'drill';
     this.selectedDir = 1;
     this.selectedRecipeId = getDefaultAssemblerRecipeId();
@@ -999,7 +1058,16 @@ export class CapytorioFactoryEngine {
         (existing.variantItemId ?? existing.type) === (variantItemId ?? baseType);
       // Clicking an existing belt/inserter with same tool rotates it cleanly instead of failing!
       if (sameTool) {
+        const beforeSnap = this.snapshotMachineForUndo(existing);
         existing.dir = ((existing.dir + 1) & 3) as CapytorioDirection;
+        this.topologyRevision++;
+        this.recordHistoryDelta(
+          `Rotate ${resolved.shortName}`,
+          gx,
+          gz,
+          beforeSnap,
+          this.snapshotMachineForUndo(existing)
+        );
         return { ok: true, machine: existing };
       }
       return { ok: false, reason: 'Tile already occupied — Right-click or press X to demolish first' };
@@ -1077,14 +1145,30 @@ export class CapytorioFactoryEngine {
     this.score += 10;
     this.recordRecentTool(resolved.id);
     this.recomputePowerMetrics();
+    this.recordHistoryDelta(
+      `Place ${resolved.shortName}`,
+      gx,
+      gz,
+      null,
+      this.snapshotMachineForUndo(machine)
+    );
     return { ok: true, machine };
   }
 
   public rotateMachineAt(gx: number, gz: number): CapytorioDirection | null {
     const m = this.machines.get(tileKey(gx, gz));
     if (!m) return null;
+    const beforeSnap = this.snapshotMachineForUndo(m);
     m.dir = ((m.dir + 1) & 3) as CapytorioDirection;
     this.topologyRevision++;
+    const resolved = resolveCapytorioPlaceableSpec(m.variantItemId ?? m.type);
+    this.recordHistoryDelta(
+      `Rotate ${resolved?.shortName ?? CAPYTORIO_MACHINE_SPECS[m.type].shortName}`,
+      gx,
+      gz,
+      beforeSnap,
+      this.snapshotMachineForUndo(m)
+    );
     return m.dir;
   }
 
@@ -1096,6 +1180,7 @@ export class CapytorioFactoryEngine {
     const m = this.machines.get(tileKey(gx, gz));
     if (m && m.type === 'assembler') {
       if (m.recipeId !== recipeId) {
+        const beforeSnap = this.snapshotMachineForUndo(m);
         // Refund leftover buffered ingredients into pocket cleanly!
         for (const [k, v] of Object.entries(m.inputBuffer) as Array<[CapytorioItemId, number]>) {
           if (v > 0) this.addPocketItem(k, v);
@@ -1103,6 +1188,13 @@ export class CapytorioFactoryEngine {
         m.inputBuffer = {};
         m.craftProgress = 0;
         m.recipeId = recipeId;
+        this.recordHistoryDelta(
+          `Set Recipe: ${rec.name}`,
+          gx,
+          gz,
+          beforeSnap,
+          this.snapshotMachineForUndo(m)
+        );
       }
       return true;
     }
@@ -1113,6 +1205,8 @@ export class CapytorioFactoryEngine {
     const key = tileKey(gx, gz);
     const m = this.machines.get(key);
     if (!m) return null;
+    const beforeSnap = this.snapshotMachineForUndo(m);
+    const resolved = resolveCapytorioPlaceableSpec(m.variantItemId ?? m.type);
     // 100% friendly refund of machine/variant item + buffered items + belt items
     if (m.variantItemId) {
       this.addPocketItem(m.variantItemId, 1);
@@ -1139,6 +1233,13 @@ export class CapytorioFactoryEngine {
     this.machineListDirty = true;
     this.topologyRevision++;
     this.recomputePowerMetrics();
+    this.recordHistoryDelta(
+      `Remove ${resolved?.shortName ?? CAPYTORIO_MACHINE_SPECS[m.type].shortName}`,
+      gx,
+      gz,
+      beforeSnap,
+      null
+    );
     return m.type;
   }
 
@@ -1167,9 +1268,17 @@ export class CapytorioFactoryEngine {
         this.selectedDir = targetDir;
         if (alignPrevTile) {
           const prevM = this.machines.get(tileKey(prevPlacedGx, prevPlacedGz));
-          if (prevM && prevM.type === 'belt') {
+          if (prevM && prevM.type === 'belt' && prevM.dir !== targetDir) {
+            const beforePrev = this.snapshotMachineForUndo(prevM);
             prevM.dir = targetDir;
             this.topologyRevision++;
+            this.recordHistoryDelta(
+              'Align Belt',
+              prevPlacedGx,
+              prevPlacedGz,
+              beforePrev,
+              this.snapshotMachineForUndo(prevM)
+            );
           }
         }
       }
@@ -1186,13 +1295,227 @@ export class CapytorioFactoryEngine {
     };
   }
 
+  private snapshotMachineForUndo(m: CapytorioMachine): CapytorioMachineUndoSnapshot {
+    return {
+      gx: m.gx,
+      gz: m.gz,
+      toolId: m.variantItemId ?? m.type,
+      baseType: m.type,
+      dir: m.dir,
+      recipeId: m.recipeId,
+      inputBuffer: { ...m.inputBuffer },
+      outputBuffer: { ...m.outputBuffer },
+      beltItems: m.beltItems.map((bi) => ({ ...bi })),
+      holdingItem: m.holdingItem,
+    };
+  }
+
+  public beginHistoryBatch(label: string): void {
+    if (this.isReplayingHistory || this.activeHistoryBatch) return;
+    this.activeHistoryBatch = { label, deltas: [] };
+  }
+
+  public commitHistoryBatch(labelOverride?: string): void {
+    if (!this.activeHistoryBatch) return;
+    const batch = this.activeHistoryBatch;
+    this.activeHistoryBatch = null;
+    if (batch.deltas.length === 0) return;
+    this.pushHistoryEntry({
+      label: labelOverride ?? batch.label,
+      deltas: batch.deltas,
+    });
+  }
+
+  private pushHistoryEntry(entry: CapytorioHistoryEntry): void {
+    if (entry.deltas.length === 0) return;
+    this.undoStack.push(entry);
+    if (this.undoStack.length > MAX_CAPYTORIO_UNDO_HISTORY) {
+      this.undoStack.shift();
+    }
+    this.redoStack.length = 0;
+  }
+
+  private recordHistoryDelta(
+    label: string,
+    gx: number,
+    gz: number,
+    before: CapytorioMachineUndoSnapshot | null,
+    after: CapytorioMachineUndoSnapshot | null
+  ): void {
+    if (this.isReplayingHistory) return;
+    if (this.activeHistoryBatch) {
+      const deltas = this.activeHistoryBatch.deltas;
+      for (let i = deltas.length - 1; i >= 0; i--) {
+        if (deltas[i].gx === gx && deltas[i].gz === gz) {
+          deltas[i].after = after;
+          if (deltas[i].before === null && deltas[i].after === null) {
+            deltas.splice(i, 1);
+          }
+          return;
+        }
+      }
+      deltas.push({ gx, gz, before, after });
+      return;
+    }
+    this.pushHistoryEntry({
+      label,
+      deltas: [{ gx, gz, before, after }],
+    });
+  }
+
+  private restoreMachineSnapshotFromPocket(snap: CapytorioMachineUndoSnapshot): boolean {
+    const key = tileKey(snap.gx, snap.gz);
+    const existing = this.machines.get(key);
+    if (existing) {
+      const sameTool =
+        existing.type === snap.baseType &&
+        (existing.variantItemId ?? existing.type) === snap.toolId;
+      if (sameTool) {
+        existing.dir = snap.dir;
+        if (snap.baseType === 'assembler' && snap.recipeId) {
+          existing.recipeId = snap.recipeId;
+        }
+        this.topologyRevision++;
+        return true;
+      }
+      this.demolishAt(snap.gx, snap.gz);
+    }
+
+    const placed = this.placeMachine(snap.toolId, snap.gx, snap.gz, snap.dir, snap.recipeId);
+    if (!placed.ok || !placed.machine) return false;
+    if (snap.baseType === 'assembler' && snap.recipeId) {
+      this.setAssemblerRecipeAt(snap.gx, snap.gz, snap.recipeId);
+    }
+    for (const [k, qty] of Object.entries(snap.inputBuffer) as Array<[CapytorioItemId, number]>) {
+      const take = Math.min(qty, this.pocketItems[k] ?? 0);
+      if (take > 0) {
+        this.consumePocketItem(k, take);
+        placed.machine.inputBuffer[k] = (placed.machine.inputBuffer[k] ?? 0) + take;
+      }
+    }
+    for (const [k, qty] of Object.entries(snap.outputBuffer) as Array<[CapytorioItemId, number]>) {
+      const take = Math.min(qty, this.pocketItems[k] ?? 0);
+      if (take > 0) {
+        this.consumePocketItem(k, take);
+        placed.machine.outputBuffer[k] = (placed.machine.outputBuffer[k] ?? 0) + take;
+      }
+    }
+    for (let bi = 0; bi < snap.beltItems.length; bi++) {
+      const bItem = snap.beltItems[bi];
+      if ((this.pocketItems[bItem.item] ?? 0) > 0) {
+        this.consumePocketItem(bItem.item, 1);
+        placed.machine.beltItems.push({ ...bItem });
+      }
+    }
+    if (snap.holdingItem && (this.pocketItems[snap.holdingItem] ?? 0) > 0) {
+      this.consumePocketItem(snap.holdingItem, 1);
+      placed.machine.holdingItem = snap.holdingItem;
+    }
+    return true;
+  }
+
+  public undoLastAction(): { ok: boolean; label: string; changedCount: number } {
+    if (this.activeHistoryBatch) {
+      this.commitHistoryBatch();
+    }
+    const entry = this.undoStack.pop();
+    if (!entry) {
+      return { ok: false, label: '', changedCount: 0 };
+    }
+    let changedCount = 0;
+    this.isReplayingHistory = true;
+    try {
+      for (let i = entry.deltas.length - 1; i >= 0; i--) {
+        const d = entry.deltas[i];
+        if (d.before === null) {
+          if (this.demolishAt(d.gx, d.gz) !== null) {
+            changedCount++;
+          }
+        } else {
+          if (this.restoreMachineSnapshotFromPocket(d.before)) {
+            changedCount++;
+          }
+        }
+      }
+    } finally {
+      this.isReplayingHistory = false;
+    }
+    this.redoStack.push(entry);
+    if (this.redoStack.length > MAX_CAPYTORIO_UNDO_HISTORY) {
+      this.redoStack.shift();
+    }
+    // If the user undid a Cut action, clear the legacy single-cut snapshot
+    if (this.undoCutSnapshot.length > 0 && entry.label.startsWith('Cut ')) {
+      this.undoCutSnapshot.length = 0;
+      if (this.clipboard?.mode === 'cut') {
+        this.clipboard = null;
+        this.clipboardToolState = 'off';
+        this.pasteAnchor = null;
+      }
+    }
+    return { ok: true, label: entry.label, changedCount };
+  }
+
+  public redoLastAction(): { ok: boolean; label: string; changedCount: number } {
+    if (this.activeHistoryBatch) {
+      this.commitHistoryBatch();
+    }
+    const entry = this.redoStack.pop();
+    if (!entry) {
+      return { ok: false, label: '', changedCount: 0 };
+    }
+    let changedCount = 0;
+    this.isReplayingHistory = true;
+    try {
+      for (let i = 0; i < entry.deltas.length; i++) {
+        const d = entry.deltas[i];
+        if (d.after === null) {
+          if (this.demolishAt(d.gx, d.gz) !== null) {
+            changedCount++;
+          }
+        } else {
+          if (this.restoreMachineSnapshotFromPocket(d.after)) {
+            changedCount++;
+          }
+        }
+      }
+    } finally {
+      this.isReplayingHistory = false;
+    }
+    this.undoStack.push(entry);
+    if (this.undoStack.length > MAX_CAPYTORIO_UNDO_HISTORY) {
+      this.undoStack.shift();
+    }
+    return { ok: true, label: entry.label, changedCount };
+  }
+
+  public setBlueprintAnchor(gx: number, gz: number): void {
+    this.pasteAnchor = { gx, gz };
+    this.hoveredGx = gx;
+    this.hoveredGz = gz;
+  }
+
+  public clearBlueprintAnchor(): void {
+    this.pasteAnchor = null;
+  }
+
   public setClipboardToolMode(
     state: CapytorioClipboardToolState,
     shape?: CapytorioSelectionShape
   ): void {
     if (shape) this.selectionShape = shape;
-    if (state === 'paste' && (!this.clipboard || this.clipboard.entries.length === 0)) {
-      this.clipboardToolState = 'select_copy';
+    this.pasteAnchor = null;
+    if (state === 'paste') {
+      if (!this.clipboard || this.clipboard.entries.length === 0) {
+        // Automatically remember the most recently copied/cut selection from the library
+        if (this.blueprintLibrary.length > 0) {
+          this.selectBlueprintFromLibrary(this.blueprintLibrary[0].id);
+          return;
+        }
+        this.clipboardToolState = 'select_copy';
+      } else {
+        this.clipboardToolState = 'paste';
+      }
     } else {
       this.clipboardToolState = state;
     }
@@ -1201,9 +1524,139 @@ export class CapytorioFactoryEngine {
 
   public clearClipboard(): void {
     this.clipboardToolState = 'off';
-    this.clipboard = null;
+    this.pasteAnchor = null;
+    // End active cut session, while keeping copied selections remembered in clipboard & library
+    if (this.clipboard?.mode === 'cut') {
+      this.clipboard = null;
+    }
     this.previewSelectedKeys.clear();
     this.undoCutSnapshot.length = 0;
+  }
+
+  public activateLastBlueprint(): boolean {
+    this.pasteAnchor = null;
+    if (this.clipboard && this.clipboard.entries.length > 0) {
+      this.clipboardToolState = 'paste';
+      this.previewSelectedKeys.clear();
+      return true;
+    }
+    if (this.blueprintLibrary.length > 0) {
+      return this.selectBlueprintFromLibrary(this.blueprintLibrary[0].id) !== null;
+    }
+    return false;
+  }
+
+  public selectBlueprintFromLibrary(id: string): CapytorioSavedBlueprint | null {
+    const found = this.blueprintLibrary.find((bp) => bp.id === id);
+    if (!found || found.entries.length === 0) return null;
+    this.clipboard = {
+      mode: 'copy',
+      entries: found.entries.map((e) => ({ ...e })),
+      canUndoCut: false,
+      blueprintId: found.id,
+      label: found.label,
+    };
+    this.activeBlueprintId = found.id;
+    this.clipboardToolState = 'paste';
+    this.pasteAnchor = null;
+    this.previewSelectedKeys.clear();
+    this.undoCutSnapshot.length = 0;
+    return found;
+  }
+
+  public deleteBlueprintFromLibrary(id: string): boolean {
+    const idx = this.blueprintLibrary.findIndex((bp) => bp.id === id);
+    if (idx < 0) return false;
+    this.blueprintLibrary.splice(idx, 1);
+    if (this.activeBlueprintId === id) {
+      this.activeBlueprintId = null;
+    }
+    if (this.clipboard?.blueprintId === id) {
+      this.clipboard.blueprintId = null;
+    }
+    return true;
+  }
+
+  public clearBlueprintLibrary(): void {
+    this.blueprintLibrary = [];
+    this.activeBlueprintId = null;
+    if (this.clipboard) {
+      this.clipboard.blueprintId = null;
+    }
+  }
+
+  private buildBlueprintLabel(entries: ReadonlyArray<CapytorioBlueprintEntry>): string {
+    if (entries.length === 0) return 'Empty Blueprint';
+    const counts = new Map<string, number>();
+    let firstRecipeName: string | null = null;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const spec = resolveCapytorioPlaceableSpec(e.toolId);
+      const name = spec?.shortName ?? CAPYTORIO_MACHINE_SPECS[e.baseType]?.shortName ?? e.baseType;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+      if (!firstRecipeName && e.baseType === 'assembler' && e.recipeId) {
+        const rec = RECIPE_BY_ID.get(e.recipeId);
+        if (rec) firstRecipeName = rec.name;
+      }
+    }
+    const ranked = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+    if (ranked.length === 1) {
+      const [name, qty] = ranked[0];
+      if (firstRecipeName && entries.length <= 2) {
+        return `${name} · ${firstRecipeName}`;
+      }
+      return qty === 1 ? name : `${name} ×${qty}`;
+    }
+    const topTwo = ranked
+      .slice(0, 2)
+      .map(([name, qty]) => (qty > 1 ? `${name} ×${qty}` : name))
+      .join(' + ');
+    return ranked.length > 2 ? `${topTwo} +${ranked.length - 2}` : topTwo;
+  }
+
+  private computeBlueprintBounds(entries: ReadonlyArray<CapytorioBlueprintEntry>): {
+    width: number;
+    height: number;
+  } {
+    if (entries.length === 0) return { width: 0, height: 0 };
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e.dx < minX) minX = e.dx;
+      if (e.dx > maxX) maxX = e.dx;
+      if (e.dz < minZ) minZ = e.dz;
+      if (e.dz > maxZ) maxZ = e.dz;
+    }
+    return {
+      width: maxX - minX + 1,
+      height: maxZ - minZ + 1,
+    };
+  }
+
+  private recordBlueprintToLibrary(
+    entries: ReadonlyArray<CapytorioBlueprintEntry>,
+    sourceMode: 'copy' | 'cut'
+  ): CapytorioSavedBlueprint {
+    const clonedEntries = entries.map((e) => ({ ...e }));
+    const bounds = this.computeBlueprintBounds(clonedEntries);
+    const saved: CapytorioSavedBlueprint = {
+      id: `bp_${Date.now().toString(36)}_${this.nextBlueprintUid++}`,
+      label: this.buildBlueprintLabel(clonedEntries),
+      sourceMode,
+      createdAt: Date.now(),
+      width: bounds.width,
+      height: bounds.height,
+      entries: clonedEntries,
+    };
+    this.blueprintLibrary.unshift(saved);
+    if (this.blueprintLibrary.length > MAX_CAPYTORIO_BLUEPRINT_LIBRARY) {
+      this.blueprintLibrary.length = MAX_CAPYTORIO_BLUEPRINT_LIBRARY;
+    }
+    this.activeBlueprintId = saved.id;
+    return saved;
   }
 
   public selectMachinesInBox(gxA: number, gzA: number, gxB: number, gzB: number): CapytorioMachine[] {
@@ -1364,31 +1817,69 @@ export class CapytorioFactoryEngine {
     }
 
     if (mode === 'cut') {
+      const cutCount = this.undoCutSnapshot.length;
+      this.beginHistoryBatch(`Cut ${cutCount} building${cutCount === 1 ? '' : 's'}`);
       for (let i = 0; i < this.undoCutSnapshot.length; i++) {
         const snap = this.undoCutSnapshot[i];
         this.demolishAt(snap.gx, snap.gz);
       }
+      this.commitHistoryBatch();
     }
 
+    const savedBp = this.recordBlueprintToLibrary(entries, mode);
     this.clipboard = {
       mode,
       entries,
       canUndoCut: mode === 'cut' && this.undoCutSnapshot.length > 0,
+      blueprintId: savedBp.id,
+      label: savedBp.label,
     };
     this.clipboardToolState = 'paste';
+    this.pasteAnchor = null;
     return { count: entries.length, mode };
   }
 
-  public rotateBlueprint90(): boolean {
+  public rotateBlueprint90(ccw: boolean = false): boolean {
     if (!this.clipboard || this.clipboard.entries.length === 0) return false;
     for (let i = 0; i < this.clipboard.entries.length; i++) {
       const e = this.clipboard.entries[i];
       const prevDx = e.dx;
       const prevDz = e.dz;
-      // 90 deg CW in Capytorio (+X East, +Z South): (dx, dz) -> (-dz, dx)
-      e.dx = -prevDz;
-      e.dz = prevDx;
-      e.dir = ((e.dir + 1) & 3) as CapytorioDirection;
+      if (ccw) {
+        // 90 deg CCW in Capytorio (+X East, +Z South): (dx, dz) -> (dz, -dx)
+        e.dx = prevDz;
+        e.dz = -prevDx;
+        e.dir = ((e.dir + 3) & 3) as CapytorioDirection;
+      } else {
+        // 90 deg CW in Capytorio (+X East, +Z South): (dx, dz) -> (-dz, dx)
+        e.dx = -prevDz;
+        e.dz = prevDx;
+        e.dir = ((e.dir + 1) & 3) as CapytorioDirection;
+      }
+    }
+    return true;
+  }
+
+  public flipBlueprintHorizontal(): boolean {
+    if (!this.clipboard || this.clipboard.entries.length === 0) return false;
+    for (let i = 0; i < this.clipboard.entries.length; i++) {
+      const e = this.clipboard.entries[i];
+      // Mirror East (+X) <-> West (-X)
+      e.dx = -e.dx;
+      if (e.dir === 1) e.dir = 3;
+      else if (e.dir === 3) e.dir = 1;
+    }
+    return true;
+  }
+
+  public flipBlueprintVertical(): boolean {
+    if (!this.clipboard || this.clipboard.entries.length === 0) return false;
+    for (let i = 0; i < this.clipboard.entries.length; i++) {
+      const e = this.clipboard.entries[i];
+      // Mirror North (-Z) <-> South (+Z)
+      e.dz = -e.dz;
+      if (e.dir === 0) e.dir = 2;
+      else if (e.dir === 2) e.dir = 0;
     }
     return true;
   }
@@ -1441,6 +1932,19 @@ export class CapytorioFactoryEngine {
     return results;
   }
 
+  public pasteBlueprintAtAnchor(): {
+    placedCount: number;
+    skippedCount: number;
+    updatedRecipesCount: number;
+    anchorGx: number;
+    anchorGz: number;
+  } {
+    const anchorGx = this.pasteAnchor ? this.pasteAnchor.gx : this.hoveredGx;
+    const anchorGz = this.pasteAnchor ? this.pasteAnchor.gz : this.hoveredGz;
+    const res = this.pasteBlueprintAt(anchorGx, anchorGz);
+    return { ...res, anchorGx, anchorGz };
+  }
+
   public pasteBlueprintAt(
     originGx: number,
     originGz: number
@@ -1454,6 +1958,7 @@ export class CapytorioFactoryEngine {
     let skippedCount = 0;
     let updatedRecipesCount = 0;
 
+    this.beginHistoryBatch('Paste blueprint');
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       const gx = originGx + entry.dx;
@@ -1488,10 +1993,19 @@ export class CapytorioFactoryEngine {
         skippedCount++;
       }
     }
+    const totalApplied = placedCount + updatedRecipesCount;
+    this.commitHistoryBatch(
+      `Paste ${totalApplied} building${totalApplied === 1 ? '' : 's'}`
+    );
+
+    if (totalApplied > 0) {
+      this.pasteAnchor = null;
+    }
 
     if (wasCut && placedCount > 0) {
       this.clipboard = null;
       this.clipboardToolState = 'off';
+      this.pasteAnchor = null;
       this.undoCutSnapshot.length = 0;
     }
 
@@ -1501,46 +2015,29 @@ export class CapytorioFactoryEngine {
   public undoCut(): { restoredCount: number } {
     if (this.undoCutSnapshot.length === 0) return { restoredCount: 0 };
     let restoredCount = 0;
-    for (let i = 0; i < this.undoCutSnapshot.length; i++) {
-      const item = this.undoCutSnapshot[i];
-      if (this.machines.has(tileKey(item.gx, item.gz))) continue;
-      const res = this.placeMachine(item.toolId, item.gx, item.gz, item.dir);
-      if (res.ok && res.machine) {
-        restoredCount++;
-        if (item.baseType === 'assembler' && item.recipeId) {
-          this.setAssemblerRecipeAt(item.gx, item.gz, item.recipeId);
-        }
-        // Re-load refunded buffers & belt items cleanly from pocket where available
-        for (const [k, qty] of Object.entries(item.inputBuffer) as Array<[CapytorioItemId, number]>) {
-          const take = Math.min(qty, this.pocketItems[k] ?? 0);
-          if (take > 0) {
-            this.consumePocketItem(k, take);
-            res.machine.inputBuffer[k] = (res.machine.inputBuffer[k] ?? 0) + take;
-          }
-        }
-        for (const [k, qty] of Object.entries(item.outputBuffer) as Array<[CapytorioItemId, number]>) {
-          const take = Math.min(qty, this.pocketItems[k] ?? 0);
-          if (take > 0) {
-            this.consumePocketItem(k, take);
-            res.machine.outputBuffer[k] = (res.machine.outputBuffer[k] ?? 0) + take;
-          }
-        }
-        for (let bi = 0; bi < item.beltItems.length; bi++) {
-          const bItem = item.beltItems[bi];
-          if ((this.pocketItems[bItem.item] ?? 0) > 0) {
-            this.consumePocketItem(bItem.item, 1);
-            res.machine.beltItems.push({ ...bItem });
-          }
-        }
-        if (item.holdingItem && (this.pocketItems[item.holdingItem] ?? 0) > 0) {
-          this.consumePocketItem(item.holdingItem, 1);
-          res.machine.holdingItem = item.holdingItem;
+    this.isReplayingHistory = true;
+    try {
+      for (let i = 0; i < this.undoCutSnapshot.length; i++) {
+        const item = this.undoCutSnapshot[i];
+        if (this.machines.has(tileKey(item.gx, item.gz))) continue;
+        if (this.restoreMachineSnapshotFromPocket(item)) {
+          restoredCount++;
         }
       }
+    } finally {
+      this.isReplayingHistory = false;
+    }
+    // Pop matching Cut history entry from undoStack if it's on top so Undo doesn't double-apply
+    if (
+      this.undoStack.length > 0 &&
+      this.undoStack[this.undoStack.length - 1].label.startsWith('Cut ')
+    ) {
+      this.undoStack.pop();
     }
     this.undoCutSnapshot.length = 0;
     this.clipboard = null;
     this.clipboardToolState = 'off';
+    this.pasteAnchor = null;
     this.previewSelectedKeys.clear();
     return { restoredCount };
   }
@@ -3504,7 +4001,33 @@ export class CapytorioFactoryEngine {
         count: this.clipboard?.entries.length ?? 0,
         canUndoCut: this.undoCutSnapshot.length > 0,
         previewCount: this.previewSelectedKeys.size,
+        activeBlueprintId: this.clipboard?.blueprintId ?? this.activeBlueprintId,
+        activeBlueprintLabel: this.clipboard?.label ?? null,
+        libraryCount: this.blueprintLibrary.length,
+        hasRememberedSelection:
+          (this.clipboard !== null && this.clipboard.entries.length > 0) ||
+          this.blueprintLibrary.length > 0,
+        pasteAnchor: this.pasteAnchor ? { gx: this.pasteAnchor.gx, gz: this.pasteAnchor.gz } : null,
       },
+      history: {
+        canUndo: this.undoStack.length > 0,
+        canRedo: this.redoStack.length > 0,
+        undoCount: this.undoStack.length,
+        redoCount: this.redoStack.length,
+        nextUndoLabel:
+          this.undoStack.length > 0 ? this.undoStack[this.undoStack.length - 1].label : null,
+        nextRedoLabel:
+          this.redoStack.length > 0 ? this.redoStack[this.redoStack.length - 1].label : null,
+      },
+      blueprintLibrary: this.blueprintLibrary.map((bp) => ({
+        id: bp.id,
+        label: bp.label,
+        sourceMode: bp.sourceMode,
+        createdAt: bp.createdAt,
+        width: bp.width,
+        height: bp.height,
+        entries: bp.entries.map((e) => ({ ...e })),
+      })),
     };
   }
 
@@ -3540,6 +4063,25 @@ export class CapytorioFactoryEngine {
             ry: +sp.ry.toFixed(2),
           }))
         : undefined;
+    const blueprintsOut =
+      this.blueprintLibrary.length > 0
+        ? this.blueprintLibrary.slice(0, MAX_CAPYTORIO_BLUEPRINT_LIBRARY).map((bp) => ({
+            id: bp.id,
+            label: bp.label,
+            sourceMode: bp.sourceMode,
+            createdAt: bp.createdAt,
+            width: bp.width,
+            height: bp.height,
+            entries: bp.entries.map((e) => ({
+              dx: e.dx,
+              dz: e.dz,
+              toolId: e.toolId,
+              baseType: e.baseType,
+              dir: e.dir,
+              recipeId: e.recipeId,
+            })),
+          }))
+        : undefined;
     return {
       version: 1,
       machines: machinesOut,
@@ -3553,6 +4095,7 @@ export class CapytorioFactoryEngine {
       activeTechId: this.activeTechId,
       techDelivered: { ...this.techDelivered },
       completedMilestones: Array.from(this.completedMilestones),
+      blueprintLibrary: blueprintsOut,
       rocketLaunches: this.rocketLaunches,
       totalProduced: this.totalProduced,
       score: this.score,
@@ -3564,6 +4107,10 @@ export class CapytorioFactoryEngine {
     this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
     this.harvestedTrees.clear();
+    this.pasteAnchor = null;
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.activeHistoryBatch = null;
     this.topologyRevision++;
     for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
       delete this.pocketItems[k];
@@ -3716,6 +4263,60 @@ export class CapytorioFactoryEngine {
           squish: 0,
           settled: cleanY <= 0.01,
           ageSec: 0,
+        });
+      }
+    }
+
+    this.blueprintLibrary = [];
+    this.activeBlueprintId = null;
+    if (Array.isArray(raw.blueprintLibrary)) {
+      for (
+        let i = 0;
+        i < raw.blueprintLibrary.length && this.blueprintLibrary.length < MAX_CAPYTORIO_BLUEPRINT_LIBRARY;
+        i++
+      ) {
+        const bp = raw.blueprintLibrary[i];
+        if (!bp || !Array.isArray(bp.entries) || bp.entries.length === 0) continue;
+        const cleanEntries: CapytorioBlueprintEntry[] = [];
+        for (let j = 0; j < bp.entries.length && cleanEntries.length < 256; j++) {
+          const e = bp.entries[j];
+          if (
+            !e ||
+            typeof e.dx !== 'number' ||
+            !Number.isFinite(e.dx) ||
+            typeof e.dz !== 'number' ||
+            !Number.isFinite(e.dz) ||
+            typeof e.toolId !== 'string' ||
+            !CAPYTORIO_MACHINE_SPECS[e.baseType]
+          ) {
+            continue;
+          }
+          cleanEntries.push({
+            dx: Math.round(e.dx),
+            dz: Math.round(e.dz),
+            toolId: e.toolId,
+            baseType: e.baseType,
+            dir: ((e.dir ?? 1) & 3) as CapytorioDirection,
+            recipeId: typeof e.recipeId === 'string' && RECIPE_BY_ID.has(e.recipeId) ? e.recipeId : undefined,
+          });
+        }
+        if (cleanEntries.length === 0) continue;
+        const bounds = this.computeBlueprintBounds(cleanEntries);
+        this.blueprintLibrary.push({
+          id:
+            typeof bp.id === 'string' && bp.id.trim().length > 0
+              ? bp.id.trim().slice(0, 64)
+              : `bp_h_${this.nextBlueprintUid++}`,
+          label:
+            typeof bp.label === 'string' && bp.label.trim().length > 0
+              ? bp.label.trim().slice(0, 80)
+              : this.buildBlueprintLabel(cleanEntries),
+          sourceMode: bp.sourceMode === 'cut' ? 'cut' : 'copy',
+          createdAt:
+            typeof bp.createdAt === 'number' && Number.isFinite(bp.createdAt) ? bp.createdAt : Date.now(),
+          width: bounds.width,
+          height: bounds.height,
+          entries: cleanEntries,
         });
       }
     }

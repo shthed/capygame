@@ -21,6 +21,7 @@ import {
   getBeltCurveShape,
   resolveCapytorioPlaceableSpec,
   tileKey,
+  type CapytorioBlueprintEntry,
 } from './CapytorioFactoryEngine';
 
 const MAX_ORE_INSTANCES = 1024;
@@ -40,6 +41,19 @@ const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
 const _activeKeysScratch = new Set<string>();
 const _blueprintStockScratch = new Map<string, number>();
+const _ghostBeltLookup = new Map<string, CapytorioBlueprintEntry>();
+const _ghostUsedCounts: Record<CapytorioMachineType, number> = {
+  drill: 0,
+  belt: 0,
+  inserter: 0,
+  furnace: 0,
+  assembler: 0,
+  generator: 0,
+  lab: 0,
+  splitter: 0,
+  tunnel: 0,
+  chest: 0,
+};
 const _beltTierCounts: [number, number, number] = [0, 0, 0];
 const _curvedLeftTierCounts: [number, number, number] = [0, 0, 0];
 const _curvedRightTierCounts: [number, number, number] = [0, 0, 0];
@@ -576,12 +590,35 @@ export class Capytorio3DRenderer {
   private readonly activeMachineGroups = new Map<string, THREE.Group>();
   private readonly inactivePoolByType = new Map<CapytorioMachineType, THREE.Group[]>();
 
+  // Pooled transparent 3D blueprint ghost models (zero per-frame allocations)
+  private readonly ghostRoot = new THREE.Group();
+  private readonly ghostPoolByType = new Map<CapytorioMachineType, THREE.Group[]>();
+  private ghostValidPrimaryMat: THREE.MeshStandardMaterial;
+  private ghostValidAccentMat: THREE.MeshStandardMaterial;
+  private ghostInvalidPrimaryMat: THREE.MeshStandardMaterial;
+  private ghostInvalidAccentMat: THREE.MeshStandardMaterial;
+  private ghostBeltDeckValidMat: THREE.MeshStandardMaterial;
+  private ghostBeltDeckInvalidMat: THREE.MeshStandardMaterial;
+
+  // Reusable belt geometries shared by instanced belts and 3D ghost belts
+  private beltChassisGeo: THREE.BufferGeometry;
+  private beltSideRailGeo: THREE.BufferGeometry;
+  private beltDeckGeo: THREE.BufferGeometry;
+  private curvedChassisLeftGeo: THREE.BufferGeometry;
+  private curvedChassisRightGeo: THREE.BufferGeometry;
+  private curvedRailLeftGeo: THREE.BufferGeometry;
+  private curvedRailRightGeo: THREE.BufferGeometry;
+  private curvedDeckLeftGeo: THREE.BufferGeometry;
+  private curvedDeckRightGeo: THREE.BufferGeometry;
+  private readonly beltHalfSpanX = (CAPYTORIO_TILE_SIZE * 0.88) * 0.5 - 0.055;
+
   // Cursor, directional build ghost, clipboard blueprint ghost & inspector ring
   private cursorGroup = new THREE.Group();
   private cursorFrameMat: THREE.MeshStandardMaterial;
   private ghostArrowMesh: THREE.Mesh;
   private ghostBodyMesh: THREE.Mesh;
   private inspectRingMesh: THREE.Mesh;
+  private bpTileMat: THREE.MeshBasicMaterial;
   private blueprintTileInstanced: THREE.InstancedMesh;
   private blueprintArrowInstanced: THREE.InstancedMesh;
 
@@ -964,6 +1001,15 @@ export class Capytorio3DRenderer {
 
       this.sharedMaterials.push(mat);
     }
+    this.beltChassisGeo = beltChassisGeo;
+    this.beltSideRailGeo = beltSideRailGeo;
+    this.beltDeckGeo = beltDeckGeo;
+    this.curvedChassisLeftGeo = curvedChassisLeftGeo;
+    this.curvedChassisRightGeo = curvedChassisRightGeo;
+    this.curvedRailLeftGeo = curvedRailLeftGeo;
+    this.curvedRailRightGeo = curvedRailRightGeo;
+    this.curvedDeckLeftGeo = curvedDeckLeftGeo;
+    this.curvedDeckRightGeo = curvedDeckRightGeo;
     this.beltDeckInstancedByTier = [deckMeshes[0], deckMeshes[1], deckMeshes[2]];
     this.beltDeckCurveLeftByTier = [curvedLeftDeckMeshes[0], curvedLeftDeckMeshes[1], curvedLeftDeckMeshes[2]];
     this.beltDeckCurveRightByTier = [curvedRightDeckMeshes[0], curvedRightDeckMeshes[1], curvedRightDeckMeshes[2]];
@@ -1114,18 +1160,19 @@ export class Capytorio3DRenderer {
     this.inspectRingMesh.userData.ignoreCameraFade = true;
     this.root.add(this.inspectRingMesh);
 
-    // 6. Pooled Cut/Copy Selection Highlight & Multi-Building 3D Paste Ghost
+    // 6. Pooled Cut/Copy Selection Highlight & Multi-Building 3D Transparent Ghost Items
     const bpTileGeo = new THREE.BoxGeometry(
       CAPYTORIO_TILE_SIZE * 0.94,
-      0.08,
+      0.06,
       CAPYTORIO_TILE_SIZE * 0.94
     );
     const bpTileMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.48,
+      opacity: 0.42,
       depthWrite: false,
     });
+    this.bpTileMat = bpTileMat;
     this.blueprintTileInstanced = new THREE.InstancedMesh(
       bpTileGeo,
       bpTileMat,
@@ -1154,8 +1201,86 @@ export class Capytorio3DRenderer {
     this.blueprintArrowInstanced.userData.ignoreCameraFade = true;
     this.root.add(this.blueprintArrowInstanced);
 
+    // Translucent 3D holographic ghost materials for blueprint placement preview
+    this.ghostValidPrimaryMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0ea5e9,
+      emissiveIntensity: 0.48,
+      roughness: 0.34,
+      metalness: 0.22,
+      transparent: true,
+      opacity: 0.46,
+      depthWrite: false,
+    });
+    this.ghostValidAccentMat = new THREE.MeshStandardMaterial({
+      color: 0x86efac,
+      emissive: 0x22c55e,
+      emissiveIntensity: 0.68,
+      roughness: 0.26,
+      metalness: 0.16,
+      transparent: true,
+      opacity: 0.64,
+      depthWrite: false,
+    });
+    this.ghostInvalidPrimaryMat = new THREE.MeshStandardMaterial({
+      color: 0xf87171,
+      emissive: 0xdc2626,
+      emissiveIntensity: 0.5,
+      roughness: 0.34,
+      metalness: 0.22,
+      transparent: true,
+      opacity: 0.46,
+      depthWrite: false,
+    });
+    this.ghostInvalidAccentMat = new THREE.MeshStandardMaterial({
+      color: 0xfca5a5,
+      emissive: 0xef4444,
+      emissiveIntensity: 0.72,
+      roughness: 0.26,
+      metalness: 0.16,
+      transparent: true,
+      opacity: 0.64,
+      depthWrite: false,
+    });
+    this.ghostBeltDeckValidMat = new THREE.MeshStandardMaterial({
+      color: 0x7dd3fc,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.5,
+      map: this.beltTrackTextures[0] ?? null,
+      roughness: 0.38,
+      metalness: 0.15,
+      transparent: true,
+      opacity: 0.66,
+      depthWrite: false,
+    });
+    this.ghostBeltDeckInvalidMat = new THREE.MeshStandardMaterial({
+      color: 0xfca5a5,
+      emissive: 0xdc2626,
+      emissiveIntensity: 0.5,
+      map: this.beltTrackTextures[0] ?? null,
+      roughness: 0.38,
+      metalness: 0.15,
+      transparent: true,
+      opacity: 0.66,
+      depthWrite: false,
+    });
+    this.ghostRoot.name = 'CapytorioBlueprintGhostRoot';
+    this.ghostRoot.userData.ignoreCameraFade = true;
+    this.root.add(this.ghostRoot);
+
     this.sharedGeometries.push(ghostPlateGeo, arrowGeo, ringGeo, bpTileGeo, bpArrowGeo);
-    this.sharedMaterials.push(this.cursorFrameMat, ringMat, bpTileMat, bpArrowMat);
+    this.sharedMaterials.push(
+      this.cursorFrameMat,
+      ringMat,
+      bpTileMat,
+      bpArrowMat,
+      this.ghostValidPrimaryMat,
+      this.ghostValidAccentMat,
+      this.ghostInvalidPrimaryMat,
+      this.ghostInvalidAccentMat,
+      this.ghostBeltDeckValidMat,
+      this.ghostBeltDeckInvalidMat
+    );
   }
 
   private buildLandingBeaconLandmark(): void {
@@ -1724,6 +1849,206 @@ export class Capytorio3DRenderer {
     });
 
     return g;
+  }
+
+  private createGhostMachineGroup(type: CapytorioMachineType): THREE.Group {
+    const primaryMeshes: THREE.Mesh[] = [];
+    const accentMeshes: THREE.Mesh[] = [];
+    const deckMeshes: THREE.Mesh[] = [];
+
+    if (type === 'belt') {
+      const g = new THREE.Group();
+      g.userData.machineType = 'belt';
+
+      const straight = new THREE.Group();
+      const sChassis = new THREE.Mesh(this.beltChassisGeo, this.ghostValidPrimaryMat);
+      const sRailL = new THREE.Mesh(this.beltSideRailGeo, this.ghostValidAccentMat);
+      sRailL.position.x = -this.beltHalfSpanX;
+      const sRailR = new THREE.Mesh(this.beltSideRailGeo, this.ghostValidAccentMat);
+      sRailR.position.x = this.beltHalfSpanX;
+      const sDeck = new THREE.Mesh(this.beltDeckGeo, this.ghostBeltDeckValidMat);
+      straight.add(sChassis, sRailL, sRailR, sDeck);
+      primaryMeshes.push(sChassis);
+      accentMeshes.push(sRailL, sRailR);
+      deckMeshes.push(sDeck);
+
+      const curveLeft = new THREE.Group();
+      const clChassis = new THREE.Mesh(this.curvedChassisLeftGeo, this.ghostValidPrimaryMat);
+      const clRail = new THREE.Mesh(this.curvedRailLeftGeo, this.ghostValidAccentMat);
+      const clDeck = new THREE.Mesh(this.curvedDeckLeftGeo, this.ghostBeltDeckValidMat);
+      curveLeft.add(clChassis, clRail, clDeck);
+      curveLeft.visible = false;
+      primaryMeshes.push(clChassis);
+      accentMeshes.push(clRail);
+      deckMeshes.push(clDeck);
+
+      const curveRight = new THREE.Group();
+      const crChassis = new THREE.Mesh(this.curvedChassisRightGeo, this.ghostValidPrimaryMat);
+      const crRail = new THREE.Mesh(this.curvedRailRightGeo, this.ghostValidAccentMat);
+      const crDeck = new THREE.Mesh(this.curvedDeckRightGeo, this.ghostBeltDeckValidMat);
+      curveRight.add(crChassis, crRail, crDeck);
+      curveRight.visible = false;
+      primaryMeshes.push(crChassis);
+      accentMeshes.push(crRail);
+      deckMeshes.push(crDeck);
+
+      g.add(straight, curveLeft, curveRight);
+      g.traverse((node) => {
+        node.userData.ignoreCameraFade = true;
+        if ((node as THREE.Mesh).isMesh) {
+          const mesh = node as THREE.Mesh;
+          mesh.castShadow = false;
+          mesh.receiveShadow = false;
+          mesh.renderOrder = 6;
+        }
+      });
+
+      g.userData.ghostPrimaryMeshes = primaryMeshes;
+      g.userData.ghostAccentMeshes = accentMeshes;
+      g.userData.ghostDeckMeshes = deckMeshes;
+      g.userData.beltVariants = { straight, curveLeft, curveRight };
+      g.userData.ghostValid = true;
+      g.visible = false;
+      this.ghostRoot.add(g);
+      return g;
+    }
+
+    const g = this.createCompositeMachineMesh(type);
+    const rawAccentMeshes = (g.userData.accentMeshes as THREE.Mesh[] | undefined) ?? [];
+    const accentSet = new Set<THREE.Mesh>(rawAccentMeshes);
+
+    // Pose inserter arm leaning forward toward -Z drop direction so ghost orientation is unmistakable
+    if (type === 'inserter') {
+      const turret = g.userData.turret as THREE.Group | undefined;
+      const shoulder = g.userData.shoulderPivot as THREE.Group | undefined;
+      const elbow = g.userData.elbowPivot as THREE.Group | undefined;
+      const wrist = g.userData.wristPivot as THREE.Group | undefined;
+      if (turret) turret.rotation.y = 0;
+      if (shoulder) shoulder.rotation.x = -0.45;
+      if (elbow) elbow.rotation.x = 0.78;
+      if (wrist) wrist.rotation.x = -0.33;
+      const heldMap = g.userData.heldMeshesByShape as
+        | Record<CapytorioItemShape, THREE.Mesh>
+        | undefined;
+      if (heldMap) {
+        for (let i = 0; i < CAPYTORIO_ITEM_SHAPES.length; i++) {
+          const hm = heldMap[CAPYTORIO_ITEM_SHAPES[i]];
+          if (hm) {
+            hm.visible = false;
+            hm.userData.isGhostHiddenHeld = true;
+          }
+        }
+      }
+    }
+
+    g.traverse((node) => {
+      node.userData.ignoreCameraFade = true;
+      if ((node as THREE.Mesh).isMesh) {
+        const mesh = node as THREE.Mesh;
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+        mesh.renderOrder = 6;
+        if (mesh.userData.isGhostHiddenHeld) return;
+        const origMat = mesh.material;
+        const isAccent =
+          accentSet.has(mesh) ||
+          origMat === this.matHazardYellow ||
+          origMat === this.matBrass ||
+          origMat === this.matFurnaceHearthIdle ||
+          origMat === this.matGeneratorFireboxIdle ||
+          origMat === this.matLabCoreIdle;
+        if (isAccent) {
+          mesh.material = this.ghostValidAccentMat;
+          accentMeshes.push(mesh);
+        } else {
+          mesh.material = this.ghostValidPrimaryMat;
+          primaryMeshes.push(mesh);
+        }
+      }
+    });
+
+    g.userData.ghostPrimaryMeshes = primaryMeshes;
+    g.userData.ghostAccentMeshes = accentMeshes;
+    g.userData.ghostDeckMeshes = deckMeshes;
+    g.userData.ghostValid = true;
+    g.visible = false;
+    this.ghostRoot.add(g);
+    return g;
+  }
+
+  private acquireGhostGroup(type: CapytorioMachineType): THREE.Group {
+    let pool = this.ghostPoolByType.get(type);
+    if (!pool) {
+      pool = [];
+      this.ghostPoolByType.set(type, pool);
+    }
+    const idx = _ghostUsedCounts[type];
+    _ghostUsedCounts[type] = idx + 1;
+    if (idx < pool.length) {
+      return pool[idx];
+    }
+    const created = this.createGhostMachineGroup(type);
+    pool.push(created);
+    return created;
+  }
+
+  private applyGhostMaterialState(group: THREE.Group, valid: boolean): void {
+    if (group.userData.ghostValid === valid) return;
+    group.userData.ghostValid = valid;
+    const primaryMat = valid ? this.ghostValidPrimaryMat : this.ghostInvalidPrimaryMat;
+    const accentMat = valid ? this.ghostValidAccentMat : this.ghostInvalidAccentMat;
+    const deckMat = valid ? this.ghostBeltDeckValidMat : this.ghostBeltDeckInvalidMat;
+
+    const primaryMeshes = group.userData.ghostPrimaryMeshes as THREE.Mesh[] | undefined;
+    if (primaryMeshes) {
+      for (let i = 0; i < primaryMeshes.length; i++) {
+        primaryMeshes[i].material = primaryMat;
+      }
+    }
+    const accentMeshes = group.userData.ghostAccentMeshes as THREE.Mesh[] | undefined;
+    if (accentMeshes) {
+      for (let i = 0; i < accentMeshes.length; i++) {
+        accentMeshes[i].material = accentMat;
+      }
+    }
+    const deckMeshes = group.userData.ghostDeckMeshes as THREE.Mesh[] | undefined;
+    if (deckMeshes) {
+      for (let i = 0; i < deckMeshes.length; i++) {
+        deckMeshes[i].material = deckMat;
+      }
+    }
+  }
+
+  private getGhostBeltCurveShape(
+    gx: number,
+    gz: number,
+    dir: CapytorioDirection,
+    engine: CapytorioFactoryEngine
+  ): 'straight' | 'curveLeft' | 'curveRight' {
+    const isFeeder = (nx: number, nz: number, expectedDir: CapytorioDirection): boolean => {
+      const key = tileKey(nx, nz);
+      const bp = _ghostBeltLookup.get(key);
+      if (bp) {
+        return bp.dir === expectedDir;
+      }
+      const world = engine.machines.get(key);
+      if (!world) return false;
+      return (
+        (world.type === 'belt' || world.type === 'splitter' || world.type === 'tunnel') &&
+        world.dir === expectedDir
+      );
+    };
+    const backDir = ((dir + 2) & 3) as CapytorioDirection;
+    if (isFeeder(gx + DIR_DX[backDir], gz + DIR_DZ[backDir], dir)) {
+      return 'straight';
+    }
+    const leftSideDir = ((dir + 3) & 3) as CapytorioDirection;
+    const rightSideDir = ((dir + 1) & 3) as CapytorioDirection;
+    const fedFromLeft = isFeeder(gx + DIR_DX[leftSideDir], gz + DIR_DZ[leftSideDir], rightSideDir);
+    const fedFromRight = isFeeder(gx + DIR_DX[rightSideDir], gz + DIR_DZ[rightSideDir], leftSideDir);
+    if (fedFromLeft && !fedFromRight) return 'curveLeft';
+    if (fedFromRight && !fedFromLeft) return 'curveRight';
+    return 'straight';
   }
 
   public sync(
@@ -2388,14 +2713,40 @@ export class Capytorio3DRenderer {
       this.ghostArrowMesh.visible = true;
     }
 
-    // 4b. Pooled 3D Selection Footprint & Paste Ghost Instanced Meshes (zero per-frame allocations)
+    // 4b. Pooled 3D Selection Footprint & Transparent 3D Blueprint Ghost Items (zero per-frame allocations)
+    _ghostUsedCounts.drill = 0;
+    _ghostUsedCounts.belt = 0;
+    _ghostUsedCounts.inserter = 0;
+    _ghostUsedCounts.furnace = 0;
+    _ghostUsedCounts.assembler = 0;
+    _ghostUsedCounts.generator = 0;
+    _ghostUsedCounts.lab = 0;
+    _ghostUsedCounts.splitter = 0;
+    _ghostUsedCounts.tunnel = 0;
+    _ghostUsedCounts.chest = 0;
+
     let bpTileCount = 0;
-    let bpArrowCount = 0;
+    const bpArrowCount = 0;
     if (showCursorAndRing && isPasteMode && engine.clipboard) {
+      this.bpTileMat.opacity = 0.22;
       _blueprintStockScratch.clear();
+      _ghostBeltLookup.clear();
       const entries = engine.clipboard.entries;
-      const anchorGx = engine.hoveredGx;
-      const anchorGz = engine.hoveredGz;
+      const anchorGx = engine.pasteAnchor ? engine.pasteAnchor.gx : engine.hoveredGx;
+      const anchorGz = engine.pasteAnchor ? engine.pasteAnchor.gz : engine.hoveredGz;
+
+      // First pass: index belt-compatible blueprint entries for curved ghost belt detection
+      for (let i = 0; i < entries.length && i < MAX_BLUEPRINT_GHOST_TILES; i++) {
+        const entry = entries[i];
+        if (
+          entry.baseType === 'belt' ||
+          entry.baseType === 'splitter' ||
+          entry.baseType === 'tunnel'
+        ) {
+          _ghostBeltLookup.set(tileKey(anchorGx + entry.dx, anchorGz + entry.dz), entry);
+        }
+      }
+
       for (let i = 0; i < entries.length && bpTileCount < MAX_BLUEPRINT_GHOST_TILES; i++) {
         const entry = entries[i];
         const gx = anchorGx + entry.dx;
@@ -2430,7 +2781,7 @@ export class Capytorio3DRenderer {
         }
         const wx = capytorioGridToWorldX(gx);
         const wz = capytorioGridToWorldZ(gz);
-        _dummy.position.set(wx, 0.06, wz);
+        _dummy.position.set(wx, 0.03, wz);
         _dummy.rotation.set(0, 0, 0);
         _dummy.scale.set(1, 1, 1);
         _dummy.updateMatrix();
@@ -2439,19 +2790,26 @@ export class Capytorio3DRenderer {
         this.blueprintTileInstanced.setColorAt(bpTileCount, _color);
         bpTileCount++;
 
-        if (bpArrowCount < MAX_BLUEPRINT_GHOST_TILES) {
-          const rotY = dirToRotY(entry.dir);
-          _dummy.position.set(wx + DIR_DX[entry.dir] * 0.35, 0.44, wz + DIR_DZ[entry.dir] * 0.35);
-          _dummy.rotation.set(0, rotY, 0);
-          _dummy.scale.set(1, 1, 1);
-          _dummy.updateMatrix();
-          this.blueprintArrowInstanced.setMatrixAt(bpArrowCount, _dummy.matrix);
-          _color.setHex(valid ? 0x86efac : 0xfca5a5);
-          this.blueprintArrowInstanced.setColorAt(bpArrowCount, _color);
-          bpArrowCount++;
+        const ghostGroup = this.acquireGhostGroup(entry.baseType);
+        ghostGroup.position.set(wx, 0, wz);
+        ghostGroup.rotation.set(0, dirToRotY(entry.dir), 0);
+        ghostGroup.scale.set(subPixelShrink, subPixelShrink, subPixelShrink);
+        if (entry.baseType === 'belt') {
+          const shape = this.getGhostBeltCurveShape(gx, gz, entry.dir, engine);
+          const variants = ghostGroup.userData.beltVariants as
+            | { straight: THREE.Group; curveLeft: THREE.Group; curveRight: THREE.Group }
+            | undefined;
+          if (variants) {
+            variants.straight.visible = shape === 'straight';
+            variants.curveLeft.visible = shape === 'curveLeft';
+            variants.curveRight.visible = shape === 'curveRight';
+          }
         }
+        this.applyGhostMaterialState(ghostGroup, valid);
+        ghostGroup.visible = true;
       }
     } else if (showCursorAndRing && isSelectMode && engine.previewSelectedKeys.size > 0) {
+      this.bpTileMat.opacity = 0.46;
       const selColor = engine.clipboardToolState === 'select_cut' ? 0xf97316 : 0x38bdf8;
       engine.previewSelectedKeys.forEach((key) => {
         if (bpTileCount >= MAX_BLUEPRINT_GHOST_TILES) return;
@@ -2469,6 +2827,15 @@ export class Capytorio3DRenderer {
         bpTileCount++;
       });
     }
+
+    // Hide any unused pooled transparent 3D ghost models
+    this.ghostPoolByType.forEach((pool, mType) => {
+      const used = _ghostUsedCounts[mType];
+      for (let i = used; i < pool.length; i++) {
+        pool[i].visible = false;
+      }
+    });
+
     this.blueprintTileInstanced.count = bpTileCount;
     this.blueprintTileInstanced.instanceMatrix.needsUpdate = true;
     if (this.blueprintTileInstanced.instanceColor) {
@@ -2521,6 +2888,7 @@ export class Capytorio3DRenderer {
     }
     this.activeMachineGroups.clear();
     this.inactivePoolByType.clear();
+    this.ghostPoolByType.clear();
     this.machineGeoCache.clear();
     this.accentMatCache.clear();
     this.heldItemMatCache.clear();

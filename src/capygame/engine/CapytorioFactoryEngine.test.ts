@@ -11,6 +11,7 @@ import {
   CAPYTORIO_BELT_ITEM_SPACING_M,
   CAPYTORIO_BELT_MAX_ITEMS_PER_TILE,
   CapytorioFactoryEngine,
+  MAX_CAPYTORIO_BLUEPRINT_LIBRARY,
   MAX_RECENT_CAPYTORIO_TOOLS,
   capytorioGridToWorldX,
   capytorioGridToWorldZ,
@@ -1202,6 +1203,297 @@ test('Capytorio Cut/Copy/Paste: Box & Freeform Lasso selection, 90-deg rotation,
   assert.equal(engine.clipboardToolState, 'off', 'Cut clears clipboard after relocating buildings');
   assert.equal(engine.getUiSnapshot().clipboard.canUndoCut, false);
 });
+
+test('Blueprint Library remembers last 100 Cut/Copy selections, persists across save/load, and supports Rotate CCW + Flip H/V', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  // Build an asymmetric L-shaped layout (starter kit has 24 belts, 8 inserters, 4 furnaces):
+  // (0,0) belt dir=1 (East) -> (1,0) belt dir=2 (South) -> (1,1) inserter dir=2 (South) -> (2,1) furnace dir=3 (West)
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 2).ok, true);
+  assert.equal(engine.placeMachine('inserter', 1, 1, 2).ok, true);
+  assert.equal(engine.placeMachine('furnace', 2, 1, 3).ok, true);
+
+  // 1. Copy saves to library and remains remembered even after clearClipboard (Esc)
+  const all = engine.selectMachinesInBox(0, 0, 2, 1);
+  assert.equal(all.length, 4);
+  engine.captureBlueprint(all, 'copy');
+  assert.equal(engine.blueprintLibrary.length, 1);
+  const firstBpId = engine.blueprintLibrary[0].id;
+  assert.equal(engine.blueprintLibrary[0].sourceMode, 'copy');
+  assert.equal(engine.blueprintLibrary[0].width, 3);
+  assert.equal(engine.blueprintLibrary[0].height, 2);
+
+  engine.clearClipboard();
+  assert.equal(engine.clipboardToolState, 'off');
+  assert.equal(engine.getUiSnapshot().clipboard.hasRememberedSelection, true);
+  assert.equal(engine.getUiSnapshot().clipboard.libraryCount, 1);
+
+  // Ctrl+V / activateLastBlueprint immediately recalls the remembered selection
+  assert.equal(engine.activateLastBlueprint(), true);
+  assert.equal(engine.clipboardToolState, 'paste');
+  assert.equal(engine.clipboard?.entries.length, 4);
+
+  // 2. Flip Horizontal: dx -> -dx, dir 1 <-> 3, dir 0/2 unchanged
+  const beforeFlipH = engine.clipboard!.entries.map((e) => ({ dx: e.dx, dz: e.dz, dir: e.dir }));
+  assert.equal(engine.flipBlueprintHorizontal(), true);
+  const afterFlipH = engine.clipboard!.entries;
+  for (let i = 0; i < beforeFlipH.length; i++) {
+    const a = beforeFlipH[i];
+    const entry = afterFlipH[i];
+    assert.equal(entry.dx, -a.dx, 'Flip H negates dx');
+    assert.equal(entry.dz, a.dz, 'Flip H preserves dz');
+    const expectedDir = a.dir === 1 ? 3 : a.dir === 3 ? 1 : a.dir;
+    assert.equal(entry.dir, expectedDir, 'Flip H mirrors East <-> West');
+  }
+
+  // Flip Vertical: dz -> -dz, dir 0 <-> 2, dir 1/3 unchanged
+  const beforeFlipV = engine.clipboard!.entries.map((e) => ({ dx: e.dx, dz: e.dz, dir: e.dir }));
+  assert.equal(engine.flipBlueprintVertical(), true);
+  const afterFlipV = engine.clipboard!.entries;
+  for (let i = 0; i < beforeFlipV.length; i++) {
+    const a = beforeFlipV[i];
+    const entry = afterFlipV[i];
+    assert.equal(entry.dx, a.dx, 'Flip V preserves dx');
+    assert.equal(entry.dz, -a.dz, 'Flip V negates dz');
+    const expectedDir = a.dir === 0 ? 2 : a.dir === 2 ? 0 : a.dir;
+    assert.equal(entry.dir, expectedDir, 'Flip V mirrors North <-> South');
+  }
+
+  // Rotate 90° CW then 90° CCW returns to exact original coordinates & directions
+  const beforeRot = engine.clipboard!.entries.map((e) => ({ dx: e.dx, dz: e.dz, dir: e.dir }));
+  engine.rotateBlueprint90(false);
+  engine.rotateBlueprint90(true);
+  for (let i = 0; i < beforeRot.length; i++) {
+    assert.equal(engine.clipboard!.entries[i].dx, beforeRot[i].dx);
+    assert.equal(engine.clipboard!.entries[i].dz, beforeRot[i].dz);
+    assert.equal(engine.clipboard!.entries[i].dir, beforeRot[i].dir);
+  }
+
+  // 3. Cut also saves to library and stays recallable after relocating buildings
+  const singleFurnace = [engine.machines.get(tileKey(2, 1))!];
+  engine.captureBlueprint(singleFurnace, 'cut');
+  assert.equal(engine.blueprintLibrary.length, 2);
+  assert.equal(engine.blueprintLibrary[0].sourceMode, 'cut');
+  const cutMoved = engine.pasteBlueprintAt(6, 6);
+  assert.equal(cutMoved.placedCount, 1);
+  assert.equal(engine.clipboardToolState, 'off');
+  assert.equal(engine.getUiSnapshot().clipboard.hasRememberedSelection, true);
+  assert.equal(engine.activateLastBlueprint(), true);
+  assert.equal(engine.clipboardToolState, 'paste');
+  assert.equal(engine.clipboard?.entries[0].baseType, 'furnace');
+
+  // 4. Cap at MAX_CAPYTORIO_BLUEPRINT_LIBRARY (100), newest first
+  const beltMachine = engine.machines.get(tileKey(0, 0))!;
+  for (let i = 0; i < MAX_CAPYTORIO_BLUEPRINT_LIBRARY + 8; i++) {
+    engine.captureBlueprint([beltMachine], 'copy');
+  }
+  assert.equal(
+    engine.blueprintLibrary.length,
+    MAX_CAPYTORIO_BLUEPRINT_LIBRARY,
+    'Library retains strictly the last 100 copied/cut blueprints'
+  );
+  assert.equal(
+    engine.blueprintLibrary.some((bp) => bp.id === firstBpId),
+    false,
+    'Oldest entries beyond 100 are evicted'
+  );
+
+  // 5. Persistence via serialize() -> hydrate() + select/delete/clear
+  const serialized = engine.serialize();
+  assert.equal(serialized.blueprintLibrary?.length, MAX_CAPYTORIO_BLUEPRINT_LIBRARY);
+
+  const restored = new CapytorioFactoryEngine();
+  restored.hydrate(serialized);
+  assert.equal(restored.blueprintLibrary.length, MAX_CAPYTORIO_BLUEPRINT_LIBRARY);
+  const newestId = restored.blueprintLibrary[0].id;
+  const picked = restored.selectBlueprintFromLibrary(newestId);
+  assert.ok(picked);
+  assert.equal(restored.clipboardToolState, 'paste');
+  assert.equal(restored.deleteBlueprintFromLibrary(newestId), true);
+  assert.equal(restored.blueprintLibrary.length, MAX_CAPYTORIO_BLUEPRINT_LIBRARY - 1);
+  restored.clearBlueprintLibrary();
+  assert.equal(restored.blueprintLibrary.length, 0);
+});
+
+test('Capytorio3DRenderer renders transparent 3D ghost models (and hides arrows) during blueprint paste', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 2).ok, true);
+  assert.equal(engine.placeMachine('inserter', 1, 1, 2).ok, true);
+  assert.equal(engine.placeMachine('furnace', 2, 1, 0).ok, true);
+
+  const selection = engine.selectMachinesInBox(0, 0, 2, 1);
+  engine.captureBlueprint(selection, 'copy');
+  engine.hoveredGx = 6;
+  engine.hoveredGz = 6;
+
+  const renderer = new Capytorio3DRenderer();
+  renderer.sync(
+    engine,
+    capytorioGridToWorldX(6),
+    capytorioGridToWorldZ(6),
+    0.016,
+    1.0,
+    true,
+    28
+  );
+
+  const ghostRoot = renderer.root.getObjectByName('CapytorioBlueprintGhostRoot');
+  assert.ok(ghostRoot, 'Blueprint ghost root group exists in 3D scene');
+  const visibleGhostGroups = ghostRoot.children.filter((c) => c.visible);
+  assert.equal(visibleGhostGroups.length, 4, 'All 4 blueprint entries render as visible 3D ghost models');
+
+  // Verify every visible ghost mesh uses transparent, depthWrite=false ghost materials
+  let transparentMeshCount = 0;
+  for (const group of visibleGhostGroups) {
+    group.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (mesh.isMesh && mesh.visible && !mesh.userData.isGhostHiddenHeld) {
+        const mat = mesh.material as THREE.Material;
+        assert.equal(mat.transparent, true, 'Ghost mesh material must be transparent');
+        assert.equal(mat.depthWrite, false, 'Ghost mesh material must disable depthWrite');
+        transparentMeshCount++;
+      }
+    });
+  }
+  assert.ok(transparentMeshCount >= 10, 'Ghost models contain composite 3D geometry parts');
+
+  // Verify legacy arrow-only paste instanced mesh is hidden (count === 0)
+  const arrowInstanced = (renderer as unknown as { blueprintArrowInstanced: THREE.InstancedMesh })
+    .blueprintArrowInstanced;
+  assert.equal(arrowInstanced.count, 0, 'Arrow-only paste markers are disabled in favor of 3D ghosts');
+
+  // Exiting paste mode hides all pooled 3D ghosts cleanly
+  engine.clearClipboard();
+  renderer.sync(
+    engine,
+    capytorioGridToWorldX(6),
+    capytorioGridToWorldZ(6),
+    0.016,
+    1.1,
+    true,
+    28
+  );
+  assert.equal(
+    ghostRoot.children.filter((c) => c.visible).length,
+    0,
+    'Pooled 3D ghosts hide cleanly when leaving paste mode'
+  );
+  renderer.dispose();
+});
+
+test('Capytorio Undo/Redo covers place, rotate, recipe, demolish, cut, and atomic blueprint paste, and Place uses locked pasteAnchor', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  assert.equal(engine.getUiSnapshot().history.canUndo, false);
+  assert.equal(engine.getUiSnapshot().history.canRedo, false);
+
+  // 1. Place assembler -> Undo removes & refunds -> Redo restores
+  const asmBefore = engine.getPocketMachineCount('assembler');
+  assert.equal(engine.placeMachine('assembler', 0, 0, 1).ok, true);
+  assert.equal(engine.getPocketMachineCount('assembler'), asmBefore - 1);
+  assert.equal(engine.getUiSnapshot().history.canUndo, true);
+
+  const undoPlace = engine.undoLastAction();
+  assert.equal(undoPlace.ok, true);
+  assert.equal(engine.machines.has(tileKey(0, 0)), false, 'Undo removed placed assembler');
+  assert.equal(engine.getPocketMachineCount('assembler'), asmBefore, 'Undo refunded assembler to pocket');
+  assert.equal(engine.getUiSnapshot().history.canRedo, true);
+
+  const redoPlace = engine.redoLastAction();
+  assert.equal(redoPlace.ok, true);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.dir, 1, 'Redo restored assembler with direction');
+  assert.equal(engine.getPocketMachineCount('assembler'), asmBefore - 1);
+
+  // 2. Rotate & Set Recipe -> Undo reverts recipe then direction -> Redo reapplies both
+  assert.equal(engine.rotateMachineAt(0, 0), 2);
+  assert.equal(engine.setAssemblerRecipeAt(0, 0, 'copper_cable'), true);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.recipeId, 'copper_cable');
+
+  assert.equal(engine.undoLastAction().ok, true);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.recipeId, 'iron_gear', 'Undo reverted assembler recipe');
+
+  assert.equal(engine.undoLastAction().ok, true);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.dir, 1, 'Undo reverted machine rotation');
+
+  assert.equal(engine.redoLastAction().ok, true);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.dir, 2);
+  assert.equal(engine.redoLastAction().ok, true);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.recipeId, 'copper_cable');
+
+  // 3. Demolish -> Undo restores building with exact recipe & direction
+  assert.equal(engine.demolishAt(0, 0), 'assembler');
+  assert.equal(engine.machines.has(tileKey(0, 0)), false);
+  assert.equal(engine.undoLastAction().ok, true);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.dir, 2);
+  assert.equal(engine.machines.get(tileKey(0, 0))?.recipeId, 'copper_cable');
+
+  // 4. Build 3-tile cluster, Copy, position ghost anchor at (6, 6), move hover away to (-9, -9),
+  //    then place via pasteBlueprintAtAnchor() -> stamps at locked (6, 6), NOT (-9, -9)!
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', 1, 1, 2).ok, true);
+  const cluster = engine.selectMachinesInBox(0, 0, 1, 1);
+  assert.equal(cluster.length, 3);
+  engine.captureBlueprint(cluster, 'copy');
+
+  // Position and lock ghost at (6, 6)
+  engine.setBlueprintAnchor(6, 6);
+  assert.deepEqual(engine.getUiSnapshot().clipboard.pasteAnchor, { gx: 6, gz: 6 });
+
+  // Simulate moving pointer down toward the HUD Place button (changes hoveredGx/hoveredGz)
+  engine.hoveredGx = -9;
+  engine.hoveredGz = -9;
+
+  const beltsBeforePaste = engine.getPocketMachineCount('belt');
+  const insBeforePaste = engine.getPocketMachineCount('inserter');
+  const asmBeforePaste = engine.getPocketMachineCount('assembler');
+
+  const anchorPaste = engine.pasteBlueprintAtAnchor();
+  assert.equal(anchorPaste.placedCount, 3, 'All 3 blueprint buildings placed via Place button');
+  assert.equal(anchorPaste.anchorGx, 6);
+  assert.equal(anchorPaste.anchorGz, 6);
+  assert.equal(engine.machines.has(tileKey(-9, -9)), false, 'Did NOT stamp at drifted hover coords');
+
+  const pastedNearAnchor = Array.from(engine.machines.values()).filter((m) => m.gx >= 5 && m.gz >= 5);
+  assert.equal(pastedNearAnchor.length, 3, 'All 3 buildings stamped around locked anchor (6, 6)');
+  const pastedAsm = pastedNearAnchor.find((m) => m.type === 'assembler');
+  assert.equal(pastedAsm?.recipeId, 'copper_cable', 'Pasted assembler preserved recipe');
+
+  // 5. Single Undo removes ALL 3 misplaced blueprint buildings atomically & refunds pocket stock!
+  const undoBlueprint = engine.undoLastAction();
+  assert.equal(undoBlueprint.ok, true);
+  assert.equal(undoBlueprint.changedCount, 3, 'Atomic undo reverted all 3 pasted buildings in one step');
+  assert.equal(
+    Array.from(engine.machines.values()).filter((m) => m.gx >= 5 && m.gz >= 5).length,
+    0,
+    'All misplaced blueprint buildings removed'
+  );
+  assert.equal(engine.getPocketMachineCount('belt'), beltsBeforePaste);
+  assert.equal(engine.getPocketMachineCount('inserter'), insBeforePaste);
+  assert.equal(engine.getPocketMachineCount('assembler'), asmBeforePaste);
+
+  // Single Redo puts all 3 blueprint buildings right back with recipe intact
+  const redoBlueprint = engine.redoLastAction();
+  assert.equal(redoBlueprint.ok, true);
+  assert.equal(redoBlueprint.changedCount, 3);
+  assert.equal(
+    Array.from(engine.machines.values()).filter((m) => m.gx >= 5 && m.gz >= 5).length,
+    3,
+    'Atomic redo restored all 3 blueprint buildings'
+  );
+
+  // 6. New building edit after Undo clears Redo stack
+  assert.equal(engine.undoLastAction().ok, true);
+  assert.equal(engine.getUiSnapshot().history.canRedo, true);
+  assert.equal(engine.placeMachine('furnace', -4, 4, 0).ok, true);
+  assert.equal(engine.getUiSnapshot().history.canRedo, false, 'New action clears Redo stack');
+});
+
 
 
 

@@ -194,6 +194,7 @@ import {
   worldToCapytorioGridX,
   worldToCapytorioGridZ,
   type CapytorioClipboardToolState,
+  type CapytorioSavedBlueprint,
   type CapytorioSelectionShape,
   type CapytorioSerializedState,
   type CapytorioStepCallbacks,
@@ -4689,6 +4690,85 @@ export class PlayStyleManager {
     this.emitCapytorioSnapshot();
   }
 
+  public rotateCapytorioBlueprint(ccw: boolean = false): boolean {
+    if (
+      this.capytorioEngine.clipboardToolState !== 'paste' ||
+      !this.capytorioEngine.clipboard ||
+      this.capytorioEngine.clipboard.entries.length === 0
+    ) {
+      return false;
+    }
+    this.capytorioEngine.rotateBlueprint90(ccw);
+    AudioService.playCoin();
+    this.emitCapytorioSnapshot();
+    return true;
+  }
+
+  public flipCapytorioBlueprintHorizontal(): boolean {
+    if (
+      this.capytorioEngine.clipboardToolState !== 'paste' ||
+      !this.capytorioEngine.clipboard ||
+      this.capytorioEngine.clipboard.entries.length === 0
+    ) {
+      return false;
+    }
+    const ok = this.capytorioEngine.flipBlueprintHorizontal();
+    if (ok) {
+      AudioService.playCoin();
+      this.emitCapytorioSnapshot();
+    }
+    return ok;
+  }
+
+  public flipCapytorioBlueprintVertical(): boolean {
+    if (
+      this.capytorioEngine.clipboardToolState !== 'paste' ||
+      !this.capytorioEngine.clipboard ||
+      this.capytorioEngine.clipboard.entries.length === 0
+    ) {
+      return false;
+    }
+    const ok = this.capytorioEngine.flipBlueprintVertical();
+    if (ok) {
+      AudioService.playCoin();
+      this.emitCapytorioSnapshot();
+    }
+    return ok;
+  }
+
+  public activateLastCapytorioBlueprint(): boolean {
+    const ok = this.capytorioEngine.activateLastBlueprint();
+    if (ok) {
+      AudioService.playCoin();
+      this.emitCapytorioSnapshot();
+    }
+    return ok;
+  }
+
+  public selectCapytorioBlueprint(id: string): CapytorioSavedBlueprint | null {
+    const picked = this.capytorioEngine.selectBlueprintFromLibrary(id);
+    if (picked) {
+      AudioService.playCoin();
+      this.emitCapytorioSnapshot();
+    }
+    return picked;
+  }
+
+  public deleteCapytorioBlueprint(id: string): boolean {
+    const removed = this.capytorioEngine.deleteBlueprintFromLibrary(id);
+    if (removed) {
+      AudioService.playBrickHit(0.85);
+      this.markCapytorioDirty();
+    }
+    return removed;
+  }
+
+  public clearCapytorioBlueprintLibrary(): void {
+    this.capytorioEngine.clearBlueprintLibrary();
+    AudioService.playBrickHit(0.82);
+    this.markCapytorioDirty();
+  }
+
   public undoCapytorioCut(): { restoredCount: number } {
     const res = this.capytorioEngine.undoCut();
     if (res.restoredCount > 0) {
@@ -4743,11 +4823,9 @@ export class PlayStyleManager {
     const res = this.capytorioEngine.captureBlueprint(keys, mode);
     if (res.count > 0) {
       AudioService.playCoin();
+      this.markCapytorioDirty();
       if (mode === 'cut') {
-        this.markCapytorioDirty();
         this.emitTelemetry();
-      } else {
-        this.emitCapytorioSnapshot();
       }
     } else {
       this.emitCapytorioSnapshot();
@@ -4764,16 +4842,109 @@ export class PlayStyleManager {
     const res = this.capytorioEngine.captureBlueprint(keys, mode);
     if (res.count > 0) {
       AudioService.playCoin();
+      this.markCapytorioDirty();
       if (mode === 'cut') {
-        this.markCapytorioDirty();
         this.emitTelemetry();
-      } else {
-        this.emitCapytorioSnapshot();
       }
     } else {
       this.emitCapytorioSnapshot();
     }
     return { count: res.count, mode };
+  }
+
+  public beginCapytorioHistoryBatch(label: string): void {
+    this.capytorioEngine.beginHistoryBatch(label);
+  }
+
+  public commitCapytorioHistoryBatch(labelOverride?: string): void {
+    this.capytorioEngine.commitHistoryBatch(labelOverride);
+    this.emitCapytorioSnapshot();
+  }
+
+  public undoCapytorioAction(): { ok: boolean; label: string; changedCount: number } {
+    const res = this.capytorioEngine.undoLastAction();
+    if (res.ok) {
+      AudioService.playBrickHit(0.95);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    } else {
+      this.emitCapytorioSnapshot();
+    }
+    return res;
+  }
+
+  public redoCapytorioAction(): { ok: boolean; label: string; changedCount: number } {
+    const res = this.capytorioEngine.redoLastAction();
+    if (res.ok) {
+      AudioService.playBrickHit(1.14);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    } else {
+      this.emitCapytorioSnapshot();
+    }
+    return res;
+  }
+
+  public setCapytorioBlueprintAnchorFromNdc(
+    ndcX: number,
+    ndcY: number
+  ): { gx: number; gz: number } | null {
+    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+      return null;
+    }
+    const prevAnchor = this.capytorioEngine.pasteAnchor;
+    this.updateCapytorioHoverFromNdc(ndcX, ndcY);
+    const gx = this.capytorioEngine.hoveredGx;
+    const gz = this.capytorioEngine.hoveredGz;
+    this.capytorioEngine.setBlueprintAnchor(gx, gz);
+    if (!prevAnchor || prevAnchor.gx !== gx || prevAnchor.gz !== gz) {
+      this.emitCapytorioSnapshot();
+    }
+    return { gx, gz };
+  }
+
+  public placeCapytorioBlueprintAtPositionedGhost(): {
+    ok: boolean;
+    placedCount: number;
+    updatedRecipesCount: number;
+    skippedCount: number;
+    message: string;
+  } {
+    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+      return { ok: false, placedCount: 0, updatedRecipesCount: 0, skippedCount: 0, message: '' };
+    }
+    const res = this.capytorioEngine.pasteBlueprintAtAnchor();
+    const totalApplied = res.placedCount + res.updatedRecipesCount;
+    if (totalApplied > 0) {
+      AudioService.playBrickHit(1.16);
+      this.vfxEngine?.emitBurst(
+        capytorioGridToWorldX(res.anchorGx),
+        0.55,
+        capytorioGridToWorldZ(res.anchorGz),
+        'citrus_burst',
+        6,
+        0x22c55e
+      );
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+      const skippedNote = res.skippedCount > 0 ? ` (${res.skippedCount} skipped)` : '';
+      return {
+        ok: true,
+        placedCount: res.placedCount,
+        updatedRecipesCount: res.updatedRecipesCount,
+        skippedCount: res.skippedCount,
+        message: `Placed ${totalApplied} building${totalApplied === 1 ? '' : 's'}${skippedNote}`,
+      };
+    }
+    AudioService.playSplash();
+    this.emitCapytorioSnapshot();
+    return {
+      ok: false,
+      placedCount: res.placedCount,
+      updatedRecipesCount: res.updatedRecipesCount,
+      skippedCount: res.skippedCount,
+      message: 'Could not place blueprint here (blocked or missing stock)',
+    };
   }
 
   public pasteCapytorioBlueprintAtNdc(
@@ -4784,37 +4955,11 @@ export class PlayStyleManager {
       return { ok: false, placedCount: 0, updatedRecipesCount: 0, skippedCount: 0, message: '' };
     }
     this.updateCapytorioHoverFromNdc(ndcX, ndcY);
-    const res = this.capytorioEngine.pasteBlueprintAt(
+    this.capytorioEngine.setBlueprintAnchor(
       this.capytorioEngine.hoveredGx,
       this.capytorioEngine.hoveredGz
     );
-    const totalApplied = res.placedCount + res.updatedRecipesCount;
-    if (totalApplied > 0) {
-      AudioService.playBrickHit(1.16);
-      this.vfxEngine?.emitBurst(
-        capytorioGridToWorldX(this.capytorioEngine.hoveredGx),
-        0.55,
-        capytorioGridToWorldZ(this.capytorioEngine.hoveredGz),
-        'citrus_burst',
-        6,
-        0x22c55e
-      );
-      this.markCapytorioDirty();
-      this.emitTelemetry();
-      const skippedNote = res.skippedCount > 0 ? ` (${res.skippedCount} skipped)` : '';
-      return {
-        ok: true,
-        ...res,
-        message: `Pasted ${totalApplied} building${totalApplied === 1 ? '' : 's'}${skippedNote}`,
-      };
-    }
-    AudioService.playSplash();
-    this.emitCapytorioSnapshot();
-    return {
-      ok: false,
-      ...res,
-      message: 'Could not paste blueprint here (blocked or missing stock)',
-    };
+    return this.placeCapytorioBlueprintAtPositionedGhost();
   }
 
   public handleCapytorioPrimaryClick(
@@ -4828,10 +4973,16 @@ export class PlayStyleManager {
     const gx = this.capytorioEngine.hoveredGx;
     const gz = this.capytorioEngine.hoveredGz;
 
-    // Paste mode: stamp active blueprint at hovered anchor
+    // Paste mode: lock transparent blueprint ghost at tapped tile so user can rotate/flip or tap Place
     if (this.capytorioEngine.clipboardToolState === 'paste') {
-      const pasted = this.pasteCapytorioBlueprintAtNdc(ndcX, ndcY);
-      return { ok: pasted.ok, message: pasted.message };
+      this.capytorioEngine.setBlueprintAnchor(gx, gz);
+      AudioService.playCoin();
+      this.emitCapytorioSnapshot();
+      return {
+        ok: true,
+        inspected: true,
+        message: `Blueprint positioned at (${gx}, ${gz}) — click Place or press Enter`,
+      };
     }
 
     // Select Copy / Cut single-tap: capture the single building under cursor
@@ -4846,18 +4997,16 @@ export class PlayStyleManager {
         const res = this.capytorioEngine.captureBlueprint([tapMachine], mode);
         if (res.count > 0) {
           AudioService.playCoin();
+          this.markCapytorioDirty();
           if (mode === 'cut') {
-            this.markCapytorioDirty();
             this.emitTelemetry();
-          } else {
-            this.emitCapytorioSnapshot();
           }
           return {
             ok: true,
             message:
               mode === 'cut'
-                ? 'Cut 1 building — tap to place · [R] Rotate'
-                : 'Copied 1 building — tap to paste · [R] Rotate',
+                ? 'Cut 1 building — saved to Blueprints · [R] Rotate · [H/V] Flip'
+                : 'Copied 1 building — saved to Blueprints · [R] Rotate · [H/V] Flip',
           };
         }
       }
@@ -5018,13 +5167,13 @@ export class PlayStyleManager {
     this.emitCapytorioSnapshot();
   }
 
-  public rotateCapytorioDirection(): CapytorioDirection {
+  public rotateCapytorioDirection(ccw: boolean = false): CapytorioDirection {
     if (
       this.capytorioEngine.clipboardToolState === 'paste' &&
       this.capytorioEngine.clipboard &&
       this.capytorioEngine.clipboard.entries.length > 0
     ) {
-      this.capytorioEngine.rotateBlueprint90();
+      this.capytorioEngine.rotateBlueprint90(ccw);
       AudioService.playCoin();
       this.emitCapytorioSnapshot();
       return this.capytorioEngine.selectedDir;
@@ -5044,7 +5193,8 @@ export class PlayStyleManager {
         return rotatedDir;
       }
     }
-    const nextDir = ((this.capytorioEngine.selectedDir + 1) & 3) as CapytorioDirection;
+    const step = ccw ? 3 : 1;
+    const nextDir = ((this.capytorioEngine.selectedDir + step) & 3) as CapytorioDirection;
     this.capytorioEngine.selectedDir = nextDir;
     this.capytorioEngine.rotateMachineAt(
       this.capytorioEngine.hoveredGx,

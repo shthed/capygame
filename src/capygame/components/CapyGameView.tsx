@@ -353,7 +353,7 @@ export const CapyGameView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<DockTab>('modes');
   const [capytorioSnap, setCapytorioSnap] = useState<CapytorioUiSnapshot | null>(null);
   const [capytorioDrawerTab, setCapytorioDrawerTab] = useState<
-    'none' | 'inventory' | 'craft' | 'tech' | 'inspect'
+    'none' | 'inventory' | 'craft' | 'tech' | 'inspect' | 'blueprints'
   >('none');
   const [capytorioCraftGroup, setCapytorioCraftGroup] = useState<
     CapytorioRecipeGroup | 'machines' | 'lua'
@@ -375,7 +375,7 @@ export const CapyGameView: React.FC = () => {
   } | null>(null);
   const lastCapytorioMachineRef = useRef<string>('drill');
   const capytorioDrawerTabRef = useRef<
-    'none' | 'inventory' | 'craft' | 'tech' | 'inspect'
+    'none' | 'inventory' | 'craft' | 'tech' | 'inspect' | 'blueprints'
   >('none');
   capytorioDrawerTabRef.current = capytorioDrawerTab;
 
@@ -726,9 +726,10 @@ export const CapyGameView: React.FC = () => {
 
   const capytorioDragRef = useRef<{
     active: boolean;
-    mode: 'place' | 'demolish' | 'select_box' | 'select_lasso' | 'none';
+    mode: 'place' | 'demolish' | 'select_box' | 'select_lasso' | 'position_blueprint' | 'none';
     clipMode: 'copy' | 'cut';
     placedAny: boolean;
+    batchStarted: boolean;
     prevGx: number | null;
     prevGz: number | null;
     placedCount: number;
@@ -745,6 +746,7 @@ export const CapyGameView: React.FC = () => {
     mode: 'none',
     clipMode: 'copy',
     placedAny: false,
+    batchStarted: false,
     prevGx: null,
     prevGz: null,
     placedCount: 0,
@@ -1363,6 +1365,31 @@ export const CapyGameView: React.FC = () => {
           setFreeMouselookActive(!isFreeMouselookRef.current);
         }
         if (inCapytorioActive) {
+          if (
+            (e.ctrlKey || e.metaKey) &&
+            !e.repeat &&
+            (key === 'z' || key === 'y')
+          ) {
+            e.preventDefault();
+            if (key === 'y' || e.shiftKey) {
+              const res = managerRef.current.redoCapytorioAction();
+              showToast(res.ok ? `Redid: ${res.label}` : 'Nothing to redo');
+            } else {
+              const res = managerRef.current.undoCapytorioAction();
+              showToast(res.ok ? `Undid: ${res.label}` : 'Nothing to undo');
+            }
+            return;
+          }
+          if (
+            key === 'enter' &&
+            !e.repeat &&
+            managerRef.current.getCapytorioSnapshot().clipboard.toolState === 'paste'
+          ) {
+            e.preventDefault();
+            const res = managerRef.current.placeCapytorioBlueprintAtPositionedGhost();
+            if (res.message) showToast(res.message);
+            return;
+          }
           if ((e.ctrlKey || e.metaKey) && !e.repeat && (key === 'c' || key === 'x' || key === 'v')) {
             e.preventDefault();
             const curClip = managerRef.current.getCapytorioSnapshot().clipboard;
@@ -1373,11 +1400,14 @@ export const CapyGameView: React.FC = () => {
               managerRef.current.setCapytorioClipboardMode('select_cut', curClip.selectionShape);
               showToast('Cut tool — drag Box/Lasso or click a building to move');
             } else if (key === 'v') {
-              if (curClip.count > 0) {
-                managerRef.current.setCapytorioClipboardMode('paste');
-                showToast(`Paste ready (${curClip.count}) — click to place · [R] Rotate`);
+              const activated = managerRef.current.activateLastCapytorioBlueprint();
+              if (activated) {
+                const nextClip = managerRef.current.getCapytorioSnapshot().clipboard;
+                showToast(
+                  `Paste ready (${nextClip.count}) — position ghost then click Place [Enter]`
+                );
               } else {
-                showToast('Clipboard empty — use Copy or Cut first');
+                showToast('Blueprint library empty — use Copy or Cut first');
               }
             }
             return;
@@ -1393,9 +1423,9 @@ export const CapyGameView: React.FC = () => {
           } else if (key === 'r' && !e.repeat) {
             const snapBefore = managerRef.current.getCapytorioSnapshot();
             const curClip = snapBefore.clipboard;
-            const nextDir = managerRef.current.rotateCapytorioDirection();
+            const nextDir = managerRef.current.rotateCapytorioDirection(e.shiftKey);
             if (curClip.toolState === 'paste') {
-              showToast('Rotated blueprint 90°');
+              showToast(e.shiftKey ? 'Rotated blueprint 90° CCW' : 'Rotated blueprint 90° CW');
             } else if (snapBefore.inspectedMachine) {
               const dirNames = ['North', 'East', 'South', 'West'];
               const mSpec = CAPYTORIO_MACHINE_SPECS[snapBefore.inspectedMachine.type];
@@ -1416,8 +1446,17 @@ export const CapyGameView: React.FC = () => {
             }
             showToast(picked.label);
           } else if (key === 'h' && !e.repeat) {
-            managerRef.current.returnToCapytorioBeacon();
-            showToast('Returned to Survey Beacon (0, 0)');
+            const curClip = managerRef.current.getCapytorioSnapshot().clipboard;
+            if (curClip.toolState === 'paste') {
+              if (managerRef.current.flipCapytorioBlueprintHorizontal()) {
+                showToast('Flipped blueprint horizontally');
+              }
+            } else {
+              managerRef.current.returnToCapytorioBeacon();
+              showToast('Returned to Survey Beacon (0, 0)');
+            }
+          } else if (key === 'b' && !e.repeat) {
+            setCapytorioDrawerTab((prev) => (prev === 'blueprints' ? 'none' : 'blueprints'));
           } else if (key === 'f' && !e.repeat) {
             const insp = managerRef.current.getCapytorioSnapshot().inspectedMachine;
             if (insp) {
@@ -1445,13 +1484,20 @@ export const CapyGameView: React.FC = () => {
           } else if (key === 'i' && !e.repeat) {
             setCapytorioDrawerTab((prev) => (prev === 'inventory' ? 'none' : 'inventory'));
           } else if (key === 'v' && !e.repeat) {
-            const nextCam = managerRef.current.toggleCapytorioCameraMode();
-            updateGameSettings({ capytorioCameraMode: nextCam });
-            showToast(
-              nextCam === 'oblique'
-                ? 'Camera: Oblique Top-Down (Factorio View)'
-                : 'Camera: 3D Chase View'
-            );
+            const curClip = managerRef.current.getCapytorioSnapshot().clipboard;
+            if (curClip.toolState === 'paste') {
+              if (managerRef.current.flipCapytorioBlueprintVertical()) {
+                showToast('Flipped blueprint vertically');
+              }
+            } else {
+              const nextCam = managerRef.current.toggleCapytorioCameraMode();
+              updateGameSettings({ capytorioCameraMode: nextCam });
+              showToast(
+                nextCam === 'oblique'
+                  ? 'Camera: Oblique Top-Down (Factorio View)'
+                  : 'Camera: 3D Chase View'
+              );
+            }
           }
         }
         if (key === '=' || key === '+' || key === ']') {
@@ -1654,6 +1700,7 @@ export const CapyGameView: React.FC = () => {
     capytorioDragRef.current.active = false;
     capytorioDragRef.current.mode = 'none';
     capytorioDragRef.current.placedAny = false;
+    capytorioDragRef.current.batchStarted = false;
     capytorioDragRef.current.prevGx = null;
     capytorioDragRef.current.prevGz = null;
     capytorioDragRef.current.placedCount = 0;
@@ -1670,6 +1717,16 @@ export const CapyGameView: React.FC = () => {
       const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
       const cSnap = managerRef.current.getCapytorioSnapshot();
       const clipState = cSnap.clipboard.toolState;
+
+      // Paste mode: tap or drag on canvas positions & locks the transparent 3D blueprint ghost (BOTH mouse & touch)
+      if (clipState === 'paste' && e.button === 0) {
+        capytorioDragRef.current.active = true;
+        capytorioDragRef.current.mode = 'position_blueprint';
+        capytorioDragRef.current.originNdcX = ndcX;
+        capytorioDragRef.current.originNdcY = ndcY;
+        managerRef.current.setCapytorioBlueprintAnchorFromNdc(ndcX, ndcY);
+        return;
+      }
 
       // Cut/Copy Box & Freeform Lasso selection works on BOTH mouse AND touch
       if ((clipState === 'select_copy' || clipState === 'select_cut') && e.button === 0) {
@@ -1774,6 +1831,11 @@ export const CapyGameView: React.FC = () => {
           const dist = Math.hypot(e.clientX - g.originX, e.clientY - g.originY);
           if (dist > g.maxDist) g.maxDist = dist;
 
+          if (cDrag.mode === 'position_blueprint') {
+            managerRef.current.setCapytorioBlueprintAnchorFromNdc(ndcX, ndcY);
+            return;
+          }
+
           if (cDrag.mode === 'select_box' || cDrag.mode === 'select_lasso') {
             if (dist >= 8) {
               const hit = managerRef.current.raycastCapytorioGridFloat(ndcX, ndcY);
@@ -1828,6 +1890,10 @@ export const CapyGameView: React.FC = () => {
 
           if (dist >= 12) {
             if (cDrag.mode === 'demolish') {
+              if (!cDrag.batchStarted) {
+                managerRef.current.beginCapytorioHistoryBatch('Drag demolish');
+                cDrag.batchStarted = true;
+              }
               if (!cDrag.placedAny) {
                 if (managerRef.current.handleCapytorioDragDemolish(cDrag.originNdcX, cDrag.originNdcY)) {
                   cDrag.placedAny = true;
@@ -1839,6 +1905,10 @@ export const CapyGameView: React.FC = () => {
                 cDrag.placedCount++;
               }
             } else if (cDrag.mode === 'place') {
+              if (!cDrag.batchStarted) {
+                managerRef.current.beginCapytorioHistoryBatch('Drag build');
+                cDrag.batchStarted = true;
+              }
               if (!cDrag.placedAny) {
                 const startRes = managerRef.current.handleCapytorioDragPaint(
                   cDrag.originNdcX,
@@ -1934,6 +2004,7 @@ export const CapyGameView: React.FC = () => {
 
     const wasCapytorioPress = capytorioDragRef.current.active;
     const wasDragPaint = wasCapytorioPress && capytorioDragRef.current.placedAny;
+    const wasBatchStarted = capytorioDragRef.current.batchStarted;
     const dragCount = capytorioDragRef.current.placedCount;
     const dragMode = capytorioDragRef.current.mode;
     const selStartGx = capytorioDragRef.current.startGx;
@@ -1945,12 +2016,31 @@ export const CapyGameView: React.FC = () => {
     capytorioDragRef.current.active = false;
     capytorioDragRef.current.mode = 'none';
     capytorioDragRef.current.placedAny = false;
+    capytorioDragRef.current.batchStarted = false;
     capytorioDragRef.current.prevGx = null;
     capytorioDragRef.current.prevGz = null;
     capytorioDragRef.current.placedCount = 0;
     capytorioDragRef.current.lassoGridPoints = [];
     capytorioDragRef.current.lassoScreenPoints = [];
     setCapytorioSelectionOverlay(null);
+
+    if (wasBatchStarted && managerRef.current) {
+      managerRef.current.commitCapytorioHistoryBatch(
+        dragMode === 'demolish'
+          ? `Demolish ${dragCount} building${dragCount === 1 ? '' : 's'}`
+          : `Build ${dragCount} building${dragCount === 1 ? '' : 's'}`
+      );
+    }
+
+    if (wasCapytorioPress && dragMode === 'position_blueprint' && managerRef.current) {
+      g.pointerId = null;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+      const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
+      managerRef.current.setCapytorioBlueprintAnchorFromNdc(ndcX, ndcY);
+      setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+      return;
+    }
 
     if (
       wasCapytorioPress &&
@@ -1971,8 +2061,8 @@ export const CapyGameView: React.FC = () => {
       if (res.count > 0) {
         showToast(
           res.mode === 'cut'
-            ? `Cut ${res.count} building${res.count === 1 ? '' : 's'} — tap to place · [R] Rotate`
-            : `Copied ${res.count} building${res.count === 1 ? '' : 's'} — tap to paste · [R] Rotate`
+            ? `Cut ${res.count} building${res.count === 1 ? '' : 's'} — position ghost & tap Place`
+            : `Copied ${res.count} building${res.count === 1 ? '' : 's'} — position ghost & tap Place`
         );
       } else {
         showToast('No buildings inside selection');
@@ -6509,6 +6599,39 @@ export const CapyGameView: React.FC = () => {
                 showToast(`Rotated ${mSpec.shortName}: ${dirNames[nextDir]}`);
               }
             }}
+            onFlipBlueprintH={() => {
+              if (managerRef.current?.flipCapytorioBlueprintHorizontal()) {
+                showToast('Flipped blueprint horizontally');
+              }
+            }}
+            onFlipBlueprintV={() => {
+              if (managerRef.current?.flipCapytorioBlueprintVertical()) {
+                showToast('Flipped blueprint vertically');
+              }
+            }}
+            onActivateLastBlueprint={() => {
+              if (managerRef.current?.activateLastCapytorioBlueprint()) {
+                const nextClip = managerRef.current.getCapytorioSnapshot().clipboard;
+                showToast(`Paste ready (${nextClip.count}) — [R] Rotate · [H/V] Flip`);
+              } else {
+                showToast('No saved blueprints yet');
+              }
+            }}
+            onSelectBlueprint={(id) => {
+              const picked = managerRef.current?.selectCapytorioBlueprint(id);
+              if (picked) {
+                showToast(`Loaded "${picked.label}" (${picked.entries.length}) — click to place`);
+              }
+            }}
+            onDeleteBlueprint={(id) => {
+              if (managerRef.current?.deleteCapytorioBlueprint(id)) {
+                showToast('Removed blueprint from library');
+              }
+            }}
+            onClearBlueprintLibrary={() => {
+              managerRef.current?.clearCapytorioBlueprintLibrary();
+              showToast('Cleared blueprint library');
+            }}
             onSetClipboardMode={(mode, shape) => {
               managerRef.current?.setCapytorioClipboardMode(mode, shape);
             }}
@@ -6516,12 +6639,30 @@ export const CapyGameView: React.FC = () => {
               managerRef.current?.clearCapytorioClipboard();
               setCapytorioSelectionOverlay(null);
             }}
+            onPlaceBlueprint={() => {
+              const res = managerRef.current?.placeCapytorioBlueprintAtPositionedGhost();
+              if (res?.message) {
+                showToast(res.message);
+              }
+            }}
             onUndoCut={() => {
               const res = managerRef.current?.undoCapytorioCut();
               if (res && res.restoredCount > 0) {
                 showToast(
                   `Restored ${res.restoredCount} cut building${res.restoredCount === 1 ? '' : 's'}`
                 );
+              }
+            }}
+            onUndoAction={() => {
+              const res = managerRef.current?.undoCapytorioAction();
+              if (res) {
+                showToast(res.ok ? `Undid: ${res.label}` : 'Nothing to undo');
+              }
+            }}
+            onRedoAction={() => {
+              const res = managerRef.current?.redoCapytorioAction();
+              if (res) {
+                showToast(res.ok ? `Redid: ${res.label}` : 'Nothing to redo');
               }
             }}
             onCollectAllOutputs={() => {

@@ -1,15 +1,22 @@
 import React, { useRef, useState } from 'react';
 import {
+  BookOpen,
+  Check,
+  ClipboardPaste,
   Copy,
   Flame,
+  FlipHorizontal2,
+  FlipVertical2,
   Hammer,
   Menu,
   Package,
+  Redo2,
   Rocket,
   RotateCcw,
   Scissors,
   Search,
   Settings,
+  Trash2,
   Undo2,
   X,
 } from 'lucide-react';
@@ -33,8 +40,10 @@ import {
   type CapytorioTechId,
 } from '../engine/CapytorioData';
 import {
+  MAX_CAPYTORIO_BLUEPRINT_LIBRARY,
   resolveCapytorioPlaceableSpec,
   type CapytorioClipboardToolState,
+  type CapytorioSavedBlueprint,
   type CapytorioSelectionShape,
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
@@ -46,7 +55,7 @@ import {
 } from './CapytorioSlotIcon';
 import { CapytorioEntityInfoPanel } from './CapytorioEntityInfoPanel';
 
-export type CapytorioDrawerTab = 'none' | 'inventory' | 'craft' | 'tech' | 'inspect';
+export type CapytorioDrawerTab = 'none' | 'inventory' | 'craft' | 'tech' | 'inspect' | 'blueprints';
 export type CapytorioCraftGroupTab = CapytorioRecipeGroup | 'machines' | 'lua';
 
 export interface CapytorioHudProps {
@@ -69,9 +78,18 @@ export interface CapytorioHudProps {
   onClearInspection: () => void;
   onDemolishMachineAt: (gx: number, gz: number) => void;
   onRotateDir: () => void;
+  onFlipBlueprintH: () => void;
+  onFlipBlueprintV: () => void;
+  onActivateLastBlueprint: () => void;
+  onSelectBlueprint: (id: string) => void;
+  onDeleteBlueprint: (id: string) => void;
+  onClearBlueprintLibrary: () => void;
   onSetClipboardMode: (mode: CapytorioClipboardToolState, shape?: CapytorioSelectionShape) => void;
   onClearClipboard: () => void;
+  onPlaceBlueprint: () => void;
   onUndoCut: () => void;
+  onUndoAction: () => void;
+  onRedoAction: () => void;
   onCollectAllOutputs: () => void;
   onFeedScience: () => void;
   onLaunchRocket: () => void;
@@ -128,6 +146,84 @@ function hexToCss(hex: number): string {
   return `#${hex.toString(16).padStart(6, '0')}`;
 }
 
+const BlueprintMiniPreview: React.FC<{ blueprint: CapytorioSavedBlueprint }> = ({ blueprint }) => {
+  if (blueprint.entries.length === 0) {
+    return (
+      <div className="w-full h-16 rounded-[2px] bg-[#0e1621] border border-[#223247] flex items-center justify-center text-[10px] text-[#6d7d92]">
+        Empty
+      </div>
+    );
+  }
+  let minX = blueprint.entries[0].dx;
+  let maxX = minX;
+  let minZ = blueprint.entries[0].dz;
+  let maxZ = minZ;
+  for (let i = 1; i < blueprint.entries.length; i++) {
+    const e = blueprint.entries[i];
+    if (e.dx < minX) minX = e.dx;
+    if (e.dx > maxX) maxX = e.dx;
+    if (e.dz < minZ) minZ = e.dz;
+    if (e.dz > maxZ) maxZ = e.dz;
+  }
+  const cols = Math.max(1, maxX - minX + 1);
+  const rows = Math.max(1, maxZ - minZ + 1);
+  const pad = 0.6;
+  const vbW = cols + pad * 2;
+  const vbH = rows + pad * 2;
+
+  return (
+    <svg
+      viewBox={`${-pad} ${-pad} ${vbW} ${vbH}`}
+      preserveAspectRatio="xMidYMid meet"
+      className="w-full h-16 rounded-[2px] bg-[#0d1724] border border-[#233952]"
+      aria-hidden="true"
+    >
+      <defs>
+        <pattern
+          id={`bp-grid-${blueprint.id}`}
+          width="1"
+          height="1"
+          patternUnits="userSpaceOnUse"
+        >
+          <path d="M 1 0 L 0 0 0 1" fill="none" stroke="#1b314b" strokeWidth="0.06" />
+        </pattern>
+      </defs>
+      <rect x={-pad} y={-pad} width={vbW} height={vbH} fill={`url(#bp-grid-${blueprint.id})`} />
+      {blueprint.entries.map((entry, idx) => {
+        const x = entry.dx - minX;
+        const y = entry.dz - minZ;
+        const spec = resolveCapytorioPlaceableSpec(entry.toolId);
+        const color = hexToCss(spec?.tintHex ?? CAPYTORIO_MACHINE_SPECS[entry.baseType].colorHex);
+        const cx = x + 0.5;
+        const cy = y + 0.5;
+        const rotDeg = entry.dir * 90;
+        return (
+          <g key={`${entry.dx},${entry.dz},${idx}`}>
+            <rect
+              x={x + 0.09}
+              y={y + 0.09}
+              width={0.82}
+              height={0.82}
+              rx={0.12}
+              fill={color}
+              fillOpacity={0.82}
+              stroke="#e2f2ff"
+              strokeOpacity={0.45}
+              strokeWidth={0.06}
+            />
+            <polygon
+              points="0,-0.26 0.2,0.16 -0.2,0.16"
+              fill="#0b1220"
+              fillOpacity={0.82}
+              transform={`translate(${cx},${cy}) rotate(${rotDeg})`}
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
+
 export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   snap,
   isTopBarVisible,
@@ -148,9 +244,18 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   onClearInspection,
   onDemolishMachineAt,
   onRotateDir,
+  onFlipBlueprintH,
+  onFlipBlueprintV,
+  onActivateLastBlueprint,
+  onSelectBlueprint,
+  onDeleteBlueprint,
+  onClearBlueprintLibrary,
   onSetClipboardMode,
   onClearClipboard,
+  onPlaceBlueprint,
   onUndoCut,
+  onUndoAction,
+  onRedoAction,
   onCollectAllOutputs,
   onFeedScience,
   onLaunchRocket,
@@ -230,6 +335,59 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
 
   return (
     <>
+      {/* TOP-LEFT COMPACT FACTORIO UNDO / REDO STRIP */}
+      <div
+        data-testid="capytorio-history-bar"
+        aria-label="Building Undo and Redo Controls"
+        className={`fixed left-2 z-30 pointer-events-auto transition-[top] duration-150 ${
+          isTopBarVisible ? 'top-[48px]' : 'top-2'
+        }`}
+      >
+        <div className={`${FACTORIO_PANEL_FRAME} p-0.5 flex items-center gap-1 text-[#e6e8ec]`}>
+          <button
+            type="button"
+            data-testid="capytorio-undo-btn"
+            disabled={!snap.history.canUndo}
+            onClick={onUndoAction}
+            title={
+              snap.history.canUndo && snap.history.nextUndoLabel
+                ? `Undo: ${snap.history.nextUndoLabel} [Ctrl+Z]`
+                : 'Nothing to undo [Ctrl+Z]'
+            }
+            aria-label="Undo last building action"
+            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap ${
+              snap.history.canUndo
+                ? `${FACTORIO_BTN_IDLE} cursor-pointer`
+                : 'bg-[#202228] border border-[#323640] text-[#5c6270] cursor-not-allowed'
+            }`}
+          >
+            <Undo2 className="w-3 h-3 shrink-0" />
+            <span>Undo</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="capytorio-redo-btn"
+            disabled={!snap.history.canRedo}
+            onClick={onRedoAction}
+            title={
+              snap.history.canRedo && snap.history.nextRedoLabel
+                ? `Redo: ${snap.history.nextRedoLabel} [Ctrl+Y]`
+                : 'Nothing to redo [Ctrl+Y]'
+            }
+            aria-label="Redo building action"
+            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap ${
+              snap.history.canRedo
+                ? `${FACTORIO_BTN_IDLE} cursor-pointer`
+                : 'bg-[#202228] border border-[#323640] text-[#5c6270] cursor-not-allowed'
+            }`}
+          >
+            <Redo2 className="w-3 h-3 shrink-0" />
+            <span>Redo</span>
+          </button>
+        </div>
+      </div>
+
       {/* TOP-RIGHT COMPACT FACTORIO MENU STRIP (Tech, Settings, Menu to reveal top bar) */}
       <div
         data-testid="capytorio-top-right-menu"
@@ -1237,6 +1395,138 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
               </div>
             </div>
           )}
+
+          {/* BLUEPRINT LIBRARY MODAL (Last 100 Cut/Copy Selections) */}
+          {drawerTab === 'blueprints' && (
+            <div
+              data-testid="capytorio-drawer-blueprints"
+              role="dialog"
+              aria-label="Blueprint Library"
+              onClick={(e) => e.stopPropagation()}
+              className={`${FACTORIO_PANEL_FRAME} w-full max-w-[780px] max-h-full flex flex-col overflow-hidden text-[#e6e8ec]`}
+            >
+              <div className={FACTORIO_HEADER_BAR}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <BookOpen className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+                  <span className="text-xs font-bold tracking-wider uppercase text-[#f4b054] whitespace-nowrap">
+                    Blueprint Library
+                  </span>
+                  <span
+                    data-testid="capytorio-blueprint-library-count"
+                    className="text-[10px] font-mono tabular-nums text-[#9aa0ac] whitespace-nowrap"
+                  >
+                    {snap.blueprintLibrary.length} / {MAX_CAPYTORIO_BLUEPRINT_LIBRARY}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {snap.blueprintLibrary.length > 0 && (
+                    <button
+                      type="button"
+                      data-testid="capytorio-blueprint-clear-all-btn"
+                      onClick={() => {
+                        onClearBlueprintLibrary();
+                      }}
+                      className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                    >
+                      Clear All
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Close Blueprint Library"
+                    onClick={() => setDrawerTab('none')}
+                    className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="px-3 py-1.5 bg-[#181b20] border-b border-[#2b303a] text-[10px] text-[#9aa0ac] flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  Every Copy [Ctrl+C] and Cut [Ctrl+X] is saved automatically (newest first, up to 100).
+                </span>
+                <span className="font-mono text-[#bae6fd]">
+                  [R] Rotate · [H] Flip H · [V] Flip V
+                </span>
+              </div>
+
+              <div className="p-3 overflow-y-auto flex-1 min-h-0">
+                {snap.blueprintLibrary.length === 0 ? (
+                  <div
+                    data-testid="capytorio-blueprint-library-empty"
+                    className={`${FACTORIO_WELL} p-6 text-center space-y-1.5`}
+                  >
+                    <div className="text-xs font-semibold text-[#e4e6eb]">
+                      No saved blueprints yet
+                    </div>
+                    <p className="text-[11px] text-[#9aa0ac]">
+                      Use Copy [Ctrl+C] or Cut [Ctrl+X] and drag a Box or Lasso around buildings to save them here.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                    {snap.blueprintLibrary.map((bp, idx) => {
+                      const isActive =
+                        clip.toolState === 'paste' && clip.activeBlueprintId === bp.id;
+                      return (
+                        <div
+                          key={bp.id}
+                          data-testid={`capytorio-blueprint-card-${bp.id}`}
+                          data-blueprint-index={idx}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => {
+                            onSelectBlueprint(bp.id);
+                            setDrawerTab('none');
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              onSelectBlueprint(bp.id);
+                              setDrawerTab('none');
+                            }
+                          }}
+                          className={`group relative rounded-[2px] p-1.5 text-left cursor-pointer transition-colors ${
+                            isActive
+                              ? 'bg-[#2a2319] border border-[#e58926]'
+                              : 'bg-[#16191f] hover:bg-[#1f242d] border border-[#2f3541]'
+                          }`}
+                        >
+                          <BlueprintMiniPreview blueprint={bp} />
+                          <div className="mt-1.5 flex items-start justify-between gap-1">
+                            <div className="min-w-0">
+                              <div className="text-[11px] font-semibold text-[#eef1f5] truncate">
+                                {bp.label}
+                              </div>
+                              <div className="text-[10px] font-mono tabular-nums text-[#9aa0ac] truncate">
+                                {bp.width}×{bp.height} · {bp.entries.length}{' '}
+                                {bp.entries.length === 1 ? 'item' : 'items'} ·{' '}
+                                {bp.sourceMode === 'cut' ? 'Cut' : 'Copy'}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              data-testid={`capytorio-blueprint-delete-${bp.id}`}
+                              title="Remove from Blueprint Library"
+                              aria-label={`Delete blueprint ${bp.label}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteBlueprint(bp.id);
+                              }}
+                              className="h-5 w-5 rounded-[2px] flex items-center justify-center shrink-0 text-[#8e95a2] hover:text-[#fca5a5] hover:bg-[#3a1f22] cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1265,133 +1555,218 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
           aria-label="Cut Copy Paste Blueprint Controls"
           className="fixed bottom-[54px] left-2 sm:left-1/2 sm:-translate-x-1/2 z-30 pointer-events-auto max-w-[calc(100vw-60px)] text-[#e6e8ec]"
         >
-          <div className={`${FACTORIO_PANEL_FRAME} px-1.5 py-1 flex items-center gap-1 overflow-x-auto`}>
-            {/* Copy vs Cut toggle */}
-            <button
-              type="button"
-              data-testid="capytorio-clip-copy-btn"
-              onClick={() => onSetClipboardMode('select_copy', clip.selectionShape)}
-              title="Copy buildings [Ctrl+C]"
-              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
-                clip.toolState === 'select_copy' || (clip.toolState === 'paste' && clip.mode === 'copy')
-                  ? FACTORIO_BTN_ACTIVE
-                  : FACTORIO_BTN_IDLE
-              }`}
-            >
-              <Copy className="w-3 h-3 shrink-0" />
-              <span>Copy</span>
-            </button>
+          <div className={`${FACTORIO_PANEL_FRAME} px-1.5 py-1 flex items-center gap-1`}>
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">
+              {clip.toolState === 'paste' ? (
+                <>
+                  {/* Primary Place button right up front for positioning + stamping */}
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-place-btn"
+                    onClick={onPlaceBlueprint}
+                    title={
+                      clip.pasteAnchor
+                        ? `Place ${clip.count} building${clip.count === 1 ? '' : 's'} at (${clip.pasteAnchor.gx}, ${clip.pasteAnchor.gz}) [Enter]`
+                        : `Place ${clip.count} building${clip.count === 1 ? '' : 's'} at ghost position [Enter]`
+                    }
+                    className="h-6 px-2.5 rounded-[2px] text-[10px] font-bold cursor-pointer flex items-center gap-1 whitespace-nowrap bg-[#2d7a36] hover:bg-[#379442] border border-[#6be678] border-b-[#153e1a] border-r-[#153e1a] text-[#f0fdf4]"
+                  >
+                    <Check className="w-3.5 h-3.5 shrink-0" />
+                    <span>Place ({clip.count})</span>
+                  </button>
 
-            <button
-              type="button"
-              data-testid="capytorio-clip-cut-btn"
-              onClick={() => onSetClipboardMode('select_cut', clip.selectionShape)}
-              title="Cut & move buildings [Ctrl+X]"
-              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
-                clip.toolState === 'select_cut' || (clip.toolState === 'paste' && clip.mode === 'cut')
-                  ? 'bg-[#b44b1e] hover:bg-[#c85624] border border-[#f59d6d] border-b-[#5a220a] border-r-[#5a220a] text-[#fff3eb] font-bold'
-                  : FACTORIO_BTN_IDLE
-              }`}
-            >
-              <Scissors className="w-3 h-3 shrink-0" />
-              <span>Cut</span>
-            </button>
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-rotate-btn"
+                    onClick={onRotateDir}
+                    title="Rotate blueprint 90° [R] (Shift+R CCW)"
+                    className={`h-6 px-1.5 rounded-[2px] text-[10px] font-mono cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <RotateCcw className="w-3 h-3 shrink-0" />
+                    <span>90°</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-flip-h-btn"
+                    onClick={onFlipBlueprintH}
+                    title="Flip blueprint horizontally (East ↔ West) [H]"
+                    className={`h-6 px-1.5 rounded-[2px] text-[10px] font-mono cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <FlipHorizontal2 className="w-3 h-3 shrink-0" />
+                    <span>Flip H</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-flip-v-btn"
+                    onClick={onFlipBlueprintV}
+                    title="Flip blueprint vertically (North ↔ South) [V]"
+                    className={`h-6 px-1.5 rounded-[2px] text-[10px] font-mono cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <FlipVertical2 className="w-3 h-3 shrink-0" />
+                    <span>Flip V</span>
+                  </button>
 
-            <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
+                  <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
 
-            {/* Square Box vs Freeform Lasso shape toggle */}
-            <button
-              type="button"
-              data-testid="capytorio-clip-box-btn"
-              onClick={() =>
-                onSetClipboardMode(
-                  clip.toolState === 'paste' ? (clip.mode === 'cut' ? 'select_cut' : 'select_copy') : clip.toolState,
-                  'box'
-                )
-              }
-              title="Square box drag selection"
-              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
-                clip.selectionShape === 'box' && clip.toolState !== 'paste'
-                  ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
-                  : FACTORIO_BTN_IDLE
-              }`}
-            >
-              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                <rect x="1.5" y="1.5" width="9" height="9" stroke="currentColor" strokeWidth="1.4" strokeDasharray="2.5 1.5" />
-              </svg>
-              <span>Box</span>
-            </button>
+                  <button
+                    type="button"
+                    data-testid="capytorio-blueprint-library-btn"
+                    onClick={() => setDrawerTab('blueprints')}
+                    title="Open Blueprint Library (last 100 copied/cut selections) [B]"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <BookOpen className="w-3 h-3 shrink-0 text-[#38bdf8]" />
+                    <span>Library{clip.libraryCount > 0 ? ` (${clip.libraryCount})` : ''}</span>
+                  </button>
 
-            <button
-              type="button"
-              data-testid="capytorio-clip-lasso-btn"
-              onClick={() =>
-                onSetClipboardMode(
-                  clip.toolState === 'paste' ? (clip.mode === 'cut' ? 'select_cut' : 'select_copy') : clip.toolState,
-                  'lasso'
-                )
-              }
-              title="Freeform lasso line selection"
-              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
-                clip.selectionShape === 'lasso' && clip.toolState !== 'paste'
-                  ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
-                  : FACTORIO_BTN_IDLE
-              }`}
-            >
-              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <path
-                  d="M2.5 8.5C2 4.5 5 2 8.5 2.5C11.5 3 12.5 5.8 11 8.5C9.5 11.2 5.5 11.8 3.5 10.2"
-                  stroke="currentColor"
-                  strokeWidth="1.4"
-                  strokeLinecap="round"
-                  strokeDasharray="2.2 1.6"
-                />
-                <circle cx="3" cy="10.2" r="1.4" fill="currentColor" />
-              </svg>
-              <span>Lasso</span>
-            </button>
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-copy-btn"
+                    onClick={() => onSetClipboardMode('select_copy', clip.selectionShape)}
+                    title="Select new area to copy [Ctrl+C]"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <Copy className="w-3 h-3 shrink-0" />
+                    <span>Copy</span>
+                  </button>
 
-            {/* Paste status / Rotate 90° / Undo Cut */}
-            {clip.toolState === 'paste' && (
-              <>
-                <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
-                <span
-                  data-testid="capytorio-clip-count"
-                  className="text-[10px] font-mono tabular-nums text-[#7ce680] font-semibold px-1 whitespace-nowrap"
-                >
-                  {clip.count} ready
-                </span>
-                <button
-                  type="button"
-                  data-testid="capytorio-clip-rotate-btn"
-                  onClick={onRotateDir}
-                  title="Rotate blueprint 90° [R]"
-                  className={`h-6 px-1.5 rounded-[2px] text-[10px] font-mono cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
-                >
-                  <RotateCcw className="w-3 h-3 shrink-0" />
-                  <span>90°</span>
-                </button>
-              </>
-            )}
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-cut-btn"
+                    onClick={() => onSetClipboardMode('select_cut', clip.selectionShape)}
+                    title="Select new area to cut [Ctrl+X]"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <Scissors className="w-3 h-3 shrink-0" />
+                    <span>Cut</span>
+                  </button>
 
-            {clip.toolState !== 'paste' && clip.previewCount > 0 && (
-              <span className="text-[10px] font-mono tabular-nums text-[#38bdf8] font-semibold px-1 whitespace-nowrap">
-                {clip.previewCount} sel
-              </span>
-            )}
+                  {clip.canUndoCut && (
+                    <button
+                      type="button"
+                      data-testid="capytorio-clip-undo-btn"
+                      onClick={onUndoCut}
+                      title="Restore cut buildings to original tiles"
+                      className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                    >
+                      <Undo2 className="w-3 h-3 shrink-0" />
+                      <span>Restore</span>
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Copy vs Cut toggle */}
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-copy-btn"
+                    onClick={() => onSetClipboardMode('select_copy', clip.selectionShape)}
+                    title="Copy buildings [Ctrl+C]"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                      clip.toolState === 'select_copy' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+                    }`}
+                  >
+                    <Copy className="w-3 h-3 shrink-0" />
+                    <span>Copy</span>
+                  </button>
 
-            {clip.canUndoCut && (
-              <button
-                type="button"
-                data-testid="capytorio-clip-undo-btn"
-                onClick={onUndoCut}
-                title="Restore cut buildings to original tiles"
-                className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
-              >
-                <Undo2 className="w-3 h-3 shrink-0" />
-                <span>Undo</span>
-              </button>
-            )}
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-cut-btn"
+                    onClick={() => onSetClipboardMode('select_cut', clip.selectionShape)}
+                    title="Cut & move buildings [Ctrl+X]"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                      clip.toolState === 'select_cut'
+                        ? 'bg-[#b44b1e] hover:bg-[#c85624] border border-[#f59d6d] border-b-[#5a220a] border-r-[#5a220a] text-[#fff3eb] font-bold'
+                        : FACTORIO_BTN_IDLE
+                    }`}
+                  >
+                    <Scissors className="w-3 h-3 shrink-0" />
+                    <span>Cut</span>
+                  </button>
+
+                  <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
+
+                  {/* Square Box vs Freeform Lasso shape toggle */}
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-box-btn"
+                    onClick={() => onSetClipboardMode(clip.toolState, 'box')}
+                    title="Square box drag selection"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                      clip.selectionShape === 'box'
+                        ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
+                        : FACTORIO_BTN_IDLE
+                    }`}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <rect x="1.5" y="1.5" width="9" height="9" stroke="currentColor" strokeWidth="1.4" strokeDasharray="2.5 1.5" />
+                    </svg>
+                    <span>Box</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="capytorio-clip-lasso-btn"
+                    onClick={() => onSetClipboardMode(clip.toolState, 'lasso')}
+                    title="Freeform lasso line selection"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                      clip.selectionShape === 'lasso'
+                        ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
+                        : FACTORIO_BTN_IDLE
+                    }`}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                      <path
+                        d="M2.5 8.5C2 4.5 5 2 8.5 2.5C11.5 3 12.5 5.8 11 8.5C9.5 11.2 5.5 11.8 3.5 10.2"
+                        stroke="currentColor"
+                        strokeWidth="1.4"
+                        strokeLinecap="round"
+                        strokeDasharray="2.2 1.6"
+                      />
+                      <circle cx="3" cy="10.2" r="1.4" fill="currentColor" />
+                    </svg>
+                    <span>Lasso</span>
+                  </button>
+
+                  {/* Paste remembered selection when not currently pasting */}
+                  {clip.hasRememberedSelection && (
+                    <>
+                      <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
+                      <button
+                        type="button"
+                        data-testid="capytorio-clip-paste-btn"
+                        onClick={onActivateLastBlueprint}
+                        title="Paste last copied/cut selection [Ctrl+V]"
+                        className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                      >
+                        <ClipboardPaste className="w-3 h-3 shrink-0 text-[#7ce680]" />
+                        <span>Paste</span>
+                      </button>
+                    </>
+                  )}
+
+                  {clip.previewCount > 0 && (
+                    <span className="text-[10px] font-mono tabular-nums text-[#38bdf8] font-semibold px-1 whitespace-nowrap">
+                      {clip.previewCount} sel
+                    </span>
+                  )}
+
+                  <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
+
+                  <button
+                    type="button"
+                    data-testid="capytorio-blueprint-library-btn"
+                    onClick={() => setDrawerTab('blueprints')}
+                    title="Open Blueprint Library (last 100 copied/cut selections) [B]"
+                    className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                  >
+                    <BookOpen className="w-3 h-3 shrink-0 text-[#38bdf8]" />
+                    <span>Library{clip.libraryCount > 0 ? ` (${clip.libraryCount})` : ''}</span>
+                  </button>
+                </>
+              )}
+            </div>
 
             <button
               type="button"
@@ -1523,7 +1898,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
               <button
                 type="button"
                 data-testid="capytorio-clipboard-btn"
-                title="Cut / Copy & Paste Buildings (Box or Freeform Lasso) [Ctrl+C / Ctrl+X]"
+                title="Cut / Copy / Paste & Blueprint Library [Ctrl+C / Ctrl+X / Ctrl+V / B]"
                 onClick={() => {
                   if (isClipboardActive) {
                     onClearClipboard();
@@ -1533,7 +1908,9 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                   }
                 }}
                 className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
-                  isClipboardActive ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+                  isClipboardActive || drawerTab === 'blueprints'
+                    ? FACTORIO_BTN_ACTIVE
+                    : FACTORIO_BTN_IDLE
                 }`}
               >
                 <Copy className="w-3.5 h-3.5" />
