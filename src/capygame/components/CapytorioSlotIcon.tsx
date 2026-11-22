@@ -264,6 +264,7 @@ export interface CapytorioSlotTileProps {
   testId?: string;
   recentSlot?: boolean;
   compact?: boolean;
+  mini?: boolean;
 }
 
 export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
@@ -281,7 +282,9 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
   testId,
   recentSlot = false,
   compact = false,
+  mini = false,
 }) => {
+  const isSquareCompact = compact || mini;
   const accentBorder = selected
     ? 'bg-[#3c2a14] border-[#e58926] border-t-[#f6be68] border-l-[#f6be68] shadow-[inset_0_0_0_1px_rgba(229,137,38,0.45)]'
     : accent === 'craftable'
@@ -290,6 +293,8 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
         ? 'bg-[#171517] hover:bg-[#221d1e] border-[#3c2525] border-t-[#111316] border-l-[#111316] border-b-[#9a352c]'
         : 'bg-[#141619] hover:bg-[#23262d] border-[#0c0d10] border-b-[#3c4049] border-r-[#3c4049]';
 
+  const iconSize = mini ? 18 : compact ? 22 : 20;
+
   return (
     <button
       type="button"
@@ -297,27 +302,35 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
       data-capytorio-recent-slot={recentSlot ? 'true' : undefined}
       title={title ?? label}
       onClick={onClick}
-      className={`relative select-none rounded-[2px] border flex flex-col items-center justify-center transition-colors ${
-        compact ? 'w-11 h-11' : 'w-full h-[52px] px-1 pt-1 pb-0.5 justify-between'
+      className={`relative select-none rounded-[2px] border flex flex-col items-center justify-center shrink-0 transition-colors ${
+        mini
+          ? 'w-9 h-9'
+          : compact
+            ? 'w-11 h-11'
+            : 'w-full h-[52px] px-1 pt-1 pb-0.5 justify-between'
       } ${onClick ? 'cursor-pointer' : 'cursor-default'} ${accentBorder} ${
         dimmed ? 'opacity-50' : ''
       }`}
     >
       {hotkey && (
-        <span className="absolute top-0.5 left-1 text-[9px] font-mono font-bold leading-none text-[#9aa0ac]">
+        <span
+          className={`absolute top-0.5 left-0.5 font-mono font-bold leading-none text-[#9aa0ac] ${
+            mini ? 'text-[8px]' : 'text-[9px] left-1'
+          }`}
+        >
           {hotkey}
         </span>
       )}
 
       <div className="flex items-center justify-center pointer-events-none my-auto">
         {machineType ? (
-          <CapytorioMachineIcon machineType={machineType} color={color} size={compact ? 22 : 20} />
+          <CapytorioMachineIcon machineType={machineType} color={color} size={iconSize} />
         ) : (
-          <CapytorioItemIcon shape={itemShape} color={color} size={compact ? 20 : 19} />
+          <CapytorioItemIcon shape={itemShape} color={color} size={mini ? 18 : compact ? 20 : 19} />
         )}
       </div>
 
-      {!compact && (
+      {!isSquareCompact && (
         <span className="w-full text-center text-[9px] font-medium leading-tight truncate text-[#d8dce3]">
           {label}
         </span>
@@ -326,8 +339,8 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
       {count !== undefined && (
         <span
           className={`absolute ${
-            compact ? 'bottom-0.5 right-1' : 'top-0.5 right-1'
-          } text-[9px] font-mono font-bold tabular-nums leading-none drop-shadow-[0_1px_1px_rgba(0,0,0,0.95)] ${
+            isSquareCompact ? 'bottom-0.5 right-0.5' : 'top-0.5 right-1'
+          } ${mini ? 'text-[8px]' : 'text-[9px]'} font-mono font-bold tabular-nums leading-none drop-shadow-[0_1px_1px_rgba(0,0,0,0.95)] ${
             selected
               ? 'text-[#ffe4b5]'
               : accent === 'craftable'

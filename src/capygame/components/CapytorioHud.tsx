@@ -1,18 +1,16 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
-  Camera,
-  Check,
-  ChevronDown,
-  ChevronUp,
+  Copy,
   Flame,
   Hammer,
-  Home,
-  Minus,
+  Menu,
   Package,
-  Plus,
   Rocket,
   RotateCcw,
-  Trash2,
+  Scissors,
+  Search,
+  Settings,
+  Undo2,
   X,
 } from 'lucide-react';
 import {
@@ -36,6 +34,8 @@ import {
 } from '../engine/CapytorioData';
 import {
   resolveCapytorioPlaceableSpec,
+  type CapytorioClipboardToolState,
+  type CapytorioSelectionShape,
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
 import {
@@ -51,13 +51,12 @@ export type CapytorioCraftGroupTab = CapytorioRecipeGroup | 'machines' | 'lua';
 
 export interface CapytorioHudProps {
   snap: CapytorioUiSnapshot;
-  isObliqueCam: boolean;
-  beltEndSpillEnabled: boolean;
+  isTopBarVisible: boolean;
+  onToggleTopBar: () => void;
+  onOpenSettings: () => void;
   pointerHoverActive: boolean;
   drawerTab: CapytorioDrawerTab;
   setDrawerTab: React.Dispatch<React.SetStateAction<CapytorioDrawerTab>>;
-  isDockCollapsed: boolean;
-  setIsDockCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
   craftGroup: CapytorioCraftGroupTab;
   setCraftGroup: (group: CapytorioCraftGroupTab) => void;
   selectedCraftRecipeId: string;
@@ -65,15 +64,14 @@ export interface CapytorioHudProps {
   luaCatalogInfo: CapytorioLuaCatalogInfo;
   setLuaCatalogInfo: (info: CapytorioLuaCatalogInfo) => void;
   onSelectTool: (toolId: string, promoteToRecent?: boolean) => void;
-  onMineAction: () => void;
   onMineTileAt: (gx: number, gz: number) => void;
   onInspectTileAt: (gx: number, gz: number) => void;
   onClearInspection: () => void;
+  onDemolishMachineAt: (gx: number, gz: number) => void;
   onRotateDir: () => void;
-  onToggleCameraMode: () => void;
-  onToggleBeltEndSpill: () => void;
-  onAdjustZoom: (delta: number) => void;
-  onReturnToBeacon: () => void;
+  onSetClipboardMode: (mode: CapytorioClipboardToolState, shape?: CapytorioSelectionShape) => void;
+  onClearClipboard: () => void;
+  onUndoCut: () => void;
   onCollectAllOutputs: () => void;
   onFeedScience: () => void;
   onLaunchRocket: () => void;
@@ -132,13 +130,12 @@ function hexToCss(hex: number): string {
 
 export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   snap,
-  isObliqueCam,
-  beltEndSpillEnabled,
+  isTopBarVisible,
+  onToggleTopBar,
+  onOpenSettings,
   pointerHoverActive,
   drawerTab,
   setDrawerTab,
-  isDockCollapsed,
-  setIsDockCollapsed,
   craftGroup,
   setCraftGroup,
   selectedCraftRecipeId,
@@ -146,15 +143,14 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   luaCatalogInfo,
   setLuaCatalogInfo,
   onSelectTool,
-  onMineAction,
   onMineTileAt,
   onInspectTileAt,
   onClearInspection,
+  onDemolishMachineAt,
   onRotateDir,
-  onToggleCameraMode,
-  onToggleBeltEndSpill,
-  onAdjustZoom,
-  onReturnToBeacon,
+  onSetClipboardMode,
+  onClearClipboard,
+  onUndoCut,
   onCollectAllOutputs,
   onFeedScience,
   onLaunchRocket,
@@ -170,8 +166,10 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
 }) => {
   const recipeLuaInputRef = useRef<HTMLInputElement | null>(null);
   const techLuaInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedCraftMachineType, setSelectedCraftMachineType] =
+    useState<CapytorioMachineType>(CAPYTORIO_HOTBAR_ORDER[0]);
+  const [focusedInvText, setFocusedInvText] = useState<string | null>(null);
 
-  const dirLabel = DIR_LABELS[snap.selectedDir] ?? 'E';
   const effPct = Math.round(snap.powerEfficiency * 100);
   const totalSciInPocket = Object.entries(snap.pocketItems).reduce<number>(
     (sum, [id, qty]) =>
@@ -189,19 +187,14 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   const inspectedSpec = inspected
     ? resolveCapytorioPlaceableSpec(inspected.variantItemId ?? inspected.type)
     : null;
+  const dirLabel = DIR_LABELS[inspected ? inspected.dir : snap.selectedDir] ?? 'E';
   const inspectedTile = snap.inspectedTile;
   const activeInfoTarget = pointerHoverActive
     ? snap.hoveredTileInfo
     : inspectedTile ?? snap.hoveredTileInfo;
   const isInfoPinned = !pointerHoverActive && inspectedTile !== null;
-  const hoveredTileInfo = snap.hoveredTile;
-  const hoveredTileLabel = hoveredTileInfo.resource
-    ? `${getCapytorioItemMeta(hoveredTileInfo.resource).shortName} ${hoveredTileInfo.resourceAmount} (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
-    : hoveredTileInfo.hasTree
-      ? `Citrus Tree +3 [E] (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
-      : hoveredTileInfo.machineType
-        ? `${resolveCapytorioPlaceableSpec(hoveredTileInfo.variantItemId ?? hoveredTileInfo.machineType)?.shortName ?? hoveredTileInfo.machineType} (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`
-        : `Grass (${hoveredTileInfo.gx}, ${hoveredTileInfo.gz})`;
+  const clip = snap.clipboard;
+  const isClipboardActive = clip.toolState !== 'off';
 
   const allCatalogItems = Object.values(CAPYTORIO_ITEM_CATALOG).sort((a, b) => {
     const ca = CATEGORY_ORDER[a.category] ?? 9;
@@ -231,19 +224,68 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
     groupRecipes[0] ??
     pocketCraftableRecipes[0];
 
-  const nextGoal = snap.milestones.find((ms) => !ms.completed);
-
   const toggleTab = (tab: Exclude<CapytorioDrawerTab, 'none'>) => {
-    setIsDockCollapsed(false);
     setDrawerTab((prev) => (prev === tab ? 'none' : tab));
   };
 
   return (
     <>
+      {/* TOP-RIGHT COMPACT FACTORIO MENU STRIP (Tech, Settings, Menu to reveal top bar) */}
+      <div
+        data-testid="capytorio-top-right-menu"
+        aria-label="Factorio Top-Right Menu"
+        className={`fixed right-2 z-30 pointer-events-auto transition-[top] duration-150 ${
+          isTopBarVisible ? 'top-[48px]' : 'top-2'
+        }`}
+      >
+        <div className={`${FACTORIO_PANEL_FRAME} p-0.5 flex items-center gap-1 text-[#e6e8ec]`}>
+          <button
+            type="button"
+            data-testid="capytorio-drawer-tech-btn"
+            title="Technology Research"
+            onClick={() => toggleTab('tech')}
+            className={`h-6 px-2 rounded-[2px] text-[10px] font-mono font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+              drawerTab === 'tech' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+            }`}
+          >
+            <span>Tech</span>
+            <span className="opacity-80">{Math.round(snap.activeTechProgress * 100)}%</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="capytorio-open-settings-btn"
+            title="Factory & World Settings"
+            aria-label="Open Settings"
+            onClick={onOpenSettings}
+            className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            type="button"
+            data-testid="capytorio-toggle-topbar-btn"
+            title={isTopBarVisible ? 'Hide Top Bar' : 'Show World & Scale Top Bar'}
+            aria-label={isTopBarVisible ? 'Hide Top Bar' : 'Show Top Bar'}
+            aria-expanded={isTopBarVisible}
+            onClick={onToggleTopBar}
+            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+              isTopBarVisible ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+            }`}
+          >
+            <Menu className="w-3 h-3 shrink-0" />
+            <span>Menu</span>
+          </button>
+        </div>
+      </div>
+
       {/* CENTERED FACTORIO MODAL LAYER (sits above viewport, leaves bottom Quickbar directly clickable) */}
       {drawerTab !== 'none' && (
         <div
-          className="fixed inset-x-0 top-10 bottom-[86px] z-20 flex items-center justify-center p-2 sm:p-4 bg-black/55 pointer-events-auto"
+          className={`fixed inset-x-0 ${
+            isTopBarVisible ? 'top-10' : 'top-0'
+          } bottom-[54px] z-20 flex items-center justify-center p-2 sm:p-4 bg-black/55 pointer-events-auto`}
           onClick={() => setDrawerTab('none')}
         >
           {/* CHARACTER INVENTORY & CRAFTING WINDOW */}
@@ -287,6 +329,18 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       Crafting
                     </button>
                   </div>
+                  <span
+                    data-testid="capytorio-power-readout"
+                    className={`text-[10px] font-mono tabular-nums font-semibold whitespace-nowrap ${
+                      effPct >= 95
+                        ? 'text-[#5cd660]'
+                        : effPct >= 60
+                          ? 'text-[#f4b054]'
+                          : 'text-[#e85d50]'
+                    }`}
+                  >
+                    {snap.powerSupplyMw.toFixed(1)}/{snap.powerDemandMw.toFixed(1)} MW ({effPct}%)
+                  </span>
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0 ml-auto">
@@ -329,12 +383,12 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                     drawerTab === 'inventory' ? 'flex' : 'hidden lg:flex'
                   } lg:col-span-5 flex-col gap-2.5 ${FACTORIO_WELL} p-2.5`}
                 >
-                  <div className="flex items-center justify-between border-b border-[#2b2e35] pb-1">
+                  <div className="flex items-center justify-between gap-2 border-b border-[#2b2e35] pb-1">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-[#f4b054]">
                       Inventory
                     </span>
-                    <span className="text-[10px] font-mono tabular-nums text-[#9aa0ac]">
-                      {totalPocketItemsCount} items
+                    <span className="text-[10px] font-mono tabular-nums text-[#9aa0ac] truncate">
+                      {focusedInvText ?? `${totalPocketItemsCount} items`}
                     </span>
                   </div>
 
@@ -343,27 +397,34 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                     <div className="text-[9px] font-mono uppercase tracking-wider text-[#8e95a2] mb-1.5">
                       Starter Buildings (Click to Equip)
                     </div>
-                    <div className="grid grid-cols-5 gap-1">
+                    <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1">
                       {CAPYTORIO_HOTBAR_ORDER.map((mType) => {
                         const spec = CAPYTORIO_MACHINE_SPECS[mType];
                         const count = snap.pocketMachines[mType] ?? 0;
                         const isActive = snap.selectedTool === mType;
                         return (
-                          <CapytorioSlotTile
+                          <div
                             key={mType}
-                            testId={`capytorio-inv-machine-${mType}`}
-                            label={spec.shortName}
-                            title={`${spec.name} (x${count}) — Click to equip`}
-                            count={count}
-                            selected={isActive}
-                            dimmed={count === 0 && !isActive}
-                            machineType={mType}
-                            color={hexToCss(spec.colorHex)}
-                            onClick={() => {
-                              onSelectTool(mType, true);
-                              showToast(`Equipped ${spec.name}`);
-                            }}
-                          />
+                            onMouseEnter={() => setFocusedInvText(`${spec.name} ×${count}`)}
+                            onMouseLeave={() => setFocusedInvText(null)}
+                          >
+                            <CapytorioSlotTile
+                              mini
+                              testId={`capytorio-inv-machine-${mType}`}
+                              label={spec.shortName}
+                              title={`${spec.name} (×${count}) — Click to equip`}
+                              count={count}
+                              selected={isActive}
+                              dimmed={count === 0 && !isActive}
+                              machineType={mType}
+                              color={hexToCss(spec.colorHex)}
+                              onClick={() => {
+                                setFocusedInvText(`${spec.name} ×${count}`);
+                                onSelectTool(mType, true);
+                                showToast(`Equipped ${spec.name}`);
+                              }}
+                            />
+                          </div>
                         );
                       })}
                     </div>
@@ -374,33 +435,38 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                     <div className="text-[9px] font-mono uppercase tracking-wider text-[#8e95a2] mb-1.5">
                       Resources & Crafted Entities
                     </div>
-                    <div className="grid grid-cols-5 sm:grid-cols-6 gap-1 max-h-[34vh] overflow-y-auto pr-0.5">
+                    <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[38vh] overflow-y-auto pr-0.5">
                       {inventoryItemList.map((meta) => {
                         const qty = snap.pocketItems[meta.id] ?? 0;
                         const placeable = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[meta.id];
                         const isEquipped = snap.selectedTool === meta.id;
                         const shape = meta.shape ?? resolveCapytorioItemShape(meta.id, meta.category);
                         return (
-                          <CapytorioSlotTile
+                          <div
                             key={meta.id}
-                            testId={`capytorio-inv-item-${meta.id}`}
-                            label={meta.shortName}
-                            title={`${meta.name}${placeable ? ' (Click to equip)' : ''}: ${qty}`}
-                            count={qty}
-                            selected={isEquipped}
-                            dimmed={qty === 0 && !isEquipped}
-                            machineType={placeable?.baseType}
-                            itemShape={shape}
-                            color={placeable?.tintHex ? hexToCss(placeable.tintHex) : meta.cssColor}
-                            onClick={
-                              placeable
-                                ? () => {
-                                    onSelectTool(meta.id, true);
-                                    showToast(`Equipped ${meta.name} into Quickbar Slot 1`);
-                                  }
-                                : undefined
-                            }
-                          />
+                            onMouseEnter={() => setFocusedInvText(`${meta.name} ×${qty}`)}
+                            onMouseLeave={() => setFocusedInvText(null)}
+                          >
+                            <CapytorioSlotTile
+                              mini
+                              testId={`capytorio-inv-item-${meta.id}`}
+                              label={meta.shortName}
+                              title={`${meta.name}${placeable ? ' (Click to equip)' : ''}: ${qty}`}
+                              count={qty}
+                              selected={isEquipped}
+                              dimmed={qty === 0 && !isEquipped}
+                              machineType={placeable?.baseType}
+                              itemShape={shape}
+                              color={placeable?.tintHex ? hexToCss(placeable.tintHex) : meta.cssColor}
+                              onClick={() => {
+                                setFocusedInvText(`${meta.name} ×${qty}`);
+                                if (placeable) {
+                                  onSelectTool(meta.id, true);
+                                  showToast(`Equipped ${meta.name} into Quickbar Slot 1`);
+                                }
+                              }}
+                            />
+                          </div>
                         );
                       })}
                     </div>
@@ -445,7 +511,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
 
                     {/* Active Category Grid */}
                     {craftGroup === 'machines' ? (
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                      <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[36vh] overflow-y-auto pr-0.5">
                         {CAPYTORIO_HOTBAR_ORDER.map((mType) => {
                           const spec = CAPYTORIO_MACHINE_SPECS[mType];
                           const canAffordMachine = Object.entries(spec.craftCost).every(
@@ -455,33 +521,22 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                             .map(([id, amt]) => `${amt} ${getCapytorioItemMeta(id).shortName}`)
                             .join(' · ');
                           return (
-                            <button
+                            <CapytorioSlotTile
                               key={mType}
-                              type="button"
-                              data-testid={`capytorio-craft-machine-${mType}`}
-                              onClick={() => onCraftMachine(mType)}
+                              mini
+                              testId={`capytorio-craft-machine-${mType}`}
+                              label={spec.shortName}
                               title={`Craft +1 ${spec.name} (${costLabel})`}
-                              className={`p-1.5 rounded-[2px] border text-left cursor-pointer flex flex-col gap-1 transition-colors ${
-                                canAffordMachine
-                                  ? 'bg-[#171b18] hover:bg-[#222a24] border-[#315034] border-b-[#45b649] text-[#e6e8ec]'
-                                  : 'bg-[#141518] hover:bg-[#1d1e22] border-[#392424] border-b-[#9a352c] text-[#9aa0ac]'
-                              }`}
-                            >
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <CapytorioMachineIcon
-                                  machineType={mType}
-                                  color={hexToCss(spec.colorHex)}
-                                  size={20}
-                                  className="shrink-0"
-                                />
-                                <span className="text-[10px] font-semibold truncate">
-                                  +1 {spec.shortName}
-                                </span>
-                              </div>
-                              <div className="text-[9px] font-mono text-[#9aa0ac] truncate">
-                                {costLabel}
-                              </div>
-                            </button>
+                              count="×1"
+                              selected={selectedCraftMachineType === mType}
+                              accent={canAffordMachine ? 'craftable' : 'missing'}
+                              machineType={mType}
+                              color={hexToCss(spec.colorHex)}
+                              onClick={() => {
+                                setSelectedCraftMachineType(mType);
+                                onCraftMachine(mType);
+                              }}
+                            />
                           );
                         })}
                       </div>
@@ -576,7 +631,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                         </div>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-4 sm:grid-cols-6 gap-1 max-h-[36vh] overflow-y-auto pr-0.5">
+                      <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[36vh] overflow-y-auto pr-0.5">
                         {groupRecipes.map((rec) => {
                           const outMeta = getCapytorioItemMeta(rec.result);
                           const canAfford = rec.ingredients.every(
@@ -589,9 +644,10 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                           return (
                             <CapytorioSlotTile
                               key={rec.id}
+                              mini
                               testId={`capytorio-craft-recipe-${rec.id}`}
                               label={outMeta.shortName}
-                              title={`${rec.name} (x${rec.resultCount}) — Click to craft 1`}
+                              title={`${rec.name} (×${rec.resultCount}) — Click to craft 1`}
                               count={`×${rec.resultCount}`}
                               selected={isSelected}
                               accent={canAfford ? 'craftable' : 'missing'}
@@ -608,6 +664,42 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       </div>
                     )}
                   </div>
+
+                  {/* Selected Building Ingredient & Craft Bar */}
+                  {craftGroup === 'machines' && (() => {
+                    const spec = CAPYTORIO_MACHINE_SPECS[selectedCraftMachineType];
+                    return (
+                      <div className="pt-2 border-t border-[#2b2e35] flex flex-wrap items-center justify-between gap-2 text-[10px]">
+                        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                          <span className="font-bold text-[#f4b054] truncate">{spec.name}</span>
+                          {Object.entries(spec.craftCost).map(([ingId, need]) => {
+                            const req = need ?? 0;
+                            const have = snap.pocketItems[ingId] ?? 0;
+                            const ok = have >= req;
+                            return (
+                              <span
+                                key={ingId}
+                                className={`px-1.5 py-0.5 rounded-[2px] font-mono tabular-nums border ${
+                                  ok
+                                    ? 'bg-[#162518] border-[#45b649]/65 text-[#86ef92]'
+                                    : 'bg-[#261616] border-[#d9483b]/65 text-[#f2857c]'
+                                }`}
+                              >
+                                {have}/{req} {getCapytorioItemMeta(ingId).shortName}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onCraftMachine(selectedCraftMachineType)}
+                          className={`px-2.5 py-1 rounded-[2px] font-mono cursor-pointer shrink-0 ${FACTORIO_BTN_ACTIVE}`}
+                        >
+                          Craft 1
+                        </button>
+                      </div>
+                    );
+                  })()}
 
                   {/* Selected Recipe Ingredient & Craft Bar */}
                   {detailRecipe && craftGroup !== 'machines' && craftGroup !== 'lua' && (
@@ -684,6 +776,17 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                       </span>
                     </div>
                   )}
+                  <span
+                    className={`hidden sm:inline text-[10px] font-mono tabular-nums font-semibold whitespace-nowrap ${
+                      effPct >= 95
+                        ? 'text-[#5cd660]'
+                        : effPct >= 60
+                          ? 'text-[#f4b054]'
+                          : 'text-[#e85d50]'
+                    }`}
+                  >
+                    · {snap.powerSupplyMw.toFixed(1)}/{snap.powerDemandMw.toFixed(1)} MW
+                  </span>
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -1137,297 +1240,319 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
         </div>
       )}
 
-      {/* FACTORIO BOTTOM-RIGHT LIVE ENTITY / TILE INFO WINDOW */}
+      {/* FACTORIO TOP-RIGHT LIVE ENTITY / TILE INFO WINDOW */}
       {drawerTab === 'none' && activeInfoTarget && (
         <CapytorioEntityInfoPanel
           info={activeInfoTarget}
           isPinned={isInfoPinned}
-          isDockCollapsed={isDockCollapsed}
+          isTopBarVisible={isTopBarVisible}
           onClearPin={onClearInspection}
           onOpenMachineModal={(gx, gz) => {
             onInspectTileAt(gx, gz);
-            setIsDockCollapsed(false);
             setDrawerTab('inspect');
           }}
           onRotateMachineAt={onRotateMachineAt}
+          onDemolishMachineAt={onDemolishMachineAt}
           onMineTileAt={onMineTileAt}
           onCollectAllOutputs={onCollectAllOutputs}
         />
       )}
 
-      {/* SINGLE COMPACT BOTTOM FACTORIO QUICKBAR DOCK */}
+      {/* CONTEXTUAL CUT / COPY / PASTE SUB-BAR (Visible ONLY when Copy/Paste tool is active) */}
+      {drawerTab === 'none' && isClipboardActive && (
+        <div
+          data-testid="capytorio-clipboard-bar"
+          aria-label="Cut Copy Paste Blueprint Controls"
+          className="fixed bottom-[54px] left-2 sm:left-1/2 sm:-translate-x-1/2 z-30 pointer-events-auto max-w-[calc(100vw-60px)] text-[#e6e8ec]"
+        >
+          <div className={`${FACTORIO_PANEL_FRAME} px-1.5 py-1 flex items-center gap-1 overflow-x-auto`}>
+            {/* Copy vs Cut toggle */}
+            <button
+              type="button"
+              data-testid="capytorio-clip-copy-btn"
+              onClick={() => onSetClipboardMode('select_copy', clip.selectionShape)}
+              title="Copy buildings [Ctrl+C]"
+              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                clip.toolState === 'select_copy' || (clip.toolState === 'paste' && clip.mode === 'copy')
+                  ? FACTORIO_BTN_ACTIVE
+                  : FACTORIO_BTN_IDLE
+              }`}
+            >
+              <Copy className="w-3 h-3 shrink-0" />
+              <span>Copy</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="capytorio-clip-cut-btn"
+              onClick={() => onSetClipboardMode('select_cut', clip.selectionShape)}
+              title="Cut & move buildings [Ctrl+X]"
+              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                clip.toolState === 'select_cut' || (clip.toolState === 'paste' && clip.mode === 'cut')
+                  ? 'bg-[#b44b1e] hover:bg-[#c85624] border border-[#f59d6d] border-b-[#5a220a] border-r-[#5a220a] text-[#fff3eb] font-bold'
+                  : FACTORIO_BTN_IDLE
+              }`}
+            >
+              <Scissors className="w-3 h-3 shrink-0" />
+              <span>Cut</span>
+            </button>
+
+            <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
+
+            {/* Square Box vs Freeform Lasso shape toggle */}
+            <button
+              type="button"
+              data-testid="capytorio-clip-box-btn"
+              onClick={() =>
+                onSetClipboardMode(
+                  clip.toolState === 'paste' ? (clip.mode === 'cut' ? 'select_cut' : 'select_copy') : clip.toolState,
+                  'box'
+                )
+              }
+              title="Square box drag selection"
+              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                clip.selectionShape === 'box' && clip.toolState !== 'paste'
+                  ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
+                  : FACTORIO_BTN_IDLE
+              }`}
+            >
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <rect x="1.5" y="1.5" width="9" height="9" stroke="currentColor" strokeWidth="1.4" strokeDasharray="2.5 1.5" />
+              </svg>
+              <span>Box</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="capytorio-clip-lasso-btn"
+              onClick={() =>
+                onSetClipboardMode(
+                  clip.toolState === 'paste' ? (clip.mode === 'cut' ? 'select_cut' : 'select_copy') : clip.toolState,
+                  'lasso'
+                )
+              }
+              title="Freeform lasso line selection"
+              className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                clip.selectionShape === 'lasso' && clip.toolState !== 'paste'
+                  ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
+                  : FACTORIO_BTN_IDLE
+              }`}
+            >
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <path
+                  d="M2.5 8.5C2 4.5 5 2 8.5 2.5C11.5 3 12.5 5.8 11 8.5C9.5 11.2 5.5 11.8 3.5 10.2"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeDasharray="2.2 1.6"
+                />
+                <circle cx="3" cy="10.2" r="1.4" fill="currentColor" />
+              </svg>
+              <span>Lasso</span>
+            </button>
+
+            {/* Paste status / Rotate 90° / Undo Cut */}
+            {clip.toolState === 'paste' && (
+              <>
+                <div className="w-[1px] h-4 bg-[#3b3f4a] mx-0.5 shrink-0" aria-hidden="true" />
+                <span
+                  data-testid="capytorio-clip-count"
+                  className="text-[10px] font-mono tabular-nums text-[#7ce680] font-semibold px-1 whitespace-nowrap"
+                >
+                  {clip.count} ready
+                </span>
+                <button
+                  type="button"
+                  data-testid="capytorio-clip-rotate-btn"
+                  onClick={onRotateDir}
+                  title="Rotate blueprint 90° [R]"
+                  className={`h-6 px-1.5 rounded-[2px] text-[10px] font-mono cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+                >
+                  <RotateCcw className="w-3 h-3 shrink-0" />
+                  <span>90°</span>
+                </button>
+              </>
+            )}
+
+            {clip.toolState !== 'paste' && clip.previewCount > 0 && (
+              <span className="text-[10px] font-mono tabular-nums text-[#38bdf8] font-semibold px-1 whitespace-nowrap">
+                {clip.previewCount} sel
+              </span>
+            )}
+
+            {clip.canUndoCut && (
+              <button
+                type="button"
+                data-testid="capytorio-clip-undo-btn"
+                onClick={onUndoCut}
+                title="Restore cut buildings to original tiles"
+                className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${FACTORIO_BTN_IDLE}`}
+              >
+                <Undo2 className="w-3 h-3 shrink-0" />
+                <span>Undo</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              data-testid="capytorio-clip-cancel-btn"
+              onClick={onClearClipboard}
+              title="Cancel selection / paste [Esc]"
+              aria-label="Cancel Cut/Copy/Paste"
+              className={`h-6 w-6 rounded-[2px] flex items-center justify-center shrink-0 cursor-pointer ${FACTORIO_BTN_IDLE}`}
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* SLIM SINGLE-ROW BOTTOM FACTORIO QUICKBAR (Items Left · 5 Commands Right) */}
       <section
         data-testid="capytorio-build-bar"
         aria-label="Capytorio Factorio Quickbar"
-        className="fixed bottom-1.5 left-1/2 -translate-x-1/2 z-30 pointer-events-auto w-[calc(100vw-12px)] md:max-w-[calc(100vw-240px)] lg:max-w-[960px] text-[#e6e8ec]"
+        className="fixed bottom-1.5 left-1/2 -translate-x-1/2 z-30 pointer-events-auto w-[calc(100vw-12px)] max-w-[780px] text-[#e6e8ec]"
       >
         <div className={`${FACTORIO_PANEL_FRAME} overflow-hidden`}>
-          {/* Slim Top Utility Strip (Power, Tech, Milestone, Tile + Camera/Spill/Collapse) */}
-          <div className="px-2 h-7 bg-[#282b32] border-b border-[#121317] flex items-center justify-between gap-2 text-[10px] tabular-nums">
-            <div className="flex items-center gap-2 min-w-0 overflow-hidden font-mono">
-              <span
-                data-testid="capytorio-power-readout"
-                className={
-                  effPct >= 95
-                    ? 'text-[#5cd660] font-semibold whitespace-nowrap'
-                    : effPct >= 60
-                      ? 'text-[#f4b054] font-semibold whitespace-nowrap'
-                      : 'text-[#e85d50] font-semibold whitespace-nowrap'
-                }
-              >
-                {snap.powerSupplyMw.toFixed(1)}/{snap.powerDemandMw.toFixed(1)} MW{' '}
-                <span className="hidden sm:inline">({effPct}%)</span>
-              </span>
-              <span className="hidden sm:inline text-[#4e5360]" aria-hidden="true">|</span>
-              <span className="hidden sm:inline text-[#f4b054] truncate max-w-[140px]">
-                {activeTech
-                  ? `${activeTech.name} ${Math.round(snap.activeTechProgress * 100)}%`
-                  : 'All Techs Complete'}
-              </span>
-              <span className="hidden md:inline text-[#4e5360]" aria-hidden="true">|</span>
-              <span className="hidden md:inline text-[#9aa0ac] truncate max-w-[155px]">
-                {hoveredTileLabel}
-              </span>
-              <span
-                data-testid="capytorio-milestone-badge"
-                title={nextGoal ? nextGoal.hint : 'All Factory Milestones Achieved!'}
-                className="hidden lg:inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] bg-[#16181c] border border-[#3a3e48] text-[9px] text-[#ffe1ad] font-sans font-medium max-w-[185px] truncate"
-              >
-                <Check className="w-2.5 h-2.5 shrink-0 text-[#45b649]" />
-                <span className="truncate">
-                  {snap.milestonesCompletedCount}/{snap.milestones.length}:{' '}
-                  {nextGoal ? nextGoal.label : 'Rocket Ready'}
-                </span>
-              </span>
+          <div
+            data-testid="capytorio-toolbar"
+            className="px-1.5 py-1 bg-[#1d1f24] flex items-center justify-between gap-1.5"
+          >
+            {/* LEFT: Compact 36x36px Item Slots (scrollable on narrow phones) */}
+            <div className="flex-1 min-w-0 flex items-center gap-1 overflow-x-auto no-scrollbar">
+              {recentSlots.map((toolId, slotIdx) => {
+                const resolved = resolveCapytorioPlaceableSpec(toolId);
+                if (!resolved) return null;
+                const hotkey = slotIdx === 9 ? '0' : String(slotIdx + 1);
+                const count = resolved.isBaseMachine
+                  ? snap.pocketMachines[resolved.baseType] ?? 0
+                  : snap.pocketItems[resolved.id] ?? 0;
+                const selected = !isClipboardActive && snap.selectedTool === toolId;
+                return (
+                  <CapytorioSlotTile
+                    key={toolId}
+                    mini
+                    recentSlot
+                    testId={`capytorio-tool-${toolId}`}
+                    label={resolved.shortName}
+                    title={`${resolved.name} [${hotkey}] — ${resolved.description}`}
+                    hotkey={hotkey}
+                    count={count}
+                    selected={selected}
+                    dimmed={count === 0 && !selected}
+                    machineType={resolved.baseType}
+                    color={hexToCss(resolved.tintHex)}
+                    onClick={() => onSelectTool(toolId, false)}
+                  />
+                );
+              })}
             </div>
 
+            <div className="w-[2px] h-7 bg-[#111216] border-r border-[#3b3f4a] shrink-0" aria-hidden="true" />
+
+            {/* RIGHT: Strictly 5 Core Commands (Rotate, Inspect, Inventory, Craft, Copy/Paste) */}
             <div className="flex items-center gap-1 shrink-0">
               <button
                 type="button"
-                data-testid="capytorio-belt-spill-btn"
-                onClick={onToggleBeltEndSpill}
+                data-testid="capytorio-rotate-btn"
                 title={
-                  beltEndSpillEnabled
-                    ? 'Belt End Item Spill: ON (items tumble off open belt ends onto ground)'
-                    : 'Belt End Item Spill: OFF (items squish at open belt ends without spilling)'
+                  clip.toolState === 'paste'
+                    ? 'Rotate Blueprint 90° [R]'
+                    : inspected
+                      ? `Rotate Selected ${inspectedSpec?.shortName ?? 'Building'} (${dirLabel}) [R]`
+                      : `Rotate Placement Direction (${dirLabel}) [R]`
                 }
-                className={`h-5 px-1.5 rounded-[2px] text-[9px] font-mono font-semibold whitespace-nowrap cursor-pointer ${
-                  beltEndSpillEnabled ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-                }`}
+                onClick={onRotateDir}
+                className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-mono font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_IDLE}`}
               >
-                Spill: {beltEndSpillEnabled ? 'ON' : 'OFF'}
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{clip.toolState === 'paste' ? '90°' : dirLabel}</span>
               </button>
+
               <button
                 type="button"
-                data-testid="capytorio-zoom-out-btn"
-                aria-label="Zoom Out Camera"
-                onClick={() => onAdjustZoom(-0.24)}
-                className={`h-5 w-5 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
-              >
-                <Minus className="w-3 h-3" />
-              </button>
-              <button
-                type="button"
-                data-testid="capytorio-zoom-in-btn"
-                aria-label="Zoom In Camera"
-                onClick={() => onAdjustZoom(0.24)}
-                className={`h-5 w-5 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
-              >
-                <Plus className="w-3 h-3" />
-              </button>
-              <button
-                type="button"
-                data-testid="capytorio-camera-mode-btn"
-                onClick={onToggleCameraMode}
-                title="Toggle 68° Factorio Overhead / 3D Chase [V]"
-                className={`h-5 px-1.5 rounded-[2px] text-[9px] font-mono font-semibold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
-                  isObliqueCam
-                    ? 'bg-[#3d2a13] border border-[#e58926] text-[#ffe1ad]'
+                data-testid="capytorio-drawer-inspect-btn"
+                title="Inspect Tile, Resource, Tree, or Building"
+                onClick={() => {
+                  if (drawerTab === 'inspect') {
+                    setDrawerTab('none');
+                    return;
+                  }
+                  if (!isClipboardActive && snap.selectedTool === 'mine' && inspectedTile) {
+                    setDrawerTab('inspect');
+                  } else {
+                    onSelectTool('mine');
+                  }
+                }}
+                className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+                  drawerTab === 'inspect' || (!isClipboardActive && snap.selectedTool === 'mine')
+                    ? FACTORIO_BTN_ACTIVE
                     : FACTORIO_BTN_IDLE
                 }`}
               >
-                <Camera className="w-2.5 h-2.5 shrink-0" />
-                <span>{isObliqueCam ? '68° [V]' : '3D [V]'}</span>
+                <Search className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Inspect</span>
               </button>
+
               <button
                 type="button"
-                data-testid="capytorio-beacon-btn"
-                onClick={onReturnToBeacon}
-                title="Warp to Survey Beacon [H]"
-                className={`h-5 w-5 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                data-testid="capytorio-drawer-inventory-btn"
+                title="Character Inventory [I]"
+                onClick={() => toggleTab('inventory')}
+                className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+                  drawerTab === 'inventory' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+                }`}
               >
-                <Home className="w-3 h-3" />
+                <Package className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Inv</span>
               </button>
+
               <button
                 type="button"
-                data-testid="capytorio-collapse-btn"
-                aria-label={isDockCollapsed ? 'Expand Quickbar' : 'Collapse Quickbar'}
-                onClick={() => setIsDockCollapsed((prev) => !prev)}
-                className={`h-5 w-5 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
+                data-testid="capytorio-drawer-craft-btn"
+                title="Crafting Workbench"
+                onClick={() => toggleTab('craft')}
+                className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+                  drawerTab === 'craft' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+                }`}
               >
-                {isDockCollapsed ? (
-                  <ChevronUp className="w-3.5 h-3.5" />
-                ) : (
-                  <ChevronDown className="w-3.5 h-3.5" />
-                )}
+                <Hammer className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Craft</span>
               </button>
+
+              <button
+                type="button"
+                data-testid="capytorio-clipboard-btn"
+                title="Cut / Copy & Paste Buildings (Box or Freeform Lasso) [Ctrl+C / Ctrl+X]"
+                onClick={() => {
+                  if (isClipboardActive) {
+                    onClearClipboard();
+                  } else {
+                    setDrawerTab('none');
+                    onSetClipboardMode('select_copy', clip.selectionShape);
+                  }
+                }}
+                className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+                  isClipboardActive ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+                }`}
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Copy</span>
+              </button>
+
+              {(snap.pocketItems.rocket_part ?? 0) > 0 && (
+                <button
+                  type="button"
+                  data-testid="capytorio-launch-rocket-btn"
+                  onClick={onLaunchRocket}
+                  className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_ACTIVE}`}
+                >
+                  <Rocket className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Launch</span>
+                </button>
+              )}
             </div>
           </div>
-
-          {/* Unified Single-Row Factorio Quickbar */}
-          {!isDockCollapsed && (
-            <div
-              data-testid="capytorio-toolbar"
-              className="px-1.5 py-1.5 bg-[#1d1f24] flex items-center justify-between gap-1.5 overflow-x-auto"
-            >
-              {/* Left Action Controls */}
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  data-testid="capytorio-tool-mine"
-                  title="Hand Mine / Inspect [E]"
-                  onClick={onMineAction}
-                  className={`h-11 px-2 rounded-[2px] text-[10px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
-                    snap.selectedTool === 'mine' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-                  }`}
-                >
-                  <span>Mine</span>
-                  <span className="text-[9px] font-mono opacity-80">[E]</span>
-                </button>
-
-                <button
-                  type="button"
-                  data-testid="capytorio-tool-demolish"
-                  title="Demolish Machine [X]"
-                  onClick={() => onSelectTool('demolish')}
-                  className={`h-11 px-2 rounded-[2px] text-[10px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
-                    snap.selectedTool === 'demolish'
-                      ? 'bg-[#6b201c] border border-[#e05b50] text-[#ffe4e2] font-bold'
-                      : FACTORIO_BTN_IDLE
-                  }`}
-                >
-                  <Trash2 className="w-3 h-3" />
-                  <span className="text-[9px] font-mono opacity-80">[X]</span>
-                </button>
-
-                <button
-                  type="button"
-                  data-testid="capytorio-rotate-btn"
-                  title="Rotate Placement Direction [R]"
-                  onClick={onRotateDir}
-                  className={`h-11 px-2 rounded-[2px] text-[10px] font-mono font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_IDLE}`}
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>{dirLabel} [R]</span>
-                </button>
-              </div>
-
-              <div className="w-[2px] h-8 bg-[#111216] border-r border-[#3b3f4a] shrink-0" aria-hidden="true" />
-
-              {/* Center 10-Slot Square Factorio Quickbar */}
-              <div className="flex items-center gap-1 shrink-0">
-                {recentSlots.map((toolId, slotIdx) => {
-                  const resolved = resolveCapytorioPlaceableSpec(toolId);
-                  if (!resolved) return null;
-                  const hotkey = slotIdx === 9 ? '0' : String(slotIdx + 1);
-                  const count = resolved.isBaseMachine
-                    ? snap.pocketMachines[resolved.baseType] ?? 0
-                    : snap.pocketItems[resolved.id] ?? 0;
-                  const selected = snap.selectedTool === toolId;
-                  return (
-                    <CapytorioSlotTile
-                      key={toolId}
-                      compact
-                      recentSlot
-                      testId={`capytorio-tool-${toolId}`}
-                      label={resolved.shortName}
-                      title={`${resolved.name} [${hotkey}] — ${resolved.description}`}
-                      hotkey={hotkey}
-                      count={count}
-                      selected={selected}
-                      dimmed={count === 0 && !selected}
-                      machineType={resolved.baseType}
-                      color={hexToCss(resolved.tintHex)}
-                      onClick={() => onSelectTool(toolId, false)}
-                    />
-                  );
-                })}
-              </div>
-
-              <div className="w-[2px] h-8 bg-[#111216] border-r border-[#3b3f4a] shrink-0" aria-hidden="true" />
-
-              {/* Right Modal Triggers */}
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  data-testid="capytorio-drawer-inventory-btn"
-                  title="Open Character Inventory [I]"
-                  onClick={() => toggleTab('inventory')}
-                  className={`h-11 px-2 rounded-[2px] text-[10px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
-                    drawerTab === 'inventory' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-                  }`}
-                >
-                  <Package className="w-3.5 h-3.5" />
-                  <span>Inv [I]</span>
-                </button>
-
-                <button
-                  type="button"
-                  data-testid="capytorio-drawer-craft-btn"
-                  title="Open Crafting Workbench"
-                  onClick={() => toggleTab('craft')}
-                  className={`h-11 px-2 rounded-[2px] text-[10px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
-                    drawerTab === 'craft' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-                  }`}
-                >
-                  <Hammer className="w-3.5 h-3.5" />
-                  <span>Craft</span>
-                </button>
-
-                <button
-                  type="button"
-                  data-testid="capytorio-drawer-tech-btn"
-                  title="Open Technology Tree"
-                  onClick={() => toggleTab('tech')}
-                  className={`h-11 px-2 rounded-[2px] text-[10px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
-                    drawerTab === 'tech' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-                  }`}
-                >
-                  <span className="text-[10px] font-bold">Tech</span>
-                  <span className="text-[9px] font-mono opacity-80">
-                    {Math.round(snap.activeTechProgress * 100)}%
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  data-testid="capytorio-drawer-inspect-btn"
-                  title="Inspect Selected Tile or Building"
-                  onClick={() => toggleTab('inspect')}
-                  className={`h-11 px-2 rounded-[2px] text-[10px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
-                    drawerTab === 'inspect' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-                  }`}
-                >
-                  <span className="text-[10px] font-bold">Inspect</span>
-                  <span className="text-[9px] font-mono opacity-80">
-                    {inspectedTile ? `${inspectedTile.gx},${inspectedTile.gz}` : '—'}
-                  </span>
-                </button>
-
-                {(snap.pocketItems.rocket_part ?? 0) > 0 && (
-                  <button
-                    type="button"
-                    data-testid="capytorio-launch-rocket-btn"
-                    onClick={onLaunchRocket}
-                    className={`h-11 px-2 rounded-[2px] text-[10px] whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_ACTIVE}`}
-                  >
-                    <Rocket className="w-3.5 h-3.5" />
-                    <span>Launch</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </section>
     </>

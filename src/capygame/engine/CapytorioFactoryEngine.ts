@@ -270,6 +270,32 @@ export interface CapytorioTileInspection {
   actionHint: string;
 }
 
+export type CapytorioClipboardToolState = 'off' | 'select_copy' | 'select_cut' | 'paste';
+export type CapytorioSelectionShape = 'box' | 'lasso';
+
+export interface CapytorioBlueprintEntry {
+  dx: number;
+  dz: number;
+  toolId: string;
+  baseType: CapytorioMachineType;
+  dir: CapytorioDirection;
+  recipeId?: CapytorioRecipeId;
+}
+
+export interface CapytorioBlueprintClipboard {
+  mode: 'copy' | 'cut';
+  entries: CapytorioBlueprintEntry[];
+  canUndoCut: boolean;
+}
+
+export interface CapytorioBlueprintPlacementCheck {
+  entry: CapytorioBlueprintEntry;
+  gx: number;
+  gz: number;
+  valid: boolean;
+  reason?: 'occupied' | 'needs_ore' | 'no_stock';
+}
+
 export interface CapytorioUiSnapshot {
   machineCount: number;
   powerSupplyMw: number;
@@ -324,6 +350,14 @@ export interface CapytorioUiSnapshot {
   milestonesCompletedCount: number;
   spilledItemCount: number;
   beltEndSpillEnabled: boolean;
+  clipboard: {
+    toolState: CapytorioClipboardToolState;
+    selectionShape: CapytorioSelectionShape;
+    mode: 'copy' | 'cut' | null;
+    count: number;
+    canUndoCut: boolean;
+    previewCount: number;
+  };
 }
 
 export interface CapytorioStepCallbacks {
@@ -624,6 +658,24 @@ export class CapytorioFactoryEngine {
   public inspectedKey: string | null = null;
   public inspectedTile: { gx: number; gz: number } | null = null;
 
+  // Multi-building Cut / Copy / Paste Blueprint Clipboard state
+  public clipboardToolState: CapytorioClipboardToolState = 'off';
+  public selectionShape: CapytorioSelectionShape = 'box';
+  public clipboard: CapytorioBlueprintClipboard | null = null;
+  public readonly previewSelectedKeys = new Set<string>();
+  private undoCutSnapshot: Array<{
+    gx: number;
+    gz: number;
+    toolId: string;
+    baseType: CapytorioMachineType;
+    dir: CapytorioDirection;
+    recipeId?: CapytorioRecipeId;
+    inputBuffer: Partial<Record<CapytorioItemId, number>>;
+    outputBuffer: Partial<Record<CapytorioItemId, number>>;
+    beltItems: CapytorioBeltItem[];
+    holdingItem: CapytorioItemId | null;
+  }> = [];
+
   // Power metrics (zero-allocation cached scalars updated every step)
   public powerSupplyMw = 0;
   public powerDemandMw = 0;
@@ -681,6 +733,10 @@ export class CapytorioFactoryEngine {
     this.lastReportedScore = 0;
     this.inspectedKey = null;
     this.inspectedTile = null;
+    this.clipboardToolState = 'off';
+    this.clipboard = null;
+    this.previewSelectedKeys.clear();
+    this.undoCutSnapshot.length = 0;
     this.selectedTool = 'drill';
     this.selectedDir = 1;
     this.selectedRecipeId = getDefaultAssemblerRecipeId();
@@ -1128,6 +1184,365 @@ export class CapytorioFactoryEngine {
       machine: res.machine,
       appliedDir: targetDir,
     };
+  }
+
+  public setClipboardToolMode(
+    state: CapytorioClipboardToolState,
+    shape?: CapytorioSelectionShape
+  ): void {
+    if (shape) this.selectionShape = shape;
+    if (state === 'paste' && (!this.clipboard || this.clipboard.entries.length === 0)) {
+      this.clipboardToolState = 'select_copy';
+    } else {
+      this.clipboardToolState = state;
+    }
+    this.previewSelectedKeys.clear();
+  }
+
+  public clearClipboard(): void {
+    this.clipboardToolState = 'off';
+    this.clipboard = null;
+    this.previewSelectedKeys.clear();
+    this.undoCutSnapshot.length = 0;
+  }
+
+  public selectMachinesInBox(gxA: number, gzA: number, gxB: number, gzB: number): CapytorioMachine[] {
+    const minX = Math.min(gxA, gxB);
+    const maxX = Math.max(gxA, gxB);
+    const minZ = Math.min(gzA, gzB);
+    const maxZ = Math.max(gzA, gzB);
+    const out: CapytorioMachine[] = [];
+    for (const m of this.machines.values()) {
+      if (m.gx >= minX && m.gx <= maxX && m.gz >= minZ && m.gz <= maxZ) {
+        out.push(m);
+      }
+    }
+    return out;
+  }
+
+  public selectMachinesInPolygon(
+    points: ReadonlyArray<{ gx: number; gz: number }>
+  ): CapytorioMachine[] {
+    const n = points.length;
+    if (n === 0) return [];
+    if (n === 1) {
+      const m = this.machines.get(tileKey(Math.round(points[0].gx), Math.round(points[0].gz)));
+      return m ? [m] : [];
+    }
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const pt = points[i];
+      if (pt.gx < minX) minX = pt.gx;
+      if (pt.gx > maxX) maxX = pt.gx;
+      if (pt.gz < minZ) minZ = pt.gz;
+      if (pt.gz > maxZ) maxZ = pt.gz;
+    }
+    const pad = 0.65;
+    const brushDistSq = 0.54 * 0.54;
+    const out: CapytorioMachine[] = [];
+
+    for (const m of this.machines.values()) {
+      const px = m.gx;
+      const pz = m.gz;
+      if (px < minX - pad || px > maxX + pad || pz < minZ - pad || pz > maxZ + pad) continue;
+
+      // 1. Check direct brush proximity to any drawn polyline segment
+      let touched = false;
+      for (let i = 0; i < n - 1; i++) {
+        const ax = points[i].gx;
+        const az = points[i].gz;
+        const bx = points[i + 1].gx;
+        const bz = points[i + 1].gz;
+        const abx = bx - ax;
+        const abz = bz - az;
+        const lenSq = abx * abx + abz * abz;
+        const t = lenSq > 1e-6 ? Math.max(0, Math.min(1, ((px - ax) * abx + (pz - az) * abz) / lenSq)) : 0;
+        const cx = ax + abx * t;
+        const cz = az + abz * t;
+        const dSq = (px - cx) * (px - cx) + (pz - cz) * (pz - cz);
+        if (dSq <= brushDistSq) {
+          touched = true;
+          break;
+        }
+      }
+      if (touched) {
+        out.push(m);
+        continue;
+      }
+
+      // 2. Ray-casting point-in-polygon check (closing last point -> first point)
+      if (n >= 3) {
+        let inside = false;
+        for (let i = 0, j = n - 1; i < n; j = i++) {
+          const xi = points[i].gx;
+          const zi = points[i].gz;
+          const xj = points[j].gx;
+          const zj = points[j].gz;
+          const intersects =
+            zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi + 1e-9) + xi;
+          if (intersects) inside = !inside;
+        }
+        if (inside) {
+          out.push(m);
+        }
+      }
+    }
+    return out;
+  }
+
+  public previewSelectionBox(gxA: number, gzA: number, gxB: number, gzB: number): number {
+    this.previewSelectedKeys.clear();
+    const list = this.selectMachinesInBox(gxA, gzA, gxB, gzB);
+    for (let i = 0; i < list.length; i++) {
+      this.previewSelectedKeys.add(tileKey(list[i].gx, list[i].gz));
+    }
+    return list.length;
+  }
+
+  public previewSelectionPolygon(points: ReadonlyArray<{ gx: number; gz: number }>): number {
+    this.previewSelectedKeys.clear();
+    const list = this.selectMachinesInPolygon(points);
+    for (let i = 0; i < list.length; i++) {
+      this.previewSelectedKeys.add(tileKey(list[i].gx, list[i].gz));
+    }
+    return list.length;
+  }
+
+  public captureBlueprint(
+    machines: ReadonlyArray<CapytorioMachine>,
+    mode: 'copy' | 'cut'
+  ): { count: number; mode: 'copy' | 'cut' } {
+    this.previewSelectedKeys.clear();
+    if (machines.length === 0) {
+      return { count: 0, mode };
+    }
+    let minGx = Infinity;
+    let maxGx = -Infinity;
+    let minGz = Infinity;
+    let maxGz = -Infinity;
+    for (let i = 0; i < machines.length; i++) {
+      const m = machines[i];
+      if (m.gx < minGx) minGx = m.gx;
+      if (m.gx > maxGx) maxGx = m.gx;
+      if (m.gz < minGz) minGz = m.gz;
+      if (m.gz > maxGz) maxGz = m.gz;
+    }
+    const anchorGx = Math.round((minGx + maxGx) * 0.5);
+    const anchorGz = Math.round((minGz + maxGz) * 0.5);
+
+    const entries: CapytorioBlueprintEntry[] = [];
+    this.undoCutSnapshot.length = 0;
+
+    for (let i = 0; i < machines.length; i++) {
+      const m = machines[i];
+      const toolId = m.variantItemId ?? m.type;
+      entries.push({
+        dx: m.gx - anchorGx,
+        dz: m.gz - anchorGz,
+        toolId,
+        baseType: m.type,
+        dir: m.dir,
+        recipeId: m.recipeId,
+      });
+      if (mode === 'cut') {
+        this.undoCutSnapshot.push({
+          gx: m.gx,
+          gz: m.gz,
+          toolId,
+          baseType: m.type,
+          dir: m.dir,
+          recipeId: m.recipeId,
+          inputBuffer: { ...m.inputBuffer },
+          outputBuffer: { ...m.outputBuffer },
+          beltItems: m.beltItems.map((bi) => ({ ...bi })),
+          holdingItem: m.holdingItem,
+        });
+      }
+    }
+
+    if (mode === 'cut') {
+      for (let i = 0; i < this.undoCutSnapshot.length; i++) {
+        const snap = this.undoCutSnapshot[i];
+        this.demolishAt(snap.gx, snap.gz);
+      }
+    }
+
+    this.clipboard = {
+      mode,
+      entries,
+      canUndoCut: mode === 'cut' && this.undoCutSnapshot.length > 0,
+    };
+    this.clipboardToolState = 'paste';
+    return { count: entries.length, mode };
+  }
+
+  public rotateBlueprint90(): boolean {
+    if (!this.clipboard || this.clipboard.entries.length === 0) return false;
+    for (let i = 0; i < this.clipboard.entries.length; i++) {
+      const e = this.clipboard.entries[i];
+      const prevDx = e.dx;
+      const prevDz = e.dz;
+      // 90 deg CW in Capytorio (+X East, +Z South): (dx, dz) -> (-dz, dx)
+      e.dx = -prevDz;
+      e.dz = prevDx;
+      e.dir = ((e.dir + 1) & 3) as CapytorioDirection;
+    }
+    return true;
+  }
+
+  public evaluateBlueprintPlacementAt(
+    originGx: number,
+    originGz: number
+  ): CapytorioBlueprintPlacementCheck[] {
+    if (!this.clipboard || this.clipboard.entries.length === 0) return [];
+    const remainingStock = new Map<string, number>();
+    const results: CapytorioBlueprintPlacementCheck[] = [];
+
+    for (let i = 0; i < this.clipboard.entries.length; i++) {
+      const entry = this.clipboard.entries[i];
+      const gx = originGx + entry.dx;
+      const gz = originGz + entry.dz;
+      const key = tileKey(gx, gz);
+      const existing = this.machines.get(key);
+      if (existing) {
+        // Allow recipe-only paste onto an existing assembler of matching recipe
+        if (existing.type === 'assembler' && entry.baseType === 'assembler' && entry.recipeId) {
+          results.push({ entry, gx, gz, valid: true });
+        } else {
+          results.push({ entry, gx, gz, valid: false, reason: 'occupied' });
+        }
+        continue;
+      }
+      if (entry.baseType === 'drill' && !this.getResourceAt(gx, gz)) {
+        results.push({ entry, gx, gz, valid: false, reason: 'needs_ore' });
+        continue;
+      }
+      const resolved = resolveCapytorioPlaceableSpec(entry.toolId);
+      if (!resolved) {
+        results.push({ entry, gx, gz, valid: false, reason: 'no_stock' });
+        continue;
+      }
+      let avail = remainingStock.get(entry.toolId);
+      if (avail === undefined) {
+        avail = resolved.isBaseMachine
+          ? this.pocketMachines[resolved.baseType] ?? 0
+          : this.pocketItems[resolved.id] ?? 0;
+      }
+      if (avail <= 0) {
+        results.push({ entry, gx, gz, valid: false, reason: 'no_stock' });
+        continue;
+      }
+      remainingStock.set(entry.toolId, avail - 1);
+      results.push({ entry, gx, gz, valid: true });
+    }
+    return results;
+  }
+
+  public pasteBlueprintAt(
+    originGx: number,
+    originGz: number
+  ): { placedCount: number; skippedCount: number; updatedRecipesCount: number } {
+    if (!this.clipboard || this.clipboard.entries.length === 0) {
+      return { placedCount: 0, skippedCount: 0, updatedRecipesCount: 0 };
+    }
+    const entries = this.clipboard.entries;
+    const wasCut = this.clipboard.mode === 'cut';
+    let placedCount = 0;
+    let skippedCount = 0;
+    let updatedRecipesCount = 0;
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const gx = originGx + entry.dx;
+      const gz = originGz + entry.dz;
+      const key = tileKey(gx, gz);
+      const existing = this.machines.get(key);
+      if (existing) {
+        if (
+          existing.type === 'assembler' &&
+          entry.baseType === 'assembler' &&
+          entry.recipeId &&
+          existing.recipeId !== entry.recipeId
+        ) {
+          if (this.setAssemblerRecipeAt(gx, gz, entry.recipeId)) {
+            updatedRecipesCount++;
+          } else {
+            skippedCount++;
+          }
+        } else {
+          skippedCount++;
+        }
+        continue;
+      }
+
+      const placed = this.placeMachine(entry.toolId, gx, gz, entry.dir);
+      if (placed.ok) {
+        placedCount++;
+        if (entry.baseType === 'assembler' && entry.recipeId) {
+          this.setAssemblerRecipeAt(gx, gz, entry.recipeId);
+        }
+      } else {
+        skippedCount++;
+      }
+    }
+
+    if (wasCut && placedCount > 0) {
+      this.clipboard = null;
+      this.clipboardToolState = 'off';
+      this.undoCutSnapshot.length = 0;
+    }
+
+    return { placedCount, skippedCount, updatedRecipesCount };
+  }
+
+  public undoCut(): { restoredCount: number } {
+    if (this.undoCutSnapshot.length === 0) return { restoredCount: 0 };
+    let restoredCount = 0;
+    for (let i = 0; i < this.undoCutSnapshot.length; i++) {
+      const item = this.undoCutSnapshot[i];
+      if (this.machines.has(tileKey(item.gx, item.gz))) continue;
+      const res = this.placeMachine(item.toolId, item.gx, item.gz, item.dir);
+      if (res.ok && res.machine) {
+        restoredCount++;
+        if (item.baseType === 'assembler' && item.recipeId) {
+          this.setAssemblerRecipeAt(item.gx, item.gz, item.recipeId);
+        }
+        // Re-load refunded buffers & belt items cleanly from pocket where available
+        for (const [k, qty] of Object.entries(item.inputBuffer) as Array<[CapytorioItemId, number]>) {
+          const take = Math.min(qty, this.pocketItems[k] ?? 0);
+          if (take > 0) {
+            this.consumePocketItem(k, take);
+            res.machine.inputBuffer[k] = (res.machine.inputBuffer[k] ?? 0) + take;
+          }
+        }
+        for (const [k, qty] of Object.entries(item.outputBuffer) as Array<[CapytorioItemId, number]>) {
+          const take = Math.min(qty, this.pocketItems[k] ?? 0);
+          if (take > 0) {
+            this.consumePocketItem(k, take);
+            res.machine.outputBuffer[k] = (res.machine.outputBuffer[k] ?? 0) + take;
+          }
+        }
+        for (let bi = 0; bi < item.beltItems.length; bi++) {
+          const bItem = item.beltItems[bi];
+          if ((this.pocketItems[bItem.item] ?? 0) > 0) {
+            this.consumePocketItem(bItem.item, 1);
+            res.machine.beltItems.push({ ...bItem });
+          }
+        }
+        if (item.holdingItem && (this.pocketItems[item.holdingItem] ?? 0) > 0) {
+          this.consumePocketItem(item.holdingItem, 1);
+          res.machine.holdingItem = item.holdingItem;
+        }
+      }
+    }
+    this.undoCutSnapshot.length = 0;
+    this.clipboard = null;
+    this.clipboardToolState = 'off';
+    this.previewSelectedKeys.clear();
+    return { restoredCount };
   }
 
   /**
@@ -3082,6 +3497,14 @@ export class CapytorioFactoryEngine {
       milestonesCompletedCount,
       spilledItemCount: this.spilledItems.length,
       beltEndSpillEnabled: this.beltEndSpillEnabled,
+      clipboard: {
+        toolState: this.clipboardToolState,
+        selectionShape: this.selectionShape,
+        mode: this.clipboard?.mode ?? null,
+        count: this.clipboard?.entries.length ?? 0,
+        canUndoCut: this.undoCutSnapshot.length > 0,
+        previewCount: this.previewSelectedKeys.size,
+      },
     };
   }
 

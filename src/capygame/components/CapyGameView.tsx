@@ -361,8 +361,18 @@ export const CapyGameView: React.FC = () => {
   const [selectedCraftRecipeId, setSelectedCraftRecipeId] = useState<CapytorioRecipeId>(
     () => CAPYTORIO_RECIPES[0]?.id ?? 'iron_gear'
   );
-  const [isCapytorioDockCollapsed, setIsCapytorioDockCollapsed] = useState<boolean>(false);
   const [capytorioPointerHoverActive, setCapytorioPointerHoverActive] = useState<boolean>(false);
+  const [isTopBarVisible, setIsTopBarVisible] = useState<boolean>(false);
+  const [capytorioSelectionOverlay, setCapytorioSelectionOverlay] = useState<{
+    active: boolean;
+    mode: 'copy' | 'cut';
+    shape: 'box' | 'lasso';
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+    points: Array<{ x: number; y: number }>;
+  } | null>(null);
   const lastCapytorioMachineRef = useRef<string>('drill');
   const capytorioDrawerTabRef = useRef<
     'none' | 'inventory' | 'craft' | 'tech' | 'inspect'
@@ -716,22 +726,36 @@ export const CapyGameView: React.FC = () => {
 
   const capytorioDragRef = useRef<{
     active: boolean;
-    mode: 'place' | 'demolish' | 'none';
+    mode: 'place' | 'demolish' | 'select_box' | 'select_lasso' | 'none';
+    clipMode: 'copy' | 'cut';
     placedAny: boolean;
     prevGx: number | null;
     prevGz: number | null;
     placedCount: number;
     originNdcX: number;
     originNdcY: number;
+    startGx: number;
+    startGz: number;
+    lastGx: number;
+    lastGz: number;
+    lassoGridPoints: Array<{ gx: number; gz: number }>;
+    lassoScreenPoints: Array<{ x: number; y: number }>;
   }>({
     active: false,
     mode: 'none',
+    clipMode: 'copy',
     placedAny: false,
     prevGx: null,
     prevGz: null,
     placedCount: 0,
     originNdcX: 0,
     originNdcY: 0,
+    startGx: 0,
+    startGz: 0,
+    lastGx: 0,
+    lastGz: 0,
+    lassoGridPoints: [],
+    lassoScreenPoints: [],
   });
 
   const [telemetry, setTelemetry] = useState<LiveModeTelemetry>({
@@ -1339,6 +1363,25 @@ export const CapyGameView: React.FC = () => {
           setFreeMouselookActive(!isFreeMouselookRef.current);
         }
         if (inCapytorioActive) {
+          if ((e.ctrlKey || e.metaKey) && !e.repeat && (key === 'c' || key === 'x' || key === 'v')) {
+            e.preventDefault();
+            const curClip = managerRef.current.getCapytorioSnapshot().clipboard;
+            if (key === 'c') {
+              managerRef.current.setCapytorioClipboardMode('select_copy', curClip.selectionShape);
+              showToast('Copy tool — drag Box/Lasso or click a building');
+            } else if (key === 'x') {
+              managerRef.current.setCapytorioClipboardMode('select_cut', curClip.selectionShape);
+              showToast('Cut tool — drag Box/Lasso or click a building to move');
+            } else if (key === 'v') {
+              if (curClip.count > 0) {
+                managerRef.current.setCapytorioClipboardMode('paste');
+                showToast(`Paste ready (${curClip.count}) — click to place · [R] Rotate`);
+              } else {
+                showToast('Clipboard empty — use Copy or Cut first');
+              }
+            }
+            return;
+          }
           if (key >= '0' && key <= '9') {
             const idx = key === '0' ? 9 : parseInt(key, 10) - 1;
             const snapTools = managerRef.current.getCapytorioSnapshot().recentTools;
@@ -1348,9 +1391,19 @@ export const CapyGameView: React.FC = () => {
               managerRef.current.setCapytorioTool(machineTool);
             }
           } else if (key === 'r' && !e.repeat) {
+            const snapBefore = managerRef.current.getCapytorioSnapshot();
+            const curClip = snapBefore.clipboard;
             const nextDir = managerRef.current.rotateCapytorioDirection();
-            const dirNames = ['North', 'East', 'South', 'West'];
-            showToast(`Orientation: ${dirNames[nextDir]}`);
+            if (curClip.toolState === 'paste') {
+              showToast('Rotated blueprint 90°');
+            } else if (snapBefore.inspectedMachine) {
+              const dirNames = ['North', 'East', 'South', 'West'];
+              const mSpec = CAPYTORIO_MACHINE_SPECS[snapBefore.inspectedMachine.type];
+              showToast(`Rotated ${mSpec.shortName}: ${dirNames[nextDir]}`);
+            } else {
+              const dirNames = ['North', 'East', 'South', 'West'];
+              showToast(`Orientation: ${dirNames[nextDir]}`);
+            }
           } else if (key === 'x' && !e.repeat) {
             const cur = managerRef.current.getCapytorioSnapshot().selectedTool;
             managerRef.current.setCapytorioTool(
@@ -1390,7 +1443,6 @@ export const CapyGameView: React.FC = () => {
               showToast('Point or stand over an ore seam to mine');
             }
           } else if (key === 'i' && !e.repeat) {
-            setIsCapytorioDockCollapsed(false);
             setCapytorioDrawerTab((prev) => (prev === 'inventory' ? 'none' : 'inventory'));
           } else if (key === 'v' && !e.repeat) {
             const nextCam = managerRef.current.toggleCapytorioCameraMode();
@@ -1411,6 +1463,10 @@ export const CapyGameView: React.FC = () => {
         if (key === 'escape') {
           setFreeMouselookActive(false);
           managerRef.current.cancelBuildingPlacementGhost();
+          if (managerRef.current.getCapytorioSnapshot().clipboard.toolState !== 'off') {
+            managerRef.current.clearCapytorioClipboard();
+            setCapytorioSelectionOverlay(null);
+          }
           if (capytorioDrawerTabRef.current !== 'none') {
             setCapytorioDrawerTab('none');
           }
@@ -1601,31 +1657,61 @@ export const CapyGameView: React.FC = () => {
     capytorioDragRef.current.prevGx = null;
     capytorioDragRef.current.prevGz = null;
     capytorioDragRef.current.placedCount = 0;
+    capytorioDragRef.current.lassoGridPoints = [];
+    capytorioDragRef.current.lassoScreenPoints = [];
 
     if (
       managerRef.current.currentMode === 'capytorio' &&
       managerRef.current.cosmicStage === 'playing' &&
-      !managerRef.current.getUniverseScaleTelemetry().active &&
-      pointerType === 'mouse' &&
-      managerRef.current.getCapytorioCameraMode() === 'oblique'
+      !managerRef.current.getUniverseScaleTelemetry().active
     ) {
       const rect = e.currentTarget.getBoundingClientRect();
       const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
       const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
-      const curTool = managerRef.current.getCapytorioSnapshot().selectedTool;
-      if (e.button === 2 || curTool === 'demolish') {
-        capytorioDragRef.current.active = true;
-        capytorioDragRef.current.mode = 'demolish';
-        capytorioDragRef.current.originNdcX = ndcX;
-        capytorioDragRef.current.originNdcY = ndcY;
-        return;
+      const cSnap = managerRef.current.getCapytorioSnapshot();
+      const clipState = cSnap.clipboard.toolState;
+
+      // Cut/Copy Box & Freeform Lasso selection works on BOTH mouse AND touch
+      if ((clipState === 'select_copy' || clipState === 'select_cut') && e.button === 0) {
+        const hit = managerRef.current.raycastCapytorioGridFloat(ndcX, ndcY);
+        if (hit) {
+          const shape = cSnap.clipboard.selectionShape;
+          const clipMode: 'copy' | 'cut' = clipState === 'select_cut' ? 'cut' : 'copy';
+          capytorioDragRef.current.active = true;
+          capytorioDragRef.current.mode = shape === 'lasso' ? 'select_lasso' : 'select_box';
+          capytorioDragRef.current.clipMode = clipMode;
+          capytorioDragRef.current.originNdcX = ndcX;
+          capytorioDragRef.current.originNdcY = ndcY;
+          capytorioDragRef.current.startGx = hit.gx;
+          capytorioDragRef.current.startGz = hit.gz;
+          capytorioDragRef.current.lastGx = hit.gx;
+          capytorioDragRef.current.lastGz = hit.gz;
+          capytorioDragRef.current.lassoGridPoints = [{ gx: hit.fGx, gz: hit.fGz }];
+          capytorioDragRef.current.lassoScreenPoints = [{ x: e.clientX, y: e.clientY }];
+          return;
+        }
       }
-      if (e.button === 0 && curTool !== 'mine') {
-        capytorioDragRef.current.active = true;
-        capytorioDragRef.current.mode = 'place';
-        capytorioDragRef.current.originNdcX = ndcX;
-        capytorioDragRef.current.originNdcY = ndcY;
-        return;
+
+      if (
+        pointerType === 'mouse' &&
+        managerRef.current.getCapytorioCameraMode() === 'oblique' &&
+        clipState === 'off'
+      ) {
+        const curTool = cSnap.selectedTool;
+        if (e.button === 2 || curTool === 'demolish') {
+          capytorioDragRef.current.active = true;
+          capytorioDragRef.current.mode = 'demolish';
+          capytorioDragRef.current.originNdcX = ndcX;
+          capytorioDragRef.current.originNdcY = ndcY;
+          return;
+        }
+        if (e.button === 0 && curTool !== 'mine') {
+          capytorioDragRef.current.active = true;
+          capytorioDragRef.current.mode = 'place';
+          capytorioDragRef.current.originNdcX = ndcX;
+          capytorioDragRef.current.originNdcY = ndcY;
+          return;
+        }
       }
     }
 
@@ -1687,6 +1773,59 @@ export const CapyGameView: React.FC = () => {
         if (cDrag.active && g.pointerId === e.pointerId) {
           const dist = Math.hypot(e.clientX - g.originX, e.clientY - g.originY);
           if (dist > g.maxDist) g.maxDist = dist;
+
+          if (cDrag.mode === 'select_box' || cDrag.mode === 'select_lasso') {
+            if (dist >= 8) {
+              const hit = managerRef.current.raycastCapytorioGridFloat(ndcX, ndcY);
+              if (cDrag.mode === 'select_box') {
+                if (hit) {
+                  cDrag.lastGx = hit.gx;
+                  cDrag.lastGz = hit.gz;
+                  managerRef.current.previewCapytorioSelectionBox(
+                    cDrag.startGx,
+                    cDrag.startGz,
+                    hit.gx,
+                    hit.gz
+                  );
+                }
+                setCapytorioSelectionOverlay({
+                  active: true,
+                  mode: cDrag.clipMode,
+                  shape: 'box',
+                  startX: g.originX,
+                  startY: g.originY,
+                  currentX: e.clientX,
+                  currentY: e.clientY,
+                  points: [],
+                });
+              } else {
+                const prevScreen =
+                  cDrag.lassoScreenPoints[cDrag.lassoScreenPoints.length - 1];
+                if (
+                  !prevScreen ||
+                  Math.hypot(e.clientX - prevScreen.x, e.clientY - prevScreen.y) >= 8
+                ) {
+                  cDrag.lassoScreenPoints.push({ x: e.clientX, y: e.clientY });
+                  if (hit) {
+                    cDrag.lassoGridPoints.push({ gx: hit.fGx, gz: hit.fGz });
+                    managerRef.current.previewCapytorioSelectionLasso(cDrag.lassoGridPoints);
+                  }
+                  setCapytorioSelectionOverlay({
+                    active: true,
+                    mode: cDrag.clipMode,
+                    shape: 'lasso',
+                    startX: g.originX,
+                    startY: g.originY,
+                    currentX: e.clientX,
+                    currentY: e.clientY,
+                    points: cDrag.lassoScreenPoints.slice(),
+                  });
+                }
+              }
+            }
+            return;
+          }
+
           if (dist >= 12) {
             if (cDrag.mode === 'demolish') {
               if (!cDrag.placedAny) {
@@ -1797,12 +1936,50 @@ export const CapyGameView: React.FC = () => {
     const wasDragPaint = wasCapytorioPress && capytorioDragRef.current.placedAny;
     const dragCount = capytorioDragRef.current.placedCount;
     const dragMode = capytorioDragRef.current.mode;
+    const selStartGx = capytorioDragRef.current.startGx;
+    const selStartGz = capytorioDragRef.current.startGz;
+    const selLastGx = capytorioDragRef.current.lastGx;
+    const selLastGz = capytorioDragRef.current.lastGz;
+    const selLassoPoints = capytorioDragRef.current.lassoGridPoints.slice();
+
     capytorioDragRef.current.active = false;
     capytorioDragRef.current.mode = 'none';
     capytorioDragRef.current.placedAny = false;
     capytorioDragRef.current.prevGx = null;
     capytorioDragRef.current.prevGz = null;
     capytorioDragRef.current.placedCount = 0;
+    capytorioDragRef.current.lassoGridPoints = [];
+    capytorioDragRef.current.lassoScreenPoints = [];
+    setCapytorioSelectionOverlay(null);
+
+    if (
+      wasCapytorioPress &&
+      (dragMode === 'select_box' || dragMode === 'select_lasso') &&
+      g.maxDist >= 10 &&
+      managerRef.current
+    ) {
+      g.pointerId = null;
+      const res =
+        dragMode === 'select_box'
+          ? managerRef.current.commitCapytorioSelectionBox(
+              selStartGx,
+              selStartGz,
+              selLastGx,
+              selLastGz
+            )
+          : managerRef.current.commitCapytorioSelectionLasso(selLassoPoints);
+      if (res.count > 0) {
+        showToast(
+          res.mode === 'cut'
+            ? `Cut ${res.count} building${res.count === 1 ? '' : 's'} — tap to place · [R] Rotate`
+            : `Copied ${res.count} building${res.count === 1 ? '' : 's'} — tap to paste · [R] Rotate`
+        );
+      } else {
+        showToast('No buildings inside selection');
+      }
+      setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+      return;
+    }
 
     const elapsed = performance.now() - g.startTime;
     const tapMaxMs = wasCapytorioPress ? 1200 : 350;
@@ -1859,7 +2036,6 @@ export const CapyGameView: React.FC = () => {
             }
             if (priRes.ok && priRes.openInspectorModal) {
               setCapytorioDrawerTab('inspect');
-              setIsCapytorioDockCollapsed(false);
             }
             setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
             return;
@@ -2804,10 +2980,33 @@ export const CapyGameView: React.FC = () => {
 
       {/* =====================================================================
           SINGLE COMPACT TOP CONTROL, SCALE, STATUS & DROPDOWN BAR (h-10 / 40px)
-          Consolidates all zoom controls, scale scrubber, live status, cosmic/snake
-          inspectors, placement ghost, sector/build/DNA dock, settings & audio
-          into one sleek top line with top-anchored popover dropdowns.
+          Hidden by default for a clean viewport; revealed from top-right Menu.
          ===================================================================== */}
+      {!isTopBarVisible &&
+        !(
+          cosmicStage === 'playing' &&
+          !universeScale.active &&
+          activeMode === 'capytorio' &&
+          !webglError &&
+          capytorioSnap
+        ) && (
+          <button
+            type="button"
+            data-testid="reveal-top-bar-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              setIsTopBarVisible(true);
+            }}
+            title="Show World & Scale Menu Bar"
+            aria-label="Show Top Menu Bar"
+            className="fixed top-2 right-2 z-30 h-7 px-2 rounded bg-zinc-950/90 hover:bg-zinc-900 border border-white/15 text-zinc-100 text-[11px] font-medium flex items-center gap-1.5 shadow-lg pointer-events-auto cursor-pointer"
+          >
+            <Menu className="w-3.5 h-3.5 text-sky-400" />
+            <span>Menu</span>
+          </button>
+        )}
+
+      {isTopBarVisible && (
       <nav
         data-testid="unified-top-bar"
         data-ui-mode={isAdvancedMode ? 'advanced' : 'basic'}
@@ -3306,8 +3505,28 @@ export const CapyGameView: React.FC = () => {
               <Maximize2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
             )}
           </button>
+
+          <button
+            type="button"
+            data-testid="hide-top-bar-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              setIsTopBarVisible(false);
+              setIsScaleAtlasOpen(false);
+              setIsOpticsOpen(false);
+              setIsInfographicExpanded(false);
+              setIsMenuOpen(false);
+              setIsPerfLogOpen(false);
+            }}
+            title="Hide Top Bar"
+            aria-label="Hide Top Bar"
+            className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-white/10 transition-colors cursor-pointer shrink-0"
+          >
+            <X className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+          </button>
         </div>
       </nav>
+      )}
 
       {/* TOP-ANCHORED PERFORMANCE LOG POPOVER (right-aligned under top-right FPS badge) */}
       {isPerfLogOpen && (
@@ -5902,6 +6121,7 @@ export const CapyGameView: React.FC = () => {
       {/* Compact Arcade Combo Multiplier HUD (Right Below Top Bar During Active Chains) */}
       {cosmicStage === 'playing' &&
         !universeScale.active &&
+        activeMode !== 'capytorio' &&
         !webglError &&
         telemetry.arcadeCombo?.active && (() => {
           const combo = telemetry.arcadeCombo;
@@ -5960,7 +6180,7 @@ export const CapyGameView: React.FC = () => {
               data-testid="bounties-hud-container"
               aria-label="Archipelago Bounties"
               className={`fixed bottom-2.5 left-2.5 z-20 pointer-events-auto flex-col items-start gap-1.5 ${
-                activeMode === 'capytorio' && !isCapytorioDockCollapsed ? 'hidden lg:flex' : 'flex'
+                activeMode === 'capytorio' ? 'hidden' : 'flex'
               }`}
             >
               {isBountiesOpen && (
@@ -6057,7 +6277,7 @@ export const CapyGameView: React.FC = () => {
             <div
               data-testid="surface-action-controls"
               className={`fixed bottom-3 z-20 items-center gap-1.5 pointer-events-auto ${
-                activeMode === 'capytorio' && !isCapytorioDockCollapsed ? 'hidden lg:flex' : 'flex'
+                activeMode === 'capytorio' ? 'hidden' : 'flex'
               } ${showTouchDpad ? 'right-36' : 'right-3'}`}
             >
               <button
@@ -6095,7 +6315,7 @@ export const CapyGameView: React.FC = () => {
           );
         })()}
 
-      {/* Mobile Bottom-Right Zoom In / Zoom Out Controls (Continuous Ground -> Orbit -> Cosmos) */}
+      {/* Compact Bottom-Right Zoom In / Zoom Out Controls (Continuous Ground -> Orbit -> Cosmos) */}
       {!isFirstRunSetupOpen &&
         !webglError &&
         !isJsonEditorOpen &&
@@ -6111,15 +6331,15 @@ export const CapyGameView: React.FC = () => {
           activeMode === 'capytorio' &&
           capytorioDrawerTab !== 'none'
         ) && (() => {
+          const isCapytorioCompactZoom =
+            cosmicStage === 'playing' && !universeScale.active && activeMode === 'capytorio';
           let positionClass = 'bottom-3 right-3';
           if (universeScale.active) {
             positionClass = isAdvancedMode
               ? 'bottom-44 sm:bottom-[88px] right-2'
               : 'bottom-[88px] right-2';
-          } else if (activeMode === 'capytorio') {
-            positionClass = isCapytorioDockCollapsed
-              ? 'bottom-[46px] left-2'
-              : 'bottom-[104px] left-2';
+          } else if (isCapytorioCompactZoom) {
+            positionClass = 'bottom-[54px] right-2';
           } else if (showTouchDpad) {
             positionClass = 'bottom-[104px] right-3';
           } else if (gameSettings.touchControlsMode !== 'hidden') {
@@ -6128,42 +6348,96 @@ export const CapyGameView: React.FC = () => {
           return (
             <div
               data-testid="mobile-zoom-controls"
-              aria-label="Mobile Camera Zoom Controls"
-              className={`lg:hidden fixed ${positionClass} z-30 pointer-events-auto flex flex-col gap-1 p-1 rounded-xl bg-zinc-950/92 border border-white/15 shadow-xl select-none`}
+              aria-label="Camera Zoom Controls"
+              className={`${
+                isCapytorioCompactZoom
+                  ? 'fixed z-30 pointer-events-auto flex flex-col gap-0.5 p-0.5 rounded-[3px] bg-[#1f2126]/95 border-2 border-[#3c4049] border-t-[#545966] border-l-[#4c515c] border-b-[#111216] border-r-[#111216] shadow-[0_8px_22px_rgba(0,0,0,0.65)] select-none'
+                  : 'lg:hidden fixed z-30 pointer-events-auto flex flex-col gap-1 p-1 rounded-xl bg-zinc-950/92 border border-white/15 shadow-xl select-none'
+              } ${positionClass}`}
             >
               <button
                 type="button"
                 data-testid="mobile-zoom-in-btn"
                 aria-label="Zoom In"
-                title="Zoom In"
+                title="Zoom In [+]"
                 onClick={() => stepMobileZoom(0.28)}
                 onPointerDown={() => startMobileZoomHold(0.28)}
                 onPointerUp={stopMobileZoomHold}
                 onPointerLeave={stopMobileZoomHold}
                 onPointerCancel={stopMobileZoomHold}
-                className="w-11 h-11 rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-sky-500/30 border border-white/12 text-zinc-100 flex items-center justify-center cursor-pointer"
+                className={
+                  isCapytorioCompactZoom
+                    ? 'w-8 h-8 rounded-[2px] bg-[#2b2e35] hover:bg-[#393d46] active:bg-[#e58926] active:text-[#151618] border border-[#4a4f5b] border-b-[#14161a] border-r-[#14161a] text-[#e4e6eb] flex items-center justify-center cursor-pointer'
+                    : 'w-10 h-10 rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-sky-500/30 border border-white/12 text-zinc-100 flex items-center justify-center cursor-pointer'
+                }
               >
-                <Plus className="w-4 h-4" />
+                <Plus className={isCapytorioCompactZoom ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
               </button>
               <button
                 type="button"
                 data-testid="mobile-zoom-out-btn"
                 aria-label="Zoom Out to Orbit"
-                title="Zoom Out (pull all the way to Orbit)"
+                title="Zoom Out [-]"
                 onClick={() => stepMobileZoom(-0.28)}
                 onPointerDown={() => startMobileZoomHold(-0.28)}
                 onPointerUp={stopMobileZoomHold}
                 onPointerLeave={stopMobileZoomHold}
                 onPointerCancel={stopMobileZoomHold}
-                className="w-11 h-11 rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-sky-500/30 border border-white/12 text-zinc-100 flex items-center justify-center cursor-pointer"
+                className={
+                  isCapytorioCompactZoom
+                    ? 'w-8 h-8 rounded-[2px] bg-[#2b2e35] hover:bg-[#393d46] active:bg-[#e58926] active:text-[#151618] border border-[#4a4f5b] border-b-[#14161a] border-r-[#14161a] text-[#e4e6eb] flex items-center justify-center cursor-pointer'
+                    : 'w-10 h-10 rounded-lg bg-zinc-900 hover:bg-zinc-800 active:bg-sky-500/30 border border-white/12 text-zinc-100 flex items-center justify-center cursor-pointer'
+                }
               >
-                <Minus className="w-4 h-4" />
+                <Minus className={isCapytorioCompactZoom ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
               </button>
             </div>
           );
         })()}
 
-      {/* Capytorio 3D Factory HUD (Factorio-styled Quickbar + Centered Modals) */}
+      {/* Live Box / Freeform Lasso Cut-Copy Selection SVG Overlay */}
+      {capytorioSelectionOverlay && capytorioSelectionOverlay.active && (
+        <svg
+          data-testid="capytorio-selection-overlay"
+          className="fixed inset-0 w-full h-full pointer-events-none z-20"
+          aria-hidden="true"
+        >
+          {capytorioSelectionOverlay.shape === 'box' ? (
+            <rect
+              x={Math.min(capytorioSelectionOverlay.startX, capytorioSelectionOverlay.currentX)}
+              y={Math.min(capytorioSelectionOverlay.startY, capytorioSelectionOverlay.currentY)}
+              width={Math.abs(capytorioSelectionOverlay.currentX - capytorioSelectionOverlay.startX)}
+              height={Math.abs(capytorioSelectionOverlay.currentY - capytorioSelectionOverlay.startY)}
+              fill={
+                capytorioSelectionOverlay.mode === 'cut'
+                  ? 'rgba(249, 115, 22, 0.16)'
+                  : 'rgba(56, 189, 248, 0.16)'
+              }
+              stroke={capytorioSelectionOverlay.mode === 'cut' ? '#fb923c' : '#38bdf8'}
+              strokeWidth={2}
+              strokeDasharray="6 4"
+            />
+          ) : (
+            capytorioSelectionOverlay.points.length >= 2 && (
+              <polygon
+                points={capytorioSelectionOverlay.points.map((p) => `${p.x},${p.y}`).join(' ')}
+                fill={
+                  capytorioSelectionOverlay.mode === 'cut'
+                    ? 'rgba(249, 115, 22, 0.14)'
+                    : 'rgba(56, 189, 248, 0.14)'
+                }
+                stroke={capytorioSelectionOverlay.mode === 'cut' ? '#fb923c' : '#38bdf8'}
+                strokeWidth={2.2}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                strokeDasharray="6 4"
+              />
+            )
+          )}
+        </svg>
+      )}
+
+      {/* Capytorio 3D Factory HUD (Simplified Factorio Quickbar + Top-Right Info & Menu) */}
       {cosmicStage === 'playing' &&
         !universeScale.active &&
         activeMode === 'capytorio' &&
@@ -6176,13 +6450,18 @@ export const CapyGameView: React.FC = () => {
         capytorioSnap && (
           <CapytorioHud
             snap={capytorioSnap}
-            isObliqueCam={gameSettings.capytorioCameraMode !== 'chase'}
-            beltEndSpillEnabled={Boolean(gameSettings.capytorioBeltEndSpill)}
+            isTopBarVisible={isTopBarVisible}
+            onToggleTopBar={() => {
+              AudioService.playCoin();
+              setIsTopBarVisible((prev) => !prev);
+            }}
+            onOpenSettings={() => {
+              AudioService.playCoin();
+              setIsSettingsOpen(true);
+            }}
             pointerHoverActive={capytorioPointerHoverActive}
             drawerTab={capytorioDrawerTab}
             setDrawerTab={setCapytorioDrawerTab}
-            isDockCollapsed={isCapytorioDockCollapsed}
-            setIsDockCollapsed={setIsCapytorioDockCollapsed}
             craftGroup={capytorioCraftGroup}
             setCraftGroup={setCapytorioCraftGroup}
             selectedCraftRecipeId={selectedCraftRecipeId}
@@ -6194,18 +6473,6 @@ export const CapyGameView: React.FC = () => {
                 lastCapytorioMachineRef.current = toolId;
               }
               managerRef.current?.setCapytorioTool(toolId, promoteToRecent);
-            }}
-            onMineAction={() => {
-              managerRef.current?.setCapytorioTool('mine');
-              const mined = managerRef.current?.handMineCapytorioAtCursorOrHero();
-              if (mined) {
-                const amt = mined === 'orange' ? 3 : 2;
-                showToast(
-                  mined === 'orange'
-                    ? `Harvested +${amt} ${getCapytorioItemMeta(mined).name}`
-                    : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
-                );
-              }
             }}
             onMineTileAt={(gx, gz) => {
               const mined = managerRef.current?.mineCapytorioTileAt(gx, gz);
@@ -6225,31 +6492,37 @@ export const CapyGameView: React.FC = () => {
             onClearInspection={() => {
               managerRef.current?.clearCapytorioInspection();
             }}
-            onRotateDir={() => managerRef.current?.rotateCapytorioDirection()}
-            onToggleCameraMode={() => {
-              const nextCam = gameSettings.capytorioCameraMode === 'chase' ? 'oblique' : 'chase';
-              managerRef.current?.setCapytorioCameraMode(nextCam);
-              updateGameSettings({ capytorioCameraMode: nextCam });
-              showToast(
-                nextCam === 'oblique'
-                  ? 'Camera: 68° Overhead Factorio View'
-                  : 'Camera: 3D Chase View'
-              );
+            onDemolishMachineAt={(gx, gz) => {
+              const removed = managerRef.current?.demolishCapytorioTileAt(gx, gz);
+              if (removed) {
+                showToast(`Deleted & refunded ${CAPYTORIO_MACHINE_SPECS[removed].name}`);
+              }
             }}
-            onToggleBeltEndSpill={() => {
-              const nextSpill = !gameSettings.capytorioBeltEndSpill;
-              managerRef.current?.setCapytorioBeltEndSpill(nextSpill);
-              updateGameSettings({ capytorioBeltEndSpill: nextSpill });
-              showToast(
-                nextSpill
-                  ? 'Belt End Spill: ON (items fall off open belt ends onto ground)'
-                  : 'Belt End Spill: OFF (items squish at open belt ends)'
-              );
+            onRotateDir={() => {
+              const snapBefore = managerRef.current?.getCapytorioSnapshot();
+              const nextDir = managerRef.current?.rotateCapytorioDirection();
+              if (snapBefore?.clipboard.toolState === 'paste') {
+                showToast('Rotated blueprint 90°');
+              } else if (snapBefore?.inspectedMachine && nextDir !== undefined) {
+                const dirNames = ['North', 'East', 'South', 'West'];
+                const mSpec = CAPYTORIO_MACHINE_SPECS[snapBefore.inspectedMachine.type];
+                showToast(`Rotated ${mSpec.shortName}: ${dirNames[nextDir]}`);
+              }
             }}
-            onAdjustZoom={(delta) => managerRef.current?.adjustZoom(delta)}
-            onReturnToBeacon={() => {
-              managerRef.current?.returnToCapytorioBeacon();
-              showToast('Returned to Survey Beacon (0, 0)');
+            onSetClipboardMode={(mode, shape) => {
+              managerRef.current?.setCapytorioClipboardMode(mode, shape);
+            }}
+            onClearClipboard={() => {
+              managerRef.current?.clearCapytorioClipboard();
+              setCapytorioSelectionOverlay(null);
+            }}
+            onUndoCut={() => {
+              const res = managerRef.current?.undoCapytorioCut();
+              if (res && res.restoredCount > 0) {
+                showToast(
+                  `Restored ${res.restoredCount} cut building${res.restoredCount === 1 ? '' : 's'}`
+                );
+              }
             }}
             onCollectAllOutputs={() => {
               const got = managerRef.current?.collectAllCapytorioOutputs() ?? 0;
@@ -6681,6 +6954,29 @@ export const CapyGameView: React.FC = () => {
                     </button>
                   </div>
 
+                  <div className="flex items-center justify-between gap-4 p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-100">
+                        Survey Beacon Home ([H])
+                      </div>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        Warp camera and Capybara back to factory origin (0, 0)
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="settings-capytorio-beacon-btn"
+                      onClick={() => {
+                        managerRef.current?.returnToCapytorioBeacon();
+                        setIsSettingsOpen(false);
+                        showToast('Returned to Survey Beacon (0, 0)');
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shrink-0 border bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border-white/12"
+                    >
+                      Return Home
+                    </button>
+                  </div>
+
                   <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-zinc-100">Time of Day</span>
@@ -6908,6 +7204,29 @@ export const CapyGameView: React.FC = () => {
                   }`}
                 >
                   {gameSettings.capytorioBeltEndSpill ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 p-3 rounded-lg bg-zinc-950/80 border border-white/10">
+                <div>
+                  <div className="text-xs font-semibold text-zinc-100">
+                    Survey Beacon Home ([H])
+                  </div>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    Return camera and Capybara to factory origin (0, 0)
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="settings-capytorio-beacon-btn"
+                  onClick={() => {
+                    managerRef.current?.returnToCapytorioBeacon();
+                    setIsSettingsOpen(false);
+                    showToast('Returned to Survey Beacon (0, 0)');
+                  }}
+                  className="px-3 py-1 rounded text-xs font-mono cursor-pointer shrink-0 border bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border-white/12"
+                >
+                  Return Home
                 </button>
               </div>
 

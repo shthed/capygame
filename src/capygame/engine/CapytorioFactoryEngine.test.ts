@@ -1094,6 +1094,115 @@ test('Capytorio universal tile inspection reports belt item counts/lanes, ore ri
   assert.equal(engine.getUiSnapshot().inspectedTile, null);
 });
 
+test('Capytorio Cut/Copy/Paste: Box & Freeform Lasso selection, 90-deg rotation, recipe copy, relocation, and Undo Cut', () => {
+  const engine = new CapytorioFactoryEngine();
+  // Grant starter crafting materials and craft extra machines into pocket for copy-pasting
+  engine.addPocketItem('iron_plate', 80);
+  engine.addPocketItem('copper_plate', 40);
+  engine.addPocketItem('iron_gear', 40);
+  engine.addPocketItem('circuit', 20);
+  for (let i = 0; i < 4; i++) {
+    engine.craftMachineIntoPocket('belt');
+    engine.craftMachineIntoPocket('inserter');
+    engine.craftMachineIntoPocket('assembler');
+  }
+
+  // Build an L-shaped cluster at (0,0)-(2,1) plus an outside furnace at (6, 6)
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('inserter', 1, 1, 2).ok, true);
+  assert.equal(engine.placeMachine('assembler', 2, 1, 0).ok, true);
+  assert.equal(engine.setAssemblerRecipeAt(2, 1, 'iron_gear'), true);
+  assert.equal(engine.placeMachine('furnace', 6, 6, 3).ok, true);
+
+  // 1. Square Box Selection captures only the 4 buildings in (0,0)-(2,1)
+  const boxMachines = engine.selectMachinesInBox(2, 1, 0, 0);
+  assert.equal(boxMachines.length, 4, 'Box selection captures all 4 buildings regardless of drag direction');
+  assert.equal(
+    boxMachines.some((m) => m.gx === 6 && m.gz === 6),
+    false,
+    'Outside furnace excluded from box'
+  );
+
+  // 2. Freeform Lasso (Polygon) Selection: concave L-shape around (0,0), (1,0), (1,1) excluding (2,1) and (6,6)
+  const lassoPolygon = [
+    { gx: -0.6, gz: -0.6 },
+    { gx: 1.45, gz: -0.6 },
+    { gx: 1.45, gz: 1.45 },
+    { gx: 0.55, gz: 1.45 },
+    { gx: 0.55, gz: 0.45 },
+    { gx: -0.6, gz: 0.45 },
+  ];
+  const lassoMachines = engine.selectMachinesInPolygon(lassoPolygon);
+  const lassoKeys = lassoMachines.map((m) => tileKey(m.gx, m.gz));
+  assert.equal(lassoMachines.length, 3, 'Freeform concave lasso selects exact 3 enclosed buildings');
+  assert.equal(lassoKeys.includes(tileKey(0, 0)), true);
+  assert.equal(lassoKeys.includes(tileKey(1, 0)), true);
+  assert.equal(lassoKeys.includes(tileKey(1, 1)), true);
+  assert.equal(lassoKeys.includes(tileKey(2, 1)), false, 'Assembler outside concave notch excluded');
+
+  // Freeform brush stroke (open polyline touching tiles directly)
+  const brushedMachines = engine.selectMachinesInPolygon([
+    { gx: 0, gz: 0 },
+    { gx: 1, gz: 0 },
+  ]);
+  assert.equal(brushedMachines.length, 2, 'Freeform line brush selects buildings along stroke');
+
+  // 3. Copy + Rotate 90° CW + Paste at (0, 8) preserves relative geometry, rotated dirs, and Assembler recipe
+  const copyRes = engine.captureBlueprint(boxMachines, 'copy');
+  assert.equal(copyRes.count, 4);
+  assert.equal(engine.clipboardToolState, 'paste');
+  assert.equal(engine.getUiSnapshot().clipboard.count, 4);
+
+  // Rotate 90° CW: (dx, dz) -> (-dz, dx), dir -> (dir + 1) & 3
+  engine.rotateBlueprint90();
+  const evalChecks = engine.evaluateBlueprintPlacementAt(0, 8);
+  assert.equal(evalChecks.length, 4);
+  assert.equal(evalChecks.every((c) => c.valid), true, 'All 4 rotated paste slots valid on clear meadow');
+
+  const pasteRes = engine.pasteBlueprintAt(0, 8);
+  assert.equal(pasteRes.placedCount, 4);
+  assert.equal(pasteRes.skippedCount, 0);
+  // Copy mode stays active for multi-stamping
+  assert.equal(engine.clipboardToolState, 'paste');
+
+  // Verify rotated Assembler arrived with dir=1 (rotated from 0) and recipe 'iron_gear'
+  const pastedAssemblers = Array.from(engine.machines.values()).filter(
+    (m) => m.type === 'assembler' && m.gz >= 6
+  );
+  assert.equal(pastedAssemblers.length, 1);
+  assert.equal(pastedAssemblers[0].dir, 1, 'Assembler direction rotated 90° CW (0 -> 1)');
+  assert.equal(pastedAssemblers[0].recipeId, 'iron_gear', 'Assembler recipe preserved across copy/paste');
+
+  // 4. Cut refunds 100% into pocket & enables Undo Cut
+  const beltsBeforeCut = engine.getPocketMachineCount('belt');
+  const insertersBeforeCut = engine.getPocketMachineCount('inserter');
+  const assemblersBeforeCut = engine.getPocketMachineCount('assembler');
+  const cutRes = engine.captureBlueprint(boxMachines, 'cut');
+  assert.equal(cutRes.count, 4);
+  assert.equal(engine.machines.has(tileKey(0, 0)), false, 'Original cut tiles removed');
+  assert.equal(engine.machines.has(tileKey(2, 1)), false);
+  assert.equal(engine.getPocketMachineCount('belt'), beltsBeforeCut + 2, 'Cut refunded 2 belts');
+  assert.equal(engine.getPocketMachineCount('inserter'), insertersBeforeCut + 1, 'Cut refunded 1 inserter');
+  assert.equal(engine.getPocketMachineCount('assembler'), assemblersBeforeCut + 1, 'Cut refunded 1 assembler');
+  assert.equal(engine.getUiSnapshot().clipboard.canUndoCut, true);
+
+  // Undo Cut restores all 4 buildings back to exact original positions & recipes!
+  const undoRes = engine.undoCut();
+  assert.equal(undoRes.restoredCount, 4);
+  assert.equal(engine.machines.has(tileKey(0, 0)), true);
+  assert.equal(engine.machines.get(tileKey(2, 1))?.recipeId, 'iron_gear');
+  assert.equal(engine.getUiSnapshot().clipboard.canUndoCut, false);
+
+  // 5. Cut again and Paste to new location (-6, 8) -> clears clipboard after 1 move
+  const boxMachinesAgain = engine.selectMachinesInBox(0, 0, 2, 1);
+  engine.captureBlueprint(boxMachinesAgain, 'cut');
+  const moveRes = engine.pasteBlueprintAt(-6, 8);
+  assert.equal(moveRes.placedCount, 4);
+  assert.equal(engine.clipboardToolState, 'off', 'Cut clears clipboard after relocating buildings');
+  assert.equal(engine.getUiSnapshot().clipboard.canUndoCut, false);
+});
+
 
 
 

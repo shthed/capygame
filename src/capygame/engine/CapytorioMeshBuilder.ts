@@ -28,6 +28,7 @@ const MAX_BELT_INSTANCES = 1400;
 const MAX_CURVED_BELT_INSTANCES = 600;
 const MAX_SHAPE_ITEM_INSTANCES = 2048;
 const MAX_TREE_INSTANCES = 512;
+const MAX_BLUEPRINT_GHOST_TILES = 256;
 const MAX_VISIBLE_RADIUS_TILES = 22;
 const BELT_SURFACE_Y = 0.145;
 const INSERTER_UPPER_ARM_LEN = 1.65;
@@ -38,6 +39,7 @@ const INSERTER_SHOULDER_Y = 0.60;
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
 const _activeKeysScratch = new Set<string>();
+const _blueprintStockScratch = new Map<string, number>();
 const _beltTierCounts: [number, number, number] = [0, 0, 0];
 const _curvedLeftTierCounts: [number, number, number] = [0, 0, 0];
 const _curvedRightTierCounts: [number, number, number] = [0, 0, 0];
@@ -574,12 +576,14 @@ export class Capytorio3DRenderer {
   private readonly activeMachineGroups = new Map<string, THREE.Group>();
   private readonly inactivePoolByType = new Map<CapytorioMachineType, THREE.Group[]>();
 
-  // Cursor, directional build ghost & inspector ring
+  // Cursor, directional build ghost, clipboard blueprint ghost & inspector ring
   private cursorGroup = new THREE.Group();
   private cursorFrameMat: THREE.MeshStandardMaterial;
   private ghostArrowMesh: THREE.Mesh;
   private ghostBodyMesh: THREE.Mesh;
   private inspectRingMesh: THREE.Mesh;
+  private blueprintTileInstanced: THREE.InstancedMesh;
+  private blueprintArrowInstanced: THREE.InstancedMesh;
 
   // Shared geometries, textures & materials for composite machines
   private sharedMaterials: THREE.Material[] = [];
@@ -1110,8 +1114,48 @@ export class Capytorio3DRenderer {
     this.inspectRingMesh.userData.ignoreCameraFade = true;
     this.root.add(this.inspectRingMesh);
 
-    this.sharedGeometries.push(ghostPlateGeo, arrowGeo, ringGeo);
-    this.sharedMaterials.push(this.cursorFrameMat, ringMat);
+    // 6. Pooled Cut/Copy Selection Highlight & Multi-Building 3D Paste Ghost
+    const bpTileGeo = new THREE.BoxGeometry(
+      CAPYTORIO_TILE_SIZE * 0.94,
+      0.08,
+      CAPYTORIO_TILE_SIZE * 0.94
+    );
+    const bpTileMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+    });
+    this.blueprintTileInstanced = new THREE.InstancedMesh(
+      bpTileGeo,
+      bpTileMat,
+      MAX_BLUEPRINT_GHOST_TILES
+    );
+    this.blueprintTileInstanced.frustumCulled = false;
+    this.blueprintTileInstanced.count = 0;
+    this.blueprintTileInstanced.userData.ignoreCameraFade = true;
+    this.root.add(this.blueprintTileInstanced);
+
+    const bpArrowGeo = new THREE.ConeGeometry(0.36, 0.85, 4);
+    bpArrowGeo.rotateX(-Math.PI * 0.5);
+    const bpArrowMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+    });
+    this.blueprintArrowInstanced = new THREE.InstancedMesh(
+      bpArrowGeo,
+      bpArrowMat,
+      MAX_BLUEPRINT_GHOST_TILES
+    );
+    this.blueprintArrowInstanced.frustumCulled = false;
+    this.blueprintArrowInstanced.count = 0;
+    this.blueprintArrowInstanced.userData.ignoreCameraFade = true;
+    this.root.add(this.blueprintArrowInstanced);
+
+    this.sharedGeometries.push(ghostPlateGeo, arrowGeo, ringGeo, bpTileGeo, bpArrowGeo);
+    this.sharedMaterials.push(this.cursorFrameMat, ringMat, bpTileMat, bpArrowMat);
   }
 
   private buildLandingBeaconLandmark(): void {
@@ -2310,14 +2354,23 @@ export class Capytorio3DRenderer {
       if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
     }
 
-    // 4. Update Cursor Hover Tile & Directional Ghost Preview
+    // 4. Update Cursor Hover Tile, Selection Highlights & Multi-Building Paste Ghost
     const showCursorAndRing = altitudeRadius <= 650;
-    this.cursorGroup.visible = showCursorAndRing;
+    const isPasteMode = engine.clipboardToolState === 'paste' && engine.clipboard !== null && engine.clipboard.entries.length > 0;
+    const isSelectMode =
+      engine.clipboardToolState === 'select_copy' || engine.clipboardToolState === 'select_cut';
+
+    this.cursorGroup.visible = showCursorAndRing && !isPasteMode;
     const hWx = capytorioGridToWorldX(engine.hoveredGx);
     const hWz = capytorioGridToWorldZ(engine.hoveredGz);
     this.cursorGroup.position.set(hWx, 0.01, hWz);
     this.cursorGroup.rotation.y = dirToRotY(engine.selectedDir);
-    if (engine.selectedTool === 'demolish') {
+    if (isSelectMode) {
+      const isCut = engine.clipboardToolState === 'select_cut';
+      this.cursorFrameMat.color.setHex(isCut ? 0xf97316 : 0x38bdf8);
+      this.cursorFrameMat.emissive.setHex(isCut ? 0xc2410c : 0x0284c7);
+      this.ghostArrowMesh.visible = false;
+    } else if (engine.selectedTool === 'demolish') {
       this.cursorFrameMat.color.setHex(0xef4444);
       this.cursorFrameMat.emissive.setHex(0xdc2626);
       this.ghostArrowMesh.visible = false;
@@ -2333,6 +2386,98 @@ export class Capytorio3DRenderer {
       this.cursorFrameMat.color.setHex(validDrill ? 0x22c55e : 0xef4444);
       this.cursorFrameMat.emissive.setHex(validDrill ? 0x16a34a : 0xb91c1c);
       this.ghostArrowMesh.visible = true;
+    }
+
+    // 4b. Pooled 3D Selection Footprint & Paste Ghost Instanced Meshes (zero per-frame allocations)
+    let bpTileCount = 0;
+    let bpArrowCount = 0;
+    if (showCursorAndRing && isPasteMode && engine.clipboard) {
+      _blueprintStockScratch.clear();
+      const entries = engine.clipboard.entries;
+      const anchorGx = engine.hoveredGx;
+      const anchorGz = engine.hoveredGz;
+      for (let i = 0; i < entries.length && bpTileCount < MAX_BLUEPRINT_GHOST_TILES; i++) {
+        const entry = entries[i];
+        const gx = anchorGx + entry.dx;
+        const gz = anchorGz + entry.dz;
+        const existingAt = engine.machines.get(tileKey(gx, gz));
+        let valid = true;
+        if (existingAt) {
+          valid =
+            entry.baseType === 'assembler' &&
+            existingAt.type === 'assembler' &&
+            entry.recipeId !== undefined;
+        } else {
+          if (entry.baseType === 'drill' && !engine.getResourceAt(gx, gz)) {
+            valid = false;
+          } else {
+            const spec = resolveCapytorioPlaceableSpec(entry.toolId);
+            if (!spec) {
+              valid = false;
+            } else {
+              const stockKey = spec.isBaseMachine ? `m:${spec.baseType}` : `i:${spec.id}`;
+              const used = _blueprintStockScratch.get(stockKey) ?? 0;
+              const avail = spec.isBaseMachine
+                ? engine.getPocketMachineCount(spec.baseType)
+                : engine.getPocketItemCount(spec.id);
+              if (avail - used < 1) {
+                valid = false;
+              } else {
+                _blueprintStockScratch.set(stockKey, used + 1);
+              }
+            }
+          }
+        }
+        const wx = capytorioGridToWorldX(gx);
+        const wz = capytorioGridToWorldZ(gz);
+        _dummy.position.set(wx, 0.06, wz);
+        _dummy.rotation.set(0, 0, 0);
+        _dummy.scale.set(1, 1, 1);
+        _dummy.updateMatrix();
+        this.blueprintTileInstanced.setMatrixAt(bpTileCount, _dummy.matrix);
+        _color.setHex(valid ? 0x22c55e : 0xef4444);
+        this.blueprintTileInstanced.setColorAt(bpTileCount, _color);
+        bpTileCount++;
+
+        if (bpArrowCount < MAX_BLUEPRINT_GHOST_TILES) {
+          const rotY = dirToRotY(entry.dir);
+          _dummy.position.set(wx + DIR_DX[entry.dir] * 0.35, 0.44, wz + DIR_DZ[entry.dir] * 0.35);
+          _dummy.rotation.set(0, rotY, 0);
+          _dummy.scale.set(1, 1, 1);
+          _dummy.updateMatrix();
+          this.blueprintArrowInstanced.setMatrixAt(bpArrowCount, _dummy.matrix);
+          _color.setHex(valid ? 0x86efac : 0xfca5a5);
+          this.blueprintArrowInstanced.setColorAt(bpArrowCount, _color);
+          bpArrowCount++;
+        }
+      }
+    } else if (showCursorAndRing && isSelectMode && engine.previewSelectedKeys.size > 0) {
+      const selColor = engine.clipboardToolState === 'select_cut' ? 0xf97316 : 0x38bdf8;
+      engine.previewSelectedKeys.forEach((key) => {
+        if (bpTileCount >= MAX_BLUEPRINT_GHOST_TILES) return;
+        const m = engine.machines.get(key);
+        if (!m) return;
+        const wx = capytorioGridToWorldX(m.gx);
+        const wz = capytorioGridToWorldZ(m.gz);
+        _dummy.position.set(wx, 0.08, wz);
+        _dummy.rotation.set(0, 0, 0);
+        _dummy.scale.set(1, 1, 1);
+        _dummy.updateMatrix();
+        this.blueprintTileInstanced.setMatrixAt(bpTileCount, _dummy.matrix);
+        _color.setHex(selColor);
+        this.blueprintTileInstanced.setColorAt(bpTileCount, _color);
+        bpTileCount++;
+      });
+    }
+    this.blueprintTileInstanced.count = bpTileCount;
+    this.blueprintTileInstanced.instanceMatrix.needsUpdate = true;
+    if (this.blueprintTileInstanced.instanceColor) {
+      this.blueprintTileInstanced.instanceColor.needsUpdate = true;
+    }
+    this.blueprintArrowInstanced.count = bpArrowCount;
+    this.blueprintArrowInstanced.instanceMatrix.needsUpdate = true;
+    if (this.blueprintArrowInstanced.instanceColor) {
+      this.blueprintArrowInstanced.instanceColor.needsUpdate = true;
     }
 
     // 5. Universal Inspected Tile / Entity Selection Halo
