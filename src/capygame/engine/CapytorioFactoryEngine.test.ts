@@ -1494,6 +1494,63 @@ test('Capytorio Undo/Redo covers place, rotate, recipe, demolish, cut, and atomi
   assert.equal(engine.getUiSnapshot().history.canRedo, false, 'New action clears Redo stack');
 });
 
+test('Partial cut-paste keeps unplaced blueprint entries & Undo Cut intact until all cut buildings are placed or restored', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  // Place 4 belts in a horizontal line (0,0)..(3,0) then cut all 4
+  for (let x = 0; x < 4; x++) {
+    assert.equal(engine.placeMachine('belt', x, 0, 1).ok, true);
+  }
+  const cutList = engine.selectMachinesInBox(0, 0, 3, 0);
+  assert.equal(cutList.length, 4);
+  engine.captureBlueprint(cutList, 'cut');
+  assert.equal(engine.clipboardToolState, 'paste');
+  assert.equal(engine.clipboard?.entries.length, 4);
+
+  // Occupy 3 of the 4 destination tiles around (0, 6) so only 1 slot fits cleanly
+  assert.equal(engine.placeMachine('furnace', -2, 6, 0).ok, true);
+  assert.equal(engine.placeMachine('furnace', -1, 6, 0).ok, true);
+  assert.equal(engine.placeMachine('furnace', 0, 6, 0).ok, true);
+  // Tile (1, 6) is open -> 1 belt places, 3 are skipped!
+  const partialRes = engine.pasteBlueprintAt(0, 6);
+  assert.equal(partialRes.placedCount, 1);
+  assert.equal(partialRes.skippedCount, 3);
+
+  // Clipboard & Undo Cut MUST remain active with the 3 remaining unplaced belts
+  assert.equal(engine.clipboardToolState, 'paste', 'Partial cut-paste keeps paste mode active');
+  assert.equal(engine.clipboard?.entries.length, 3, '3 skipped cut entries remain in clipboard');
+  assert.equal(engine.getUiSnapshot().clipboard.canUndoCut, true, 'Undo Cut stays available for remaining cut buildings');
+
+  // Calling undoCut restores the 3 unplaced belts back to their original tiles (without disturbing the 1 moved belt)
+  const restored = engine.undoCut();
+  assert.equal(restored.restoredCount, 3, 'All 3 remaining cut belts restored cleanly to original tiles');
+  assert.equal(engine.machines.has(tileKey(1, 6)), true, 'The 1 successfully moved belt stays at destination');
+  assert.equal(engine.clipboardToolState, 'off');
+
+  // Also test finishing a partial cut-paste cleanly on clear ground clears clipboard when skippedCount reaches 0
+  engine.resetToBlankStarterField();
+  for (let x = 0; x < 3; x++) {
+    assert.equal(engine.placeMachine('belt', x, 0, 1).ok, true);
+  }
+  engine.captureBlueprint(engine.selectMachinesInBox(0, 0, 2, 0), 'cut');
+  assert.equal(engine.placeMachine('furnace', -1, 5, 0).ok, true);
+  assert.equal(engine.placeMachine('furnace', 0, 5, 0).ok, true);
+
+  const partial2 = engine.pasteBlueprintAt(0, 5);
+  assert.equal(partial2.placedCount, 1);
+  assert.equal(partial2.skippedCount, 2);
+  assert.equal(engine.clipboard?.entries.length, 2);
+
+  // Move to clear meadow (0, 10) and paste the remaining 2 entries -> now clipboard clears!
+  const finishRes = engine.pasteBlueprintAt(0, 10);
+  assert.equal(finishRes.placedCount, 2);
+  assert.equal(finishRes.skippedCount, 0);
+  assert.equal(engine.clipboardToolState, 'off', 'Clipboard clears only once all cut buildings are placed');
+  assert.equal(engine.getUiSnapshot().clipboard.canUndoCut, false);
+});
+
+
 
 
 

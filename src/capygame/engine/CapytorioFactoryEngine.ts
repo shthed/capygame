@@ -1916,7 +1916,10 @@ export class CapytorioFactoryEngine {
         results.push({ entry, gx, gz, valid: false, reason: 'no_stock' });
         continue;
       }
-      let avail = remainingStock.get(entry.toolId);
+      const stockKey = resolved.isBaseMachine
+        ? `m:${resolved.baseType}`
+        : `i:${resolved.id}`;
+      let avail = remainingStock.get(stockKey);
       if (avail === undefined) {
         avail = resolved.isBaseMachine
           ? this.pocketMachines[resolved.baseType] ?? 0
@@ -1926,7 +1929,7 @@ export class CapytorioFactoryEngine {
         results.push({ entry, gx, gz, valid: false, reason: 'no_stock' });
         continue;
       }
-      remainingStock.set(entry.toolId, avail - 1);
+      remainingStock.set(stockKey, avail - 1);
       results.push({ entry, gx, gz, valid: true });
     }
     return results;
@@ -1957,6 +1960,8 @@ export class CapytorioFactoryEngine {
     let placedCount = 0;
     let skippedCount = 0;
     let updatedRecipesCount = 0;
+    const remainingEntries: CapytorioBlueprintEntry[] = [];
+    const remainingCutSnapshots: CapytorioMachineUndoSnapshot[] = [];
 
     this.beginHistoryBatch('Paste blueprint');
     for (let i = 0; i < entries.length; i++) {
@@ -1976,9 +1981,21 @@ export class CapytorioFactoryEngine {
             updatedRecipesCount++;
           } else {
             skippedCount++;
+            if (wasCut) {
+              remainingEntries.push(entry);
+              if (this.undoCutSnapshot[i]) {
+                remainingCutSnapshots.push(this.undoCutSnapshot[i]);
+              }
+            }
           }
         } else {
           skippedCount++;
+          if (wasCut) {
+            remainingEntries.push(entry);
+            if (this.undoCutSnapshot[i]) {
+              remainingCutSnapshots.push(this.undoCutSnapshot[i]);
+            }
+          }
         }
         continue;
       }
@@ -1991,6 +2008,12 @@ export class CapytorioFactoryEngine {
         }
       } else {
         skippedCount++;
+        if (wasCut) {
+          remainingEntries.push(entry);
+          if (this.undoCutSnapshot[i]) {
+            remainingCutSnapshots.push(this.undoCutSnapshot[i]);
+          }
+        }
       }
     }
     const totalApplied = placedCount + updatedRecipesCount;
@@ -2002,11 +2025,21 @@ export class CapytorioFactoryEngine {
       this.pasteAnchor = null;
     }
 
-    if (wasCut && placedCount > 0) {
-      this.clipboard = null;
-      this.clipboardToolState = 'off';
-      this.pasteAnchor = null;
-      this.undoCutSnapshot.length = 0;
+    if (wasCut) {
+      if (skippedCount === 0 && (placedCount > 0 || updatedRecipesCount > 0)) {
+        this.clipboard = null;
+        this.clipboardToolState = 'off';
+        this.pasteAnchor = null;
+        this.undoCutSnapshot.length = 0;
+      } else if (totalApplied > 0 && remainingEntries.length > 0) {
+        this.clipboard = {
+          ...this.clipboard,
+          entries: remainingEntries,
+          canUndoCut: remainingCutSnapshots.length > 0,
+        };
+        this.undoCutSnapshot = remainingCutSnapshots;
+        this.clipboardToolState = 'paste';
+      }
     }
 
     return { placedCount, skippedCount, updatedRecipesCount };

@@ -174,6 +174,7 @@ import {
 } from './GameplayFunMath';
 import {
   CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_TILE_SIZE,
   CAPYTORIO_WORLD_ORIGIN_X,
   CAPYTORIO_WORLD_ORIGIN_Z,
   ensureLiveCapytorioLuaSync,
@@ -4662,8 +4663,8 @@ export class PlayStyleManager {
     _raycaster.setFromCamera(_capyPointerNdc, this.camera);
     const hit = _raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit);
     if (!hit) return null;
-    const fGx = (_capyGroundHit.x - CAPYTORIO_WORLD_ORIGIN_X) / 2.5;
-    const fGz = (_capyGroundHit.z - CAPYTORIO_WORLD_ORIGIN_Z) / 2.5;
+    const fGx = (_capyGroundHit.x - CAPYTORIO_WORLD_ORIGIN_X) / CAPYTORIO_TILE_SIZE;
+    const fGz = (_capyGroundHit.z - CAPYTORIO_WORLD_ORIGIN_Z) / CAPYTORIO_TILE_SIZE;
     const gx = Math.round(fGx);
     const gz = Math.round(fGz);
     if (
