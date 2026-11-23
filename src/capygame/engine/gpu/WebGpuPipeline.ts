@@ -4,10 +4,13 @@ import {
   abs,
   cameraPosition,
   clamp,
+  Discard,
   dot,
   exp,
   float,
+  floor,
   Fn,
+  fract,
   hash,
   If,
   instancedArray,
@@ -18,6 +21,7 @@ import {
   max,
   min,
   mix,
+  mod,
   mrt,
   normalView,
   normalize,
@@ -27,6 +31,7 @@ import {
   positionView,
   positionWorld,
   pow,
+  screenCoordinate,
   screenUV,
   sin,
   smoothstep,
@@ -643,42 +648,37 @@ export function createTslWaterPhysicalNodeMaterial(opts: {
 }
 
 /**
- * Attaches a TSL WGSL play-area cutout sightline fade to a standard/physical material on WebGPU.
- * Matches `capyComputePlayAreaCutoutAlpha` in the WebGL shader and `evaluatePlayAreaCutoutSightlineAlpha`.
+ * Attaches a TSL WGSL 4x4 Bayer screen-door dither sightline fade to a standard/physical material on WebGPU.
+ * Matches `capyComputeThirdPersonOccDensity` in the WebGL shader and `evaluatePlayAreaCutoutSightlineAlpha`.
  */
 export function upgradeMaterialWithTslSightlineFade(
   mat: THREE.Material,
-  viewportRef: THREE.Vector2 = new THREE.Vector2(1280, 720),
-  headClipRef: THREE.Vector4 = new THREE.Vector4(0.5, 0.5, 10.0, 0.28),
-  tailClipRef: THREE.Vector4 = new THREE.Vector4(0.5, 0.44, 10.4, 0.08)
+  _viewportRef: THREE.Vector2 = new THREE.Vector2(1280, 720),
+  _headClipRef: THREE.Vector4 = new THREE.Vector4(0.5, 0.5, 10.0, 0.28),
+  _tailClipRef: THREE.Vector4 = new THREE.Vector4(0.5, 0.44, 10.4, 0.08)
 ): { value: number } {
   const blendUniform = uniform(0.0);
-  const uVp = uniform(viewportRef);
-  const uHeadClip = uniform(headClipRef);
-  const uTailClip = uniform(tailClipRef);
   const nodeMat = mat as unknown as {
     opacityNode?: unknown;
     transparent: boolean;
   };
   const baseOpacity = typeof mat.opacity === 'number' ? mat.opacity : 1.0;
-  nodeMat.transparent = true;
+  nodeMat.transparent = Boolean(mat.userData?.__origTransparent ?? mat.transparent);
   nodeMat.opacityNode = Fn(() => {
-    const minDim = max(float(10.0), min(uVp.x, uVp.y));
-    const scale = uVp.div(minDim);
-    const p = screenUV.mul(scale);
-    const a = vec2(uHeadClip.x, uHeadClip.y).mul(scale);
-    const b = vec2(uTailClip.x, uTailClip.y).mul(scale);
-    const ab = b.sub(a);
-    const abLenSq = max(float(0.00001), dot(ab, ab));
-    const segT = clamp(dot(p.sub(a), ab).div(abLenSq), 0.0, 1.0);
-    const dist = length(p.sub(a.add(ab.mul(segT))));
-    const innerR = clamp(uHeadClip.w, 0.22, 0.4);
-    const feather = max(float(0.11), innerR.mul(0.45));
-    const windowAlpha = smoothstep(innerR, innerR.add(feather), dist);
     const fragViewDepth = max(float(0.01), positionView.z.negate());
-    const lensAlpha = smoothstep(0.55, 2.4, fragViewDepth);
-    const targetOcc = windowAlpha.mul(lensAlpha).mul(baseOpacity);
-    return clamp(mix(float(baseOpacity), targetOcc, blendUniform), 0.0, 1.0);
+    const lensAlpha = smoothstep(0.55, 2.2, fragViewDepth);
+    const targetVis = lensAlpha.mul(0.25);
+    const density = mix(float(1.0), targetVis, clamp(blendUniform, 0.0, 1.0));
+
+    const cell = floor(mod(screenCoordinate.xy, 4.0));
+    const hi = floor(cell.mul(0.5));
+    const lo = mod(cell, 2.0);
+    const b2Hi = fract(hi.x.mul(0.5).add(hi.y.mul(hi.y).mul(0.75)));
+    const b2Lo = fract(lo.x.mul(0.5).add(lo.y.mul(lo.y).mul(0.75)));
+    const bayerThresh = b2Hi.mul(0.25).add(b2Lo).add(0.03125);
+
+    Discard(blendUniform.greaterThan(0.001).and(density.lessThanEqual(bayerThresh)));
+    return float(baseOpacity);
   })();
   return blendUniform as unknown as { value: number };
 }

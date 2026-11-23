@@ -307,69 +307,41 @@ export function doesSphereBlockPlayerSightline(
 }
 
 /**
- * Pure CPU mirror of the play-area sightline cutout shader (WebGL GLSL + WebGPU TSL):
- * - When an object is NOT blocking the sightline (`occBlend === 0`), returns `1.0` everywhere.
- * - When an object DOES block the sightline or sits right in front of the lens (`occBlend -> 1`),
- *   carves a large aspect-normalized capsule cutout around `[headUv -> tailUv]` covering the
- *   Capybara and immediate play area (`alpha = 0`), smoothly feathers back to `1.0` outside the
- *   window so outer tree trunks/canopies remain visible, and softens fragments right against the lens.
+ * Pure CPU mirror of the standard 3rd-person object dither sightline shader (WebGL GLSL + WebGPU TSL):
+ * - When an object is NOT blocking the sightline (`occBlend === 0`), returns `1.0` (100% solid).
+ * - When an object blocks the camera-to-player sightline (`occBlend -> 1`), uniformly dithers the whole
+ *   object to a balanced ghost silhouette (`0.25`) so the character behind it reads clearly while the
+ *   tree/prop keeps its complete natural shape without circular holes or severed trunks.
+ * - Fragments right in front of the camera lens (`fragViewDepth < 2.2m`) smoothly dissolve to `0.0`.
  */
 export function evaluatePlayAreaCutoutSightlineAlpha(
-  sUvX: number,
-  sUvY: number,
+  _sUvX: number,
+  _sUvY: number,
   occBlend: number,
-  headUvX: number = 0.5,
-  headUvY: number = 0.5,
-  tailUvX: number = 0.5,
-  tailUvY: number = 0.44,
-  innerRadiusNorm: number = 0.28,
+  _headUvX: number = 0.5,
+  _headUvY: number = 0.5,
+  _tailUvX: number = 0.5,
+  _tailUvY: number = 0.44,
+  _innerRadiusNorm: number = 0.28,
   viewportW: number = 1280,
   viewportH: number = 720,
   fragViewDepth?: number
 ): number {
   if (occBlend <= 0.001 || viewportW < 10 || viewportH < 10) return 1.0;
 
-  const minDim = Math.max(10, Math.min(viewportW, viewportH));
-  const scaleX = viewportW / minDim;
-  const scaleY = viewportH / minDim;
-
-  const px = sUvX * scaleX;
-  const py = sUvY * scaleY;
-  const ax = headUvX * scaleX;
-  const ay = headUvY * scaleY;
-  const bx = tailUvX * scaleX;
-  const by = tailUvY * scaleY;
-
-  const abX = bx - ax;
-  const abY = by - ay;
-  const abLenSq = abX * abX + abY * abY;
-  const t =
-    abLenSq > 0.00001
-      ? Math.max(0.0, Math.min(1.0, ((px - ax) * abX + (py - ay) * abY) / abLenSq))
-      : 0.0;
-  const cx = ax + abX * t;
-  const cy = ay + abY * t;
-  const dist = Math.hypot(px - cx, py - cy);
-
-  const innerR = Math.max(0.22, Math.min(0.4, innerRadiusNorm));
-  const feather = Math.max(0.11, innerR * 0.45);
-  const windowFrac = Math.max(0.0, Math.min(1.0, (dist - innerR) / feather));
-  const windowAlpha = windowFrac * windowFrac * (3.0 - 2.0 * windowFrac);
-
   let lensAlpha = 1.0;
   if (fragViewDepth !== undefined && fragViewDepth > 0) {
-    const lensFrac = Math.max(0.0, Math.min(1.0, (fragViewDepth - 0.55) / 1.85));
+    const lensFrac = Math.max(0.0, Math.min(1.0, (fragViewDepth - 0.55) / 1.65));
     lensAlpha = lensFrac * lensFrac * (3.0 - 2.0 * lensFrac);
   }
 
-  const targetOccAlpha = windowAlpha * lensAlpha;
-  const finalAlpha = 1.0 + (targetOccAlpha - 1.0) * occBlend;
-  if (occBlend > 0.85 && finalAlpha < 0.004) return 0.0;
+  const targetOccVisibility = 0.25 * lensAlpha;
+  const finalAlpha = 1.0 + (targetOccVisibility - 1.0) * occBlend;
   return Math.max(0.0, Math.min(1.0, finalAlpha));
 }
 
 /**
- * Legacy helper alias forwarding to `evaluatePlayAreaCutoutSightlineAlpha` centered on viewport.
+ * Legacy helper alias forwarding to `evaluatePlayAreaCutoutSightlineAlpha`.
  */
 export function evaluateWholeScreenSightlineClearAlpha(
   sUvX: number,

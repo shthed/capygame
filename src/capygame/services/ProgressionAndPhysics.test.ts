@@ -98,7 +98,7 @@ import { DEFAULT_GPU_PIPELINE_CONFIG } from '../engine/gpu/GpuEngineTypes';
 import { PerformanceProfiler } from '../engine/gpu/PerformanceProfiler';
 import { PlayStyleManager } from '../engine/PlayStyleManager';
 
-test('Sightline Occlusion Regression: side/ahead objects stay 100% solid; blocking objects carve a large play-area cutout while keeping outer canopy visible', () => {
+test('Sightline Occlusion Regression: side/ahead objects stay 100% solid; blocking objects uniformly dither to 0.25 ghost visibility and dissolve near lens', () => {
   // Camera at (0, 6.8, 15.5) looking at Hero at (0, 1.0, 4.0) (distance ~12.88m)
   const camX = 0;
   const camY = 6.8;
@@ -123,50 +123,30 @@ test('Sightline Occlusion Regression: side/ahead objects stay 100% solid; blocki
     false
   );
 
-  // 3. Tree genuinely between camera and player along the sightline triggers cutout:
+  // 3. Tree genuinely between camera and player along the sightline triggers dither fade:
   assert.equal(
     doesSphereBlockPlayerSightline(0.4, 4.2, 10.2, 3.0, camX, camY, camZ, heroX, heroY, heroZ),
     true
   );
 
-  // 4. Large play-area cutout on 390x844 mobile portrait:
-  //    - Inside Capybara head/torso + immediate play area -> 0.0 (clear view)
+  // 4. Standard 3rd-person uniform ghost dither across the whole blocking prop (0.25), zero severed hole:
   assert.equal(
     evaluatePlayAreaCutoutSightlineAlpha(0.5, 0.48, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
-    0.0
-  );
-  assert.equal(
-    evaluatePlayAreaCutoutSightlineAlpha(0.26, 0.47, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
-    0.0
-  );
-  //    - Smooth feathered rim around edge of cutout
-  const rimAlpha = evaluatePlayAreaCutoutSightlineAlpha(
-    0.5,
-    0.69,
-    1.0,
-    0.5,
-    0.5,
-    0.5,
-    0.44,
-    0.34,
-    390,
-    844,
-    10.0
-  );
-  assert.ok(rimAlpha > 0.05 && rimAlpha < 0.95);
-  //    - Outer canopy/trunk well outside the cutout window stays 100% solid (1.0)!
-  assert.equal(
-    evaluatePlayAreaCutoutSightlineAlpha(0.5, 0.9, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
-    1.0
+    0.25
   );
   assert.equal(
     evaluatePlayAreaCutoutSightlineAlpha(0.1, 0.1, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
-    1.0
+    0.25
   );
-  //    - Fragments right in front of the camera lens (< 2.4m) soften cleanly even outside cutout
+  assert.equal(
+    evaluatePlayAreaCutoutSightlineAlpha(0.5, 0.9, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
+    0.25
+  );
+
+  //    - Fragments right in front of the camera lens (< 2.2m) dissolve smoothly toward 0.0
   const nearLensAlpha = evaluatePlayAreaCutoutSightlineAlpha(
     0.5,
-    0.9,
+    0.5,
     1.0,
     0.5,
     0.5,
@@ -175,9 +155,9 @@ test('Sightline Occlusion Regression: side/ahead objects stay 100% solid; blocki
     0.34,
     390,
     844,
-    0.9
+    0.85
   );
-  assert.ok(nearLensAlpha < 0.15);
+  assert.ok(nearLensAlpha < 0.05);
 });
 
 test('60 FPS & Zero-Glitch Governor: shadow azimuth stays invariant across (-75,-75)..(+75,+75) districts and snaps cleanly to texels', () => {

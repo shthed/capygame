@@ -7479,6 +7479,7 @@ export class PlayStyleManager {
       mesh.userData.__occMaterial = mesh.material.map((m) => {
         const occMat = m.clone();
         delete occMat.userData.__occUniforms;
+        occMat.userData.__origTransparent = m.transparent;
         occMat.userData.__origOpacity = m.opacity;
         occMat.userData.__origDepthWrite = m.depthWrite;
         installSightlineEdgeFadeShader(occMat, this.isWebGpu);
@@ -7488,6 +7489,7 @@ export class PlayStyleManager {
       const orig = mesh.material;
       const occMat = orig.clone();
       delete occMat.userData.__occUniforms;
+      occMat.userData.__origTransparent = orig.transparent;
       occMat.userData.__origOpacity = orig.opacity;
       occMat.userData.__origDepthWrite = orig.depthWrite;
       installSightlineEdgeFadeShader(occMat, this.isWebGpu);
@@ -7533,30 +7535,40 @@ export class PlayStyleManager {
       const nextBlend = curBlend + (targetBlend - curBlend) * rate;
 
       const origDepthWrite = Boolean(mat.userData.__origDepthWrite ?? true);
+      const origTransparent = Boolean(mat.userData.__origTransparent ?? false);
+      mat.transparent = origTransparent;
 
       if (targetBlend > 0.5) {
         allRestored = false;
         const snapped = nextBlend > 0.985 ? 1.0 : nextBlend;
         uniforms.uCapyOccBlend.value = snapped;
         mat.opacity = origOpacity;
-        mat.depthWrite = shouldEnableOccluderDepthWrite(snapped, origDepthWrite);
+        mat.depthWrite = origTransparent
+          ? shouldEnableOccluderDepthWrite(snapped, origDepthWrite)
+          : origDepthWrite;
+        const vis = +THREE.MathUtils.lerp(origOpacity, 0.25, snapped).toFixed(4);
         mat.userData.__occBlend = snapped;
-        mat.userData.__centerScreenOpacity = +(1.0 - snapped).toFixed(4);
-        mat.userData.__edgeOutlineMaxOpacity = origOpacity;
+        mat.userData.__centerScreenOpacity = vis;
+        mat.userData.__edgeOutlineMaxOpacity = vis;
       } else if (nextBlend <= 0.015) {
         uniforms.uCapyOccBlend.value = 0.0;
         mat.opacity = origOpacity;
-        mat.depthWrite = shouldEnableOccluderDepthWrite(0.0, origDepthWrite);
+        mat.depthWrite = origTransparent
+          ? shouldEnableOccluderDepthWrite(0.0, origDepthWrite)
+          : origDepthWrite;
         mat.userData.__occBlend = 0.0;
         mat.userData.__centerScreenOpacity = origOpacity;
         mat.userData.__edgeOutlineMaxOpacity = origOpacity;
       } else {
         allRestored = false;
         uniforms.uCapyOccBlend.value = nextBlend;
-        mat.depthWrite = shouldEnableOccluderDepthWrite(nextBlend, origDepthWrite);
+        mat.depthWrite = origTransparent
+          ? shouldEnableOccluderDepthWrite(nextBlend, origDepthWrite)
+          : origDepthWrite;
+        const vis = +THREE.MathUtils.lerp(origOpacity, 0.25, nextBlend).toFixed(4);
         mat.userData.__occBlend = nextBlend;
-        mat.userData.__centerScreenOpacity = +(1.0 - nextBlend).toFixed(4);
-        mat.userData.__edgeOutlineMaxOpacity = origOpacity;
+        mat.userData.__centerScreenOpacity = vis;
+        mat.userData.__edgeOutlineMaxOpacity = vis;
       }
     }
 
@@ -8041,8 +8053,8 @@ export class PlayStyleManager {
       }
     }
 
-    const fadeOutRate = Math.min(1, dt * 18);
-    const restoreRate = Math.min(1, dt * 12);
+    const fadeOutRate = Math.min(1, dt * 14);
+    const restoreRate = Math.min(1, dt * 10);
 
     this.currentFrameOccluders.forEach((mesh) => {
       if (!mesh.userData.__inOccluderList) {

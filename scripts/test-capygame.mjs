@@ -852,9 +852,8 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
       yuzuGroup.traverse((node) => {
         if (node.isMesh && !node.userData?.ignoreCameraFade) {
           yuzuChildMeshCount++;
-          if (
-            mgr.evaluateOccluderScreenAlpha(node, yuzuHeadUv.x, yuzuHeadUv.y, 10.0) !== 0
-          ) {
+          const a = mgr.evaluateOccluderScreenAlpha(node, yuzuHeadUv.x, yuzuHeadUv.y, 10.0);
+          if (a < 0.24 || a > 0.27) {
             yuzuAllChildrenWindowClear = false;
           }
         }
@@ -865,9 +864,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     }
     const curHeadUv = treeLeafMat.userData.__occUniforms?.uCapyHeadUv?.value ?? { x: 0.5, y: 0.5 };
     const giantTree4CutoutClear =
-      mgr.evaluateOccluderScreenAlpha(t4.skeletonMesh, curHeadUv.x, curHeadUv.y, 10.0) === 0 &&
-      mgr.evaluateOccluderScreenAlpha(t4.leafInstancedMesh, curHeadUv.x, curHeadUv.y, 10.0) === 0 &&
-      mgr.evaluateOccluderScreenAlpha(t4.slots[0].fruitSphere, curHeadUv.x, curHeadUv.y, 10.0) === 0;
+      Math.abs(mgr.evaluateOccluderScreenAlpha(t4.skeletonMesh, curHeadUv.x, curHeadUv.y, 10.0) - 0.25) < 0.02 &&
+      Math.abs(mgr.evaluateOccluderScreenAlpha(t4.leafInstancedMesh, curHeadUv.x, curHeadUv.y, 10.0) - 0.25) < 0.02 &&
+      Math.abs(mgr.evaluateOccluderScreenAlpha(t4.slots[0].fruitSphere, curHeadUv.x, curHeadUv.y, 10.0) - 0.25) < 0.02;
     // Tree 0 at (0, 0.9) is >10m behind the camera lens and must NOT be faded
     const distantBehindCameraOpaque =
       mgr.evaluateOccluderScreenAlpha(t0.leafInstancedMesh, 0.5, 0.5) >= 0.98;
@@ -1143,9 +1142,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     !advancedSimCheck.fourStageBotany ||
     advancedSimCheck.staticClipError !== null ||
     advancedSimCheck.fadedCountBehindTree < 1 ||
-    advancedSimCheck.centerScreenOpacityWhenBlocking !== 0 ||
-    advancedSimCheck.playerWindowAlpha !== 0 ||
-    advancedSimCheck.outerScreenAlphaWhenBlocking < 0.98 ||
+    advancedSimCheck.centerScreenOpacityWhenBlocking > 0.27 ||
+    advancedSimCheck.playerWindowAlpha > 0.27 ||
+    advancedSimCheck.outerScreenAlphaWhenBlocking < 0.24 ||
     !advancedSimCheck.yuzuAllChildrenWindowClear ||
     !advancedSimCheck.giantTree4CutoutClear ||
     !advancedSimCheck.distantBehindCameraOpaque ||

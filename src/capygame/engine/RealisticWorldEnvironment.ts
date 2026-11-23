@@ -51,11 +51,12 @@ export interface OccluderEdgeShaderUniforms {
 }
 
 /**
- * Installs a zero-allocation GLSL shader hook on any Three.js mesh material so that when
- * `uCapyOccBlend` ramps from 0 -> 1 (triggered when an object blocks the player sightline or lens):
- * - Cuts out a large, aspect-corrected feathered window around the Capybara (`uCapySightHead` -> `uCapySightTail`)
- *   and immediate play area (`alpha = 0`, `discard`) while keeping surrounding trunks and canopies solid.
- * - Smoothly dissolves fragments within 2.4m of the camera lens so close leaves never block the view.
+ * Installs a zero-allocation 4x4 Bayer screen-door dither shader hook on any Three.js mesh material:
+ * - Preserves original material `transparent` and `depthWrite` settings so overlapping foliage and
+ *   double-sided trunks never suffer transparent sorting artifacts.
+ * - When `uCapyOccBlend` ramps from 0 -> 1, uniformly dithers the blocking object to `0.25`
+ *   visibility (keeping its complete unbroken silhouette while letting the player read cleanly behind it),
+ *   and dissolves fragments within `2.2m` of the camera lens all the way to `0.0`.
  */
 export function installSightlineEdgeFadeShader(
   mat: THREE.Material,
@@ -72,6 +73,16 @@ export function installSightlineEdgeFadeShader(
 
   const isNodeMat =
     isWebGpu || Boolean((mat as unknown as { isNodeMaterial?: boolean }).isNodeMaterial);
+  if (mat.userData.__origTransparent === undefined) {
+    mat.userData.__origTransparent = mat.transparent;
+  }
+  if (mat.userData.__origOpacity === undefined) {
+    mat.userData.__origOpacity = mat.opacity;
+  }
+  if (mat.userData.__origDepthWrite === undefined) {
+    mat.userData.__origDepthWrite = mat.depthWrite;
+  }
+
   const tslBlend = isNodeMat
     ? upgradeMaterialWithTslSightlineFade(
         mat,
@@ -91,12 +102,10 @@ export function installSightlineEdgeFadeShader(
   };
 
   mat.userData.__occUniforms = uniforms;
-  mat.userData.__origOpacity = mat.opacity;
-  mat.userData.__origDepthWrite = mat.depthWrite;
   mat.userData.__occBlend = 0.0;
   mat.userData.__centerScreenOpacity = 1.0;
   mat.userData.__edgeOutlineMaxOpacity = 1.0;
-  mat.transparent = true;
+  mat.transparent = Boolean(mat.userData.__origTransparent ?? mat.transparent);
   mat.depthWrite = Boolean(mat.userData.__origDepthWrite ?? true);
 
   if (isNodeMat) {
@@ -104,7 +113,7 @@ export function installSightlineEdgeFadeShader(
   }
 
   const baseType = mat.type;
-  mat.customProgramCacheKey = () => `capy_occ_play_cutout_v2_${baseType}`;
+  mat.customProgramCacheKey = () => `capy_occ_bayer_dither_v3_${baseType}`;
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uCapyOccBlend = uniforms.uCapyOccBlend;
@@ -116,54 +125,33 @@ export function installSightlineEdgeFadeShader(
 
     shader.fragmentShader =
       'uniform float uCapyOccBlend;\n' +
-      'uniform vec2 uCapyViewport;\n' +
-      'uniform vec4 uCapySightHead;\n' +
-      'uniform vec4 uCapySightTail;\n' +
-      'float capyComputePlayAreaCutoutAlpha() {\n' +
-      '  vec2 vp = uCapyViewport;\n' +
-      '  if (vp.x < 10.0 || vp.y < 10.0) {\n' +
-      '    return 1.0;\n' +
-      '  }\n' +
-      '  float minDim = max(10.0, min(vp.x, vp.y));\n' +
-      '  vec2 scale = vp / minDim;\n' +
-      '  vec2 sUv = gl_FragCoord.xy / vp;\n' +
-      '  vec2 p = sUv * scale;\n' +
-      '  vec2 a = uCapySightHead.xy * scale;\n' +
-      '  vec2 b = uCapySightTail.xy * scale;\n' +
-      '  vec2 ab = b - a;\n' +
-      '  float abLenSq = dot(ab, ab);\n' +
-      '  float segT = abLenSq > 0.00001 ? clamp(dot(p - a, ab) / abLenSq, 0.0, 1.0) : 0.0;\n' +
-      '  float dist = length(p - (a + ab * segT));\n' +
-      '  float innerR = clamp(uCapySightHead.w, 0.22, 0.40);\n' +
-      '  float feather = max(0.11, innerR * 0.45);\n' +
-      '  float windowAlpha = smoothstep(innerR, innerR + feather, dist);\n' +
-      '  float fragViewDepth = 1.0 / max(gl_FragCoord.w, 0.0001);\n' +
-      '  float lensAlpha = smoothstep(0.55, 2.40, fragViewDepth);\n' +
-      '  return windowAlpha * lensAlpha;\n' +
+      'float capyBayer2(vec2 a) {\n' +
+      '  a = floor(a);\n' +
+      '  return fract(a.x * 0.5 + a.y * a.y * 0.75);\n' +
       '}\n' +
-      shader.fragmentShader
-        .replace(
-          '#include <clipping_planes_fragment>',
-          `#include <clipping_planes_fragment>
-        float capyOccTargetAlpha = 1.0;
+      'float capyBayer4(vec2 fragXy) {\n' +
+      '  vec2 cell = floor(mod(fragXy, 4.0));\n' +
+      '  return capyBayer2(floor(cell * 0.5)) * 0.25 + capyBayer2(mod(cell, 2.0));\n' +
+      '}\n' +
+      'float capyComputeThirdPersonOccDensity() {\n' +
+      '  float fragViewDepth = 1.0 / max(gl_FragCoord.w, 0.0001);\n' +
+      '  float lensAlpha = smoothstep(0.55, 2.20, fragViewDepth);\n' +
+      '  float targetVis = 0.25 * lensAlpha;\n' +
+      '  return mix(1.0, targetVis, clamp(uCapyOccBlend, 0.0, 1.0));\n' +
+      '}\n' +
+      shader.fragmentShader.replace(
+        '#include <clipping_planes_fragment>',
+        `#include <clipping_planes_fragment>
         if (uCapyOccBlend > 0.001) {
-          capyOccTargetAlpha = capyComputePlayAreaCutoutAlpha();
-          if (uCapyOccBlend > 0.85 && capyOccTargetAlpha < 0.004) {
-            discard;
+          float capyOccVis = capyComputeThirdPersonOccDensity();
+          if (capyOccVis < 0.995) {
+            float capyDitherThresh = capyBayer4(gl_FragCoord.xy) + 0.03125;
+            if (capyOccVis <= capyDitherThresh) {
+              discard;
+            }
           }
         }`
-        )
-        .replace(
-          '#include <dithering_fragment>',
-          `#include <dithering_fragment>
-        if (uCapyOccBlend > 0.001) {
-          float finalAlpha = mix(gl_FragColor.a, gl_FragColor.a * capyOccTargetAlpha, uCapyOccBlend);
-          if (uCapyOccBlend > 0.85 && finalAlpha < 0.004) {
-            discard;
-          }
-          gl_FragColor.a = finalAlpha;
-        }`
-        );
+      );
   };
 
   return uniforms;
