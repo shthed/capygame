@@ -3,8 +3,8 @@
  * Clean-room public persona exporter for `capyboop/capygame`.
  *
  * Exports a clean, standalone copy of the repository where `capyboop` is the sole
- * author and owner with zero trace of `shthed`, dev-only mirror workflows, or
- * rebrand scripts anywhere in the exported tree.
+ * author and owner with zero trace of `shthed`, dev-only mirror/cleanup workflows,
+ * AI Studio scratch artifacts, or rebrand scripts anywhere in the exported tree.
  *
  * Usage:
  *   node scripts/rebrand-persona.mjs --stage-dir /tmp/capyboop-stage
@@ -21,9 +21,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 
 export const DEV_ONLY_RELATIVE_PATHS = new Set([
+  'AGENTS.md',
+  'metadata.json',
+  'favicon.ico',
+  'public/assets/aistudio',
+  'src/assets/images/capygame_feature_graphic_1794867675350.jpg',
+  'docs/gallery/capygame_breakout.png',
   'scripts/rebrand-persona.mjs',
   '.github/workflows/publish-capyboop.yml',
   '.github/workflows/deploy-cloudflare.yml',
+  '.github/workflows/cleanup-branches.yml',
+  '.github/workflows/cleanup-closed-pr.yml',
+  '.github/scripts',
   'docs/sync',
 ]);
 
@@ -69,7 +78,7 @@ const TEXT_FILENAMES = new Set([
 ]);
 
 export const FORBIDDEN_PERSONA_REGEX =
-  /shthed|hairy[\s_-]*dog[\s_-]*trumpet|381055\+|CAPYBOOP_SYNC_TOKEN|capyboop@gmail\.com|rebrand-persona|publish-capyboop|persona:capyboop|capy-dev-only/i;
+  /shthed|hairy[\s_-]*dog[\s_-]*trumpet|381055\+|CAPYBOOP_SYNC_TOKEN|capyboop@gmail\.com|rebrand-persona|publish-capyboop|persona:capyboop|capy-dev-only|\/\.aistudio\/artifacts/i;
 
 export function stripDevOnlyBlocks(content) {
   return content
@@ -79,6 +88,12 @@ export function stripDevOnlyBlocks(content) {
 
 export function transformPersonaContent(content) {
   return stripDevOnlyBlocks(content)
+    .replace(/^- \*\*Contributor & Operational Playbook\*\*: \[`?AGENTS\.md`?\]\(\.\/AGENTS\.md\)\r?\n?/gm, '')
+    .replace(/\s*\(AGENTS\.md[^)]*\)/g, '')
+    .replace(/Audit `metadata\.json` \(`capabilities` and `requestFramePermissions`\) and /g, 'Audit ')
+    .replace(/\s*\|\s*\[`?(?:AGENTS|CAPYBOOP)\.md`?\]\(\.\/(?:AGENTS|CAPYBOOP)\.md(?:#[^)\s]*)?\)/g, '')
+    .replace(/\[`?(?:AGENTS|CAPYBOOP)\.md`?\]\(\.\/(?:AGENTS|CAPYBOOP)\.md(?:#[^)\s]*)?\)\s*\|\s*/g, '')
+    .replace(/\[([^\[\]\r\n]+)\]\(\.\/(?:AGENTS|CAPYBOOP)\.md(?:#[^)\s]*)?\)/g, '$1')
     .replace(
       /\[([^\[\]\r\n]+)\]\(https:\/\/github\.com\/(?:shthed|capyboop)\/capygame\/(?:pull|issues|milestone)\/\d+(?:[/?#][^\s)]*)?\)/g,
       '$1'
@@ -86,6 +101,18 @@ export function transformPersonaContent(content) {
     .replace(
       /https:\/\/(?:shthed|capyboop)\.github\.io\/capygame\/(?:PR|pull)\/\d+\/?/g,
       'https://capyboop.com/'
+    )
+    .replace(
+      /const ARTIFACT_DIR = ['"]\/\.aistudio\/artifacts\/[^'"]+['"];/g,
+      "const ARTIFACT_DIR = process.env.CAPTURE_ARTIFACT_DIR || '';"
+    )
+    .replace(
+      /fs\.mkdirSync\(ARTIFACT_DIR, \{ recursive: true \}\);/g,
+      'if (ARTIFACT_DIR) fs.mkdirSync(ARTIFACT_DIR, { recursive: true });'
+    )
+    .replace(
+      /fs\.writeFileSync\(path\.join\(ARTIFACT_DIR, filename\), buffer\);/g,
+      'if (ARTIFACT_DIR) fs.writeFileSync(path.join(ARTIFACT_DIR, filename), buffer);'
     )
     .replace(/381055\+shthed@users\.noreply\.github\.com/gi, '354866242+capyboop@users.noreply.github.com')
     .replace(/shthed@gmail\.com/gi, '354866242+capyboop@users.noreply.github.com')
@@ -98,7 +125,13 @@ export function transformPersonaContent(content) {
     .replaceAll('shthed.github.io', 'capyboop.github.io')
     .replaceAll('shthed/capygame', 'capyboop/capygame')
     .replace(/hairy[\s_-]*dog[\s_-]*trumpet/gi, 'capyboop')
-    .replace(/shthed/gi, (match) => (match === match.toUpperCase() ? 'CAPYBOOP' : 'capyboop'));
+    .replace(/shthed/gi, (match) =>
+      match === match.toUpperCase()
+        ? 'CAPYBOOP'
+        : match[0] === match[0].toUpperCase()
+          ? 'Capyboop'
+          : 'capyboop'
+    );
 }
 
 export function sanitizeCommitMessage(rawMessage) {
@@ -109,7 +142,11 @@ export function sanitizeCommitMessage(rawMessage) {
       .find((line) => line.length > 0) || 'Update CapyGame';
 
   const withoutPrSuffix = firstLine.replace(/\s*\(#\d+\)\s*$/, '').trim();
-  const sanitized = transformPersonaContent(withoutPrSuffix).replace(/\s+/g, ' ').trim();
+  const sanitized = transformPersonaContent(withoutPrSuffix)
+    .replace(/from\s+capyboop\/antigravity\//gi, 'from capyboop/')
+    .replace(/cleanup-branches|codex/gi, 'branch-maintenance')
+    .replace(/\s+/g, ' ')
+    .trim();
   const result = sanitized.length > 0 ? sanitized : 'Update CapyGame';
 
   if (FORBIDDEN_PERSONA_REGEX.test(result)) {

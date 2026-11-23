@@ -98,7 +98,12 @@ graph TD
 - **Technical Architecture & Engine Reference**: [`GAME.md`](./GAME.md)
 - **Automated Testing & Verification Guide**: [`TESTING.md`](./TESTING.md)
 - **Active Roadmap**: [`TODO.md`](./TODO.md)
+- **Contributing Guide**: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- **Support & Help**: [`SUPPORT.md`](./SUPPORT.md)
+- **Security Policy**: [`SECURITY.md`](./SECURITY.md)
+<!-- capy-dev-only:start -->
 - **Contributor & Operational Playbook**: [`AGENTS.md`](./AGENTS.md)
+<!-- capy-dev-only:end -->
 
 ---
 

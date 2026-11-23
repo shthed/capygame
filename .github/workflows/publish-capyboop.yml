@@ -7,7 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       reset_clean_root:
-        description: 'Reset capyboop/capygame main to a fresh single root commit authored by capyboop'
+        description: 'Reset capyboop/capygame main to a fresh clean-room history authored by capyboop'
+        required: false
+        default: false
+        type: boolean
+      replay_full_history:
+        description: 'Replay entire shthed/capygame main commit history as clean capyboop commits'
         required: false
         default: false
         type: boolean
@@ -23,6 +28,7 @@ jobs:
   publish:
     name: Export & Push Clean capyboop/capygame Release
     if: github.repository == 'shthed/capygame'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Check CAPYBOOP_SYNC_TOKEN configuration
@@ -45,7 +51,7 @@ jobs:
         if: steps.check_secret.outputs.enabled == 'true'
         uses: actions/checkout@v7
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Setup Node.js
         if: steps.check_secret.outputs.enabled == 'true'
@@ -75,47 +81,159 @@ jobs:
         env:
           CAPYBOOP_SYNC_TOKEN: ${{ secrets.CAPYBOOP_SYNC_TOKEN }}
           RESET_CLEAN_ROOT: ${{ inputs.reset_clean_root == true }}
+          REPLAY_FULL_HISTORY: ${{ inputs.replay_full_history == true }}
+          SOURCE_REPO_DIR: ${{ github.workspace }}
           GIT_AUTHOR_NAME: capyboop
           GIT_AUTHOR_EMAIL: 354866242+capyboop@users.noreply.github.com
           GIT_COMMITTER_NAME: capyboop
           GIT_COMMITTER_EMAIL: 354866242+capyboop@users.noreply.github.com
         run: |
           set -euo pipefail
+          cd /tmp/capyboop-stage
+
           ASKPASS_SCRIPT="$(mktemp)"
           REMOTE_LOG_FILE="$(mktemp)"
-          trap 'rm -f "${ASKPASS_SCRIPT}" "${REMOTE_LOG_FILE}"' EXIT
+          cleanup() {
+            rm -f "${ASKPASS_SCRIPT}" "${REMOTE_LOG_FILE}"
+          }
+          trap cleanup EXIT
+
+          chmod 700 "${ASKPASS_SCRIPT}"
           cat <<'EOF' > "${ASKPASS_SCRIPT}"
-          #!/usr/bin/env sh
-          case "$1" in
-            *Username*) printf '%s\n' "x-access-token" ;;
+          #!/usr/bin/env bash
+          case "${1:-}" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
             *) printf '%s\n' "${CAPYBOOP_SYNC_TOKEN}" ;;
           esac
           EOF
-          chmod 700 "${ASKPASS_SCRIPT}"
           export GIT_ASKPASS="${ASKPASS_SCRIPT}"
           export GIT_TERMINAL_PROMPT=0
 
-          cd /tmp/capyboop-stage
           git init -b main
           git config user.name "${GIT_AUTHOR_NAME}"
           git config user.email "${GIT_AUTHOR_EMAIL}"
           git config credential.helper ""
-          git remote add target "https://github.com/capyboop/capygame.git"
+          git remote add target "https://x-access-token@github.com/capyboop/capygame.git"
           git add -A
 
-          REMOTE_MAIN_STATUS=0
-          git ls-remote --exit-code --heads target main >/dev/null || REMOTE_MAIN_STATUS=$?
-          if [ "${REMOTE_MAIN_STATUS}" -ne 0 ] && [ "${REMOTE_MAIN_STATUS}" -ne 2 ]; then
-            echo "Failed to query target main branch (exit ${REMOTE_MAIN_STATUS})." >&2
-            exit "${REMOTE_MAIN_STATUS}"
-          fi
-
           NEEDS_CLEAN_RESET="false"
-          if [ "${RESET_CLEAN_ROOT}" = "true" ]; then
+          if [ "${RESET_CLEAN_ROOT}" = "true" ] || [ "${REPLAY_FULL_HISTORY}" = "true" ]; then
             NEEDS_CLEAN_RESET="true"
           fi
 
+          replay_full_clean_history() {
+            node - "${SOURCE_REPO_DIR}" "${GIT_AUTHOR_NAME}" "${GIT_AUTHOR_EMAIL}" <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+
+          const [srcRepo, authorName, authorEmail] = process.argv.slice(2);
+          const { exportCleanPersonaStage, sanitizeCommitMessage } = await import(
+            path.join(srcRepo, 'scripts/rebrand-persona.mjs')
+          );
+
+          const histSrc = '/tmp/capyboop-hist-src';
+          const histStage = '/tmp/capyboop-hist-stage';
+          const histDst = '/tmp/capyboop-hist-dst';
+          fs.rmSync(histSrc, { recursive: true, force: true });
+          fs.rmSync(histStage, { recursive: true, force: true });
+          fs.rmSync(histDst, { recursive: true, force: true });
+
+          execFileSync('git', ['-C', srcRepo, 'worktree', 'add', '--detach', histSrc, 'HEAD'], { stdio: 'ignore' });
+          execFileSync('git', ['init', '-b', 'main', histDst], { stdio: 'ignore' });
+          execFileSync('git', ['-C', histDst, 'config', 'user.name', authorName], { stdio: 'ignore' });
+          execFileSync('git', ['-C', histDst, 'config', 'user.email', authorEmail], { stdio: 'ignore' });
+
+          const commits = execFileSync('git', ['-C', srcRepo, 'rev-list', '--topo-order', '--reverse', 'HEAD'], {
+            encoding: 'utf8',
+          })
+            .trim()
+            .split('\n')
+            .filter(Boolean);
+
+          const cleanMap = new Map();
+          let lastCleanSha = '';
+
+          for (let idx = 0; idx < commits.length; idx++) {
+            const origSha = commits[idx];
+            const isHead = idx === commits.length - 1;
+            const meta = execFileSync(
+              'git',
+              ['-C', srcRepo, 'show', '-s', '--format=%P%x1f%aI%x1f%cI%x1f%B', origSha],
+              { encoding: 'utf8' }
+            );
+            const [parentsStr, authorDate, committerDate, rawMsg] = meta.split('\x1f');
+            const origParents = parentsStr ? parentsStr.trim().split(/\s+/).filter(Boolean) : [];
+            const cleanParents = origParents.map((p) => cleanMap.get(p)).filter(Boolean);
+
+            execFileSync('git', ['-C', histSrc, 'checkout', '-f', '--detach', origSha], { stdio: 'ignore' });
+            fs.rmSync(histStage, { recursive: true, force: true });
+            try {
+              exportCleanPersonaStage({ repoRoot: histSrc, stageDir: histStage });
+            } catch (err) {
+              if (isHead) throw err;
+            }
+
+            for (const entry of fs.readdirSync(histDst)) {
+              if (entry === '.git') continue;
+              fs.rmSync(path.join(histDst, entry), { recursive: true, force: true });
+            }
+            for (const entry of fs.readdirSync(histStage)) {
+              fs.cpSync(path.join(histStage, entry), path.join(histDst, entry), { recursive: true });
+            }
+
+            execFileSync('git', ['-C', histDst, 'add', '-A'], { stdio: 'ignore' });
+            const treeSha = execFileSync('git', ['-C', histDst, 'write-tree'], { encoding: 'utf8' }).trim();
+            const scrubHistMsg = (m) =>
+              m
+                .replace(/publish-capyboop/gi, 'publish-mirror')
+                .replace(/rebrand-persona/gi, 'persona-export')
+                .replace(/persona:capyboop/gi, 'persona:mirror')
+                .replace(/capy-dev-only/gi, 'dev-only')
+                .replace(/CAPYBOOP_SYNC_TOKEN/gi, 'SYNC_TOKEN');
+            let cleanMsg = '';
+            try {
+              cleanMsg = sanitizeCommitMessage((rawMsg || '').trim());
+            } catch {
+              try {
+                cleanMsg = sanitizeCommitMessage(scrubHistMsg((rawMsg || '').trim()));
+              } catch {
+                cleanMsg = `Update CapyGame (${origSha.slice(0, 7)})`;
+              }
+            }
+            cleanMsg = cleanMsg || `Update CapyGame (${origSha.slice(0, 7)})`;
+
+            const commitArgs = ['-C', histDst, 'commit-tree', treeSha];
+            for (const cp of cleanParents) {
+              commitArgs.push('-p', cp);
+            }
+            commitArgs.push('-m', cleanMsg);
+
+            const cleanSha = execFileSync('git', commitArgs, {
+              encoding: 'utf8',
+              env: {
+                ...process.env,
+                GIT_AUTHOR_NAME: authorName,
+                GIT_AUTHOR_EMAIL: authorEmail,
+                GIT_COMMITTER_NAME: authorName,
+                GIT_COMMITTER_EMAIL: authorEmail,
+                GIT_AUTHOR_DATE: authorDate.trim(),
+                GIT_COMMITTER_DATE: committerDate.trim(),
+              },
+            }).trim();
+            cleanMap.set(origSha, cleanSha);
+            lastCleanSha = cleanSha;
+          }
+
+          execFileSync('git', ['-C', histDst, 'update-ref', 'refs/heads/main', lastCleanSha], { stdio: 'ignore' });
+          execFileSync('git', ['-C', srcRepo, 'worktree', 'remove', '--force', histSrc], { stdio: 'ignore' });
+          process.stdout.write(`${lastCleanSha}\n`);
+          NODE
+          }
+
           PUSHED_COMMIT_SHA=""
+          REMOTE_MAIN_STATUS=0
+          git ls-remote --exit-code --heads target main >/dev/null || REMOTE_MAIN_STATUS=$?
           if [ "${REMOTE_MAIN_STATUS}" -eq 0 ]; then
             git fetch target main
             if [ "${NEEDS_CLEAN_RESET}" != "true" ]; then
@@ -131,10 +249,11 @@ jobs:
             fi
 
             if [ "${NEEDS_CLEAN_RESET}" = "true" ]; then
-              echo "Initializing fresh clean-room root history authored solely by capyboop..."
-              git commit -m "Release CapyGame v${version}"
-              PUSHED_COMMIT_SHA="$(git rev-parse HEAD)"
-              git push --force target "${PUSHED_COMMIT_SHA}:refs/heads/main"
+              echo "Replaying full clean-room commit history authored solely by capyboop..."
+              PUSHED_COMMIT_SHA="$(replay_full_clean_history)"
+              git -C /tmp/capyboop-hist-dst remote add target "https://x-access-token@github.com/capyboop/capygame.git"
+              git -C /tmp/capyboop-hist-dst config credential.helper ""
+              git -C /tmp/capyboop-hist-dst push --force target "${PUSHED_COMMIT_SHA}:refs/heads/main"
             else
               TREE_SHA="$(git write-tree)"
               REMOTE_TREE_SHA="$(git rev-parse FETCH_HEAD^{tree})"
@@ -148,18 +267,26 @@ jobs:
                 git push target "${PUSHED_COMMIT_SHA}:refs/heads/main"
               fi
             fi
+          elif [ "${REMOTE_MAIN_STATUS}" -eq 2 ]; then
+            echo "Target repository has no main branch yet; replaying full clean-room commit history..."
+            PUSHED_COMMIT_SHA="$(replay_full_clean_history)"
+            git -C /tmp/capyboop-hist-dst remote add target "https://x-access-token@github.com/capyboop/capygame.git"
+            git -C /tmp/capyboop-hist-dst config credential.helper ""
+            git -C /tmp/capyboop-hist-dst push --force target "${PUSHED_COMMIT_SHA}:refs/heads/main"
           else
-            echo "Target repository has no main branch yet; pushing initial clean root commit..."
-            git commit -m "Release CapyGame v${version}"
-            PUSHED_COMMIT_SHA="$(git rev-parse HEAD)"
-            git push target "${PUSHED_COMMIT_SHA}:refs/heads/main"
+            echo "Failed to query target main branch (exit ${REMOTE_MAIN_STATUS})." >&2
+            exit "${REMOTE_MAIN_STATUS}"
           fi
 
           TAG_NAME="v${version}"
+          TAG_REPO_DIR="/tmp/capyboop-stage"
+          if [ -d /tmp/capyboop-hist-dst/.git ]; then
+            TAG_REPO_DIR="/tmp/capyboop-hist-dst"
+          fi
           if [ "${NEEDS_CLEAN_RESET}" = "true" ]; then
             echo "Force-syncing release tag ${TAG_NAME} (${PUSHED_COMMIT_SHA}) to capyboop/capygame..."
-            git tag -f "${TAG_NAME}" "${PUSHED_COMMIT_SHA}"
-            git push --force target "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+            git -C "${TAG_REPO_DIR}" tag -f "${TAG_NAME}" "${PUSHED_COMMIT_SHA}"
+            git -C "${TAG_REPO_DIR}" push --force target "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
           else
             REMOTE_TAG_STATUS=0
             git ls-remote --exit-code --tags target "refs/tags/${TAG_NAME}" >/dev/null || REMOTE_TAG_STATUS=$?
@@ -167,8 +294,8 @@ jobs:
               echo "Tag ${TAG_NAME} already exists on capyboop/capygame; skipping tag push."
             elif [ "${REMOTE_TAG_STATUS}" -eq 2 ]; then
               echo "Pushing release tag ${TAG_NAME} (${PUSHED_COMMIT_SHA}) to capyboop/capygame..."
-              git tag -f "${TAG_NAME}" "${PUSHED_COMMIT_SHA}"
-              git push target "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+              git -C "${TAG_REPO_DIR}" tag -f "${TAG_NAME}" "${PUSHED_COMMIT_SHA}"
+              git -C "${TAG_REPO_DIR}" push target "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
             else
               echo "Failed to query target tag ${TAG_NAME} (exit ${REMOTE_TAG_STATUS})." >&2
               exit "${REMOTE_TAG_STATUS}"
