@@ -68,6 +68,7 @@ export interface CapytorioPlaceableMapping {
 export const CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE: Record<string, CapytorioPlaceableMapping> = {
   burner_mining_drill: { baseType: 'drill', tierMult: 0.75, tintHex: 0x78716c },
   electric_mining_drill: { baseType: 'drill', tierMult: 1.25, tintHex: 0x0ea5e9 },
+  offshore_pump: { baseType: 'drill', tierMult: 1.0, tintHex: 0x0284c7 },
   transport_belt: { baseType: 'belt', tierMult: 1.0, tintHex: 0xfacc15 },
   fast_transport_belt: { baseType: 'belt', tierMult: 2.0, tintHex: 0xef4444 },
   express_transport_belt: { baseType: 'belt', tierMult: 3.0, tintHex: 0x06b6d4 },
@@ -136,6 +137,9 @@ export function getCapytorioBaseFootprint(
   baseType: CapytorioMachineType,
   variantItemId?: string
 ): CapytorioFootprint {
+  if (variantItemId === 'offshore_pump') {
+    return { width: 1, height: 1 };
+  }
   if (
     variantItemId === 'burner_mining_drill' ||
     variantItemId === 'boiler' ||

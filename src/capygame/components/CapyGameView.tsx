@@ -6708,11 +6708,11 @@ export const CapyGameView: React.FC = () => {
             snap={capytorioSnap}
             isTopBarVisible={isTopBarVisible}
             onToggleTopBar={() => {
-              AudioService.playCoin();
+              AudioService.playCapytorioUiClick('tool');
               setIsTopBarVisible((prev) => !prev);
             }}
             onOpenSettings={() => {
-              AudioService.playCoin();
+              AudioService.playCapytorioUiClick('tool');
               setIsSettingsOpen(true);
             }}
             pointerHoverActive={capytorioPointerHoverActive}

@@ -345,6 +345,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   const techLuaInputRef = useRef<HTMLInputElement | null>(null);
   const invSearchInputRef = useRef<HTMLInputElement | null>(null);
   const craftSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const assemblerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const techSearchInputRef = useRef<HTMLInputElement | null>(null);
   const blueprintSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedCraftMachineType, setSelectedCraftMachineType] =
@@ -352,6 +353,9 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
   const [focusedInvText, setFocusedInvText] = useState<string | null>(null);
   const [invSearchQuery, setInvSearchQuery] = useState('');
   const [craftSearchQuery, setCraftSearchQuery] = useState('');
+  const [assemblerSearchQuery, setAssemblerSearchQuery] = useState('');
+  const [assemblerRecipeGroup, setAssemblerRecipeGroup] =
+    useState<CapytorioRecipeGroup>('logistics');
   const [techSearchQuery, setTechSearchQuery] = useState('');
   const [blueprintSearchQuery, setBlueprintSearchQuery] = useState('');
   const [hoverTooltip, setHoverTooltip] = useState<{
@@ -410,11 +414,13 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
           ? craftSearchInputRef.current
           : drawerTab === 'inventory'
             ? invSearchInputRef.current
-            : drawerTab === 'tech'
-              ? techSearchInputRef.current
-              : drawerTab === 'blueprints'
-                ? blueprintSearchInputRef.current
-                : null;
+            : drawerTab === 'inspect'
+              ? assemblerSearchInputRef.current
+              : drawerTab === 'tech'
+                ? techSearchInputRef.current
+                : drawerTab === 'blueprints'
+                  ? blueprintSearchInputRef.current
+                  : null;
       if (target) {
         target.focus();
         target.select();
@@ -523,6 +529,48 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
     pocketCraftableRecipes.find((r) => r.id === selectedCraftRecipeId) ??
     groupRecipes[0] ??
     pocketCraftableRecipes[0];
+
+  const activeAssemblerRecipeId =
+    inspected?.type === 'assembler' ? inspected.recipeId : snap.selectedRecipeId;
+  const assemblerGroupTabs = GROUP_TABS.filter(
+    (tab): tab is { id: CapytorioRecipeGroup; label: string } =>
+      tab.id !== 'machines' &&
+      tab.id !== 'lua' &&
+      assemblerRecipes.some((r) => r.group === tab.id)
+  );
+  const inspectedKey = inspected ? `${inspected.gx},${inspected.gz}` : null;
+  useEffect(() => {
+    if (drawerTab !== 'inspect') return;
+    setAssemblerSearchQuery('');
+    const assigned = assemblerRecipes.find((r) => r.id === activeAssemblerRecipeId);
+    if (assigned) {
+      setAssemblerRecipeGroup(assigned.group);
+    }
+    // Sync tab only when opening inspect or switching inspected machine
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawerTab, inspectedKey]);
+  const effectiveAssemblerGroup: CapytorioRecipeGroup = assemblerGroupTabs.some(
+    (t) => t.id === assemblerRecipeGroup
+  )
+    ? assemblerRecipeGroup
+    : assemblerGroupTabs[0]?.id ?? 'logistics';
+  const assemblerNeedle = assemblerSearchQuery.trim().toLowerCase();
+  const filteredAssemblerRecipes = assemblerNeedle
+    ? assemblerRecipes.filter((r) => {
+        const outMeta = getCapytorioItemMeta(r.result);
+        return (
+          r.name.toLowerCase().includes(assemblerNeedle) ||
+          r.id.toLowerCase().includes(assemblerNeedle) ||
+          r.group.toLowerCase().includes(assemblerNeedle) ||
+          outMeta.name.toLowerCase().includes(assemblerNeedle) ||
+          outMeta.shortName.toLowerCase().includes(assemblerNeedle)
+        );
+      })
+    : assemblerRecipes.filter((r) => r.group === effectiveAssemblerGroup);
+  const activeAssemblerRecipe =
+    assemblerRecipes.find((r) => r.id === activeAssemblerRecipeId) ??
+    filteredAssemblerRecipes[0] ??
+    assemblerRecipes[0];
 
   const toggleTab = (tab: Exclude<CapytorioDrawerTab, 'none'>) => {
     setDrawerTab((prev) => (prev === tab ? 'none' : tab));
@@ -675,7 +723,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
         <div
           className={`fixed inset-x-0 ${
             isTopBarVisible ? 'top-10' : 'top-0'
-          } bottom-[78px] z-20 flex items-center justify-center p-2 sm:p-4 bg-black/55 pointer-events-auto`}
+          } bottom-[78px] z-20 flex items-center justify-center pt-[46px] px-2 pb-2 sm:pt-[48px] sm:px-4 sm:pb-4 bg-black/55 pointer-events-auto`}
           onClick={() => setDrawerTab('none')}
         >
           {/* CHARACTER INVENTORY & CRAFTING WINDOW */}
@@ -2183,33 +2231,199 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
                 )}
 
                 {(!inspected || inspected.type === 'assembler') && (
-                  <div className={`${FACTORIO_WELL} p-2.5`}>
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#f4b054] mb-1.5">
-                      Assembler Recipe
-                    </div>
-                    <div className="grid grid-cols-3 sm:grid-cols-5 gap-1">
-                      {assemblerRecipes.map((rec) => {
-                        const outMeta = getCapytorioItemMeta(rec.result);
-                        const shape =
-                          outMeta.shape ?? resolveCapytorioItemShape(outMeta.id, outMeta.category);
-                        const isSel =
-                          (inspected?.type === 'assembler'
-                            ? inspected.recipeId
-                            : snap.selectedRecipeId) === rec.id;
-                        return (
-                          <CapytorioSlotTile
-                            key={rec.id}
-                            testId={`capytorio-assembler-recipe-${rec.id}`}
-                            label={outMeta.shortName}
-                            title={`Assign Assembler Recipe: ${rec.name}`}
-                            selected={isSel}
-                            itemShape={shape}
-                            color={outMeta.cssColor}
-                            onClick={() => onSelectAssemblerRecipe(rec.id as CapytorioRecipeId)}
+                  <div className={`flex flex-col justify-between gap-2 ${FACTORIO_WELL} p-2.5`}>
+                    <div className="space-y-2">
+                      {/* Header bar matching Crafting workbench */}
+                      <div className="flex items-center justify-between gap-2 border-b border-[#2b2e35] pb-1">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-[#f4b054] shrink-0">
+                          Assembler Recipe
+                        </span>
+                        <div className="relative flex-1 max-w-[200px]">
+                          <Search className="w-3 h-3 text-[#8e95a2] absolute left-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            ref={assemblerSearchInputRef}
+                            type="text"
+                            value={assemblerSearchQuery}
+                            onChange={(e) => setAssemblerSearchQuery(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape' && assemblerSearchQuery) {
+                                e.stopPropagation();
+                                setAssemblerSearchQuery('');
+                              }
+                            }}
+                            data-testid="capytorio-assembler-search"
+                            placeholder="Search recipes [Ctrl+F]..."
+                            aria-label="Search Assembler Recipes"
+                            className="w-full h-5 pl-5 pr-4 rounded-[2px] bg-[#101216] border border-[#2f333d] focus:border-[#e58926] outline-none text-[10px] text-[#eef1f5] placeholder-[#6c7382]"
                           />
-                        );
-                      })}
+                          {assemblerSearchQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setAssemblerSearchQuery('')}
+                              aria-label="Clear assembler recipe search"
+                              className="absolute right-1 top-1/2 -translate-y-1/2 text-[#8e95a2] hover:text-[#eef1f5] cursor-pointer"
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          )}
+                        </div>
+                        <span className="text-[10px] font-mono tabular-nums text-[#9aa0ac] hidden sm:inline shrink-0">
+                          {assemblerNeedle
+                            ? `${filteredAssemblerRecipes.length} matches`
+                            : `${assemblerRecipes.length} unlocked`}
+                        </span>
+                      </div>
+
+                      {/* Category Tabs matching Crafting workbench */}
+                      <div className="flex flex-wrap gap-1">
+                        {assemblerGroupTabs.map((tab) => {
+                          const active = !assemblerNeedle && effectiveAssemblerGroup === tab.id;
+                          return (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              data-testid={`capytorio-assembler-tab-${tab.id}`}
+                              onClick={() => {
+                                setAssemblerSearchQuery('');
+                                setAssemblerRecipeGroup(tab.id);
+                              }}
+                              className={`px-2 py-1 rounded-[2px] text-[10px] font-semibold cursor-pointer ${
+                                active ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+                              }`}
+                            >
+                              {tab.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Compact 36x36 Recipe Grid matching Crafting workbench */}
+                      <div className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 max-h-[36vh] overflow-y-auto pr-0.5">
+                        {filteredAssemblerRecipes.map((rec) => {
+                          const outMeta = getCapytorioItemMeta(rec.result);
+                          const isSel = activeAssemblerRecipeId === rec.id;
+                          const placeable = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result];
+                          const shape =
+                            outMeta.shape ?? resolveCapytorioItemShape(outMeta.id, outMeta.category);
+                          const resolvedColor = placeable?.tintHex
+                            ? hexToCss(placeable.tintHex)
+                            : outMeta.cssColor;
+                          const fp = placeable
+                            ? getCapytorioFootprint(placeable.baseType, rec.result)
+                            : null;
+                          const stockCount = Object.prototype.hasOwnProperty.call(
+                            CAPYTORIO_MACHINE_SPECS,
+                            rec.result
+                          )
+                            ? snap.pocketMachines[rec.result as CapytorioMachineType] ?? 0
+                            : snap.pocketItems[rec.result] ?? 0;
+                          const ingEntries = rec.ingredients.map((i) => ({
+                            id: i.item,
+                            name: getCapytorioItemMeta(i.item).name,
+                            have:
+                              (inspected?.type === 'assembler'
+                                ? inspected.inputBuffer[i.item] ?? 0
+                                : 0) + (snap.pocketItems[i.item] ?? 0),
+                            need: i.count,
+                          }));
+                          const hasInputs = ingEntries.every((i) => i.have >= i.need);
+                          const openTip = (el: HTMLElement) =>
+                            showSlotTooltip(el, {
+                              title: rec.name,
+                              subtitle: placeable ? 'Placeable Entity' : outMeta.category,
+                              description: placeable
+                                ? CAPYTORIO_MACHINE_SPECS[placeable.baseType]?.description
+                                : undefined,
+                              machineType: placeable?.baseType,
+                              itemShape: shape,
+                              color: resolvedColor,
+                              footprint: fp ? `${fp.width}×${fp.height}` : undefined,
+                              stockCount,
+                              outputCount: rec.resultCount,
+                              craftTimeSec: rec.craftTimeSec,
+                              ingredients: ingEntries,
+                              hint: 'Click Assign Recipe · Alt+Click Pedia',
+                            });
+                          return (
+                            <CapytorioSlotTile
+                              key={rec.id}
+                              mini
+                              suppressNativeTitle
+                              testId={`capytorio-assembler-recipe-${rec.id}`}
+                              label={outMeta.shortName}
+                              title={`Assign Assembler Recipe: ${rec.name} (×${rec.resultCount})`}
+                              count={`×${rec.resultCount}`}
+                              selected={isSel}
+                              accent={hasInputs ? 'craftable' : 'none'}
+                              machineType={placeable?.baseType}
+                              itemShape={shape}
+                              color={resolvedColor}
+                              onMouseEnter={(e) => openTip(e.currentTarget)}
+                              onFocus={(e) => openTip(e.currentTarget)}
+                              onMouseLeave={hideSlotTooltip}
+                              onBlur={hideSlotTooltip}
+                              onClick={(e) => {
+                                if (e.altKey) {
+                                  e.preventDefault();
+                                  hideSlotTooltip();
+                                  onOpenPedia(rec.result);
+                                  return;
+                                }
+                                onSelectAssemblerRecipe(rec.id as CapytorioRecipeId);
+                              }}
+                            />
+                          );
+                        })}
+                        {assemblerNeedle && filteredAssemblerRecipes.length === 0 && (
+                          <div className="col-span-full text-[10px] text-[#7c8391] py-4 text-center">
+                            No assembler recipes match "{assemblerSearchQuery}"
+                          </div>
+                        )}
+                      </div>
                     </div>
+
+                    {/* Selected Assembler Recipe Ingredient & Status Bar */}
+                    {activeAssemblerRecipe && (
+                      <div
+                        data-testid="capytorio-assembler-selected-bar"
+                        className="pt-2 border-t border-[#2b2e35] flex flex-wrap items-center justify-between gap-2 text-[10px]"
+                      >
+                        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                          <span className="font-bold text-[#f4b054] truncate">
+                            {activeAssemblerRecipe.name}
+                          </span>
+                          <span className="text-[#9aa0ac] font-mono tabular-nums">
+                            ×{activeAssemblerRecipe.resultCount} · {activeAssemblerRecipe.craftTimeSec}s
+                          </span>
+                          {activeAssemblerRecipe.ingredients.map((ing) => {
+                            const inMachine =
+                              inspected?.type === 'assembler'
+                                ? inspected.inputBuffer[ing.item] ?? 0
+                                : 0;
+                            const inPocket = snap.pocketItems[ing.item] ?? 0;
+                            const have = inMachine + inPocket;
+                            const ok = have >= ing.count;
+                            return (
+                              <span
+                                key={ing.item}
+                                className={`px-1.5 py-0.5 rounded-[2px] font-mono tabular-nums border ${
+                                  ok
+                                    ? 'bg-[#162518] border-[#45b649]/65 text-[#86ef92]'
+                                    : 'bg-[#261616] border-[#d9483b]/65 text-[#f2857c]'
+                                }`}
+                              >
+                                {have}/{ing.count} {getCapytorioItemMeta(ing.item).shortName}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        {inspected?.type === 'assembler' && (
+                          <span className="px-1.5 py-0.5 rounded-[2px] bg-[#2a2216] border border-[#e58926]/65 text-[#f4b054] font-mono font-semibold shrink-0">
+                            Assigned
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

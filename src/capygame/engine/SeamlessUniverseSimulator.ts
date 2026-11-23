@@ -4472,7 +4472,8 @@ export class SeamlessUniverseSimulator {
     realityScaleGamma: number = 1.0,
     showObjectMarkers: boolean = false,
     astrophysicsPalette: AstrophysicsPaletteMode = 'natural',
-    suppressGladeForSurfaceLanding: boolean = false
+    suppressGladeForSurfaceLanding: boolean = false,
+    suppressWoodlandSurfaceLayers: boolean = false
   ): UniverseScaleBandSpec {
     this.ensureLayersBuilt();
     this.elapsed += dt;
@@ -4593,6 +4594,19 @@ export class SeamlessUniverseSimulator {
       const isSingleElectron = layerId === 'single_electron';
       const isSinglePhoton = layerId === 'single_photon';
       const isPlanckFoam = layerId === 'planck_quantum_foam';
+
+      // When zooming out from Capytorio (industrial meadow/aquatic world), never fade in
+      // Sanctuary's woodland glade / giant pine ecosystem / valley canopy meshes on top of the factory!
+      if (
+        suppressWoodlandSurfaceLayers &&
+        (isLandMasses || isEcosystems || isForestGlade || isLeafGlade)
+      ) {
+        if (layer.group.visible) {
+          layer.group.visible = false;
+        }
+        layer.group.matrixWorldAutoUpdate = false;
+        continue;
+      }
 
       // Unified Forest Glade continuous zoom curve:
       // Makes the ONE ForestMicroDiorama emerge smoothly inside Ecosystems (2.20), open into a wide

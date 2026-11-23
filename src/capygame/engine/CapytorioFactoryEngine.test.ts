@@ -5,6 +5,10 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
 import {
+  computeCapytorioAmbientMix,
+  selectCapytorioPlacementProfile,
+} from '../services/AudioService';
+import {
   BELT_CURVE_INNER_ARC_M,
   BELT_CURVE_OUTER_ARC_M,
   CAPYTORIO_BELT_ITEMS_PER_LANE,
@@ -19,8 +23,11 @@ import {
   getBeltCurveShape,
   getBeltLaneArcMeters,
   getBeltLaneCapacity,
+  isCapytorioWaterTerrain,
   resolveCapytorioPlaceableSpec,
   sampleCapytorioBaseResource,
+  sampleCapytorioTerrain,
+  sampleCapytorioTerrainDetail,
   sampleCapytorioTreeAt,
   sanitizeCapytorioState,
   tileKey,
@@ -176,8 +183,22 @@ test('Capytorio provides infinite unbounded procedural ore chunks far from origi
   assert.equal(foundFarChunkOre, true, 'far away 16x16 chunks should contain procedural ore seams');
 
   const engine = new CapytorioFactoryEngine();
+  // Locate a dry land tile far across the far hemisphere (avoiding procedural oceans/lakes/rivers)
+  let farDryGx = 250;
+  let farDryGz = -180;
+  let foundFarDry = false;
+  for (let gx = 240; gx <= 290 && !foundFarDry; gx++) {
+    for (let gz = -200; gz <= -150 && !foundFarDry; gz++) {
+      if (!isCapytorioWaterTerrain(sampleCapytorioTerrain(gx, gz))) {
+        farDryGx = gx;
+        farDryGz = gz;
+        foundFarDry = true;
+      }
+    }
+  }
+  assert.equal(foundFarDry, true, 'far hemisphere should contain buildable dry continents');
   // Verify machines can be placed arbitrarily far across the far hemisphere without clamping
-  const beltFar = engine.placeMachine('belt', 250, -180, 1);
+  const beltFar = engine.placeMachine('belt', farDryGx, farDryGz, 1);
   assert.equal(beltFar.ok, true);
   assert.equal(worldToCapytorioGridX(capytorioGridToWorldX(250)), 250);
   assert.equal(worldToCapytorioGridZ(capytorioGridToWorldZ(-180)), -180);
@@ -2028,3 +2049,216 @@ test('Capytorio3DRenderer centers multi-tile models cleanly and syncs Alt-Mode o
     renderer.dispose();
   }
 });
+
+test('Capytorio procedural audio helpers classify placement profiles and scale ambient mix safely', () => {
+  assert.equal(selectCapytorioPlacementProfile('belt'), 'belt');
+  assert.equal(selectCapytorioPlacementProfile('tunnel'), 'belt');
+  assert.equal(selectCapytorioPlacementProfile('splitter'), 'belt');
+  assert.equal(selectCapytorioPlacementProfile('inserter'), 'servo');
+  assert.equal(selectCapytorioPlacementProfile('chest'), 'crate');
+  assert.equal(selectCapytorioPlacementProfile('assembler'), 'heavy');
+  assert.equal(selectCapytorioPlacementProfile('furnace'), 'heavy');
+  assert.equal(selectCapytorioPlacementProfile('drill'), 'heavy');
+  assert.equal(selectCapytorioPlacementProfile('generator'), 'heavy');
+  assert.equal(selectCapytorioPlacementProfile('lab'), 'heavy');
+
+  // Ambient mix silences outside Capytorio, when muted, or with zero active machines
+  assert.equal(computeCapytorioAmbientMix(12, 1.0, false, false).targetGain, 0);
+  assert.equal(computeCapytorioAmbientMix(12, 1.0, true, true).targetGain, 0);
+  assert.equal(computeCapytorioAmbientMix(0, 1.0, true, false).targetGain, 0);
+
+  // Active machines smoothly ramp gain & frequency while capping cleanly for large factories
+  const small = computeCapytorioAmbientMix(2, 1.0, true, false);
+  const large = computeCapytorioAmbientMix(40, 1.0, true, false);
+  const brownout = computeCapytorioAmbientMix(10, 0.2, true, false);
+  assert.ok(small.targetGain > 0 && small.targetGain < large.targetGain, 'Larger factory produces richer hum');
+  assert.ok(large.targetGain <= 0.04, 'Ambient gain stays subtle and non-fatiguing');
+  assert.ok(brownout.humHz < large.humHz, 'Low power efficiency drops turbine hum pitch');
+  assert.ok(brownout.filterHz < large.filterHz, 'Low power efficiency softens filter cutoff');
+});
+
+test('Capytorio3DRenderer builds all 9 upgraded composite archetypes with live mechanical animations', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+
+  // Ensure every archetype has pocket stock available for placement
+  const pocket = (engine as unknown as { pocketMachines: Record<string, number> }).pocketMachines;
+  for (const mType of ['drill', 'furnace', 'assembler', 'generator', 'lab', 'splitter', 'tunnel', 'chest', 'inserter']) {
+    pocket[mType] = Math.max(pocket[mType] ?? 0, 5);
+  }
+
+  // Locate a nearby ore tile for drill placement
+  let oreGx = 0;
+  let oreGz = 0;
+  let foundOre = false;
+  for (let r = 0; r <= 12 && !foundOre; r++) {
+    for (let dx = -r; dx <= r && !foundOre; dx++) {
+      for (let dz = -r; dz <= r && !foundOre; dz++) {
+        if (engine.findFirstOreInFootprint(dx, dz, 2, 2)) {
+          oreGx = dx;
+          oreGz = dz;
+          foundOre = true;
+        }
+      }
+    }
+  }
+  assert.equal(foundOre, true, 'Found ore patch for drill placement');
+  assert.equal(engine.placeMachine('drill', oreGx, oreGz, 0).ok, true);
+
+  // Place all remaining 8 composite machine types on clear coordinates
+  const placements: Array<['furnace' | 'assembler' | 'generator' | 'lab' | 'splitter' | 'tunnel' | 'chest' | 'inserter', number, number]> = [
+    ['furnace', 12, 0],
+    ['assembler', 16, 0],
+    ['generator', 20, 0],
+    ['lab', 24, 0],
+    ['splitter', 12, 6],
+    ['tunnel', 16, 6],
+    ['chest', 18, 6],
+    ['inserter', 20, 6],
+  ];
+  for (const [type, gx, gz] of placements) {
+    assert.equal(engine.placeMachine(type, gx, gz, 0).ok, true, `Placed ${type}`);
+  }
+
+  // Activate generator, assembler, lab, and inserter hold state so all sub-parts animate
+  const gen = engine.machines.get(tileKey(20, 0))!;
+  gen.fuelTimer = 25;
+  const asm = engine.machines.get(tileKey(16, 0))!;
+  asm.recipeId = 'iron_gear';
+  asm.craftProgress = 0.45;
+  const lab = engine.machines.get(tileKey(24, 0))!;
+  lab.craftProgress = 0.5;
+  const ins = engine.machines.get(tileKey(20, 6))!;
+  ins.holdingItem = 'iron_plate';
+
+  const renderer = new Capytorio3DRenderer();
+  try {
+    const cx = capytorioGridToWorldX(16);
+    const cz = capytorioGridToWorldZ(2);
+    renderer.sync(engine, cx, cz, 0.016, 1.0, true, 32);
+
+    const activeGroups = (renderer as unknown as { activeMachineGroups: Map<string, THREE.Group> }).activeMachineGroups;
+    const asmGroup = activeGroups.get(tileKey(16, 0))!;
+    const labGroup = activeGroups.get(tileKey(24, 0))!;
+    const insGroup = activeGroups.get(tileKey(20, 6))!;
+    const genGroup = activeGroups.get(tileKey(20, 0))!;
+    assert.ok(asmGroup.userData.gearA && asmGroup.userData.gearB && asmGroup.userData.pressHead, 'Assembler has meshing gears and stamping press');
+    assert.ok(labGroup.userData.labRingA && labGroup.userData.labRingB, 'Lab has dual orbital gyro rings');
+    assert.ok(insGroup.userData.jawL && insGroup.userData.jawR, 'Inserter has articulated pneumatic jaws');
+    assert.ok(genGroup.userData.flywheel, 'Generator has spoked brass flywheel');
+
+    const gearA0 = (asmGroup.userData.gearA as THREE.Object3D).rotation.y;
+    const ringA0 = (labGroup.userData.labRingA as THREE.Object3D).rotation.x;
+    const fw0 = (genGroup.userData.flywheel as THREE.Object3D).rotation.x;
+    const jawClampedX = (insGroup.userData.jawL as THREE.Object3D).position.x;
+
+    // Release inserter item and advance time -> animations update cleanly
+    ins.holdingItem = null;
+    renderer.sync(engine, cx, cz, 0.016, 2.25, true, 32);
+
+    assert.notEqual((asmGroup.userData.gearA as THREE.Object3D).rotation.y, gearA0, 'Assembler toothed gear rotates');
+    assert.notEqual((labGroup.userData.labRingA as THREE.Object3D).rotation.x, ringA0, 'Lab gyro ring rotates');
+    assert.notEqual((genGroup.userData.flywheel as THREE.Object3D).rotation.x, fw0, 'Generator spoked flywheel spins');
+    assert.ok(
+      Math.abs((insGroup.userData.jawL as THREE.Object3D).position.x) > Math.abs(jawClampedX),
+      'Inserter pincer jaws open wider when empty vs clamped on held item'
+    );
+  } finally {
+    renderer.dispose();
+  }
+});
+
+test('Capytorio terrain generator creates lakes, rivers, and oceans while keeping starter plain dry and guarding water placement', () => {
+  // 1. Starter plain (r <= 12.6) is strictly dry meadow grass
+  for (let gx = -12; gx <= 12; gx++) {
+    for (let gz = -12; gz <= 12; gz++) {
+      if (Math.hypot(gx, gz) <= 12.6) {
+        const detail = sampleCapytorioTerrainDetail(gx, gz);
+        assert.equal(detail.isWater, false, `Starter tile (${gx},${gz}) must stay dry`);
+        assert.equal(detail.type, 'grass', `Starter tile (${gx},${gz}) must be meadow grass`);
+      }
+    }
+  }
+
+  // 2. Scan surrounding region (-90..90) and verify all 6 hydrology/terrain types exist deterministically
+  const counts: Record<string, number> = {
+    grass: 0,
+    sand: 0,
+    shallow_water: 0,
+    river: 0,
+    lake: 0,
+    ocean: 0,
+  };
+  let sampleLakeTile: [number, number] | null = null;
+  let sampleRiverTile: [number, number] | null = null;
+  let sampleOceanTile: [number, number] | null = null;
+  let sampleSandTile: [number, number] | null = null;
+
+  for (let gx = -90; gx <= 90; gx += 2) {
+    for (let gz = -90; gz <= 90; gz += 2) {
+      const d = sampleCapytorioTerrainDetail(gx, gz);
+      counts[d.type] = (counts[d.type] ?? 0) + 1;
+      if (d.isWater) {
+        assert.ok(d.elevationY <= -0.2, `Water tile (${gx},${gz}) must recess below water plane`);
+        assert.ok(d.waterDepth > 0, `Water tile (${gx},${gz}) must have positive depth`);
+        // Zero ores or trees spawn underwater
+        assert.equal(sampleCapytorioBaseResource(gx, gz), null, `No ore should spawn underwater at (${gx},${gz})`);
+        assert.equal(sampleCapytorioTreeAt(gx, gz), false, `No tree should spawn underwater at (${gx},${gz})`);
+      } else if (d.type === 'sand') {
+        assert.equal(sampleCapytorioTreeAt(gx, gz), false, `No tree should spawn on sandy beach at (${gx},${gz})`);
+        if (!sampleSandTile) sampleSandTile = [gx, gz];
+      }
+      if (d.type === 'lake' && !sampleLakeTile) sampleLakeTile = [gx, gz];
+      if (d.type === 'river' && !sampleRiverTile) sampleRiverTile = [gx, gz];
+      if (d.type === 'ocean' && !sampleOceanTile) sampleOceanTile = [gx, gz];
+    }
+  }
+
+  assert.ok(counts.grass > 100, 'Expected abundant meadow grass');
+  assert.ok(counts.sand > 20, 'Expected sandy beaches and riverbanks');
+  assert.ok(counts.shallow_water > 10, 'Expected shallow coastal water');
+  assert.ok(counts.river > 10, 'Expected meandering rivers');
+  assert.ok(counts.lake > 10, 'Expected inland freshwater lakes');
+  assert.ok(counts.ocean > 50, 'Expected sweeping ocean basins');
+  assert.ok(sampleLakeTile && sampleRiverTile && sampleOceanTile && sampleSandTile);
+
+  // 3. Water blocks land machines while permitting offshore_pump
+  const engine = new CapytorioFactoryEngine();
+  engine.addPocketItem('offshore_pump', 2);
+  const [lakeX, lakeZ] = sampleLakeTile!;
+  const [riverX, riverZ] = sampleRiverTile!;
+  const [oceanX, oceanZ] = sampleOceanTile!;
+  const [sandX, sandZ] = sampleSandTile!;
+
+  const blockedBelt = engine.placeMachine('belt', lakeX, lakeZ, 0);
+  assert.equal(blockedBelt.ok, false, 'Belt cannot be placed on lake water');
+  assert.match(blockedBelt.reason ?? '', /water/i);
+
+  const blockedAsm = engine.placeMachine('assembler', oceanX, oceanZ, 0);
+  assert.equal(blockedAsm.ok, false, 'Assembler cannot be placed on ocean water');
+
+  const okPump = engine.placeMachine('offshore_pump', lakeX, lakeZ, 0);
+  assert.equal(okPump.ok, true, 'Offshore pump can be placed on water');
+
+  // 4. Tile inspection reports accurate hydrology labels
+  const riverInspect = engine.inspectTileSnapshot(riverX, riverZ);
+  assert.equal(riverInspect.terrainName, 'Flowing River');
+  const oceanInspect = engine.inspectTileSnapshot(oceanX, oceanZ);
+  assert.equal(oceanInspect.terrainName, 'Deep Ocean');
+  const sandInspect = engine.inspectTileSnapshot(sandX, sandZ);
+  assert.equal(sandInspect.terrainName, 'Sandy Shore');
+
+  // 5. Capytorio3DRenderer syncs terrain & water decks cleanly across close, strategic, and high-altitude zooms
+  const renderer = new Capytorio3DRenderer();
+  try {
+    const cx = capytorioGridToWorldX(0);
+    const cz = capytorioGridToWorldZ(0);
+    renderer.sync(engine, cx, cz, 0.016, 1.0, true, 32);
+    renderer.sync(engine, cx, cz, 0.016, 2.0, true, 180);
+    renderer.sync(engine, cx, cz, 0.016, 3.0, true, 520);
+  } finally {
+    renderer.dispose();
+  }
+});
+
+

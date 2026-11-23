@@ -856,7 +856,11 @@ export class PlayStyleManager {
       onTechCompleted: (_techId, techName, rewardDna, _rewardCoins, isRocketLaunch) => {
         const snap = this.capytorioEngine.getUiSnapshot();
         this.awardProgress(rewardDna, 'capytorio', snap.score);
-        AudioService.playPrestigeFanfare();
+        if (isRocketLaunch) {
+          AudioService.playCapytorioRocketLaunch();
+        } else {
+          AudioService.playCapytorioTechComplete();
+        }
         this.addCameraTrauma(isRocketLaunch ? 0.45 : 0.24);
         NativeBridge.haptic('success');
         this.callbacks.onBountyEvent?.('capytorio_pack', 1);
@@ -874,10 +878,13 @@ export class PlayStyleManager {
         }
       },
       onMilestoneCompleted: (_id, label) => {
-        AudioService.playCoin();
+        AudioService.playCapytorioTechComplete();
         NativeBridge.haptic('success');
         this.callbacks.onModeNotification?.(`Factory Milestone: ${label}!`);
         this.markCapytorioDirty();
+      },
+      onCraftQueueCompleted: () => {
+        AudioService.playCapytorioCraftQueue('complete');
       },
       onScoreChanged: (score) => {
         this.awardProgress(0, 'capytorio', score);
@@ -2057,8 +2064,8 @@ export class PlayStyleManager {
         this.camera.far = desiredFar;
         this.camera.updateProjectionMatrix();
       }
-      this.capytorioPlanetFadeActive = true;
-      const skyAlpha = 1.0 - smoothstep01(2.45, 3.85, pose.logAlt);
+      this.capytorioPlanetFadeActive = pose.altitudeRadius > 420;
+      const skyAlpha = 1.0 - smoothstep01(3.05, 4.15, pose.logAlt);
       this.setSkyDomeAlpha(skyAlpha);
       if (this.worldEnv) {
         this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
@@ -2066,7 +2073,7 @@ export class PlayStyleManager {
         this.worldEnv.mountainMesh.visible = false;
       }
       if (this.oceanMesh) {
-        this.oceanMesh.visible = pose.logAlt <= 2.95;
+        this.oceanMesh.visible = pose.logAlt <= 3.65;
         if (this.oceanMesh.visible) {
           this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
           this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
@@ -2126,6 +2133,7 @@ export class PlayStyleManager {
       if (this.seamlessUniverse) {
         const showForestGrove =
           isSurfaceVisible &&
+          this.currentMode !== 'capytorio' &&
           ((this.seamlessZoomActive &&
             this.currentLogScaleMeters >= -0.85 &&
             this.currentLogScaleMeters <= 3.1) ||
@@ -2412,6 +2420,9 @@ export class PlayStyleManager {
     }
     const prevWorldPos = this.heroCapy.position.clone();
     this.currentMode = mode;
+    if (mode !== 'capytorio') {
+      AudioService.updateCapytorioAmbient(0, 0, false);
+    }
     this.physicsBridge?.setActiveDistrict(mode);
 
     // Keep all 5 game zones permanently active & visible in the same contiguous world!
@@ -4834,7 +4845,7 @@ export class PlayStyleManager {
     const mined = this.capytorioEngine.handMineAt(gx, gz, 2);
     if (mined) {
       const meta = getCapytorioItemMeta(mined);
-      AudioService.playCoin();
+      AudioService.playCapytorioMine(mined === 'orange' ? 'tree' : 'ore');
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
         0.4,
@@ -4878,7 +4889,7 @@ export class PlayStyleManager {
     shape?: CapytorioSelectionShape
   ): void {
     this.capytorioEngine.setClipboardToolMode(mode, shape);
-    AudioService.playCoin();
+    AudioService.playCapytorioUiClick('tool');
     this.emitCapytorioSnapshot();
   }
 
@@ -4896,7 +4907,7 @@ export class PlayStyleManager {
       return false;
     }
     this.capytorioEngine.rotateBlueprint90(ccw);
-    AudioService.playCoin();
+    AudioService.playCapytorioRotate();
     this.emitCapytorioSnapshot();
     return true;
   }
@@ -4911,7 +4922,7 @@ export class PlayStyleManager {
     }
     const ok = this.capytorioEngine.flipBlueprintHorizontal();
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioBlueprint('flip');
       this.emitCapytorioSnapshot();
     }
     return ok;
@@ -4927,7 +4938,7 @@ export class PlayStyleManager {
     }
     const ok = this.capytorioEngine.flipBlueprintVertical();
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioBlueprint('flip');
       this.emitCapytorioSnapshot();
     }
     return ok;
@@ -4936,7 +4947,7 @@ export class PlayStyleManager {
   public activateLastCapytorioBlueprint(): boolean {
     const ok = this.capytorioEngine.activateLastBlueprint();
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioUiClick('tool');
       this.emitCapytorioSnapshot();
     }
     return ok;
@@ -4945,7 +4956,7 @@ export class PlayStyleManager {
   public selectCapytorioBlueprint(id: string): CapytorioSavedBlueprint | null {
     const picked = this.capytorioEngine.selectBlueprintFromLibrary(id);
     if (picked) {
-      AudioService.playCoin();
+      AudioService.playCapytorioUiClick('tool');
       this.emitCapytorioSnapshot();
     }
     return picked;
@@ -4954,7 +4965,7 @@ export class PlayStyleManager {
   public deleteCapytorioBlueprint(id: string): boolean {
     const removed = this.capytorioEngine.deleteBlueprintFromLibrary(id);
     if (removed) {
-      AudioService.playBrickHit(0.85);
+      AudioService.playCapytorioDemolish();
       this.markCapytorioDirty();
     }
     return removed;
@@ -4962,14 +4973,14 @@ export class PlayStyleManager {
 
   public clearCapytorioBlueprintLibrary(): void {
     this.capytorioEngine.clearBlueprintLibrary();
-    AudioService.playBrickHit(0.82);
+    AudioService.playCapytorioDemolish();
     this.markCapytorioDirty();
   }
 
   public undoCapytorioCut(): { restoredCount: number } {
     const res = this.capytorioEngine.undoCut();
     if (res.restoredCount > 0) {
-      AudioService.playBrickHit(1.1);
+      AudioService.playCapytorioBlueprint('paste', res.restoredCount);
       this.markCapytorioDirty();
       this.emitTelemetry();
     } else {
@@ -4981,7 +4992,7 @@ export class PlayStyleManager {
   public demolishCapytorioTileAt(gx: number, gz: number): CapytorioMachineType | null {
     const removed = this.capytorioEngine.demolishAt(gx, gz);
     if (removed) {
-      AudioService.playBrickHit(0.88);
+      AudioService.playCapytorioDemolish();
       this.capytorioEngine.inspectTileAt(gx, gz);
       this.markCapytorioDirty();
       this.emitTelemetry();
@@ -5019,7 +5030,7 @@ export class PlayStyleManager {
     const keys = this.capytorioEngine.selectMachinesInBox(gxA, gzA, gxB, gzB);
     const res = this.capytorioEngine.captureBlueprint(keys, mode);
     if (res.count > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioBlueprint(mode, res.count);
       this.markCapytorioDirty();
       if (mode === 'cut') {
         this.emitTelemetry();
@@ -5038,7 +5049,7 @@ export class PlayStyleManager {
     const keys = this.capytorioEngine.selectMachinesInPolygon(points);
     const res = this.capytorioEngine.captureBlueprint(keys, mode);
     if (res.count > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioBlueprint(mode, res.count);
       this.markCapytorioDirty();
       if (mode === 'cut') {
         this.emitTelemetry();
@@ -5061,7 +5072,7 @@ export class PlayStyleManager {
   public undoCapytorioAction(): { ok: boolean; label: string; changedCount: number } {
     const res = this.capytorioEngine.undoLastAction();
     if (res.ok) {
-      AudioService.playBrickHit(0.95);
+      AudioService.playCapytorioDemolish();
       this.markCapytorioDirty();
       this.emitTelemetry();
     } else {
@@ -5073,7 +5084,7 @@ export class PlayStyleManager {
   public redoCapytorioAction(): { ok: boolean; label: string; changedCount: number } {
     const res = this.capytorioEngine.redoLastAction();
     if (res.ok) {
-      AudioService.playBrickHit(1.14);
+      AudioService.playCapytorioBlueprint('paste', res.changedCount);
       this.markCapytorioDirty();
       this.emitTelemetry();
     } else {
@@ -5113,7 +5124,7 @@ export class PlayStyleManager {
     const res = this.capytorioEngine.pasteBlueprintAtAnchor();
     const totalApplied = res.placedCount + res.updatedRecipesCount;
     if (totalApplied > 0) {
-      AudioService.playBrickHit(1.16);
+      AudioService.playCapytorioBlueprint('paste', totalApplied);
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(res.anchorGx),
         0.55,
@@ -5133,7 +5144,7 @@ export class PlayStyleManager {
         message: `Placed ${totalApplied} building${totalApplied === 1 ? '' : 's'}${skippedNote}`,
       };
     }
-    AudioService.playSplash();
+    AudioService.playCapytorioError();
     this.emitCapytorioSnapshot();
     return {
       ok: false,
@@ -5173,7 +5184,7 @@ export class PlayStyleManager {
     // Paste mode: lock transparent blueprint ghost at tapped tile so user can rotate/flip or tap Place
     if (this.capytorioEngine.clipboardToolState === 'paste') {
       this.capytorioEngine.setBlueprintAnchor(gx, gz);
-      AudioService.playCoin();
+      AudioService.playCapytorioUiClick('tool');
       this.emitCapytorioSnapshot();
       return {
         ok: true,
@@ -5193,7 +5204,7 @@ export class PlayStyleManager {
       if (tapMachine) {
         const res = this.capytorioEngine.captureBlueprint([tapMachine], mode);
         if (res.count > 0) {
-          AudioService.playCoin();
+          AudioService.playCapytorioBlueprint(mode, res.count);
           this.markCapytorioDirty();
           if (mode === 'cut') {
             this.emitTelemetry();
@@ -5227,7 +5238,7 @@ export class PlayStyleManager {
     if (tool === 'demolish') {
       const removed = this.capytorioEngine.demolishAt(gx, gz);
       if (removed) {
-        AudioService.playBrickHit(0.9);
+        AudioService.playCapytorioDemolish();
         this.markCapytorioDirty();
         return { ok: true, message: `Refunded ${CAPYTORIO_MACHINE_SPECS[removed].name}` };
       }
@@ -5239,6 +5250,7 @@ export class PlayStyleManager {
     if (tool === 'mine') {
       if (existing) {
         const info = this.capytorioEngine.inspectTileAt(gx, gz);
+        AudioService.playCapytorioUiClick('tool');
         this.emitCapytorioSnapshot();
         return {
           ok: true,
@@ -5256,6 +5268,7 @@ export class PlayStyleManager {
       // second tap on the already-inspected tree (or pressing [E] / Chop button) harvests it.
       if (this.capytorioEngine.hasTreeAt(gx, gz) && !alreadyInspectingThisTile) {
         const info = this.capytorioEngine.inspectTileAt(gx, gz);
+        AudioService.playCapytorioUiClick('tool');
         this.emitCapytorioSnapshot();
         return {
           ok: true,
@@ -5268,7 +5281,7 @@ export class PlayStyleManager {
       if (mined) {
         const meta = getCapytorioItemMeta(mined);
         const amt = mined === 'orange' ? 3 : 2;
-        AudioService.playCoin();
+        AudioService.playCapytorioMine(mined === 'orange' ? 'tree' : 'ore');
         this.vfxEngine?.emitBurst(
           capytorioGridToWorldX(gx),
           0.4,
@@ -5303,6 +5316,7 @@ export class PlayStyleManager {
       const existingToolId = existing.variantItemId ?? existing.type;
       if (existingToolId !== tool) {
         const info = this.capytorioEngine.inspectTileAt(gx, gz);
+        AudioService.playCapytorioUiClick('tool');
         this.emitCapytorioSnapshot();
         return {
           ok: true,
@@ -5326,7 +5340,11 @@ export class PlayStyleManager {
       this.capytorioEngine.selectedDir
     );
     if (res.ok) {
-      AudioService.playBrickHit(1.18);
+      if (existing) {
+        AudioService.playCapytorioRotate();
+      } else {
+        AudioService.playCapytorioPlace(resolvedTool?.baseType ?? tool, false);
+      }
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
         0.5,
@@ -5347,7 +5365,7 @@ export class PlayStyleManager {
     this.capytorioEngine.inspectTileAt(gx, gz);
     this.emitCapytorioSnapshot();
     if (res.reason) {
-      AudioService.playSplash();
+      AudioService.playCapytorioError();
     }
     return { ok: false, inspected: true, message: res.reason };
   }
@@ -5360,7 +5378,7 @@ export class PlayStyleManager {
       this.capytorioEngine.hoveredGz
     );
     if (removed) {
-      AudioService.playBrickHit(0.85);
+      AudioService.playCapytorioDemolish();
       this.markCapytorioDirty();
       this.emitTelemetry();
       return true;
@@ -5372,7 +5390,7 @@ export class PlayStyleManager {
     this.capytorioEngine.clipboardToolState = 'off';
     this.capytorioEngine.previewSelectedKeys.clear();
     this.capytorioEngine.equipPlaceableTool(tool, promoteToRecent);
-    AudioService.playCoin();
+    AudioService.playCapytorioUiClick('tool');
     this.emitCapytorioSnapshot();
   }
 
@@ -5383,7 +5401,7 @@ export class PlayStyleManager {
       this.capytorioEngine.clipboard.entries.length > 0
     ) {
       this.capytorioEngine.rotateBlueprint90(ccw);
-      AudioService.playCoin();
+      AudioService.playCapytorioRotate();
       this.emitCapytorioSnapshot();
       return this.capytorioEngine.selectedDir;
     }
@@ -5397,7 +5415,7 @@ export class PlayStyleManager {
       );
       if (rotatedDir !== null) {
         this.capytorioEngine.selectedDir = rotatedDir;
-        AudioService.playCoin();
+        AudioService.playCapytorioRotate();
         this.markCapytorioDirty();
         return rotatedDir;
       }
@@ -5409,7 +5427,7 @@ export class PlayStyleManager {
       this.capytorioEngine.hoveredGx,
       this.capytorioEngine.hoveredGz
     );
-    AudioService.playCoin();
+    AudioService.playCapytorioRotate();
     this.markCapytorioDirty();
     return nextDir;
   }
@@ -5417,7 +5435,7 @@ export class PlayStyleManager {
   public rotateCapytorioMachineAt(gx: number, gz: number): CapytorioDirection | null {
     const nextDir = this.capytorioEngine.rotateMachineAt(gx, gz);
     if (nextDir !== null) {
-      AudioService.playCoin();
+      AudioService.playCapytorioRotate();
       this.markCapytorioDirty();
     }
     return nextDir;
@@ -5433,7 +5451,7 @@ export class PlayStyleManager {
     const info = this.capytorioEngine.inspectTileAt(gx, gz);
     this.capytorioEngine.hoveredGx = gx;
     this.capytorioEngine.hoveredGz = gz;
-    AudioService.playCoin();
+    AudioService.playCapytorioUiClick('tool');
     this.markCapytorioDirty();
     return {
       pediaId: resolvePediaIdFromTileInspection(info),
@@ -5481,7 +5499,7 @@ export class PlayStyleManager {
     const next = Boolean(enabled);
     this.settings.capytorioBeltEndSpill = next;
     this.capytorioEngine.beltEndSpillEnabled = next;
-    AudioService.playCoin();
+    AudioService.playCapytorioUiClick(next ? 'alt_on' : 'alt_off');
     this.emitCapytorioSnapshot();
   }
 
@@ -5501,7 +5519,7 @@ export class PlayStyleManager {
       );
     }
     this.capytorioEngine.selectedRecipeId = recipeId;
-    AudioService.playCoin();
+    AudioService.playCapytorioSettings('paste');
     this.markCapytorioDirty();
     return applied;
   }
@@ -5509,7 +5527,7 @@ export class PlayStyleManager {
   public selectCapytorioTech(techId: CapytorioTechId): boolean {
     const ok = this.capytorioEngine.selectActiveTech(techId);
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioScienceFeed();
       this.markCapytorioDirty();
     }
     return ok;
@@ -5523,7 +5541,7 @@ export class PlayStyleManager {
     const res = this.capytorioEngine.pickupItemsAtTile(gx, gz);
     if (res.total > 0) {
       const leadMeta = res.items[0] ? getCapytorioItemMeta(res.items[0].item) : null;
-      AudioService.playCoin();
+      AudioService.playCapytorioPickup();
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
         0.45,
@@ -5589,7 +5607,7 @@ export class PlayStyleManager {
     // 2. Hand-mine ore or chop tree at hovered cursor
     const cursorOre = this.capytorioEngine.handMineAt(curGx, curGz, 2);
     if (cursorOre) {
-      AudioService.playCoin();
+      AudioService.playCapytorioMine(cursorOre === 'orange' ? 'tree' : 'ore');
       this.markCapytorioDirty();
       return {
         kind: cursorOre === 'orange' ? 'chop' : 'mine',
@@ -5627,7 +5645,7 @@ export class PlayStyleManager {
       for (let dz = -1; dz <= 1; dz++) {
         const ore = this.capytorioEngine.handMineAt(hGx + dx, hGz + dz, 2);
         if (ore) {
-          AudioService.playCoin();
+          AudioService.playCapytorioMine(ore === 'orange' ? 'tree' : 'ore');
           this.markCapytorioDirty();
           return {
             kind: ore === 'orange' ? 'chop' : 'mine',
@@ -5647,7 +5665,7 @@ export class PlayStyleManager {
       2
     );
     if (cursorOre) {
-      AudioService.playCoin();
+      AudioService.playCapytorioMine(cursorOre === 'orange' ? 'tree' : 'ore');
       this.markCapytorioDirty();
       return cursorOre;
     }
@@ -5657,7 +5675,7 @@ export class PlayStyleManager {
       for (let dz = -1; dz <= 1; dz++) {
         const ore = this.capytorioEngine.handMineAt(hGx + dx, hGz + dz, 2);
         if (ore) {
-          AudioService.playCoin();
+          AudioService.playCapytorioMine(ore === 'orange' ? 'tree' : 'ore');
           this.markCapytorioDirty();
           return ore;
         }
@@ -5672,7 +5690,7 @@ export class PlayStyleManager {
   ): boolean {
     const ok = this.capytorioEngine.pocketCraftRecipe(recipeId, batches);
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioCraftQueue('complete');
       this.markCapytorioDirty();
       this.emitTelemetry();
     }
@@ -5682,7 +5700,7 @@ export class PlayStyleManager {
   public craftCapytorioMachine(type: CapytorioMachineType): boolean {
     const ok = this.capytorioEngine.craftMachineIntoPocket(type);
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioCraftQueue('complete');
       this.markCapytorioDirty();
     }
     return ok;
@@ -5691,7 +5709,7 @@ export class PlayStyleManager {
   public feedScienceCapytorio(): number {
     const fed = this.capytorioEngine.feedPocketScienceToLabs();
     if (fed > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioScienceFeed();
       // Step once immediately so tech completes cleanly if threshold was met
       this.capytorioEngine.step(0.05, this.capytorioStepCallbacks);
       this.markCapytorioDirty();
@@ -5703,7 +5721,7 @@ export class PlayStyleManager {
   public collectAllCapytorioOutputs(): number {
     const got = this.capytorioEngine.collectAllChestsAndOutputs();
     if (got > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioPickup();
       this.markCapytorioDirty();
     }
     return got;
@@ -5732,7 +5750,7 @@ export class PlayStyleManager {
     if (tool === 'demolish') {
       const removed = this.capytorioEngine.demolishAt(gx, gz);
       if (removed) {
-        AudioService.playBrickHit(0.85);
+        AudioService.playCapytorioDemolish();
         this.markCapytorioDirty();
         this.emitTelemetry();
         return { placed: true, gx, gz, tool };
@@ -5760,7 +5778,7 @@ export class PlayStyleManager {
     );
     if (res.ok) {
       const resolvedTool = resolveCapytorioPlaceableSpec(tool);
-      AudioService.playBrickHit(1.22);
+      AudioService.playCapytorioPlace(resolvedTool?.baseType ?? tool, true);
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
         0.45,
@@ -5789,7 +5807,7 @@ export class PlayStyleManager {
       this.capytorioEngine.hoveredGx,
       this.capytorioEngine.hoveredGz
     );
-    AudioService.playCoin();
+    AudioService.playCapytorioUiClick('pipette');
     this.emitCapytorioSnapshot();
     const spec = resolveCapytorioPlaceableSpec(res.tool);
     const label = res.picked
@@ -5814,7 +5832,7 @@ export class PlayStyleManager {
   public fuelCapytorioGenerator(gx: number, gz: number, maxAmount: number = 5): number {
     const loaded = this.capytorioEngine.insertPocketFuelToGenerator(gx, gz, maxAmount);
     if (loaded > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioFuelLoad();
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
         1.2,
@@ -5833,7 +5851,7 @@ export class PlayStyleManager {
   public insertInputsCapytorioMachine(gx: number, gz: number, batches: number = 4): number {
     const moved = this.capytorioEngine.insertPocketInputsForMachine(gx, gz, batches);
     if (moved > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioPickup();
       this.capytorioEngine.step(0.05, this.capytorioStepCallbacks);
       this.markCapytorioDirty();
       this.emitTelemetry();
@@ -5844,7 +5862,7 @@ export class PlayStyleManager {
   public takeOutputsCapytorioMachine(gx: number, gz: number): number {
     const taken = this.capytorioEngine.takeMachineOutputsToPocket(gx, gz);
     if (taken > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioPickup();
       this.markCapytorioDirty();
       this.emitTelemetry();
     }
@@ -5865,7 +5883,7 @@ export class PlayStyleManager {
 
   public toggleCapytorioAltMode(): boolean {
     const next = this.capytorioEngine.toggleAltMode();
-    AudioService.playCoin();
+    AudioService.playCapytorioUiClick(next ? 'alt_on' : 'alt_off');
     this.markCapytorioDirty();
     return next;
   }
@@ -5876,7 +5894,7 @@ export class PlayStyleManager {
   ): { ok: boolean; label?: string; reason?: string } {
     const res = this.capytorioEngine.copyEntitySettingsAt(gx, gz);
     if (res.ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioSettings('copy');
       this.emitCapytorioSnapshot();
     }
     return res;
@@ -5888,10 +5906,10 @@ export class PlayStyleManager {
   ): { ok: boolean; label?: string; reason?: string } {
     const res = this.capytorioEngine.pasteEntitySettingsAt(gx, gz);
     if (res.ok) {
-      AudioService.playBrickHit(1.15);
+      AudioService.playCapytorioSettings('paste');
       this.markCapytorioDirty();
     } else {
-      AudioService.playSplash();
+      AudioService.playCapytorioError();
     }
     return res;
   }
@@ -5931,7 +5949,7 @@ export class PlayStyleManager {
   ): boolean {
     const ok = this.capytorioEngine.setSplitterConfigAt(gx, gz, config);
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioUiClick('tool');
       this.markCapytorioDirty();
     }
     return ok;
@@ -5948,7 +5966,7 @@ export class PlayStyleManager {
   ): boolean {
     const ok = this.capytorioEngine.setInserterConfigAt(gx, gz, config);
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioUiClick('tool');
       this.markCapytorioDirty();
     }
     return ok;
@@ -5961,7 +5979,7 @@ export class PlayStyleManager {
   ): boolean {
     const ok = this.capytorioEngine.setChestSlotLimitAt(gx, gz, slotLimit);
     if (ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioUiClick('tool');
       this.markCapytorioDirty();
     }
     return ok;
@@ -5973,11 +5991,11 @@ export class PlayStyleManager {
   ): { ok: boolean; queuedBatches: number; reason?: string } {
     const res = this.capytorioEngine.enqueuePocketCraft(recipeId, batches);
     if (res.ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioCraftQueue('start');
       this.markCapytorioDirty();
       this.emitTelemetry();
     } else {
-      AudioService.playSplash();
+      AudioService.playCapytorioError();
     }
     return res;
   }
@@ -5988,10 +6006,10 @@ export class PlayStyleManager {
   ): { ok: boolean; queuedCount: number; reason?: string } {
     const res = this.capytorioEngine.enqueueMachineCraft(type, count);
     if (res.ok) {
-      AudioService.playCoin();
+      AudioService.playCapytorioCraftQueue('start');
       this.markCapytorioDirty();
     } else {
-      AudioService.playSplash();
+      AudioService.playCapytorioError();
     }
     return { ok: res.ok, queuedCount: res.queuedBatches };
   }
@@ -5999,7 +6017,7 @@ export class PlayStyleManager {
   public cancelCapytorioCraftQueueItem(uid: number): boolean {
     const res = this.capytorioEngine.cancelCraftQueueItem(uid);
     if (res.ok) {
-      AudioService.playBrickHit(0.88);
+      AudioService.playCapytorioCraftQueue('cancel');
       this.markCapytorioDirty();
     }
     return res.ok;
@@ -10962,7 +10980,7 @@ export class PlayStyleManager {
       3.8
     );
     if (pickedUp > 0) {
-      AudioService.playCoin();
+      AudioService.playCapytorioPickup();
       this.capytorioAutoSaveDirty = true;
     }
 
@@ -10985,6 +11003,11 @@ export class PlayStyleManager {
     if (this.capytorioUiAccum >= 0.1) {
       this.capytorioUiAccum = 0;
       this.emitCapytorioSnapshot();
+      AudioService.updateCapytorioAmbient(
+        this.capytorioEngine.machines.size,
+        this.capytorioEngine.powerEfficiency,
+        this.currentMode === 'capytorio' && !this.seamlessZoomActive && activeAltitudeRadius <= 120
+      );
     }
 
     if (this.capytorioAutoSaveDirty) {
@@ -12433,7 +12456,9 @@ export class PlayStyleManager {
     pose: typeof _capytorioAltPose
   ): void {
     if (!this.seamlessUniverse || this.seamlessZoomActive) return;
-    if (pose.altitudeRadius <= 65) {
+    // Keep tactical & macro factory zoom (up to 420m altitude) 100% pure Capytorio terrain/water
+    // with zero universe-scale woodland or planetary overlay interference.
+    if (pose.altitudeRadius <= 420) {
       if (this.capytorioPlanetFadeActive) {
         this.capytorioPlanetFadeActive = false;
         this.seamlessUniverse.hide();
@@ -12453,6 +12478,8 @@ export class PlayStyleManager {
     const paletteMode: AstrophysicsPaletteMode =
       this.settings.astrophysicsPalette ?? 'natural';
     _seamlessFocalPos.set(wx, wy, wz);
+    // Pass suppressWoodlandSurfaceLayers = true so Sanctuary's giant pine/ecosystem/glade trees
+    // NEVER appear over Capytorio — only atmosphere clouds and the planetary globe emerge cleanly!
     this.seamlessUniverse.updateForLogScale(
       pose.logAlt,
       dt,
@@ -12461,13 +12488,15 @@ export class PlayStyleManager {
       _seamlessSkyColor,
       effectiveGamma,
       false,
-      paletteMode
+      paletteMode,
+      true,
+      true
     );
     this.seamlessUniverse.rootGroup.scale.setScalar(pose.altitudeRadius / 38.0);
     this.seamlessUniverse.forestGroveGroup.visible = false;
     this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = false;
 
-    const skyAlpha = 1.0 - smoothstep01(2.45, 3.85, pose.logAlt);
+    const skyAlpha = 1.0 - smoothstep01(3.05, 4.15, pose.logAlt);
     this.setSkyDomeAlpha(skyAlpha);
     if (this.worldEnv) {
       _colorHelper.copy(this.worldEnv.currentHorizonSkyColor);

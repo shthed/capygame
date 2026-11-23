@@ -89,7 +89,6 @@ export default defineConfig({
       'three/addons/tsl/display/FXAANode.js',
       'three/addons/tsl/display/GTAONode.js',
       'three/addons/tsl/display/TRAANode.js',
-      '@dimforge/rapier3d-compat',
       'clsx',
       'tailwind-merge',
     ],

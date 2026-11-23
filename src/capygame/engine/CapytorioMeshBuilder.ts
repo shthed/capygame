@@ -28,10 +28,23 @@ import {
   getCapytorioPlacementAnchor,
   getCapytorioToolFootprint,
   resolveCapytorioPlaceableSpec,
+  sampleCapytorioTerrainDetail,
   tileKey,
   type CapytorioBlueprintEntry,
   type CapytorioMachine,
+  type CapytorioTerrainSample,
 } from './CapytorioFactoryEngine';
+
+const TERRAIN_DECK_SEGS = 128;
+const TERRAIN_DECK_BASE_SIZE = TERRAIN_DECK_SEGS * CAPYTORIO_TILE_SIZE; // 320m at lodStep = 1
+const WATER_SURFACE_Y = -0.20;
+const _terrainSampleScratch: CapytorioTerrainSample = {
+  type: 'grass',
+  isWater: false,
+  elevationY: -0.02,
+  waterDepth: 0,
+  sandBlend: 0,
+};
 
 const MAX_ORE_INSTANCES = 1024;
 const MAX_BELT_INSTANCES = 1400;
@@ -186,6 +199,346 @@ function groundGeometryBottomAtZero(geo: THREE.BufferGeometry): THREE.BufferGeom
     geo.translate(0, -geo.boundingBox.min.y, 0);
   }
   return geo;
+}
+
+/**
+ * Procedural beveled toothed spur gear lying flat around the Y axis (centered at y = 0).
+ */
+function createSpurGearGeometry(
+  teeth: number,
+  outerR: number,
+  rootR: number,
+  holeR: number,
+  depth: number
+): THREE.BufferGeometry {
+  const step = (Math.PI * 2) / teeth;
+  const s = new THREE.Shape();
+  for (let i = 0; i < teeth; i++) {
+    const a0 = i * step;
+    const a1 = a0 + step * 0.2;
+    const a2 = a0 + step * 0.32;
+    const a3 = a0 + step * 0.68;
+    const a4 = a0 + step * 0.8;
+    if (i === 0) s.moveTo(Math.cos(a0) * rootR, Math.sin(a0) * rootR);
+    else s.lineTo(Math.cos(a0) * rootR, Math.sin(a0) * rootR);
+    s.lineTo(Math.cos(a1) * rootR, Math.sin(a1) * rootR);
+    s.lineTo(Math.cos(a2) * outerR, Math.sin(a2) * outerR);
+    s.lineTo(Math.cos(a3) * outerR, Math.sin(a3) * outerR);
+    s.lineTo(Math.cos(a4) * rootR, Math.sin(a4) * rootR);
+  }
+  s.closePath();
+  if (holeR > 0.01) {
+    const hole = new THREE.Path();
+    hole.absarc(0, 0, holeR, 0, Math.PI * 2, true);
+    s.holes.push(hole);
+  }
+  const gearBody = new THREE.ExtrudeGeometry(s, {
+    depth,
+    bevelEnabled: true,
+    bevelThickness: Math.min(0.02, depth * 0.16),
+    bevelSize: Math.min(0.016, (outerR - rootR) * 0.16),
+    bevelSegments: 1,
+  });
+  gearBody.rotateX(Math.PI * 0.5);
+  gearBody.translate(0, depth * 0.5, 0);
+
+  const hub = new THREE.CylinderGeometry(
+    Math.max(holeR + 0.05, rootR * 0.42),
+    Math.max(holeR + 0.06, rootR * 0.48),
+    depth * 1.45,
+    10
+  );
+  return mergeSimpleIndexedGeometries([gearBody, hub]);
+}
+
+/**
+ * Chamfered industrial hull block standing upright along Y, centered at (0, 0, 0).
+ */
+function createChamferedBoxGeometry(
+  width: number,
+  height: number,
+  depth: number,
+  chamfer: number
+): THREE.BufferGeometry {
+  const hw = width * 0.5;
+  const hd = depth * 0.5;
+  const c = Math.min(chamfer, hw * 0.45, hd * 0.45);
+  const s = new THREE.Shape();
+  s.moveTo(-hw + c, -hd);
+  s.lineTo(hw - c, -hd);
+  s.lineTo(hw, -hd + c);
+  s.lineTo(hw, hd - c);
+  s.lineTo(hw - c, hd);
+  s.lineTo(-hw + c, hd);
+  s.lineTo(-hw, hd - c);
+  s.lineTo(-hw, -hd + c);
+  s.closePath();
+  const bevel = Math.min(0.035, height * 0.12, c * 0.6);
+  const geo = new THREE.ExtrudeGeometry(s, {
+    depth: Math.max(0.04, height - bevel * 2),
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 1,
+  });
+  geo.rotateX(Math.PI * 0.5);
+  geo.computeBoundingBox();
+  if (geo.boundingBox) {
+    const cy = (geo.boundingBox.min.y + geo.boundingBox.max.y) * 0.5;
+    geo.translate(0, -cy, 0);
+  }
+  return geo;
+}
+
+function createBrushedSteelTexture(
+  baseHex: string,
+  streakHex: string,
+  seamHex: string
+): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = baseHex;
+  ctx.fillRect(0, 0, 256, 256);
+
+  // Directional brushed metal streaks
+  ctx.fillStyle = streakHex;
+  for (let i = 0; i < 420; i++) {
+    const x = (i * 73) % 256;
+    const y = (i * 197 + (i % 7) * 11) % 256;
+    const w = 18 + ((i * 29) % 52);
+    ctx.globalAlpha = 0.08 + ((i % 5) * 0.025);
+    ctx.fillRect(x, y, w, 1.5);
+  }
+  ctx.globalAlpha = 1;
+
+  // Riveted industrial steel plate seam grid (2x2 plates per tile)
+  ctx.strokeStyle = seamHex;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, 254, 254);
+  ctx.beginPath();
+  ctx.moveTo(128, 0);
+  ctx.lineTo(128, 256);
+  ctx.moveTo(0, 128);
+  ctx.lineTo(256, 128);
+  ctx.stroke();
+
+  // Subtle corner rivet bolts inside each panel
+  const panels = [
+    [0, 0],
+    [128, 0],
+    [0, 128],
+    [128, 128],
+  ];
+  for (let p = 0; p < panels.length; p++) {
+    const [px, py] = panels[p];
+    const pts = [
+      [px + 12, py + 12],
+      [px + 116, py + 12],
+      [px + 12, py + 116],
+      [px + 116, py + 116],
+    ];
+    for (let r = 0; r < pts.length; r++) {
+      ctx.fillStyle = seamHex;
+      ctx.beginPath();
+      ctx.arc(pts[r][0], pts[r][1], 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = streakHex;
+      ctx.globalAlpha = 0.45;
+      ctx.beginPath();
+      ctx.arc(pts[r][0] - 0.8, pts[r][1] - 0.8, 1.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function createIndustrialPlateBumpTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = '#848484';
+  ctx.fillRect(0, 0, 256, 256);
+
+  // Subtle brushed metal micro-grain
+  for (let i = 0; i < 360; i++) {
+    const x = (i * 89) % 256;
+    const y = (i * 151) % 256;
+    const v = 114 + ((i * 23) % 34);
+    ctx.fillStyle = `rgb(${v},${v},${v})`;
+    ctx.fillRect(x, y, 22 + (i % 34), 1);
+  }
+
+  // Recessed plate seams
+  ctx.strokeStyle = '#383838';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1.5, 1.5, 253, 253);
+  ctx.beginPath();
+  ctx.moveTo(128, 0);
+  ctx.lineTo(128, 256);
+  ctx.moveTo(0, 128);
+  ctx.lineTo(256, 128);
+  ctx.stroke();
+
+  // Raised rivet bumps
+  const panels = [
+    [0, 0],
+    [128, 0],
+    [0, 128],
+    [128, 128],
+  ];
+  ctx.fillStyle = '#d4d4d4';
+  for (let p = 0; p < panels.length; p++) {
+    const [px, py] = panels[p];
+    const pts = [
+      [px + 12, py + 12],
+      [px + 116, py + 12],
+      [px + 12, py + 116],
+      [px + 116, py + 116],
+    ];
+    for (let r = 0; r < pts.length; r++) {
+      ctx.beginPath();
+      ctx.arc(pts[r][0], pts[r][1], 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function createHazardStripeTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(0, 0, 256, 256);
+
+  // Bold 45-degree black industrial warning stripes
+  ctx.fillStyle = '#1e293b';
+  const stripeW = 32;
+  for (let offset = -256; offset < 512; offset += stripeW * 2) {
+    ctx.beginPath();
+    ctx.moveTo(offset, 0);
+    ctx.lineTo(offset + stripeW, 0);
+    ctx.lineTo(offset + stripeW - 256, 256);
+    ctx.lineTo(offset - 256, 256);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Subtle industrial wear speckles
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  for (let i = 0; i < 160; i++) {
+    ctx.fillRect((i * 53) % 256, (i * 97) % 256, 3, 2);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1.5, 1.5);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function createKilnBrickTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  // Dark mortar base
+  ctx.fillStyle = '#292524';
+  ctx.fillRect(0, 0, 256, 256);
+
+  const rows = 8;
+  const cols = 4;
+  const rowH = 256 / rows;
+  const colW = 256 / cols;
+  const brickTones = ['#6b5c52', '#78665a', '#5e524b', '#826b5c', '#63564e'];
+
+  for (let r = 0; r < rows; r++) {
+    const xShift = (r % 2) * (colW * 0.5);
+    for (let c = -1; c <= cols; c++) {
+      const bx = c * colW + xShift;
+      const by = r * rowH;
+      const tone = brickTones[(r * 7 + c * 3 + 12) % brickTones.length];
+      ctx.fillStyle = tone;
+      ctx.fillRect(bx + 2.5, by + 2.5, colW - 5, rowH - 5);
+      // Warm kiln-fired top highlight
+      ctx.fillStyle = 'rgba(255, 224, 190, 0.10)';
+      ctx.fillRect(bx + 3, by + 3, colW - 6, 4);
+      // Soot shading along lower edge
+      ctx.fillStyle = 'rgba(18, 14, 12, 0.18)';
+      ctx.fillRect(bx + 3, by + rowH - 7, colW - 6, 4);
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 2);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function createKilnBrickBumpTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  // Recessed mortar joints
+  ctx.fillStyle = '#2a2a2a';
+  ctx.fillRect(0, 0, 256, 256);
+
+  const rows = 8;
+  const cols = 4;
+  const rowH = 256 / rows;
+  const colW = 256 / cols;
+  for (let r = 0; r < rows; r++) {
+    const xShift = (r % 2) * (colW * 0.5);
+    for (let c = -1; c <= cols; c++) {
+      const bx = c * colW + xShift;
+      const by = r * rowH;
+      const shade = 188 + ((r * 13 + c * 17 + 40) % 36);
+      ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+      ctx.fillRect(bx + 3, by + 3, colW - 6, rowH - 6);
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 2);
+  return tex;
 }
 
 function createFactorioBeltSurfaceTexture(
@@ -402,9 +755,18 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
   // so 4 items per lane (0.625 m Factorio slot pitch) sit tightly packed and touching with zero gaps,
   // while keeping width (X) <= 0.72 m inside each 0.98 m lane corridor.
   if (shape === 'ore') {
-    const geo = new THREE.DodecahedronGeometry(0.325, 0);
-    geo.scale(1.06, 0.72, 0.99);
-    return groundGeometryBottomAtZero(geo);
+    const main = new THREE.DodecahedronGeometry(0.24, 0);
+    main.scale(1.08, 0.86, 1.0);
+    main.translate(-0.04, 0.18, 0.02);
+    const shardA = new THREE.DodecahedronGeometry(0.165, 0);
+    shardA.scale(0.95, 1.15, 0.9);
+    shardA.rotateZ(-0.35);
+    shardA.translate(0.15, 0.14, -0.09);
+    const shardB = new THREE.DodecahedronGeometry(0.145, 0);
+    shardB.scale(1.05, 0.78, 0.95);
+    shardB.rotateX(0.28);
+    shardB.translate(-0.08, 0.11, -0.15);
+    return groundGeometryBottomAtZero(mergeSimpleIndexedGeometries([main, shardA, shardB]));
   }
   if (shape === 'plate') {
     const hw = 0.34;
@@ -473,15 +835,20 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
     s.lineTo(-hw + 0.065, hd);
     s.lineTo(-hw, hd - 0.065);
     s.closePath();
-    const geo = new THREE.ExtrudeGeometry(s, {
-      depth: 0.075,
+    const board = new THREE.ExtrudeGeometry(s, {
+      depth: 0.065,
       bevelEnabled: true,
-      bevelThickness: 0.014,
-      bevelSize: 0.012,
+      bevelThickness: 0.012,
+      bevelSize: 0.01,
       bevelSegments: 1,
     });
-    geo.rotateX(Math.PI * 0.5);
-    return groundGeometryBottomAtZero(geo);
+    board.rotateX(Math.PI * 0.5);
+    board.translate(0, 0.065, 0);
+    const icChip = new THREE.BoxGeometry(0.24, 0.07, 0.22);
+    icChip.translate(-0.04, 0.095, 0.01);
+    const cap = new THREE.CylinderGeometry(0.055, 0.055, 0.08, 8);
+    cap.translate(0.17, 0.1, -0.09);
+    return groundGeometryBottomAtZero(mergeSimpleIndexedGeometries([board, icChip, cap]));
   }
   if (shape === 'science') {
     // Classic Erlenmeyer conical science flask silhouette
@@ -510,22 +877,12 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
     return groundGeometryBottomAtZero(geo);
   }
   // 'crate'
-  const c = 0.285;
-  const s = new THREE.Shape();
-  s.moveTo(-c, -c);
-  s.lineTo(c, -c);
-  s.lineTo(c, c);
-  s.lineTo(-c, c);
-  s.closePath();
-  const geo = new THREE.ExtrudeGeometry(s, {
-    depth: 0.28,
-    bevelEnabled: true,
-    bevelThickness: 0.025,
-    bevelSize: 0.025,
-    bevelSegments: 1,
-  });
-  geo.rotateX(Math.PI * 0.5);
-  return groundGeometryBottomAtZero(geo);
+  const c = 0.28;
+  const body = createChamferedBoxGeometry(c * 2, 0.28, c * 2, 0.045);
+  body.translate(0, 0.16, 0);
+  const lid = new THREE.BoxGeometry(c * 2.08, 0.06, c * 2.08);
+  lid.translate(0, 0.31, 0);
+  return groundGeometryBottomAtZero(mergeSimpleIndexedGeometries([body, lid]));
 }
 
 function createLushMeadowGrassTexture(): THREE.CanvasTexture | null {
@@ -536,34 +893,32 @@ function createLushMeadowGrassTexture(): THREE.CanvasTexture | null {
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  // Lush Factorio-style emerald & olive meadow turf base
-  ctx.fillStyle = '#417930';
+  // Neutral-bright organic surface grain multiplied cleanly by per-vertex biome colors
+  // (preserves true emerald meadow, sunlit golden sand, turquoise shallows, and deep ocean hues)
+  ctx.fillStyle = '#e8ece6';
   ctx.fillRect(0, 0, 512, 512);
 
-  // Warm earthy soil dapples & sun-dappled turf blades
-  for (let i = 0; i < 3200; i++) {
+  // Subtle natural turf / sand micro-grain dapples
+  for (let i = 0; i < 3000; i++) {
     const x = (i * 197 + (i % 7) * 13) % 512;
     const y = (i * 331 + (i % 5) * 19) % 512;
     if (i % 9 === 0) {
-      // Subtle loam/clover tuft
-      ctx.fillStyle = '#346326';
+      ctx.fillStyle = '#cfd6cc';
       ctx.fillRect(x, y, 5, 4);
     } else {
-      const g = 108 + ((i * 37) % 38);
-      const r = 52 + ((i * 23) % 26);
-      const b = 36 + ((i * 17) % 18);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      const v = 212 + ((i * 37) % 38);
+      ctx.fillStyle = `rgb(${v - 2},${v + 2},${v - 4})`;
       ctx.fillRect(x, y, 2, 4);
     }
   }
 
-  // Crisp subtle Factorio tile grid alignment border (clean building placement clarity)
-  ctx.strokeStyle = 'rgba(18, 42, 14, 0.22)';
+  // Crisp subtle Factorio tile grid alignment border (clean building placement clarity on land)
+  ctx.strokeStyle = 'rgba(20, 32, 18, 0.16)';
   ctx.lineWidth = 3;
   ctx.strokeRect(1.5, 1.5, 509, 509);
 
   // Subtle corner surveyor ticks
-  ctx.fillStyle = 'rgba(20, 48, 16, 0.34)';
+  ctx.fillStyle = 'rgba(20, 36, 18, 0.26)';
   ctx.fillRect(0, 0, 14, 3);
   ctx.fillRect(0, 0, 3, 14);
 
@@ -571,8 +926,8 @@ function createLushMeadowGrassTexture(): THREE.CanvasTexture | null {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  // 320m / 2.5m tile = 128 tiles
-  tex.repeat.set(128, 128);
+  tex.repeat.set(TERRAIN_DECK_SEGS, TERRAIN_DECK_SEGS);
+  tex.offset.set(0.5, 0.5);
   tex.anisotropy = 8;
   return tex;
 }
@@ -601,16 +956,66 @@ function createDeckBumpTexture(): THREE.CanvasTexture | null {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(128, 128);
+  tex.repeat.set(TERRAIN_DECK_SEGS, TERRAIN_DECK_SEGS);
+  tex.offset.set(0.5, 0.5);
+  return tex;
+}
+
+function createWaterRippleTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = '#c8ecfa';
+  ctx.fillRect(0, 0, 256, 256);
+
+  // Seamless periodic multi-directional water ripples & subtle sunlit caustics (neutral-bright so vertexColors tint cleanly)
+  for (let y = 0; y < 256; y += 4) {
+    for (let x = 0; x < 256; x += 4) {
+      const u = (x / 256) * Math.PI * 2;
+      const v = (y / 256) * Math.PI * 2;
+      const w1 = Math.sin(u * 4 + Math.cos(v * 3) * 1.1);
+      const w2 = Math.cos(v * 5 + Math.sin(u * 3 - v * 2) * 0.9);
+      const w3 = Math.sin((u * 6 - v * 5) + Math.sin(u * 2) * 0.7);
+      const wave = w1 * 0.4 + w2 * 0.35 + w3 * 0.25;
+      const glint = Math.pow(Math.max(0, wave), 2.2);
+      const r = Math.min(255, Math.round(182 + wave * 18 + glint * 54));
+      const g = Math.min(255, Math.round(218 + wave * 14 + glint * 36));
+      const b = Math.min(255, Math.round(234 + wave * 10 + glint * 21));
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(x, y, 4, 4);
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(36, 36);
+  tex.anisotropy = 4;
   return tex;
 }
 
 export class Capytorio3DRenderer {
   public readonly root = new THREE.Group();
 
-  // Endless snapping ground deck
+  // Endless snapping vertex-colored hydrology terrain mesh & depth-masked animated PBR water mesh
   private groundDeck: THREE.Mesh;
+  private groundDeckGeo: THREE.PlaneGeometry;
   private groundEdgeStrip: THREE.Mesh;
+  private waterDeck: THREE.Mesh;
+  private waterDeckGeo: THREE.PlaneGeometry;
+  private waterMaskBuf: Uint8Array;
+  private waterMat: THREE.MeshStandardMaterial;
+  private waterTex: THREE.CanvasTexture | null = null;
+  private deckTex: THREE.CanvasTexture | null = null;
+  private deckBumpTex: THREE.CanvasTexture | null = null;
+  private lastDeckSnapGx = Number.NaN;
+  private lastDeckSnapGz = Number.NaN;
+  private lastDeckLodStep = -1;
   private beaconPillarGroup = new THREE.Group();
 
   // Instanced meshes for high-density ores, continuous dual-lane belts, distinct-shape items, and tropical citrus trees
@@ -691,12 +1096,18 @@ export class Capytorio3DRenderer {
   private matBrick: THREE.MeshStandardMaterial;
   private matCopper: THREE.MeshStandardMaterial;
   private matLabGlass: THREE.MeshStandardMaterial;
+  private matDarkVoid: THREE.MeshStandardMaterial;
+  private matStatusLampIdle: THREE.MeshStandardMaterial;
+  private matStatusLampOn: THREE.MeshStandardMaterial;
   private matFurnaceHearthIdle: THREE.MeshStandardMaterial;
   private matFurnaceHearthActive: THREE.MeshStandardMaterial;
   private matGeneratorFireboxIdle: THREE.MeshStandardMaterial;
   private matGeneratorFireboxActive: THREE.MeshStandardMaterial;
   private matLabCoreIdle: THREE.MeshStandardMaterial;
   private matLabCoreActive: THREE.MeshStandardMaterial;
+  private industrialPlateBumpTex: THREE.CanvasTexture | null = null;
+  private beaconOrb: THREE.Object3D | null = null;
+  private beaconDishRing: THREE.Object3D | null = null;
 
   private lastBeltScrollPhase = 0;
   // Static ore & tree terrain InstancedMesh dirty-cache (skips 3200+ tile scans/uploads per frame)
@@ -710,46 +1121,90 @@ export class Capytorio3DRenderer {
     this.root.name = 'Capytorio3DRendererRoot';
     this.root.userData.ignoreCameraFade = true;
 
+    // Procedural industrial PBR canvas maps (SSR/Node-safe)
+    const steelDarkTex = createBrushedSteelTexture('#334155', '#64748b', '#1e293b');
+    const steelLightTex = createBrushedSteelTexture('#94a3b8', '#e2e8f0', '#475569');
+    const plateBumpTex = createIndustrialPlateBumpTexture();
+    const hazardTex = createHazardStripeTexture();
+    const brickTex = createKilnBrickTexture();
+    const brickBumpTex = createKilnBrickBumpTexture();
+    this.industrialPlateBumpTex = plateBumpTex;
+    if (steelDarkTex) this.sharedTextures.push(steelDarkTex);
+    if (steelLightTex) this.sharedTextures.push(steelLightTex);
+    if (plateBumpTex) this.sharedTextures.push(plateBumpTex);
+    if (hazardTex) this.sharedTextures.push(hazardTex);
+    if (brickTex) this.sharedTextures.push(brickTex);
+    if (brickBumpTex) this.sharedTextures.push(brickBumpTex);
+
     // Shared calibrated PBR materials (roughness/metalness deltas >= 0.25 between parts)
     this.matSteelDark = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.72,
-      metalness: 0.55,
+      color: steelDarkTex ? 0xffffff : 0x334155,
+      map: steelDarkTex ?? null,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.025,
+      roughness: 0.68,
+      metalness: 0.58,
     });
     this.matSteelLight = new THREE.MeshStandardMaterial({
-      color: 0x94a3b8,
-      roughness: 0.34,
+      color: steelLightTex ? 0xffffff : 0x94a3b8,
+      map: steelLightTex ?? null,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.02,
+      roughness: 0.32,
       metalness: 0.82,
     });
     this.matBrass = new THREE.MeshStandardMaterial({
       color: 0xf59e0b,
-      roughness: 0.26,
-      metalness: 0.85,
+      roughness: 0.24,
+      metalness: 0.86,
     });
     this.matHazardYellow = new THREE.MeshStandardMaterial({
-      color: 0xfacc15,
-      roughness: 0.5,
-      metalness: 0.15,
+      color: hazardTex ? 0xffffff : 0xfacc15,
+      map: hazardTex ?? null,
+      roughness: 0.48,
+      metalness: 0.16,
     });
     this.matBrick = new THREE.MeshStandardMaterial({
-      color: 0x57534e,
-      roughness: 0.88,
-      metalness: 0.08,
+      color: brickTex ? 0xffffff : 0x6b5c52,
+      map: brickTex ?? null,
+      bumpMap: brickBumpTex ?? null,
+      bumpScale: 0.06,
+      roughness: 0.9,
+      metalness: 0.06,
     });
     this.matCopper = new THREE.MeshStandardMaterial({
       color: 0xea580c,
-      roughness: 0.32,
-      metalness: 0.8,
+      roughness: 0.28,
+      metalness: 0.84,
     });
     this.matLabGlass = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.45,
-      roughness: 0.14,
-      metalness: 0.12,
+      emissiveIntensity: 0.36,
+      roughness: 0.1,
+      metalness: 0.16,
       transparent: true,
-      opacity: 0.58,
+      opacity: 0.38,
       depthWrite: false,
+    });
+    this.matDarkVoid = new THREE.MeshStandardMaterial({
+      color: 0x0b0f17,
+      roughness: 0.96,
+      metalness: 0.05,
+    });
+    this.matStatusLampIdle = new THREE.MeshStandardMaterial({
+      color: 0xf59e0b,
+      emissive: 0xd97706,
+      emissiveIntensity: 0.55,
+      roughness: 0.25,
+      metalness: 0.1,
+    });
+    this.matStatusLampOn = new THREE.MeshStandardMaterial({
+      color: 0x4ade80,
+      emissive: 0x22c55e,
+      emissiveIntensity: 1.45,
+      roughness: 0.2,
+      metalness: 0.1,
     });
     this.matFurnaceHearthIdle = new THREE.MeshStandardMaterial({
       color: 0xf97316,
@@ -758,10 +1213,10 @@ export class Capytorio3DRenderer {
       roughness: 0.25,
     });
     this.matFurnaceHearthActive = new THREE.MeshStandardMaterial({
-      color: 0xf97316,
+      color: 0xfb923c,
       emissive: 0xea580c,
-      emissiveIntensity: 1.55,
-      roughness: 0.22,
+      emissiveIntensity: 1.65,
+      roughness: 0.2,
     });
     this.matGeneratorFireboxIdle = new THREE.MeshStandardMaterial({
       color: 0xf97316,
@@ -770,7 +1225,7 @@ export class Capytorio3DRenderer {
       roughness: 0.25,
     });
     this.matGeneratorFireboxActive = new THREE.MeshStandardMaterial({
-      color: 0xf97316,
+      color: 0xfb923c,
       emissive: 0xf59e0b,
       emissiveIntensity: 1.55,
       roughness: 0.22,
@@ -782,9 +1237,9 @@ export class Capytorio3DRenderer {
       roughness: 0.18,
     });
     this.matLabCoreActive = new THREE.MeshStandardMaterial({
-      color: 0xa855f7,
+      color: 0xc084fc,
       emissive: 0x9333ea,
-      emissiveIntensity: 1.85,
+      emissiveIntensity: 1.9,
       roughness: 0.16,
     });
     this.sharedMaterials.push(
@@ -795,6 +1250,9 @@ export class Capytorio3DRenderer {
       this.matBrick,
       this.matCopper,
       this.matLabGlass,
+      this.matDarkVoid,
+      this.matStatusLampIdle,
+      this.matStatusLampOn,
       this.matFurnaceHearthIdle,
       this.matFurnaceHearthActive,
       this.matGeneratorFireboxIdle,
@@ -803,37 +1261,101 @@ export class Capytorio3DRenderer {
       this.matLabCoreActive
     );
 
-    // 1. Infinite Lush Meadow Grass Deck (320m x 320m snapping smoothly in 10m steps)
-    // Kept opaque at ground altitude for fast early-Z, crisp SSAO depth, and zero sorting glitches!
+    // 1. Infinite Snapping Recessed-Basin Terrain Deck (Meadow Grass, Sandy Shores, Lakes, Rivers & Oceans)
+    // Subdivided 128x128 mesh with pre-allocated vertex colors & elevation updated ONLY on chunk/LOD snap!
     const deckTex = createLushMeadowGrassTexture();
     const bumpTex = createDeckBumpTexture();
+    const waterTex = createWaterRippleTexture();
+    this.deckTex = deckTex;
+    this.deckBumpTex = bumpTex;
+    this.waterTex = waterTex;
     if (deckTex) this.sharedTextures.push(deckTex);
     if (bumpTex) this.sharedTextures.push(bumpTex);
-    const deckGeo = new THREE.PlaneGeometry(320, 320, 1, 1);
+    if (waterTex) this.sharedTextures.push(waterTex);
+
+    const deckGeo = new THREE.PlaneGeometry(
+      TERRAIN_DECK_BASE_SIZE,
+      TERRAIN_DECK_BASE_SIZE,
+      TERRAIN_DECK_SEGS,
+      TERRAIN_DECK_SEGS
+    );
     deckGeo.rotateX(-Math.PI * 0.5);
+    const vertCount = deckGeo.attributes.position.count;
+    const colorArray = new Float32Array(vertCount * 3);
+    for (let i = 0; i < vertCount; i++) {
+      colorArray[i * 3] = 0.28;
+      colorArray[i * 3 + 1] = 0.52;
+      colorArray[i * 3 + 2] = 0.21;
+    }
+    deckGeo.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
+    this.groundDeckGeo = deckGeo;
+
     const deckMat = new THREE.MeshStandardMaterial({
-      color: deckTex ? 0xffffff : 0x417930,
+      color: 0xffffff,
+      vertexColors: true,
       map: deckTex ?? null,
       bumpMap: bumpTex ?? null,
-      bumpScale: 0.05,
-      roughness: 0.92,
+      bumpScale: 0.045,
+      roughness: 0.9,
       metalness: 0.02,
       transparent: false,
       opacity: 1.0,
-      polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
     });
     this.deckMat = deckMat;
     this.groundDeck = new THREE.Mesh(deckGeo, deckMat);
-    this.groundDeck.position.set(CAPYTORIO_WORLD_ORIGIN_X, -0.02, CAPYTORIO_WORLD_ORIGIN_Z);
+    this.groundDeck.position.set(CAPYTORIO_WORLD_ORIGIN_X, 0, CAPYTORIO_WORLD_ORIGIN_Z);
     this.groundDeck.receiveShadow = true;
     this.groundDeck.userData.ignoreCameraFade = true;
     this.root.add(this.groundDeck);
     this.sharedGeometries.push(deckGeo);
     this.sharedMaterials.push(deckMat);
 
-    // Sandy coastline shelf along x = 500 facing Sanctuary across the sea
+    // Depth-Masked Shimmering Animated PBR Water Mesh (matching 128x128 grid; dry-land interior drops to -8m
+    // so high-altitude zoom-out NEVER suffers depth-buffer bleed over continents!)
+    const waterGeo = new THREE.PlaneGeometry(
+      TERRAIN_DECK_BASE_SIZE,
+      TERRAIN_DECK_BASE_SIZE,
+      TERRAIN_DECK_SEGS,
+      TERRAIN_DECK_SEGS
+    );
+    waterGeo.rotateX(-Math.PI * 0.5);
+    const waterColorArr = new Float32Array(vertCount * 3);
+    for (let i = 0; i < vertCount; i++) {
+      waterColorArr[i * 3] = 0.16;
+      waterColorArr[i * 3 + 1] = 0.62;
+      waterColorArr[i * 3 + 2] = 0.84;
+    }
+    waterGeo.setAttribute('color', new THREE.BufferAttribute(waterColorArr, 3));
+    this.waterDeckGeo = waterGeo;
+    this.waterMaskBuf = new Uint8Array(vertCount);
+
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      map: waterTex ?? null,
+      bumpMap: waterTex ?? null,
+      bumpScale: 0.025,
+      roughness: 0.34,
+      metalness: 0.04,
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false,
+      envMapIntensity: 0.65,
+    });
+    this.waterMat = waterMat;
+    this.waterDeck = new THREE.Mesh(waterGeo, waterMat);
+    this.waterDeck.position.set(CAPYTORIO_WORLD_ORIGIN_X, 0, CAPYTORIO_WORLD_ORIGIN_Z);
+    this.waterDeck.receiveShadow = true;
+    this.waterDeck.renderOrder = 2;
+    this.waterDeck.userData.ignoreCameraFade = true;
+    this.root.add(this.waterDeck);
+    this.sharedGeometries.push(waterGeo);
+    this.sharedMaterials.push(waterMat);
+
+    // Populate initial terrain elevation, water mask & biome colors around origin immediately
+    this.rebuildTerrainDeckGeometry(0, 0, 1);
+
+    // Legacy straight coast strip kept hidden now that organic procedural ocean shorelines replace it
     const coastGeo = new THREE.BoxGeometry(12, 1.8, 360);
     const coastMat = new THREE.MeshStandardMaterial({
       color: 0xfde68a,
@@ -845,6 +1367,7 @@ export class Capytorio3DRenderer {
     this.coastMat = coastMat;
     this.groundEdgeStrip = new THREE.Mesh(coastGeo, coastMat);
     this.groundEdgeStrip.position.set(496, -0.92, 0);
+    this.groundEdgeStrip.visible = false;
     this.groundEdgeStrip.receiveShadow = true;
     this.groundEdgeStrip.userData.ignoreCameraFade = true;
     this.root.add(this.groundEdgeStrip);
@@ -869,11 +1392,25 @@ export class Capytorio3DRenderer {
     this.orePlateInstanced.userData.ignoreCameraFade = true;
     this.root.add(this.orePlateInstanced);
 
-    const oreCrystalGeo = new THREE.DodecahedronGeometry(0.42, 0);
+    // Sculpted 3-shard crystalline ore cluster (single merged instanced geo)
+    const oreShardMain = new THREE.ConeGeometry(0.28, 0.78, 6);
+    oreShardMain.rotateZ(0.14);
+    oreShardMain.translate(0, 0.34, 0);
+    const oreShardLeft = new THREE.ConeGeometry(0.21, 0.56, 5);
+    oreShardLeft.rotateZ(0.42);
+    oreShardLeft.rotateY(0.6);
+    oreShardLeft.translate(-0.24, 0.22, 0.12);
+    const oreShardRight = new THREE.ConeGeometry(0.19, 0.48, 5);
+    oreShardRight.rotateZ(-0.38);
+    oreShardRight.rotateX(0.32);
+    oreShardRight.translate(0.22, 0.19, -0.14);
+    const oreCrystalGeo = groundGeometryBottomAtZero(
+      mergeSimpleIndexedGeometries([oreShardMain, oreShardLeft, oreShardRight])
+    );
     const oreCrystalMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.3,
-      metalness: 0.55,
+      roughness: 0.28,
+      metalness: 0.58,
     });
     this.oreCrystalInstanced = new THREE.InstancedMesh(
       oreCrystalGeo,
@@ -1121,9 +1658,16 @@ export class Capytorio3DRenderer {
     this.itemGeosByShape = shapeGeos;
     this.itemInstancedByShape = shapePools;
 
-    // 4B. Instanced Tropical Citrus Trees (Bark trunk + lush crown + ripe oranges)
-    const trunkGeo = new THREE.CylinderGeometry(0.18, 0.27, 1.45, 7);
-    trunkGeo.translate(0, 0.725, 0); // Grounded pivot at y = 0
+    // 4B. Instanced Tropical Citrus Trees (Flared Lathe trunk + multi-lobed organic crown + ripe oranges)
+    const trunkProfile = [
+      new THREE.Vector2(0.36, 0.0),
+      new THREE.Vector2(0.27, 0.24),
+      new THREE.Vector2(0.22, 0.72),
+      new THREE.Vector2(0.18, 1.24),
+      new THREE.Vector2(0.24, 1.48),
+      new THREE.Vector2(0.01, 1.52),
+    ];
+    const trunkGeo = new THREE.LatheGeometry(trunkProfile, 8);
     const trunkMat = new THREE.MeshStandardMaterial({
       color: 0x6b4423,
       roughness: 0.9,
@@ -1137,7 +1681,16 @@ export class Capytorio3DRenderer {
     this.treeTrunkInstanced.userData.ignoreCameraFade = true;
     this.root.add(this.treeTrunkInstanced);
 
-    const canopyGeo = new THREE.DodecahedronGeometry(0.95, 1);
+    const lobeCenter = new THREE.DodecahedronGeometry(0.86, 1);
+    lobeCenter.scale(1.04, 0.88, 1.04);
+    lobeCenter.translate(0, 0.16, 0);
+    const lobeA = new THREE.DodecahedronGeometry(0.64, 1);
+    lobeA.translate(0.46, -0.1, 0.22);
+    const lobeB = new THREE.DodecahedronGeometry(0.62, 1);
+    lobeB.translate(-0.44, -0.12, 0.24);
+    const lobeC = new THREE.DodecahedronGeometry(0.6, 1);
+    lobeC.translate(0.02, -0.08, -0.46);
+    const canopyGeo = mergeSimpleIndexedGeometries([lobeCenter, lobeA, lobeB, lobeC]);
     const canopyMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.84,
@@ -1621,41 +2174,91 @@ export class Capytorio3DRenderer {
   }
 
   private buildLandingBeaconLandmark(): void {
-    // Low-profile architectural Drop-Pod Surveyor Beacon slightly off spawn pad (-3.5, -3.5) -> clear vista
+    // Sculpted architectural Drop-Pod Surveyor Beacon slightly off spawn pad -> clear vista
     const pylon = new THREE.Group();
     pylon.position.set(CAPYTORIO_WORLD_ORIGIN_X, 0, CAPYTORIO_WORLD_ORIGIN_Z - 6.8);
 
-    const baseGeo = new THREE.CylinderGeometry(1.4, 1.8, 0.35, 8);
+    // Tiered octagonal armored base + anchor pads
+    const padLower = new THREE.CylinderGeometry(1.65, 1.95, 0.24, 8);
+    padLower.translate(0, 0.12, 0);
+    const padUpper = new THREE.CylinderGeometry(1.18, 1.42, 0.28, 8);
+    padUpper.translate(0, 0.36, 0);
+    const baseGeo = mergeSimpleIndexedGeometries([padLower, padUpper]);
     const base = new THREE.Mesh(baseGeo, this.matSteelDark);
-    base.position.y = 0.175;
     base.castShadow = true;
     base.receiveShadow = true;
     pylon.add(base);
 
-    const mastGeo = new THREE.CylinderGeometry(0.22, 0.34, 4.6, 8);
+    // Hazard-striped perimeter safety ring
+    const hazardRingGeo = new THREE.CylinderGeometry(1.48, 1.54, 0.09, 8);
+    const hazardRing = new THREE.Mesh(hazardRingGeo, this.matHazardYellow);
+    hazardRing.position.y = 0.27;
+    pylon.add(hazardRing);
+
+    // Tapered central mast + 4 diagonal lattice support struts + parabolic surveyor dish
+    const mastParts: THREE.BufferGeometry[] = [];
+    const mastCore = new THREE.CylinderGeometry(0.2, 0.34, 4.45, 8);
+    mastCore.translate(0, 2.55, 0);
+    mastParts.push(mastCore);
+    for (let i = 0; i < 4; i++) {
+      const ang = (i * Math.PI) * 0.5 + Math.PI * 0.25;
+      const strut = new THREE.CylinderGeometry(0.065, 0.085, 2.25, 6);
+      strut.rotateZ(0.46);
+      strut.rotateY(ang);
+      strut.translate(Math.cos(ang) * 0.62, 1.25, -Math.sin(ang) * 0.62);
+      mastParts.push(strut);
+    }
+    const dishProfile = [
+      new THREE.Vector2(0.05, 0.0),
+      new THREE.Vector2(0.42, 0.06),
+      new THREE.Vector2(0.84, 0.26),
+      new THREE.Vector2(0.92, 0.32),
+      new THREE.Vector2(0.84, 0.35),
+      new THREE.Vector2(0.38, 0.13),
+      new THREE.Vector2(0.05, 0.07),
+    ];
+    const dishShell = new THREE.LatheGeometry(dishProfile, 16);
+    dishShell.rotateX(0.42);
+    dishShell.translate(0, 4.35, 0.22);
+    mastParts.push(dishShell);
+    const mastGeo = mergeSimpleIndexedGeometries(mastParts);
     const mast = new THREE.Mesh(mastGeo, this.matSteelLight);
-    mast.position.y = 2.5;
     mast.castShadow = true;
     pylon.add(mast);
 
-    const dishGeo = new THREE.TorusGeometry(0.85, 0.09, 8, 20);
+    // Copper telemetry feed horn & coil collar
+    const feedCollar = new THREE.TorusGeometry(0.36, 0.065, 8, 16);
+    feedCollar.rotateX(Math.PI * 0.5);
+    feedCollar.translate(0, 3.65, 0);
+    const feedSpike = new THREE.ConeGeometry(0.11, 0.55, 8);
+    feedSpike.translate(0, 4.78, 0.42);
+    feedSpike.rotateX(0.22);
+    const copperGeo = mergeSimpleIndexedGeometries([feedCollar, feedSpike]);
+    const copperMesh = new THREE.Mesh(copperGeo, this.matCopper);
+    pylon.add(copperMesh);
+
+    // Rotating brass telemetry gyro halo
+    const dishGeo = new THREE.TorusGeometry(0.92, 0.075, 8, 24);
     const dish = new THREE.Mesh(dishGeo, this.matBrass);
-    dish.position.y = 4.6;
+    dish.position.y = 5.38;
     dish.rotation.x = Math.PI * 0.32;
     pylon.add(dish);
+    this.beaconDishRing = dish;
 
     const orbMat = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x0ea5e9,
-      emissiveIntensity: 1.1,
-      roughness: 0.15,
-      metalness: 0.2,
+      emissiveIntensity: 1.25,
+      roughness: 0.14,
+      metalness: 0.22,
     });
-    const orbGeo = new THREE.OctahedronGeometry(0.45, 0);
+    const orbGeo = new THREE.OctahedronGeometry(0.42, 0);
     const orb = new THREE.Mesh(orbGeo, orbMat);
-    orb.position.y = 5.3;
+    orb.position.y = 5.38;
     pylon.add(orb);
-    this.sharedGeometries.push(baseGeo, mastGeo, dishGeo, orbGeo);
+    this.beaconOrb = orb;
+
+    this.sharedGeometries.push(baseGeo, hazardRingGeo, mastGeo, copperGeo, dishGeo, orbGeo);
     this.sharedMaterials.push(orbMat);
 
     this.beaconPillarGroup.add(pylon);
@@ -1683,8 +2286,10 @@ export class Capytorio3DRenderer {
     if (!mat) {
       mat = new THREE.MeshStandardMaterial({
         color: colorHex,
-        roughness: 0.38,
-        metalness: 0.35,
+        bumpMap: this.industrialPlateBumpTex ?? null,
+        bumpScale: 0.018,
+        roughness: 0.36,
+        metalness: 0.38,
       });
       this.accentMatCache.set(colorHex, mat);
       this.sharedMaterials.push(mat);
@@ -1751,83 +2356,226 @@ export class Capytorio3DRenderer {
     g.userData.__occluderRoot = g;
     g.userData.ignoreCameraFade = true;
 
-    // Base chassis plinth sitting flush on y = 0 (2x1 wide plinth for splitters, 1x1 unit scaled by footprint otherwise)
+    // Stepped cast-iron plinth with corner anchor bolts sitting flush on y = 0
     const plinth = new THREE.Mesh(
       type === 'splitter'
-        ? this.getCachedMachineGeo(
-            'plinth_splitter_2x1',
-            () => new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 2 - 0.28, 0.24, CAPYTORIO_TILE_SIZE - 0.16)
-          )
-        : this.getCachedMachineGeo('plinth', () => new THREE.BoxGeometry(2.05, 0.24, 2.05)),
+        ? this.getCachedMachineGeo('plinth_splitter_2x1', () => {
+            const w = CAPYTORIO_TILE_SIZE * 2 - 0.24;
+            const d = CAPYTORIO_TILE_SIZE - 0.14;
+            const lower = createChamferedBoxGeometry(w, 0.16, d, 0.14);
+            lower.translate(0, 0.08, 0);
+            const upper = createChamferedBoxGeometry(w - 0.14, 0.1, d - 0.14, 0.1);
+            upper.translate(0, 0.2, 0);
+            return mergeSimpleIndexedGeometries([lower, upper]);
+          })
+        : this.getCachedMachineGeo('plinth', () => {
+            const parts: THREE.BufferGeometry[] = [];
+            const lower = createChamferedBoxGeometry(2.12, 0.15, 2.12, 0.16);
+            lower.translate(0, 0.075, 0);
+            parts.push(lower);
+            const upper = createChamferedBoxGeometry(1.94, 0.1, 1.94, 0.14);
+            upper.translate(0, 0.195, 0);
+            parts.push(upper);
+            const boltOff = 0.88;
+            for (const bx of [-boltOff, boltOff]) {
+              for (const bz of [-boltOff, boltOff]) {
+                const pad = new THREE.CylinderGeometry(0.11, 0.14, 0.16, 6);
+                pad.translate(bx, 0.12, bz);
+                parts.push(pad);
+              }
+            }
+            return mergeSimpleIndexedGeometries(parts);
+          }),
       this.matSteelDark
     );
-    plinth.position.y = 0.12;
     plinth.castShadow = true;
     plinth.receiveShadow = true;
     g.add(plinth);
 
     if (type === 'drill') {
-      // Twin A-frame pillars + rotating drill auger + output chute pointing -Z
-      const legGeo = this.getCachedMachineGeo('drill_leg', () => new THREE.BoxGeometry(0.28, 1.45, 0.36));
-      for (const sx of [-0.72, 0.72]) {
-        const leg = new THREE.Mesh(legGeo, this.matSteelLight);
-        leg.position.set(sx, 0.92, 0);
-        leg.castShadow = true;
-        g.add(leg);
-      }
-      const bridge = new THREE.Mesh(
-        this.getCachedMachineGeo('drill_bridge', () => new THREE.BoxGeometry(1.85, 0.34, 0.9)),
-        accentMat
-      );
-      bridge.position.set(0, 1.56, 0);
-      bridge.castShadow = true;
-      bridge.receiveShadow = true;
-      g.add(bridge);
-      accentMeshes.push(bridge);
+      // Heavy A-frame truss mining rig + hydraulic guide pistons + fluted auger + hazard chute
+      const frame = new THREE.Mesh(
+        this.getCachedMachineGeo('drill_frame', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          for (const sx of [-0.74, 0.74]) {
+            const legF = new THREE.BoxGeometry(0.18, 1.48, 0.22);
+            legF.rotateX(0.14);
+            legF.translate(sx, 0.92, -0.34);
+            parts.push(legF);
 
-      const augerGroup = new THREE.Group();
-      augerGroup.position.set(0, 0.86, 0);
-      const cone = new THREE.Mesh(
-        this.getCachedMachineGeo('drill_cone', () => new THREE.ConeGeometry(0.46, 1.18, 8)),
-        this.matBrass
-      );
-      cone.rotation.x = Math.PI;
-      augerGroup.add(cone);
-      const collar = new THREE.Mesh(
-        this.getCachedMachineGeo('drill_collar', () => new THREE.TorusGeometry(0.4, 0.08, 6, 14)),
+            const legB = new THREE.BoxGeometry(0.18, 1.48, 0.22);
+            legB.rotateX(-0.14);
+            legB.translate(sx, 0.92, 0.34);
+            parts.push(legB);
+
+            const cross = new THREE.BoxGeometry(0.14, 0.14, 0.88);
+            cross.translate(sx, 0.78, 0);
+            parts.push(cross);
+
+            const piston = new THREE.CylinderGeometry(0.08, 0.08, 1.24, 8);
+            piston.translate(sx * 0.72, 0.88, 0);
+            parts.push(piston);
+          }
+          // Floor collar around drill bore
+          const boreRing = new THREE.TorusGeometry(0.54, 0.08, 8, 16);
+          boreRing.rotateX(Math.PI * 0.5);
+          boreRing.translate(0, 0.28, 0);
+          parts.push(boreRing);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
         this.matSteelLight
       );
-      collar.rotation.x = Math.PI * 0.5;
-      collar.position.y = 0.25;
-      augerGroup.add(collar);
+      frame.castShadow = true;
+      frame.receiveShadow = true;
+      g.add(frame);
+
+      const motor = new THREE.Mesh(
+        this.getCachedMachineGeo('drill_motor', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          // Open twin-motor gantry flanking an exposed central drill rotary well
+          for (const sx of [-0.66, 0.66]) {
+            const pod = createChamferedBoxGeometry(0.56, 0.44, 1.18, 0.1);
+            pod.translate(sx, 1.62, 0.04);
+            parts.push(pod);
+          }
+          // Rear bridge deck connecting twin drive pods (leaves center rotary spindle open!)
+          const rearBridge = createChamferedBoxGeometry(1.76, 0.34, 0.42, 0.08);
+          rearBridge.translate(0, 1.64, 0.52);
+          parts.push(rearBridge);
+          // Front cross-beam tie
+          const frontBeam = createChamferedBoxGeometry(1.72, 0.24, 0.28, 0.06);
+          frontBeam.translate(0, 1.62, -0.5);
+          parts.push(frontBeam);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        accentMat
+      );
+      motor.castShadow = true;
+      motor.receiveShadow = true;
+      g.add(motor);
+      accentMeshes.push(motor);
+
+      const drillTrim = new THREE.Mesh(
+        this.getCachedMachineGeo('drill_trim', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          // Heavy central dark-steel rotary gearbox collar + twin exhaust mufflers
+          const wellRing = new THREE.TorusGeometry(0.46, 0.085, 8, 16);
+          wellRing.rotateX(Math.PI * 0.5);
+          wellRing.translate(0, 1.76, 0);
+          parts.push(wellRing);
+          for (const sx of [-0.68, 0.68]) {
+            const vent = new THREE.BoxGeometry(0.32, 0.1, 0.72);
+            vent.translate(sx, 1.88, 0.04);
+            parts.push(vent);
+          }
+          const muffler = new THREE.CylinderGeometry(0.12, 0.14, 0.58, 8);
+          muffler.translate(0.62, 2.02, 0.56);
+          parts.push(muffler);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matSteelDark
+      );
+      drillTrim.castShadow = true;
+      g.add(drillTrim);
+
+      const augerGroup = new THREE.Group();
+      augerGroup.position.set(0, 0.88, 0);
+      const augerMesh = new THREE.Mesh(
+        this.getCachedMachineGeo('drill_auger', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          // Tapered fluted drill bit via LatheGeometry
+          const bitPts = [
+            new THREE.Vector2(0.01, -0.62),
+            new THREE.Vector2(0.18, -0.36),
+            new THREE.Vector2(0.32, -0.05),
+            new THREE.Vector2(0.44, 0.34),
+            new THREE.Vector2(0.24, 0.62),
+            new THREE.Vector2(0.2, 1.06),
+            new THREE.Vector2(0.01, 1.08),
+          ];
+          parts.push(new THREE.LatheGeometry(bitPts, 10));
+          // Stepped helical cutting flight collars
+          const flightSpecs: Array<[number, number, number]> = [
+            [-0.24, 0.25, 0.055],
+            [0.02, 0.35, 0.065],
+            [0.28, 0.44, 0.075],
+          ];
+          for (let i = 0; i < flightSpecs.length; i++) {
+            const [fy, fr, ft] = flightSpecs[i];
+            const ring = new THREE.TorusGeometry(fr, ft, 6, 14);
+            ring.rotateX(Math.PI * 0.5 + 0.16);
+            ring.rotateY(i * 1.1);
+            ring.translate(0, fy, 0);
+            parts.push(ring);
+          }
+          // Exposed overhead spinning 8-tooth rotary drive wheel visible from oblique camera!
+          const topWheel = createSpurGearGeometry(8, 0.44, 0.33, 0.1, 0.14);
+          topWheel.translate(0, 1.02, 0);
+          parts.push(topWheel);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matBrass
+      );
+      augerMesh.castShadow = true;
+      augerGroup.add(augerMesh);
       g.add(augerGroup);
       g.userData.spinPart = augerGroup;
 
       const chute = new THREE.Mesh(
-        this.getCachedMachineGeo('drill_chute', () => new THREE.BoxGeometry(0.55, 0.32, 0.65)),
+        this.getCachedMachineGeo('drill_chute', () => {
+          const hood = createChamferedBoxGeometry(0.68, 0.36, 0.66, 0.08);
+          hood.translate(0, 0.4, -0.96);
+          return hood;
+        }),
         this.matHazardYellow
       );
-      chute.position.set(0, 0.36, -0.98);
+      chute.castShadow = true;
       g.add(chute);
+
+      const mouth = new THREE.Mesh(
+        this.getCachedMachineGeo('drill_mouth', () => new THREE.BoxGeometry(0.48, 0.22, 0.1)),
+        this.matDarkVoid
+      );
+      mouth.position.set(0, 0.36, -1.26);
+      g.add(mouth);
+
+      const lamp = new THREE.Mesh(
+        this.getCachedMachineGeo('machine_status_lamp', () => new THREE.SphereGeometry(0.11, 8, 6)),
+        this.matStatusLampOn
+      );
+      lamp.position.set(0, 2.15, -0.26);
+      g.add(lamp);
+      g.userData.statusLamp = lamp;
     } else if (type === 'inserter') {
-      // Multi-joint articulated Factorio mechanical inserter (all geometries pooled & shared)
+      // Articulated Factorio servo inserter with hydraulic rods + paired pneumatic pincer claws
+      // Pooled geometry budget strictly <= 22 across all instances (currently 20 total incl. 8 held shapes)
       const ped = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_ped', () => new THREE.CylinderGeometry(0.56, 0.72, 0.22, 8)),
+        this.getCachedMachineGeo('ins_ped', () => {
+          const lower = new THREE.CylinderGeometry(0.64, 0.76, 0.16, 8);
+          lower.translate(0, 0.29, 0);
+          const flange = new THREE.CylinderGeometry(0.46, 0.54, 0.14, 8);
+          flange.translate(0, 0.4, 0);
+          return mergeSimpleIndexedGeometries([lower, flange]);
+        }),
         this.matSteelLight
       );
-      ped.position.y = 0.26;
       ped.castShadow = true;
       ped.receiveShadow = true;
       g.add(ped);
 
       const turret = new THREE.Group();
-      turret.position.set(0, 0.38, 0);
+      turret.position.set(0, 0.42, 0);
 
       const turretCollar = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_collar', () => new THREE.CylinderGeometry(0.36, 0.44, 0.22, 8)),
+        this.getCachedMachineGeo('ins_collar', () => {
+          const core = new THREE.CylinderGeometry(0.38, 0.46, 0.24, 8);
+          core.translate(0, 0.1, 0);
+          const servoPod = createChamferedBoxGeometry(0.56, 0.22, 0.42, 0.06);
+          servoPod.translate(0, 0.12, 0.18);
+          return mergeSimpleIndexedGeometries([core, servoPod]);
+        }),
         accentMat
       );
-      turretCollar.position.y = 0.08;
       turret.add(turretCollar);
       accentMeshes.push(turretCollar);
 
@@ -1835,68 +2583,94 @@ export class Capytorio3DRenderer {
       shoulderPivot.position.set(0, 0.22, 0);
 
       const shoulderPin = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_pin', () => new THREE.CylinderGeometry(0.16, 0.16, 0.44, 10)),
+        this.getCachedMachineGeo('ins_pin', () => {
+          const axle = new THREE.CylinderGeometry(0.17, 0.17, 0.48, 10);
+          axle.rotateZ(Math.PI * 0.5);
+          return axle;
+        }),
         this.matSteelDark
       );
-      shoulderPin.rotation.z = Math.PI * 0.5;
       shoulderPivot.add(shoulderPin);
 
-      const upperArmGeo = this.getCachedMachineGeo(
-        'ins_upper',
-        () => new THREE.BoxGeometry(0.11, INSERTER_UPPER_ARM_LEN, 0.2)
+      // Merged twin upper truss booms + cross-braces (1 shared geo!)
+      const upperBoom = new THREE.Mesh(
+        this.getCachedMachineGeo('ins_upper', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          for (const sx of [-0.13, 0.13]) {
+            const rail = new THREE.BoxGeometry(0.1, INSERTER_UPPER_ARM_LEN, 0.22);
+            rail.translate(sx, INSERTER_UPPER_ARM_LEN * 0.5, 0);
+            parts.push(rail);
+          }
+          for (const cy of [0.48, 1.12]) {
+            const brace = new THREE.BoxGeometry(0.28, 0.1, 0.16);
+            brace.translate(0, cy, 0);
+            parts.push(brace);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        accentMat
       );
-      const upperArmL = new THREE.Mesh(upperArmGeo, accentMat);
-      upperArmL.position.set(-0.12, INSERTER_UPPER_ARM_LEN * 0.5, 0);
-      upperArmL.castShadow = true;
-      shoulderPivot.add(upperArmL);
-      accentMeshes.push(upperArmL);
-
-      const upperArmR = new THREE.Mesh(upperArmGeo, accentMat);
-      upperArmR.position.set(0.12, INSERTER_UPPER_ARM_LEN * 0.5, 0);
-      upperArmR.castShadow = true;
-      shoulderPivot.add(upperArmR);
-      accentMeshes.push(upperArmR);
+      upperBoom.castShadow = true;
+      shoulderPivot.add(upperBoom);
+      accentMeshes.push(upperBoom);
 
       const upperStrut = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_strut', () => new THREE.BoxGeometry(0.14, 1.12, 0.14)),
+        this.getCachedMachineGeo('ins_strut', () => {
+          const cyl = new THREE.CylinderGeometry(0.065, 0.065, 1.18, 8);
+          cyl.translate(0, 0.72, 0.12);
+          const sleeve = new THREE.CylinderGeometry(0.095, 0.095, 0.52, 8);
+          sleeve.translate(0, 0.44, 0.12);
+          return mergeSimpleIndexedGeometries([cyl, sleeve]);
+        }),
         this.matSteelLight
       );
-      upperStrut.position.set(0, 0.72, 0.08);
       shoulderPivot.add(upperStrut);
 
       const elbowPivot = new THREE.Group();
       elbowPivot.position.set(0, INSERTER_UPPER_ARM_LEN, 0);
 
       const elbowDrum = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_drum', () => new THREE.CylinderGeometry(0.18, 0.18, 0.36, 12)),
+        this.getCachedMachineGeo('ins_drum', () => {
+          const drum = new THREE.CylinderGeometry(0.2, 0.2, 0.38, 12);
+          drum.rotateZ(Math.PI * 0.5);
+          return drum;
+        }),
         this.matSteelDark
       );
-      elbowDrum.rotation.z = Math.PI * 0.5;
       elbowPivot.add(elbowDrum);
 
       const elbowCap = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_cap', () => new THREE.CylinderGeometry(0.11, 0.11, 0.4, 10)),
+        this.getCachedMachineGeo('ins_cap', () => {
+          const cap = new THREE.CylinderGeometry(0.12, 0.12, 0.44, 10);
+          cap.rotateZ(Math.PI * 0.5);
+          return cap;
+        }),
         this.matBrass
       );
-      elbowCap.rotation.z = Math.PI * 0.5;
       elbowPivot.add(elbowCap);
 
       const forearm = new THREE.Mesh(
-        this.getCachedMachineGeo(
-          'ins_forearm',
-          () => new THREE.BoxGeometry(0.16, 0.15, INSERTER_FOREARM_LEN)
-        ),
+        this.getCachedMachineGeo('ins_forearm', () => {
+          const boom = new THREE.BoxGeometry(0.16, 0.15, INSERTER_FOREARM_LEN);
+          boom.translate(0, 0, -INSERTER_FOREARM_LEN * 0.5);
+          const rod = new THREE.CylinderGeometry(0.045, 0.045, INSERTER_FOREARM_LEN * 0.76, 8);
+          rod.rotateX(Math.PI * 0.5);
+          rod.translate(0, -0.09, -INSERTER_FOREARM_LEN * 0.48);
+          return mergeSimpleIndexedGeometries([boom, rod]);
+        }),
         this.matSteelLight
       );
-      forearm.position.set(0, 0, -INSERTER_FOREARM_LEN * 0.5);
       forearm.castShadow = true;
       elbowPivot.add(forearm);
 
       const forearmRib = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_rib', () => new THREE.BoxGeometry(0.2, 0.08, 1.24)),
+        this.getCachedMachineGeo('ins_rib', () => {
+          const rib = createChamferedBoxGeometry(0.22, 0.09, 1.24, 0.04);
+          rib.translate(0, 0.08, -0.78);
+          return rib;
+        }),
         accentMat
       );
-      forearmRib.position.set(0, 0.06, -0.78);
       elbowPivot.add(forearmRib);
       accentMeshes.push(forearmRib);
 
@@ -1904,17 +2678,35 @@ export class Capytorio3DRenderer {
       wristPivot.position.set(0, 0, -INSERTER_FOREARM_LEN);
 
       const wristHub = new THREE.Mesh(
-        this.getCachedMachineGeo('ins_wrist', () => new THREE.BoxGeometry(0.32, 0.14, 0.22)),
+        this.getCachedMachineGeo('ins_wrist', () => {
+          const hub = createChamferedBoxGeometry(0.36, 0.15, 0.24, 0.04);
+          const collar = new THREE.CylinderGeometry(0.1, 0.1, 0.18, 8);
+          collar.rotateX(Math.PI * 0.5);
+          collar.translate(0, 0, 0.12);
+          return mergeSimpleIndexedGeometries([hub, collar]);
+        }),
         this.matSteelDark
       );
       wristPivot.add(wristHub);
 
-      const jawGeo = this.getCachedMachineGeo('ins_jaw', () => new THREE.BoxGeometry(0.065, 0.26, 0.14));
-      for (const sx of [-0.15, 0.15]) {
-        const jaw = new THREE.Mesh(jawGeo, this.matBrass);
-        jaw.position.set(sx, -0.14, 0);
-        wristPivot.add(jaw);
-      }
+      // Curved pneumatic pincer claws (shared 1 geo mirrored via scale.x = -1, animated on hold!)
+      const jawGeo = this.getCachedMachineGeo('ins_jaw', () => {
+        const upperFinger = new THREE.BoxGeometry(0.065, 0.16, 0.14);
+        upperFinger.rotateZ(-0.22);
+        upperFinger.translate(-0.02, -0.08, 0);
+        const lowerTip = new THREE.BoxGeometry(0.055, 0.15, 0.12);
+        lowerTip.rotateZ(0.32);
+        lowerTip.translate(0.01, -0.21, 0);
+        return mergeSimpleIndexedGeometries([upperFinger, lowerTip]);
+      });
+      const jawL = new THREE.Mesh(jawGeo, this.matBrass);
+      jawL.position.set(-0.15, -0.05, 0);
+      wristPivot.add(jawL);
+
+      const jawR = new THREE.Mesh(jawGeo, this.matBrass);
+      jawR.scale.x = -1;
+      jawR.position.set(0.15, -0.05, 0);
+      wristPivot.add(jawR);
 
       // Pre-built held item meshes sharing cached color materials (zero per-inserter material allocs)
       const defaultHeldMat = this.getCachedHeldItemMat(0xffffff);
@@ -1939,219 +2731,527 @@ export class Capytorio3DRenderer {
       g.userData.shoulderPivot = shoulderPivot;
       g.userData.elbowPivot = elbowPivot;
       g.userData.wristPivot = wristPivot;
+      g.userData.jawL = jawL;
+      g.userData.jawR = jawR;
       g.userData.heldMount = heldMount;
       g.userData.heldMeshesByShape = heldMeshesByShape;
       g.userData.lastHeldColorHex = 0xffffff;
     } else if (type === 'furnace') {
+      // Domed stoneware brick kiln + merged ironwork bands & twin flanged chimneys + copper coil
+      // Strictly 6 pooled geometries (plinth + kiln + ironwork + copper + hearth + port <= 6!)
       const kiln = new THREE.Mesh(
-        this.getCachedMachineGeo('furn_kiln', () => new THREE.CylinderGeometry(0.86, 1.0, 1.35, 8)),
+        this.getCachedMachineGeo('furn_kiln', () => {
+          const pts = [
+            new THREE.Vector2(0.01, 0.22),
+            new THREE.Vector2(1.02, 0.22),
+            new THREE.Vector2(0.98, 0.72),
+            new THREE.Vector2(0.9, 1.24),
+            new THREE.Vector2(0.76, 1.56),
+            new THREE.Vector2(0.46, 1.78),
+            new THREE.Vector2(0.01, 1.82),
+          ];
+          return new THREE.LatheGeometry(pts, 12);
+        }),
         this.matBrick
       );
-      kiln.position.y = 0.9;
       kiln.castShadow = true;
       kiln.receiveShadow = true;
       g.add(kiln);
 
-      const chimneyGeo = this.getCachedMachineGeo(
-        'furn_chimney',
-        () => new THREE.CylinderGeometry(0.18, 0.22, 1.0, 8)
+      const ironwork = new THREE.Mesh(
+        this.getCachedMachineGeo('furn_ironwork', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          // 2 heavy forged-iron kiln tension hoops
+          for (const [hy, hr] of [
+            [0.54, 1.0],
+            [1.18, 0.92],
+          ]) {
+            const band = new THREE.TorusGeometry(hr, 0.045, 6, 16);
+            band.rotateX(Math.PI * 0.5);
+            band.translate(0, hy, 0);
+            parts.push(band);
+          }
+          // Twin tall flanged smokestacks
+          for (const sx of [-0.46, 0.46]) {
+            const stack = new THREE.CylinderGeometry(0.17, 0.22, 1.08, 10);
+            stack.translate(sx, 1.92, 0.32);
+            parts.push(stack);
+            const lip = new THREE.CylinderGeometry(0.24, 0.2, 0.12, 10);
+            lip.translate(sx, 2.46, 0.32);
+            parts.push(lip);
+          }
+          // Arched cast-iron firebox surround
+          const archFrame = new THREE.TorusGeometry(0.42, 0.075, 6, 12, Math.PI);
+          archFrame.translate(0, 0.74, -0.94);
+          parts.push(archFrame);
+          for (const px of [-0.42, 0.42]) {
+            const post = new THREE.BoxGeometry(0.14, 0.46, 0.16);
+            post.translate(px, 0.52, -0.94);
+            parts.push(post);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matSteelDark
       );
-      const chimneyL = new THREE.Mesh(chimneyGeo, this.matSteelDark);
-      chimneyL.position.set(-0.46, 1.85, 0.35);
-      chimneyL.castShadow = true;
-      g.add(chimneyL);
-
-      const chimneyR = new THREE.Mesh(chimneyGeo, this.matSteelDark);
-      chimneyR.position.set(0.46, 1.85, 0.35);
-      chimneyR.castShadow = true;
-      g.add(chimneyR);
+      ironwork.castShadow = true;
+      g.add(ironwork);
 
       const hearth = new THREE.Mesh(
-        this.getCachedMachineGeo('furn_hearth', () => new THREE.BoxGeometry(0.75, 0.52, 0.2)),
+        this.getCachedMachineGeo('furn_hearth', () => {
+          const box = new THREE.BoxGeometry(0.74, 0.52, 0.18);
+          const dome = new THREE.CylinderGeometry(0.37, 0.37, 0.18, 10, 1, false, 0, Math.PI);
+          dome.rotateZ(Math.PI * 0.5);
+          dome.rotateY(Math.PI * 0.5);
+          dome.translate(0, 0.26, 0);
+          return mergeSimpleIndexedGeometries([box, dome]);
+        }),
         this.matFurnaceHearthIdle
       );
-      hearth.position.set(0, 0.65, -0.88);
+      hearth.position.set(0, 0.54, -0.92);
       g.add(hearth);
       g.userData.hearthMesh = hearth;
 
-      const capRing = new THREE.Mesh(
-        this.getCachedMachineGeo('furn_ring', () => new THREE.TorusGeometry(0.72, 0.08, 6, 12)),
+      const copperCrown = new THREE.Mesh(
+        this.getCachedMachineGeo('furn_ring', () => {
+          const ring = new THREE.TorusGeometry(0.74, 0.08, 8, 16);
+          ring.rotateX(Math.PI * 0.5);
+          ring.translate(0, 1.56, 0);
+          const cap = new THREE.CylinderGeometry(0.28, 0.36, 0.22, 10);
+          cap.translate(0, 1.88, -0.06);
+          return mergeSimpleIndexedGeometries([ring, cap]);
+        }),
         this.matCopper
       );
-      capRing.rotation.x = Math.PI * 0.5;
-      capRing.position.y = 1.56;
-      g.add(capRing);
+      g.add(copperCrown);
 
       const furnaceOutPort = new THREE.Mesh(
-        this.getCachedMachineGeo('furn_port', () => new THREE.BoxGeometry(0.55, 0.24, 0.34)),
+        this.getCachedMachineGeo('furn_port', () => {
+          const apron = createChamferedBoxGeometry(0.72, 0.22, 0.42, 0.06);
+          apron.translate(0, 0.28, -1.0);
+          return apron;
+        }),
         this.matHazardYellow
       );
-      furnaceOutPort.position.set(0, 0.28, -0.96);
       g.add(furnaceOutPort);
     } else if (type === 'assembler') {
+      // Chamfered heavy industrial chassis + gantry + real toothed meshing spur gears + stamping press
       const hull = new THREE.Mesh(
-        this.getCachedMachineGeo('asm_hull', () => new THREE.BoxGeometry(1.86, 1.05, 1.86)),
+        this.getCachedMachineGeo('asm_hull', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          const body = createChamferedBoxGeometry(1.9, 0.96, 1.9, 0.22);
+          body.translate(0, 0.72, 0);
+          parts.push(body);
+          // Side radiator louvre pods
+          for (const sx of [-0.94, 0.94]) {
+            const pod = createChamferedBoxGeometry(0.22, 0.62, 1.12, 0.06);
+            pod.translate(sx, 0.74, 0);
+            parts.push(pod);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
         accentMat
       );
-      hull.position.y = 0.76;
       hull.castShadow = true;
       hull.receiveShadow = true;
       g.add(hull);
       accentMeshes.push(hull);
 
+      const gantry = new THREE.Mesh(
+        this.getCachedMachineGeo('asm_gantry', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          // 4 heavy corner stanchions
+          for (const cx of [-0.78, 0.78]) {
+            for (const cz of [-0.78, 0.78]) {
+              const post = new THREE.BoxGeometry(0.24, 1.24, 0.24);
+              post.translate(cx, 0.84, cz);
+              parts.push(post);
+            }
+          }
+          // Overhead gantry cross-beam for stamping press
+          const beam = new THREE.BoxGeometry(1.74, 0.18, 0.28);
+          beam.translate(0, 1.88, -0.34);
+          parts.push(beam);
+          for (const sx of [-0.76, 0.76]) {
+            const riser = new THREE.BoxGeometry(0.16, 0.56, 0.22);
+            riser.translate(sx, 1.62, -0.34);
+            parts.push(riser);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matSteelDark
+      );
+      gantry.castShadow = true;
+      g.add(gantry);
+
       const hood = new THREE.Mesh(
-        this.getCachedMachineGeo('asm_hood', () => new THREE.BoxGeometry(1.42, 0.3, 1.42)),
+        this.getCachedMachineGeo('asm_hood', () => {
+          const deck = createChamferedBoxGeometry(1.5, 0.26, 1.5, 0.16);
+          deck.translate(0, 1.34, 0);
+          const pressHousing = new THREE.CylinderGeometry(0.2, 0.24, 0.36, 10);
+          pressHousing.translate(0, 1.98, -0.34);
+          return mergeSimpleIndexedGeometries([deck, pressHousing]);
+        }),
         this.matSteelLight
       );
-      hood.position.y = 1.42;
       hood.castShadow = true;
       g.add(hood);
 
+      // True toothed meshing spur gears (10-tooth brass + 8-tooth steel, center distance = 0.76)
       const gearA = new THREE.Mesh(
-        this.getCachedMachineGeo('asm_gearA', () => new THREE.CylinderGeometry(0.42, 0.42, 0.18, 8)),
+        this.getCachedMachineGeo('asm_gearA', () => createSpurGearGeometry(10, 0.44, 0.34, 0.1, 0.14)),
         this.matBrass
       );
-      gearA.position.set(-0.36, 1.66, 0);
+      gearA.position.set(-0.36, 1.56, 0.26);
+      gearA.castShadow = true;
       g.add(gearA);
 
       const gearB = new THREE.Mesh(
-        this.getCachedMachineGeo('asm_gearB', () => new THREE.CylinderGeometry(0.32, 0.32, 0.18, 6)),
+        this.getCachedMachineGeo('asm_gearB', () => createSpurGearGeometry(8, 0.35, 0.26, 0.08, 0.14)),
         this.matSteelLight
       );
-      gearB.position.set(0.38, 1.66, 0);
+      gearB.position.set(0.38, 1.56, 0.26);
+      gearB.castShadow = true;
       g.add(gearB);
 
+      // Reciprocating stamping press piston head
+      const pressHead = new THREE.Mesh(
+        this.getCachedMachineGeo('asm_press', () => {
+          const shaft = new THREE.CylinderGeometry(0.09, 0.09, 0.48, 8);
+          shaft.translate(0, 0.18, 0);
+          const ram = createChamferedBoxGeometry(0.44, 0.14, 0.36, 0.05);
+          ram.translate(0, -0.06, 0);
+          return mergeSimpleIndexedGeometries([shaft, ram]);
+        }),
+        this.matCopper
+      );
+      pressHead.position.set(0, 1.62, -0.34);
+      g.add(pressHead);
+
       const portOut = new THREE.Mesh(
-        this.getCachedMachineGeo('asm_port', () => new THREE.BoxGeometry(0.6, 0.34, 0.28)),
+        this.getCachedMachineGeo('asm_port', () => {
+          const apron = createChamferedBoxGeometry(0.76, 0.32, 0.34, 0.06);
+          apron.translate(0, 0.44, -0.98);
+          return apron;
+        }),
         this.matHazardYellow
       );
-      portOut.position.set(0, 0.46, -0.98);
       g.add(portOut);
+
+      const lamp = new THREE.Mesh(
+        this.getCachedMachineGeo('machine_status_lamp', () => new THREE.SphereGeometry(0.11, 8, 6)),
+        this.matStatusLampOn
+      );
+      lamp.position.set(0.68, 1.58, -0.64);
+      g.add(lamp);
 
       g.userData.gearA = gearA;
       g.userData.gearB = gearB;
+      g.userData.pressHead = pressHead;
+      g.userData.statusLamp = lamp;
     } else if (type === 'generator') {
+      // Domed horizontal Lathe boiler + iron saddles & spark-arrestor stack + TubeGeometry copper manifold + spoked brass flywheel
       const boiler = new THREE.Mesh(
-        this.getCachedMachineGeo('gen_boiler', () => new THREE.CylinderGeometry(0.68, 0.68, 1.65, 12)),
+        this.getCachedMachineGeo('gen_boiler', () => {
+          const boilerPts = [
+            new THREE.Vector2(0.01, -0.88),
+            new THREE.Vector2(0.46, -0.82),
+            new THREE.Vector2(0.66, -0.64),
+            new THREE.Vector2(0.68, 0.64),
+            new THREE.Vector2(0.46, 0.82),
+            new THREE.Vector2(0.01, 0.88),
+          ];
+          const tank = new THREE.LatheGeometry(boilerPts, 14);
+          tank.rotateX(Math.PI * 0.5);
+          tank.translate(0.06, 1.0, 0);
+          const steamDome = new THREE.CylinderGeometry(0.32, 0.38, 0.34, 10);
+          steamDome.translate(0.06, 1.72, -0.14);
+          return mergeSimpleIndexedGeometries([tank, steamDome]);
+        }),
         accentMat
       );
-      boiler.rotation.x = Math.PI * 0.5;
-      boiler.position.set(0, 0.98, 0);
       boiler.castShadow = true;
       boiler.receiveShadow = true;
       g.add(boiler);
       accentMeshes.push(boiler);
 
+      const cradleAndStack = new THREE.Mesh(
+        this.getCachedMachineGeo('gen_stack', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          // Twin mounting saddles + riveted boiler bands + end-cap bolted rings
+          for (const sz of [-0.46, 0.46]) {
+            const saddle = new THREE.BoxGeometry(1.16, 0.44, 0.22);
+            saddle.translate(0.06, 0.44, sz);
+            parts.push(saddle);
+            const band = new THREE.TorusGeometry(0.69, 0.045, 6, 16);
+            band.translate(0.06, 1.0, sz);
+            parts.push(band);
+          }
+          const topSpine = new THREE.BoxGeometry(0.18, 0.12, 1.28);
+          topSpine.translate(0.06, 1.66, 0.06);
+          parts.push(topSpine);
+          const rearHatch = new THREE.CylinderGeometry(0.34, 0.38, 0.14, 10);
+          rearHatch.rotateX(Math.PI * 0.5);
+          rearHatch.translate(0.06, 1.0, 0.86);
+          parts.push(rearHatch);
+          // Tall flanged exhaust smokestack + spark arrestor crown
+          const stack = new THREE.CylinderGeometry(0.22, 0.28, 1.48, 10);
+          stack.translate(0.48, 1.92, 0.46);
+          parts.push(stack);
+          const cap = new THREE.CylinderGeometry(0.32, 0.24, 0.16, 10);
+          cap.translate(0.48, 2.68, 0.46);
+          parts.push(cap);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matSteelDark
+      );
+      cradleAndStack.castShadow = true;
+      g.add(cradleAndStack);
+
       const firebox = new THREE.Mesh(
-        this.getCachedMachineGeo('gen_firebox', () => new THREE.BoxGeometry(0.64, 0.44, 0.22)),
+        this.getCachedMachineGeo('gen_firebox', () => new THREE.BoxGeometry(0.68, 0.44, 0.22)),
         this.matGeneratorFireboxIdle
       );
-      firebox.position.set(0, 0.65, -0.82);
+      firebox.position.set(0.06, 0.64, -0.84);
       g.add(firebox);
       g.userData.fireboxMesh = firebox;
 
-      const stack = new THREE.Mesh(
-        this.getCachedMachineGeo('gen_stack', () => new THREE.CylinderGeometry(0.24, 0.3, 1.4, 8)),
-        this.matSteelDark
-      );
-      stack.position.set(0.45, 1.9, 0.42);
-      stack.castShadow = true;
-      g.add(stack);
-
+      // Curved TubeGeometry copper steam manifold running from steam dome to turbine flywheel side + pressure gauge
       const pipe = new THREE.Mesh(
-        this.getCachedMachineGeo('gen_pipe', () => new THREE.TorusGeometry(0.48, 0.1, 6, 12)),
+        this.getCachedMachineGeo('gen_pipe', () => {
+          const curve = new THREE.CatmullRomCurve3([
+            new THREE.Vector3(0.06, 1.82, -0.14),
+            new THREE.Vector3(-0.36, 1.86, -0.14),
+            new THREE.Vector3(-0.68, 1.56, -0.06),
+            new THREE.Vector3(-0.74, 1.06, 0.14),
+          ]);
+          const tube = new THREE.TubeGeometry(curve, 14, 0.095, 8, false);
+          const flange = new THREE.CylinderGeometry(0.15, 0.15, 0.12, 8);
+          flange.rotateZ(Math.PI * 0.5);
+          flange.translate(-0.74, 1.02, 0.14);
+          const gaugeCap = new THREE.CylinderGeometry(0.22, 0.26, 0.14, 10);
+          gaugeCap.translate(0.06, 1.94, -0.14);
+          return mergeSimpleIndexedGeometries([tube, flange, gaugeCap]);
+        }),
         this.matCopper
       );
-      pipe.position.set(-0.52, 1.15, -0.2);
-      pipe.rotation.y = Math.PI * 0.5;
+      pipe.castShadow = true;
       g.add(pipe);
 
+      // Spoked brass flywheel (rim + 4 radial spokes + hub merged into 1 geo!)
       const flywheel = new THREE.Mesh(
-        this.getCachedMachineGeo('gen_flywheel', () => new THREE.CylinderGeometry(0.62, 0.62, 0.18, 12)),
+        this.getCachedMachineGeo('gen_flywheel', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          const rim = new THREE.TorusGeometry(0.58, 0.095, 8, 18);
+          rim.rotateY(Math.PI * 0.5);
+          parts.push(rim);
+          for (let i = 0; i < 4; i++) {
+            const spoke = new THREE.BoxGeometry(0.08, 1.08, 0.1);
+            spoke.rotateX((i * Math.PI) / 4);
+            parts.push(spoke);
+          }
+          const hub = new THREE.CylinderGeometry(0.18, 0.18, 0.22, 10);
+          hub.rotateZ(Math.PI * 0.5);
+          parts.push(hub);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
         this.matBrass
       );
-      flywheel.rotation.z = Math.PI * 0.5;
-      flywheel.position.set(-0.88, 0.98, 0.15);
+      flywheel.position.set(-0.88, 1.0, 0.14);
+      flywheel.castShadow = true;
       g.add(flywheel);
       g.userData.flywheel = flywheel;
+
+      const hopperLip = new THREE.Mesh(
+        this.getCachedMachineGeo('gen_lip', () => {
+          const lip = createChamferedBoxGeometry(0.76, 0.18, 0.3, 0.05);
+          lip.translate(0.06, 0.34, -0.94);
+          return lip;
+        }),
+        this.matHazardYellow
+      );
+      g.add(hopperLip);
     } else if (type === 'lab') {
+      // Hexagonal research console + perimeter accent pylons + geodesic brass dome ribs + dual counter-rotating gyro rings
       const consoleBase = new THREE.Mesh(
-        this.getCachedMachineGeo('lab_base', () => new THREE.CylinderGeometry(0.95, 1.05, 0.45, 6)),
+        this.getCachedMachineGeo('lab_base', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          const lowerHex = new THREE.CylinderGeometry(0.98, 1.08, 0.34, 6);
+          lowerHex.translate(0, 0.4, 0);
+          parts.push(lowerHex);
+          const upperCollar = new THREE.CylinderGeometry(0.9, 0.96, 0.18, 12);
+          upperCollar.translate(0, 0.64, 0);
+          parts.push(upperCollar);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
         this.matSteelLight
       );
-      consoleBase.position.y = 0.46;
       consoleBase.castShadow = true;
       consoleBase.receiveShadow = true;
       g.add(consoleBase);
 
+      const labPylons = new THREE.Mesh(
+        this.getCachedMachineGeo('lab_pylons', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          for (let i = 0; i < 3; i++) {
+            const ang = (i * Math.PI * 2) / 3 + Math.PI / 6;
+            const tower = new THREE.CylinderGeometry(0.14, 0.22, 0.54, 6);
+            tower.translate(Math.cos(ang) * 0.94, 0.64, Math.sin(ang) * 0.94);
+            parts.push(tower);
+            const emitter = new THREE.CylinderGeometry(0.07, 0.14, 0.2, 6);
+            emitter.translate(Math.cos(ang) * 0.94, 1.0, Math.sin(ang) * 0.94);
+            parts.push(emitter);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        accentMat
+      );
+      labPylons.castShadow = true;
+      g.add(labPylons);
+      accentMeshes.push(labPylons);
+
+      // Geodesic brass meridian dome cage
+      const domeRibs = new THREE.Mesh(
+        this.getCachedMachineGeo('lab_ribs', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          const eqRing = new THREE.TorusGeometry(0.91, 0.042, 6, 20);
+          eqRing.rotateX(Math.PI * 0.5);
+          eqRing.translate(0, 0.72, 0);
+          parts.push(eqRing);
+          for (let i = 0; i < 3; i++) {
+            const arc = new THREE.TorusGeometry(0.91, 0.032, 6, 16, Math.PI);
+            arc.rotateY((i * Math.PI) / 3);
+            arc.translate(0, 0.72, 0);
+            parts.push(arc);
+          }
+          const finial = new THREE.CylinderGeometry(0.08, 0.14, 0.18, 8);
+          finial.translate(0, 1.66, 0);
+          parts.push(finial);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matBrass
+      );
+      g.add(domeRibs);
+
       const core = new THREE.Mesh(
-        this.getCachedMachineGeo('lab_core', () => new THREE.OctahedronGeometry(0.44, 0)),
+        this.getCachedMachineGeo('lab_core', () => new THREE.OctahedronGeometry(0.36, 0)),
         this.matLabCoreIdle
       );
-      core.position.y = 1.25;
+      core.position.y = 1.18;
       g.add(core);
       g.userData.labCoreMesh = core;
+
+      const labRingA = new THREE.Mesh(
+        this.getCachedMachineGeo('lab_ringA', () => new THREE.TorusGeometry(0.56, 0.036, 6, 20)),
+        this.matBrass
+      );
+      labRingA.position.y = 1.18;
+      g.add(labRingA);
+
+      const labRingB = new THREE.Mesh(
+        this.getCachedMachineGeo('lab_ringB', () => new THREE.TorusGeometry(0.68, 0.03, 6, 20)),
+        this.matCopper
+      );
+      labRingB.position.y = 1.18;
+      g.add(labRingB);
 
       const dome = new THREE.Mesh(
         this.getCachedMachineGeo(
           'lab_dome',
-          () => new THREE.SphereGeometry(0.88, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55)
+          () => new THREE.SphereGeometry(0.88, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.54)
         ),
         this.matLabGlass
       );
-      dome.position.y = 0.68;
+      dome.position.y = 0.7;
       dome.renderOrder = 3;
       g.add(dome);
-      g.userData.spinPart = core;
-    } else if (type === 'splitter') {
-      // True classic Factorio 2x1 dual-lane belt splitter
-      const halfSpan = CAPYTORIO_TILE_SIZE * 0.5;
-      const laneDeckGeo = this.getCachedMachineGeo(
-        'split_lane_deck_2x1',
-        () => new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 0.86, 0.14, CAPYTORIO_TILE_SIZE + 0.02)
-      );
-      const deckL = new THREE.Mesh(laneDeckGeo, this.matSteelDark);
-      deckL.position.set(-halfSpan, 0.07, 0);
-      deckL.receiveShadow = true;
-      g.add(deckL);
 
-      const deckR = new THREE.Mesh(laneDeckGeo, this.matSteelDark);
-      deckR.position.set(halfSpan, 0.07, 0);
-      deckR.receiveShadow = true;
-      g.add(deckR);
+      g.userData.spinPart = core;
+      g.userData.labRingA = labRingA;
+      g.userData.labRingB = labRingB;
+    } else if (type === 'splitter') {
+      // Sculpted 2x1 dual-lane mechanical sorting bridge + hazard lintels + twin rotating brass sorting capstans
+      const halfSpan = CAPYTORIO_TILE_SIZE * 0.5;
+      const decks = new THREE.Mesh(
+        this.getCachedMachineGeo('split_lane_deck_2x1', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          for (const sx of [-halfSpan, halfSpan]) {
+            const lane = new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 0.86, 0.14, CAPYTORIO_TILE_SIZE + 0.02);
+            lane.translate(sx, 0.07, 0);
+            parts.push(lane);
+          }
+          // Outer side guide walls + recessed dark gear wells atop bridge
+          for (const wx of [-CAPYTORIO_TILE_SIZE + 0.18, CAPYTORIO_TILE_SIZE - 0.18]) {
+            const wall = new THREE.BoxGeometry(0.14, 0.56, 1.54);
+            wall.translate(wx, 0.42, 0);
+            parts.push(wall);
+          }
+          for (const sx of [-halfSpan, halfSpan]) {
+            const well = new THREE.CylinderGeometry(0.46, 0.48, 0.08, 12);
+            well.translate(sx, 0.92, -0.08);
+            parts.push(well);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matSteelDark
+      );
+      decks.receiveShadow = true;
+      g.add(decks);
 
       const bridge = new THREE.Mesh(
-        this.getCachedMachineGeo(
-          'split_bridge_2x1',
-          () => new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 2 - 0.24, 0.66, 1.32)
-        ),
+        this.getCachedMachineGeo('split_bridge_2x1', () => {
+          const hull = createChamferedBoxGeometry(CAPYTORIO_TILE_SIZE * 2 - 0.24, 0.58, 1.32, 0.14);
+          hull.translate(0, 0.64, 0);
+          return hull;
+        }),
         accentMat
       );
-      bridge.position.y = 0.56;
       bridge.castShadow = true;
       bridge.receiveShadow = true;
       g.add(bridge);
       accentMeshes.push(bridge);
 
       const centerDivider = new THREE.Mesh(
-        this.getCachedMachineGeo('split_divider', () => new THREE.BoxGeometry(0.28, 0.78, 1.56)),
+        this.getCachedMachineGeo('split_divider', () => {
+          const wall = createChamferedBoxGeometry(0.32, 0.82, 1.66, 0.06);
+          wall.translate(0, 0.56, 0);
+          const bar = new THREE.CylinderGeometry(0.08, 0.08, CAPYTORIO_TILE_SIZE * 1.6, 8);
+          bar.rotateZ(Math.PI * 0.5);
+          bar.translate(0, 0.96, 0.22);
+          return mergeSimpleIndexedGeometries([wall, bar]);
+        }),
         this.matSteelLight
       );
-      centerDivider.position.set(0, 0.52, 0);
       centerDivider.castShadow = true;
       g.add(centerDivider);
 
-      const dialGeo = this.getCachedMachineGeo('split_dial', () => new THREE.ConeGeometry(0.36, 0.48, 4));
-      const dialL = new THREE.Mesh(dialGeo, this.matHazardYellow);
-      dialL.rotation.x = -Math.PI * 0.5;
-      dialL.position.set(-halfSpan, 1.0, -0.15);
-      g.add(dialL);
+      const hazardLintels = new THREE.Mesh(
+        this.getCachedMachineGeo('split_hazard', () => {
+          const front = new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 2 - 0.34, 0.18, 0.14);
+          front.translate(0, 0.86, -0.66);
+          const back = new THREE.BoxGeometry(CAPYTORIO_TILE_SIZE * 2 - 0.34, 0.18, 0.14);
+          back.translate(0, 0.86, 0.66);
+          return mergeSimpleIndexedGeometries([front, back]);
+        }),
+        this.matHazardYellow
+      );
+      g.add(hazardLintels);
 
-      const dialR = new THREE.Mesh(dialGeo, this.matHazardYellow);
-      dialR.rotation.x = -Math.PI * 0.5;
-      dialR.position.set(halfSpan, 1.0, -0.15);
-      g.add(dialR);
+      // Twin animated brass sorting gears/capstans on top of each lane
+      const rotorGeo = this.getCachedMachineGeo('split_rotor', () =>
+        createSpurGearGeometry(6, 0.4, 0.28, 0.09, 0.12)
+      );
+      const rotorL = new THREE.Mesh(rotorGeo, this.matBrass);
+      rotorL.position.set(-halfSpan, 1.0, -0.08);
+      g.add(rotorL);
+
+      const rotorR = new THREE.Mesh(rotorGeo, this.matBrass);
+      rotorR.position.set(halfSpan, 1.0, -0.08);
+      g.add(rotorR);
+
+      g.userData.splitRotorL = rotorL;
+      g.userData.splitRotorR = rotorR;
     } else if (type === 'tunnel') {
+      // Corrugated ribbed subway tunnel hood + pitch-black subterranean throat + hazard bumper
       const passDeck = new THREE.Mesh(
         this.getCachedMachineGeo(
           'split_deck',
@@ -2164,42 +3264,134 @@ export class Capytorio3DRenderer {
       g.add(passDeck);
 
       const arch = new THREE.Mesh(
-        this.getCachedMachineGeo(
-          'tun_arch',
-          () => new THREE.CylinderGeometry(0.75, 0.85, 1.5, 10, 1, false, 0, Math.PI)
-        ),
+        this.getCachedMachineGeo('tun_arch', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          const barrel = new THREE.CylinderGeometry(0.84, 0.9, 1.62, 12, 1, false, 0, Math.PI);
+          barrel.rotateZ(Math.PI * 0.5);
+          barrel.rotateY(Math.PI * 0.5);
+          barrel.translate(0, 0.26, 0.08);
+          parts.push(barrel);
+          // 3 corrugated reinforcement arch ribs
+          for (const rz of [-0.56, 0.08, 0.72]) {
+            const rib = new THREE.TorusGeometry(0.88, 0.065, 6, 14, Math.PI);
+            rib.translate(0, 0.26, rz);
+            parts.push(rib);
+          }
+          // Side foundation skirts
+          for (const sx of [-0.88, 0.88]) {
+            const skirt = new THREE.BoxGeometry(0.18, 0.36, 1.64);
+            skirt.translate(sx, 0.28, 0.08);
+            parts.push(skirt);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
         accentMat
       );
-      arch.rotation.z = Math.PI * 0.5;
-      arch.rotation.y = Math.PI * 0.5;
-      arch.position.set(0, 0.3, 0);
       arch.castShadow = true;
+      arch.receiveShadow = true;
       g.add(arch);
       accentMeshes.push(arch);
 
-      const signArrow = new THREE.Mesh(
-        this.getCachedMachineGeo('tun_arrow', () => new THREE.ConeGeometry(0.34, 0.65, 4)),
+      const throatVoid = new THREE.Mesh(
+        this.getCachedMachineGeo('tun_void', () => {
+          const hole = new THREE.CylinderGeometry(0.7, 0.7, 0.14, 12, 1, false, 0, Math.PI);
+          hole.rotateZ(Math.PI * 0.5);
+          hole.rotateY(Math.PI * 0.5);
+          hole.translate(0, 0.24, -0.68);
+          // Dark-steel top directional badge plate so hazard chevron pops crisply
+          const badgePlate = createChamferedBoxGeometry(0.84, 0.09, 0.88, 0.08);
+          badgePlate.translate(0, 1.18, -0.06);
+          return mergeSimpleIndexedGeometries([hole, badgePlate]);
+        }),
+        this.matDarkVoid
+      );
+      g.add(throatVoid);
+
+      const bumperAndSign = new THREE.Mesh(
+        this.getCachedMachineGeo('tun_arrow', () => {
+          const bumper = createChamferedBoxGeometry(1.94, 0.2, 0.26, 0.04);
+          bumper.translate(0, 0.3, -0.78);
+          const arrow = new THREE.ConeGeometry(0.32, 0.62, 4);
+          arrow.rotateX(-Math.PI * 0.5);
+          arrow.translate(0, 1.32, -0.06);
+          return mergeSimpleIndexedGeometries([bumper, arrow]);
+        }),
         this.matHazardYellow
       );
-      signArrow.rotation.x = -Math.PI * 0.5;
-      signArrow.position.set(0, 1.15, -0.1);
-      g.add(signArrow);
+      g.add(bumperAndSign);
     } else if (type === 'chest') {
+      // Chamfered reinforced supply chest with corner steel brackets, X-braced lid & locking clasp
       const body = new THREE.Mesh(
-        this.getCachedMachineGeo('chest_body', () => new THREE.BoxGeometry(1.5, 0.88, 1.5)),
+        this.getCachedMachineGeo('chest_body', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          const crate = createChamferedBoxGeometry(1.56, 0.84, 1.56, 0.12);
+          crate.translate(0, 0.64, 0);
+          parts.push(crate);
+          // Stamped reinforcement side ribs
+          for (const off of [-0.36, 0.36]) {
+            const ribZ = new THREE.BoxGeometry(0.12, 0.72, 1.62);
+            ribZ.translate(off, 0.64, 0);
+            parts.push(ribZ);
+            const ribX = new THREE.BoxGeometry(1.62, 0.72, 0.12);
+            ribX.translate(0, 0.64, off);
+            parts.push(ribX);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
         accentMat
       );
-      body.position.y = 0.66;
       body.castShadow = true;
       body.receiveShadow = true;
       g.add(body);
       accentMeshes.push(body);
 
+      const brackets = new THREE.Mesh(
+        this.getCachedMachineGeo('chest_brackets', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          for (const cx of [-0.74, 0.74]) {
+            for (const cz of [-0.74, 0.74]) {
+              const corner = new THREE.BoxGeometry(0.18, 0.88, 0.18);
+              corner.translate(cx, 0.65, cz);
+              parts.push(corner);
+            }
+          }
+          // Heavy dark-steel lid cross-straps + central lock plate visible from overhead
+          const strapX = new THREE.BoxGeometry(1.64, 0.08, 0.22);
+          strapX.translate(0, 1.29, 0);
+          parts.push(strapX);
+          const strapZ = new THREE.BoxGeometry(0.22, 0.08, 1.64);
+          strapZ.translate(0, 1.29, 0);
+          parts.push(strapZ);
+          const centerPlate = createChamferedBoxGeometry(0.46, 0.1, 0.46, 0.06);
+          centerPlate.translate(0, 1.31, 0);
+          parts.push(centerPlate);
+          return mergeSimpleIndexedGeometries(parts);
+        }),
+        this.matSteelDark
+      );
+      g.add(brackets);
+
       const lid = new THREE.Mesh(
-        this.getCachedMachineGeo('chest_lid', () => new THREE.BoxGeometry(1.6, 0.22, 1.6)),
+        this.getCachedMachineGeo('chest_lid', () => {
+          const parts: THREE.BufferGeometry[] = [];
+          const cap = createChamferedBoxGeometry(1.66, 0.22, 1.66, 0.14);
+          cap.translate(0, 1.16, 0);
+          parts.push(cap);
+          // Front locking clasp latch
+          const clasp = new THREE.BoxGeometry(0.28, 0.28, 0.14);
+          clasp.translate(0, 1.04, -0.84);
+          parts.push(clasp);
+          // Twin rear hinge knuckles
+          for (const hx of [-0.46, 0.46]) {
+            const hinge = new THREE.CylinderGeometry(0.07, 0.07, 0.22, 8);
+            hinge.rotateZ(Math.PI * 0.5);
+            hinge.translate(hx, 1.12, 0.84);
+            parts.push(hinge);
+          }
+          return mergeSimpleIndexedGeometries(parts);
+        }),
         this.matBrass
       );
-      lid.position.y = 1.18;
       lid.castShadow = true;
       g.add(lid);
     }
@@ -2318,7 +3510,9 @@ export class Capytorio3DRenderer {
           origMat === this.matBrass ||
           origMat === this.matFurnaceHearthIdle ||
           origMat === this.matGeneratorFireboxIdle ||
-          origMat === this.matLabCoreIdle;
+          origMat === this.matLabCoreIdle ||
+          origMat === this.matStatusLampIdle ||
+          origMat === this.matStatusLampOn;
         if (isAccent) {
           mesh.material = this.ghostValidAccentMat;
           accentMeshes.push(mesh);
@@ -2430,33 +3624,55 @@ export class Capytorio3DRenderer {
     this.root.visible = effectiveVisible;
     if (!effectiveVisible) return;
 
-    // Smoothly dissolve lush Factorio grass deck into Capy-Earth planetary texture between ~250m and ~2.8km
+    // Smoothly dissolve terrain & water deck into Capy-Earth planetary globe only at high orbital altitude (~1.2km..8km)
     const deckAlpha =
-      logAlt <= 2.40 ? 1.0 : logAlt >= 3.45 ? 0.0 : 1.0 - (logAlt - 2.40) / (3.45 - 2.40);
+      logAlt <= 3.10 ? 1.0 : logAlt >= 3.92 ? 0.0 : 1.0 - (logAlt - 3.10) / (3.92 - 3.10);
     const showGroundDeck = deckAlpha > 0.015;
     this.groundDeck.visible = showGroundDeck;
-    this.groundEdgeStrip.visible = showGroundDeck;
+    this.waterDeck.visible = showGroundDeck;
+    this.groundEdgeStrip.visible = false;
     if (showGroundDeck) {
       const wantTransparent = deckAlpha < 0.995;
       if (this.deckMat.transparent !== wantTransparent) {
         this.deckMat.transparent = wantTransparent;
         this.deckMat.needsUpdate = true;
       }
-      if (this.coastMat.transparent !== wantTransparent) {
-        this.coastMat.transparent = wantTransparent;
-        this.coastMat.needsUpdate = true;
-      }
       this.deckMat.opacity = deckAlpha;
       this.deckMat.depthWrite = deckAlpha >= 0.98;
-      this.coastMat.opacity = deckAlpha;
-      this.coastMat.depthWrite = deckAlpha >= 0.98;
-      const deckExtentScale = Math.max(1.0, Math.min(10.0, altitudeRadius / 72.0));
-      this.groundDeck.scale.set(deckExtentScale, 1, deckExtentScale);
-      const snapStep = CAPYTORIO_TILE_SIZE * 4;
-      const deckX = Math.max(500 + 160 * deckExtentScale, Math.round(camX / snapStep) * snapStep);
-      const deckZ = Math.round(camZ / snapStep) * snapStep;
-      this.groundDeck.position.set(deckX, -0.02, deckZ);
-      this.groundEdgeStrip.position.z = deckZ;
+      this.waterMat.opacity = 0.76 * deckAlpha;
+
+      // Adapt vertex spacing with camera altitude so close-up shows exact 1-tile shorelines
+      // while zoomed-out strategic view reveals sweeping rivers, lakes, and entire ocean coastlines!
+      const lodStep =
+        altitudeRadius <= 95 ? 1 : altitudeRadius <= 220 ? 2 : altitudeRadius <= 520 ? 4 : 8;
+      const snapTiles = Math.max(4, 4 * lodStep);
+      const rawCenterGx = (camX - CAPYTORIO_WORLD_ORIGIN_X) / CAPYTORIO_TILE_SIZE;
+      const rawCenterGz = (camZ - CAPYTORIO_WORLD_ORIGIN_Z) / CAPYTORIO_TILE_SIZE;
+      const snapGx = Math.round(rawCenterGx / snapTiles) * snapTiles;
+      const snapGz = Math.round(rawCenterGz / snapTiles) * snapTiles;
+
+      if (
+        snapGx !== this.lastDeckSnapGx ||
+        snapGz !== this.lastDeckSnapGz ||
+        lodStep !== this.lastDeckLodStep
+      ) {
+        this.rebuildTerrainDeckGeometry(snapGx, snapGz, lodStep);
+      }
+
+      const deckX = capytorioGridToWorldX(snapGx);
+      const deckZ = capytorioGridToWorldZ(snapGz);
+      this.groundDeck.scale.set(lodStep, 1, lodStep);
+      this.groundDeck.position.set(deckX, 0, deckZ);
+      this.waterDeck.scale.set(lodStep, 1, lodStep);
+      this.waterDeck.position.set(deckX, 0, deckZ);
+
+      if (this.waterTex) {
+        const rep = 36 * lodStep;
+        if (this.waterTex.repeat.x !== rep) {
+          this.waterTex.repeat.set(rep, rep);
+        }
+        this.waterTex.offset.set((timeSec * 0.042) % 1, (timeSec * 0.026) % 1);
+      }
     }
 
     // Sub-pixel gentle scale-down right as factory disappears into planet surface
@@ -2468,7 +3684,7 @@ export class Capytorio3DRenderer {
     const terrainTileRadius =
       altitudeRadius > 1100
         ? 0
-        : Math.min(28, Math.max(MAX_VISIBLE_RADIUS_TILES, Math.round(altitudeRadius * 0.25)));
+        : Math.min(34, Math.max(MAX_VISIBLE_RADIUS_TILES, Math.round(altitudeRadius * 0.25)));
 
     const terrainDirty =
       centerGx !== this.lastTerrainCenterGx ||
@@ -2585,8 +3801,17 @@ export class Capytorio3DRenderer {
       this.treeOrangeInstanced.instanceMatrix.needsUpdate = true;
     }
 
-    // Pulse shared active generator firebox material once per frame
+    // Pulse shared active emissive materials & animate Drop-Pod Beacon once per frame (zero allocations)
     this.matGeneratorFireboxActive.emissiveIntensity = 1.55 + Math.sin(timeSec * 8.0) * 0.35;
+    this.matFurnaceHearthActive.emissiveIntensity = 1.65 + Math.sin(timeSec * 6.5) * 0.3;
+    if (this.beaconOrb) {
+      this.beaconOrb.rotation.y = timeSec * 1.15;
+      this.beaconOrb.position.y = 5.38 + Math.sin(timeSec * 2.2) * 0.14;
+    }
+    if (this.beaconDishRing) {
+      this.beaconDishRing.rotation.z = timeSec * 0.72;
+      this.beaconDishRing.rotation.y = timeSec * 0.38;
+    }
 
     // 3. Synchronize belt chevron UV scroll strictly 1:1 with CapytorioFactoryEngine.beltScrollPhase
     this.lastBeltScrollPhase = engine.beltScrollPhase;
@@ -2782,15 +4007,35 @@ export class Capytorio3DRenderer {
 
         // Zero-allocation mechanical animations & 2-bone analytical inserter IK
         if (m.type === 'drill' && group.userData.spinPart) {
-          (group.userData.spinPart as THREE.Object3D).rotation.y =
-            timeSec * 5.2 * engine.powerEfficiency;
+          const auger = group.userData.spinPart as THREE.Object3D;
+          const drillSpeed = engine.powerEfficiency;
+          auger.rotation.y = timeSec * 5.8 * drillSpeed;
+          auger.position.y = 0.88 + (drillSpeed > 0.05 ? Math.sin(timeSec * 14.0) * 0.045 * drillSpeed : 0);
+          const lamp = group.userData.statusLamp as THREE.Mesh | undefined;
+          if (lamp) {
+            const desiredLamp = drillSpeed > 0.05 ? this.matStatusLampOn : this.matStatusLampIdle;
+            if (lamp.material !== desiredLamp) lamp.material = desiredLamp;
+          }
         } else if (m.type === 'assembler') {
-          const spin = timeSec * 3.4 * engine.getCraftSpeedMultiplier() * engine.powerEfficiency;
+          const isWorking = m.craftProgress > 0.005 || m.recipeId !== null;
+          const speedMult = engine.getCraftSpeedMultiplier() * engine.powerEfficiency;
+          const spin = timeSec * 3.2 * speedMult * (isWorking ? 1.0 : 0.25);
           if (group.userData.gearA) (group.userData.gearA as THREE.Object3D).rotation.y = spin;
-          if (group.userData.gearB) (group.userData.gearB as THREE.Object3D).rotation.y = -spin * 1.3;
+          // Exact 10:8 gear tooth meshing ratio
+          if (group.userData.gearB) (group.userData.gearB as THREE.Object3D).rotation.y = -spin * 1.25 + 0.24;
+          if (group.userData.pressHead) {
+            const pressObj = group.userData.pressHead as THREE.Object3D;
+            const stroke = isWorking && speedMult > 0.05 ? Math.pow(Math.max(0, Math.sin(timeSec * 5.2 * speedMult)), 2) : 0;
+            pressObj.position.y = 1.66 - stroke * 0.16;
+          }
+          const lamp = group.userData.statusLamp as THREE.Mesh | undefined;
+          if (lamp) {
+            const desiredLamp = isWorking && speedMult > 0.05 ? this.matStatusLampOn : this.matStatusLampIdle;
+            if (lamp.material !== desiredLamp) lamp.material = desiredLamp;
+          }
         } else if (m.type === 'generator') {
           if (group.userData.flywheel) {
-            const genRate = m.fuelTimer > 0 ? 7.5 : 1.8;
+            const genRate = m.fuelTimer > 0 ? 7.5 : 1.4;
             (group.userData.flywheel as THREE.Object3D).rotation.x = timeSec * genRate;
           }
           const fireboxMesh = group.userData.fireboxMesh as THREE.Mesh | undefined;
@@ -2802,16 +4047,34 @@ export class Capytorio3DRenderer {
             }
           }
         } else if (m.type === 'lab' && group.userData.spinPart) {
+          const labActive = m.craftProgress > 0.01;
           const core = group.userData.spinPart as THREE.Object3D;
-          core.rotation.y = timeSec * (m.craftProgress > 0.01 ? 4.8 : 2.4);
-          core.position.y = 1.25 + Math.sin(timeSec * 3.2) * 0.08;
+          core.rotation.y = timeSec * (labActive ? 4.8 : 2.2);
+          core.position.y = 1.18 + Math.sin(timeSec * 3.2) * 0.07;
+          const ringA = group.userData.labRingA as THREE.Object3D | undefined;
+          if (ringA) {
+            ringA.rotation.x = timeSec * (labActive ? 2.6 : 1.1);
+            ringA.rotation.y = timeSec * (labActive ? 1.8 : 0.7);
+          }
+          const ringB = group.userData.labRingB as THREE.Object3D | undefined;
+          if (ringB) {
+            ringB.rotation.x = -timeSec * (labActive ? 1.9 : 0.85) + 0.8;
+            ringB.rotation.z = timeSec * (labActive ? 2.4 : 0.95);
+          }
           const coreMesh = group.userData.labCoreMesh as THREE.Mesh | undefined;
           if (coreMesh) {
-            const desiredMat =
-              m.craftProgress > 0.01 ? this.matLabCoreActive : this.matLabCoreIdle;
+            const desiredMat = labActive ? this.matLabCoreActive : this.matLabCoreIdle;
             if (coreMesh.material !== desiredMat) {
               coreMesh.material = desiredMat;
             }
+          }
+        } else if (m.type === 'splitter') {
+          const splitSpin = this.lastBeltScrollPhase * Math.PI * 2;
+          if (group.userData.splitRotorL) {
+            (group.userData.splitRotorL as THREE.Object3D).rotation.y = splitSpin;
+          }
+          if (group.userData.splitRotorR) {
+            (group.userData.splitRotorR as THREE.Object3D).rotation.y = -splitSpin;
           }
         } else if (m.type === 'inserter' && group.userData.turret) {
           const turret = group.userData.turret as THREE.Object3D;
@@ -2925,6 +4188,16 @@ export class Capytorio3DRenderer {
                 hm.material = activeMat;
               }
             }
+          }
+
+          const jawL = group.userData.jawL as THREE.Object3D | undefined;
+          const jawR = group.userData.jawR as THREE.Object3D | undefined;
+          if (jawL && jawR) {
+            const clamped = m.holdingItem !== null;
+            jawL.position.x = clamped ? -0.115 : -0.165;
+            jawR.position.x = clamped ? 0.115 : 0.165;
+            jawL.rotation.z = clamped ? 0.18 : -0.12;
+            jawR.rotation.z = clamped ? -0.18 : 0.12;
           }
         } else if (m.type === 'furnace' && group.userData.hearthMesh) {
           const hearthMesh = group.userData.hearthMesh as THREE.Mesh;
@@ -3144,8 +4417,17 @@ export class Capytorio3DRenderer {
         DIR_DZ[engine.selectedDir] * arrowOffset
       );
       this.ghostArrowMesh.rotation.y = dirToRotY(engine.selectedDir);
-      const fits = engine.canFootprintFit(anchor.gx, anchor.gz, fp.width, fp.height);
+      const allowWater = engine.selectedTool === 'offshore_pump';
+      const fits = engine.canFootprintFit(
+        anchor.gx,
+        anchor.gz,
+        fp.width,
+        fp.height,
+        undefined,
+        allowWater
+      );
       const validDrill =
+        allowWater ||
         resolvedGhost?.baseType !== 'drill' ||
         engine.findFirstOreInFootprint(anchor.gx, anchor.gz, fp.width, fp.height) !== null;
       const validPlace = fits && validDrill;
@@ -3209,7 +4491,16 @@ export class Capytorio3DRenderer {
             entry.baseType === 'chest')
         ) {
           valid = true;
-        } else if (!engine.canFootprintFit(gx, gz, efp.width, efp.height)) {
+        } else if (
+          !engine.canFootprintFit(
+            gx,
+            gz,
+            efp.width,
+            efp.height,
+            undefined,
+            entry.toolId === 'offshore_pump'
+          )
+        ) {
           valid = false;
         } else {
           if (
@@ -3352,6 +4643,161 @@ export class Capytorio3DRenderer {
       }
     } else {
       this.inspectRingMesh.visible = false;
+    }
+  }
+
+  /**
+   * Re-samples the 128x128 terrain vertex height & biome color buffers around (snapGx, snapGz)
+   * with zero heap allocations. Called ONLY when camera snaps to a new chunk or zoom LOD step.
+   */
+  private rebuildTerrainDeckGeometry(snapGx: number, snapGz: number, lodStep: number): void {
+    this.lastDeckSnapGx = snapGx;
+    this.lastDeckSnapGz = snapGz;
+    this.lastDeckLodStep = lodStep;
+
+    const posAttr = this.groundDeckGeo.attributes.position as THREE.BufferAttribute;
+    const colAttr = this.groundDeckGeo.attributes.color as THREE.BufferAttribute;
+    const posArr = posAttr.array as Float32Array;
+    const colArr = colAttr.array as Float32Array;
+    const wPosAttr = this.waterDeckGeo.attributes.position as THREE.BufferAttribute;
+    const wColAttr = this.waterDeckGeo.attributes.color as THREE.BufferAttribute;
+    const wPosArr = wPosAttr.array as Float32Array;
+    const wColArr = wColAttr.array as Float32Array;
+    const mask = this.waterMaskBuf;
+
+    const cols = TERRAIN_DECK_SEGS + 1;
+    const halfSegs = TERRAIN_DECK_SEGS * 0.5;
+
+    for (let iz = 0; iz <= TERRAIN_DECK_SEGS; iz++) {
+      const gz = snapGz + (iz - halfSegs) * lodStep;
+      const rowOffset = iz * cols;
+      for (let ix = 0; ix <= TERRAIN_DECK_SEGS; ix++) {
+        const gx = snapGx + (ix - halfSegs) * lodStep;
+        const sample = sampleCapytorioTerrainDetail(gx, gz, _terrainSampleScratch);
+        const vi = rowOffset + ix;
+        const pIdx = vi * 3;
+
+        posArr[pIdx + 1] = sample.elevationY;
+        mask[vi] = sample.isWater ? 1 : 0;
+
+        let r: number;
+        let g: number;
+        let b: number;
+        let wr = 0.24;
+        let wg = 0.72;
+        let wb = 0.86;
+
+        if (sample.isWater) {
+          const d = sample.waterDepth;
+          if (sample.type === 'ocean') {
+            const t = Math.min(1, Math.max(0, (d - 0.35) / 0.65));
+            r = 0.06 * (1 - t) + 0.02 * t;
+            g = 0.32 * (1 - t) + 0.12 * t;
+            b = 0.52 * (1 - t) + 0.30 * t;
+            wr = 0.10 * (1 - t) + 0.04 * t;
+            wg = 0.46 * (1 - t) + 0.24 * t;
+            wb = 0.74 * (1 - t) + 0.54 * t;
+          } else if (sample.type === 'river') {
+            const t = Math.min(1, d);
+            r = 0.11 * (1 - t) + 0.06 * t;
+            g = 0.48 * (1 - t) + 0.34 * t;
+            b = 0.66 * (1 - t) + 0.56 * t;
+            wr = 0.18 * (1 - t) + 0.10 * t;
+            wg = 0.66 * (1 - t) + 0.52 * t;
+            wb = 0.86 * (1 - t) + 0.78 * t;
+          } else if (sample.type === 'lake') {
+            const t = Math.min(1, d);
+            r = 0.09 * (1 - t) + 0.04 * t;
+            g = 0.44 * (1 - t) + 0.26 * t;
+            b = 0.62 * (1 - t) + 0.48 * t;
+            wr = 0.14 * (1 - t) + 0.08 * t;
+            wg = 0.60 * (1 - t) + 0.44 * t;
+            wb = 0.82 * (1 - t) + 0.72 * t;
+          } else {
+            const t = Math.min(1, d * 2.1);
+            r = 0.34 * (1 - t) + 0.14 * t;
+            g = 0.64 * (1 - t) + 0.54 * t;
+            b = 0.60 * (1 - t) + 0.64 * t;
+            wr = 0.34 * (1 - t) + 0.18 * t;
+            wg = 0.82 * (1 - t) + 0.70 * t;
+            wb = 0.86 * (1 - t) + 0.86 * t;
+          }
+        } else {
+          // Lush meadow grass with natural organic mottling + smooth warm golden coastal sand beaches
+          const mottling =
+            Math.sin(gx * 0.17 + 0.4) * Math.cos(gz * 0.15 - 0.7) * 0.5 +
+            Math.sin((gx + gz) * 0.07) * 0.5;
+          const grassR = 0.275 + mottling * 0.028;
+          const grassG = 0.525 + mottling * 0.042;
+          const grassB = 0.205 + mottling * 0.018;
+
+          const sb = sample.sandBlend;
+          if (sb > 0.001) {
+            const wet = sb > 0.75 ? (sb - 0.75) * 0.45 : 0;
+            const sandR = 0.87 - wet * 0.18;
+            const sandG = 0.77 - wet * 0.16;
+            const sandB = 0.52 - wet * 0.14;
+            r = grassR + (sandR - grassR) * sb;
+            g = grassG + (sandG - grassG) * sb;
+            b = grassB + (sandB - grassB) * sb;
+          } else {
+            r = grassR;
+            g = grassG;
+            b = grassB;
+          }
+          // Subtle seafoam highlight on the tucked 1-ring shoreline vertices
+          wr = 0.46;
+          wg = 0.84;
+          wb = 0.88;
+        }
+
+        colArr[pIdx] = r;
+        colArr[pIdx + 1] = g;
+        colArr[pIdx + 2] = b;
+        wColArr[pIdx] = wr;
+        wColArr[pIdx + 1] = wg;
+        wColArr[pIdx + 2] = wb;
+      }
+    }
+
+    // Pass 2: Place waterDeck at WATER_SURFACE_Y over all water vertices and their 1-ring shoreline edge,
+    // and drop strictly dry-land interior vertices to -8.0m so water NEVER depth-bleeds over continents at any zoom!
+    for (let iz = 0; iz <= TERRAIN_DECK_SEGS; iz++) {
+      const rowOffset = iz * cols;
+      const zMin = iz > 0 ? iz - 1 : 0;
+      const zMax = iz < TERRAIN_DECK_SEGS ? iz + 1 : TERRAIN_DECK_SEGS;
+      for (let ix = 0; ix <= TERRAIN_DECK_SEGS; ix++) {
+        const vi = rowOffset + ix;
+        let nearWater = mask[vi] === 1;
+        if (!nearWater) {
+          const xMin = ix > 0 ? ix - 1 : 0;
+          const xMax = ix < TERRAIN_DECK_SEGS ? ix + 1 : TERRAIN_DECK_SEGS;
+          for (let nz = zMin; nz <= zMax && !nearWater; nz++) {
+            const nRow = nz * cols;
+            for (let nx = xMin; nx <= xMax; nx++) {
+              if (mask[nRow + nx] === 1) {
+                nearWater = true;
+                break;
+              }
+            }
+          }
+        }
+        wPosArr[vi * 3 + 1] = nearWater ? WATER_SURFACE_Y : -8.0;
+      }
+    }
+
+    posAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
+    wPosAttr.needsUpdate = true;
+    wColAttr.needsUpdate = true;
+    this.groundDeckGeo.computeVertexNormals();
+
+    const tileRepeat = TERRAIN_DECK_SEGS * lodStep;
+    if (this.deckTex) {
+      this.deckTex.repeat.set(tileRepeat, tileRepeat);
+    }
+    if (this.deckBumpTex) {
+      this.deckBumpTex.repeat.set(tileRepeat, tileRepeat);
     }
   }
 
