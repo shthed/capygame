@@ -7542,11 +7542,7 @@ export class PlayStyleManager {
         mat.depthWrite = shouldEnableOccluderDepthWrite(snapped, origDepthWrite);
         mat.userData.__occBlend = snapped;
         mat.userData.__centerScreenOpacity = +(1.0 - snapped).toFixed(4);
-        mat.userData.__edgeOutlineMaxOpacity = +THREE.MathUtils.lerp(
-          origOpacity,
-          0.25,
-          snapped
-        ).toFixed(4);
+        mat.userData.__edgeOutlineMaxOpacity = origOpacity;
       } else if (nextBlend <= 0.015) {
         uniforms.uCapyOccBlend.value = 0.0;
         mat.opacity = origOpacity;
@@ -7560,11 +7556,7 @@ export class PlayStyleManager {
         mat.depthWrite = shouldEnableOccluderDepthWrite(nextBlend, origDepthWrite);
         mat.userData.__occBlend = nextBlend;
         mat.userData.__centerScreenOpacity = +(1.0 - nextBlend).toFixed(4);
-        mat.userData.__edgeOutlineMaxOpacity = +THREE.MathUtils.lerp(
-          origOpacity,
-          0.25,
-          nextBlend
-        ).toFixed(4);
+        mat.userData.__edgeOutlineMaxOpacity = origOpacity;
       }
     }
 
@@ -7597,9 +7589,12 @@ export class PlayStyleManager {
       u.uCapyOccBounds.value.z,
       SHARED_OCCLUDER_VIEWPORT.x,
       SHARED_OCCLUDER_VIEWPORT.y,
-      SHARED_OCCLUDER_HEAD_UV.x,
-      SHARED_OCCLUDER_HEAD_UV.y,
-      fragViewDepth
+      SHARED_OCCLUDER_HEAD_CLIP.x,
+      SHARED_OCCLUDER_HEAD_CLIP.y,
+      fragViewDepth,
+      SHARED_OCCLUDER_TAIL_CLIP.x,
+      SHARED_OCCLUDER_TAIL_CLIP.y,
+      SHARED_OCCLUDER_HEAD_CLIP.w
     );
   }
 
@@ -7681,7 +7676,7 @@ export class PlayStyleManager {
       const tailUvX = _occProjectedNdc.x * 0.5 + 0.5;
       const tailUvY = _occProjectedNdc.y * 0.5 + 0.5;
 
-      // Aspect-invariant world-to-screen aperture radius around the player (~1.25m clearance)
+      // Large aspect-invariant cutout radius covering Capybara + immediate play area (~2.25m clearance)
       const halfFovRad = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
       const viewHeightWorld =
         (2.0 * headDepth * Math.tan(halfFovRad)) / Math.max(0.25, this.camera.zoom);
@@ -7692,9 +7687,9 @@ export class PlayStyleManager {
       const minDimWorldSpan = Math.max(0.5, viewHeightWorld * Math.min(1.0, safeAspect));
       const heroScale = Math.max(0.75, this.heroCapy.scale.x || 1.0);
       const innerRadiusNorm = THREE.MathUtils.clamp(
-        (1.25 * heroScale) / minDimWorldSpan,
-        0.135,
-        0.23
+        (2.25 * heroScale) / minDimWorldSpan,
+        0.24,
+        0.36
       );
       SHARED_OCCLUDER_HEAD_CLIP.set(headUvX, headUvY, headDepth, innerRadiusNorm);
       SHARED_OCCLUDER_TAIL_CLIP.set(tailUvX, tailUvY, torsoDepth, 0.08);
@@ -7711,6 +7706,7 @@ export class PlayStyleManager {
       const horizLen = Math.hypot(horizDx, horizDz);
       const horizDirX = horizLen > 0.1 ? horizDx / horizLen : 0;
       const horizDirZ = horizLen > 0.1 ? horizDz / horizLen : -1;
+      const playerPlaneDepth = Math.max(0.6, Math.min(headDepth, torsoDepth));
 
       const blocksPlayerCorridor = (
         sx: number,
@@ -7745,6 +7741,26 @@ export class PlayStyleManager {
           0.35
         );
 
+      const isRightInFrontOfLens = (
+        sx: number,
+        sy: number,
+        sz: number,
+        radius: number
+      ): boolean => {
+        const relX = sx - camX;
+        const relY = sy - camY;
+        const relZ = sz - camZ;
+        const fwd = relX * _camForward.x + relY * _camForward.y + relZ * _camForward.z;
+        const maxLensDepth = Math.min(2.6, Math.max(0.4, playerPlaneDepth - 0.35));
+        if (fwd <= -radius * 0.45 || fwd >= maxLensDepth) return false;
+        const clampedFwd = Math.max(0, fwd);
+        const px = relX - _camForward.x * clampedFwd;
+        const py = relY - _camForward.y * clampedFwd;
+        const pz = relZ - _camForward.z * clampedFwd;
+        const lensRadius = radius + 0.55;
+        return px * px + py * py + pz * pz <= lensRadius * lensRadius;
+      };
+
       if (centerDist > 0.45) {
         _occluderCandidates.length = 0;
 
@@ -7752,9 +7768,8 @@ export class PlayStyleManager {
           const zx = ZONE_LOCATIONS.sanctuary.x;
           const zz = ZONE_LOCATIONS.sanctuary.z;
 
-          // 1. Procedural Exponential Fruit Trees: fade cleanly whenever trunk OR overhanging canopy
-          //    enters the viewport corridor strictly between camera and player (even if trunk is beside lens).
-          //    Still keeps trees strictly AHEAD of/beyond the player (`horizProj >= horizLen - 0.15`) 100% opaque.
+          // 1. Procedural Exponential Fruit Trees: trigger ONLY if blocking Capybara corridor or right in front of lens.
+          //    Side trees stay 100% solid unless their actual mesh enters the sightline/near-lens rays.
           for (let i = 0; i < this.sanctuaryTrees.length; i++) {
             const tr = this.sanctuaryTrees[i];
             const wx = zx + tr.x;
@@ -7762,44 +7777,26 @@ export class PlayStyleManager {
             const cr = tr.crownRadius;
             const th = tr.trunkHeight;
             const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
-            const envelopeR = cr * 1.32 + 1.6;
-            const canopyInFrontOfPlayer =
-              horizLen > 0.5 && horizProj > -envelopeR && horizProj < horizLen - 0.15;
-            const rootedInFrontOfPlayer =
-              horizLen > 0.5 && horizProj > 0.15 && horizProj < horizLen - 0.15;
+            const inFrontOfPlayer = horizLen > 0.5 && horizProj < horizLen - 0.25;
+            if (!inFrontOfPlayer || horizProj <= -cr * 0.85) continue;
 
-            const camCrownDx = wx - camX;
-            const camCrownDy = th * 0.88 - camY;
-            const camCrownDz = wz - camZ;
-            const cameraCoreRadius = Math.max(1.85, cr * 1.15);
-            const cameraInsideCanopy =
-              horizLen > 1.2 &&
-              horizProj > -cr * 1.05 &&
-              horizProj < horizLen - 0.3 &&
-              camY < th + cr * 1.18 &&
-              camCrownDx * camCrownDx +
-                camCrownDy * camCrownDy +
-                camCrownDz * camCrownDz <=
-                cameraCoreRadius * cameraCoreRadius;
+            const trunkCheckRadius = Math.max(0.28, tr.trunkRadius * 1.05);
+            const blocksTrunkOrLens =
+              isRightInFrontOfLens(wx, th * 0.65, wz, Math.max(0.75, cr * 0.58)) ||
+              blocksPlayerCorridor(wx, th * 0.34, wz, trunkCheckRadius) ||
+              blocksPlayerCorridor(wx, th * 0.68, wz, trunkCheckRadius * 0.92);
 
-            const trunkCheckRadius = Math.max(0.55, tr.trunkRadius * 1.4);
-            const crownCoreRadius = Math.max(1.65, cr * 0.82);
-            const blocks =
-              cameraInsideCanopy ||
-              (canopyInFrontOfPlayer &&
-                (blocksPlayerCorridor(wx, th * 0.34, wz, trunkCheckRadius) ||
-                  blocksPlayerCorridor(wx, th * 0.68, wz, Math.max(0.5, tr.trunkRadius * 1.32)) ||
-                  blocksPlayerCorridor(wx, th * 0.92, wz, crownCoreRadius)));
-
-            if (blocks) {
+            if (blocksTrunkOrLens) {
               this.markObjectHierarchyOccluded(tr.rootGroup);
-            } else if (
-              (rootedInFrontOfPlayer || canopyInFrontOfPlayer) &&
-              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
-                envelopeR * envelopeR
-            ) {
-              tr.rootGroup.userData.__isSanctuaryTree = true;
-              _occluderCandidates.push(tr.rootGroup);
+            } else {
+              const candRadius = cr + 0.9;
+              if (
+                distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
+                candRadius * candRadius
+              ) {
+                tr.rootGroup.userData.__isSanctuaryTree = true;
+                _occluderCandidates.push(tr.rootGroup);
+              }
             }
           }
 
@@ -7810,17 +7807,18 @@ export class PlayStyleManager {
             const postWz = zz + this.homePool.centerZ;
             const postProj =
               (postWx - camX) * horizDirX + (postWz - camZ) * horizDirZ;
-            if (
-              postProj > 0 &&
-              postProj < horizLen - 0.2 &&
-              blocksPlayerCorridor(postWx, 1.55, postWz, 1.05)
-            ) {
-              this.markObjectHierarchyOccluded(this.homePool.tapFixtureGroup);
-            } else if (
-              distSqPointToSegment2D(postWx, postWz, camX, camZ, headX, headZ) <=
-              4.0
-            ) {
-              _occluderCandidates.push(this.homePool.tapFixtureGroup);
+            if (postProj > -0.6 && postProj < horizLen - 0.25) {
+              if (
+                isRightInFrontOfLens(postWx, 1.45, postWz, 0.85) ||
+                blocksPlayerCorridor(postWx, 1.55, postWz, 0.72)
+              ) {
+                this.markObjectHierarchyOccluded(this.homePool.tapFixtureGroup);
+              } else if (
+                distSqPointToSegment2D(postWx, postWz, camX, camZ, headX, headZ) <=
+                2.56
+              ) {
+                _occluderCandidates.push(this.homePool.tapFixtureGroup);
+              }
             }
           }
 
@@ -7838,60 +7836,67 @@ export class PlayStyleManager {
             const wx = zx + bm.position.x;
             const wz = zz + bm.position.z;
             const s = bm.scale.x || 1.0;
-            const bRadius = 2.35 * s;
+            const bRadius = 1.9 * s;
             const bHeight = 3.2 * s;
             const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
-            const rootedInFrontOfPlayer =
-              horizLen > 0.5 && horizProj > -bRadius && horizProj < horizLen - 0.2;
+            if (horizLen <= 0.5 || horizProj <= -bRadius || horizProj >= horizLen - 0.25) {
+              continue;
+            }
 
             const blocks =
-              rootedInFrontOfPlayer &&
-              (blocksPlayerCorridor(wx, bHeight * 0.45, wz, bRadius * 0.9) ||
-                blocksPlayerCorridor(wx, bHeight * 0.85, wz, bRadius));
+              isRightInFrontOfLens(wx, bHeight * 0.55, wz, bRadius * 0.85) ||
+              blocksPlayerCorridor(wx, bHeight * 0.45, wz, bRadius * 0.78) ||
+              blocksPlayerCorridor(wx, bHeight * 0.85, wz, bRadius * 0.82);
 
             if (blocks) {
               this.markObjectHierarchyOccluded(bm);
-            } else if (
-              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
-              (bRadius + 1.5) * (bRadius + 1.5)
-            ) {
-              _occluderCandidates.push(bm);
+            } else {
+              const candR = bRadius + 0.9;
+              if (
+                distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
+                candR * candR
+              ) {
+                _occluderCandidates.push(bm);
+              }
             }
           }
 
-          // 4. World Portals: only when strictly between camera and player
+          // 4. World Portals: only when blocking sightline or right in front of lens
           for (let i = 0; i < this.sanctuaryPortals.length; i++) {
             const p = this.sanctuaryPortals[i];
             const wx = zx + p.x;
             const wz = zz + p.z;
             const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
+            if (horizProj <= -1.8 || horizProj >= horizLen - 0.25) continue;
             if (
-              horizProj > -2.5 &&
-              horizProj < horizLen - 0.2 &&
-              (blocksPlayerCorridor(wx, 2.1, wz, 2.35) ||
-                blocksPlayerCorridor(wx, 3.6, wz, 2.15))
+              isRightInFrontOfLens(wx, 2.2, wz, 1.65) ||
+              blocksPlayerCorridor(wx, 2.1, wz, 1.65) ||
+              blocksPlayerCorridor(wx, 3.6, wz, 1.45)
             ) {
               this.markObjectHierarchyOccluded(p.mesh);
             } else if (
-              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 9.0
+              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 6.25
             ) {
               _occluderCandidates.push(p.mesh);
             }
           }
 
-          // 5. Large Elevated Physics Fruits directly crossing sightline
+          // 5. Large Elevated Physics Fruits directly crossing sightline or lens
           for (let i = 0; i < this.physicsFruits.length; i++) {
             const f = this.physicsFruits[i];
             if (!f.active || f.radius < 0.35) continue;
             const wx = zx + f.x;
             const wz = zz + f.z;
+            const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
+            if (horizProj <= -f.radius || horizProj >= horizLen - 0.25) continue;
             if (
               (f.radius >= 0.48 || f.y > 0.75) &&
-              blocksPlayerCorridor(wx, f.y, wz, f.radius * 1.05)
+              (isRightInFrontOfLens(wx, f.y, wz, f.radius * 0.95) ||
+                blocksPlayerCorridor(wx, f.y, wz, f.radius * 0.95))
             ) {
               this.markObjectHierarchyOccluded(f.mesh);
             } else {
-              const rF = f.radius + 0.8;
+              const rF = f.radius + 0.65;
               if (
                 distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <=
                 rF * rF
@@ -7901,20 +7906,24 @@ export class PlayStyleManager {
             }
           }
 
-          // 6. Wandering Sanctuary Capybara Buddies ONLY if directly crossing head sightline rays
+          // 6. Wandering Sanctuary Capybara Buddies ONLY if directly crossing sightline or lens
           for (let i = 0; i < this.sanctuaryCapys.length; i++) {
             const buddy = this.sanctuaryCapys[i].capy;
             if (!buddy.visible) continue;
             const wx = zx + buddy.position.x;
             const wz = zz + buddy.position.z;
-            if (
-              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 1.96
+            const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
+            if (horizProj <= -0.8 || horizProj >= horizLen - 0.25) continue;
+            if (isRightInFrontOfLens(wx, 0.7, wz, 0.75)) {
+              this.markObjectHierarchyOccluded(buddy);
+            } else if (
+              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 1.69
             ) {
               _occluderCandidates.push(buddy);
             }
           }
 
-          // 7. Coiled Trailing Dachshund Segments (idx >= 2): only fade if directly crossing head sightline rays
+          // 7. Coiled Trailing Dachshund Segments (idx >= 2): only fade if directly crossing sightline rays
           for (let i = 2; i < this.snakeSegmentCount; i++) {
             const seg = this.dachshundSegments[i];
             if (
@@ -7941,18 +7950,15 @@ export class PlayStyleManager {
           const oz = ZONE_LOCATIONS[this.currentMode];
           for (let i = 0; i < activeGroup.children.length; i++) {
             const child = activeGroup.children[i];
+            if (!child.visible || child.userData?.ignoreCameraFade || child.position.y <= -0.15) {
+              continue;
+            }
+            const wx = oz.x + child.position.x;
+            const wz = oz.z + child.position.z;
+            const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
+            if (horizProj <= -1.2 || horizProj >= horizLen - 0.25) continue;
             if (
-              child.visible &&
-              !child.userData?.ignoreCameraFade &&
-              child.position.y > -0.15 &&
-              distSqPointToSegment2D(
-                oz.x + child.position.x,
-                oz.z + child.position.z,
-                camX,
-                camZ,
-                headX,
-                headZ
-              ) <= 12.25
+              distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 7.84
             ) {
               if (!child.userData.__occluderRoot) {
                 child.userData.__occluderRoot = child;
@@ -7963,14 +7969,12 @@ export class PlayStyleManager {
         }
 
         if (_occluderCandidates.length > 0) {
-          // Cast direct camera-to-player rays (0..6) + foreground viewport sweep rays strictly closer
-          // than the player depth plane so ANY tree/object entering the viewport between camera and
-          // player fades cleanly while trees beyond/ahead of the player never fade.
+          // Cast 7 focused sightline rays around Capybara + immediate play area AND 5 tight central
+          // near-lens rays (<= 2.6m from camera). Off-center side props never trigger.
           const TOTAL_PLAYER_RAYS = 7;
-          const FOREGROUND_SWEEP_RAYS = 9;
-          const playerPlaneDepth = Math.max(0.6, Math.min(headDepth, torsoDepth));
+          const NEAR_LENS_RAYS = 5;
 
-          for (let r = 0; r < TOTAL_PLAYER_RAYS + FOREGROUND_SWEEP_RAYS; r++) {
+          for (let r = 0; r < TOTAL_PLAYER_RAYS + NEAR_LENS_RAYS; r++) {
             let maxRayDist = 0;
             if (r < TOTAL_PLAYER_RAYS) {
               if (r === 6) {
@@ -7980,13 +7984,14 @@ export class PlayStyleManager {
                 if (r === 1) {
                   _rayTargetPos.y += 0.36;
                 } else if (r === 2) {
-                  _rayTargetPos.addScaledVector(_camRight, 0.28);
+                  _rayTargetPos.addScaledVector(_camRight, 0.65);
                 } else if (r === 3) {
-                  _rayTargetPos.addScaledVector(_camRight, -0.28);
+                  _rayTargetPos.addScaledVector(_camRight, -0.65);
                 } else if (r === 4) {
-                  _rayTargetPos.y += 0.68;
+                  _rayTargetPos.y += 0.62;
                 } else if (r === 5) {
-                  _rayTargetPos.y -= 0.22;
+                  _rayTargetPos.copy(_heroTorsoWorldPos);
+                  _rayTargetPos.y += 0.15;
                 }
               }
               _rayDir.subVectors(_rayTargetPos, this.camera.position);
@@ -7995,11 +8000,9 @@ export class PlayStyleManager {
               _rayDir.multiplyScalar(1 / dist);
               maxRayDist = Math.max(0.12, dist - 0.3);
             } else {
-              const fgIdx = r - TOTAL_PLAYER_RAYS;
-              const col = fgIdx % 3; // -1, 0, +1
-              const row = Math.floor(fgIdx / 3); // 0, 1, 2
-              const ndcX = (col - 1) * 0.54;
-              const ndcY = -0.56 + row * 0.34; // [-0.56, -0.22, +0.12] covers foreground bottom & center
+              const lensIdx = r - TOTAL_PLAYER_RAYS;
+              const ndcX = lensIdx === 1 ? -0.22 : lensIdx === 2 ? 0.22 : 0.0;
+              const ndcY = lensIdx === 3 ? -0.22 : lensIdx === 4 ? 0.22 : 0.0;
               _occProjectedNdc.set(ndcX, ndcY, 0.5).unproject(this.camera);
               _rayDir.subVectors(_occProjectedNdc, this.camera.position);
               const dLen = _rayDir.length();
@@ -8009,8 +8012,10 @@ export class PlayStyleManager {
                 _rayDir.x * _camForward.x +
                 _rayDir.y * _camForward.y +
                 _rayDir.z * _camForward.z;
-              if (forwardDot <= 0.25) continue;
-              maxRayDist = Math.max(0.15, (playerPlaneDepth - 0.45) / forwardDot);
+              if (forwardDot <= 0.35) continue;
+              const maxAllowedPlayer = (playerPlaneDepth - 0.35) / forwardDot;
+              maxRayDist = Math.min(2.6 / forwardDot, Math.max(0.12, maxAllowedPlayer));
+              if (maxRayDist <= 0.15) continue;
             }
 
             _occluderRaycaster.set(this.camera.position, _rayDir);

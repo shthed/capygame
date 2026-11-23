@@ -85,7 +85,7 @@ import {
   computeTexelSnappedShadowOrigin,
   computeVesselOneToOneTransform,
   doesSphereBlockPlayerSightline,
-  evaluateWholeScreenSightlineClearAlpha,
+  evaluatePlayAreaCutoutSightlineAlpha,
   extractWebGpuRenderDrawCalls,
   installFastMatrixCull,
   isLowMemoryEnvironment,
@@ -98,7 +98,7 @@ import { DEFAULT_GPU_PIPELINE_CONFIG } from '../engine/gpu/GpuEngineTypes';
 import { PerformanceProfiler } from '../engine/gpu/PerformanceProfiler';
 import { PlayStyleManager } from '../engine/PlayStyleManager';
 
-test('Sightline Occlusion Regression: offscreen/ahead objects stay 100% solid; player-blocking objects clear >=95% of the whole screen', () => {
+test('Sightline Occlusion Regression: side/ahead objects stay 100% solid; blocking objects carve a large play-area cutout while keeping outer canopy visible', () => {
   // Camera at (0, 6.8, 15.5) looking at Hero at (0, 1.0, 4.0) (distance ~12.88m)
   const camX = 0;
   const camY = 6.8;
@@ -107,32 +107,77 @@ test('Sightline Occlusion Regression: offscreen/ahead objects stay 100% solid; p
   const heroY = 1.0;
   const heroZ = 4.0;
 
-  // 1. Tree ahead of / beyond the player (walking toward a tree at z = -0.5 with wide 5m canopy going offscreen at top):
+  // 1. Tree ahead of / beyond the player NEVER triggers fading:
   assert.equal(
     doesSphereBlockPlayerSightline(0, 5.5, -0.5, 5.0, camX, camY, camZ, heroX, heroY, heroZ),
     false
   );
-  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.5, 0.5, 0.0, 390, 844), 1.0);
+  assert.equal(
+    evaluatePlayAreaCutoutSightlineAlpha(0.5, 0.5, 0.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844),
+    1.0
+  );
 
-  // 2. Pool / Onsen / Tree off to the bottom-left or side starting to go offscreen (x = -8.5, z = 10.0, r = 3.2):
+  // 2. Pool / Onsen / Tree off to the side NEVER triggers fading:
   assert.equal(
     doesSphereBlockPlayerSightline(-8.5, 1.5, 10.0, 3.2, camX, camY, camZ, heroX, heroY, heroZ),
     false
   );
 
-  // 3. Tree genuinely between camera and player along the sightline (x = 0.4, y = 4.2, z = 10.2, r = 3.0) -> MUST trigger whole-screen clear!
+  // 3. Tree genuinely between camera and player along the sightline triggers cutout:
   assert.equal(
     doesSphereBlockPlayerSightline(0.4, 4.2, 10.2, 3.0, camX, camY, camZ, heroX, heroY, heroZ),
     true
   );
 
-  // 4. Whole-screen visibility on 390x844 mobile portrait when blocking player (NOT just a small border around the player!):
-  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.5, 0.48, 1.0, 390, 844), 0.0);
-  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.15, 0.78, 1.0, 390, 844), 0.0);
-  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.85, 0.22, 1.0, 390, 844), 0.0);
-  assert.equal(evaluateWholeScreenSightlineClearAlpha(0.05, 0.92, 1.0, 390, 844), 0.0);
-  const outerRimAlpha = evaluateWholeScreenSightlineClearAlpha(0.996, 0.5, 1.0, 390, 844);
-  assert.ok(outerRimAlpha > 0.02 && outerRimAlpha <= 0.19);
+  // 4. Large play-area cutout on 390x844 mobile portrait:
+  //    - Inside Capybara head/torso + immediate play area -> 0.0 (clear view)
+  assert.equal(
+    evaluatePlayAreaCutoutSightlineAlpha(0.5, 0.48, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
+    0.0
+  );
+  assert.equal(
+    evaluatePlayAreaCutoutSightlineAlpha(0.26, 0.47, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
+    0.0
+  );
+  //    - Smooth feathered rim around edge of cutout
+  const rimAlpha = evaluatePlayAreaCutoutSightlineAlpha(
+    0.5,
+    0.69,
+    1.0,
+    0.5,
+    0.5,
+    0.5,
+    0.44,
+    0.34,
+    390,
+    844,
+    10.0
+  );
+  assert.ok(rimAlpha > 0.05 && rimAlpha < 0.95);
+  //    - Outer canopy/trunk well outside the cutout window stays 100% solid (1.0)!
+  assert.equal(
+    evaluatePlayAreaCutoutSightlineAlpha(0.5, 0.9, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
+    1.0
+  );
+  assert.equal(
+    evaluatePlayAreaCutoutSightlineAlpha(0.1, 0.1, 1.0, 0.5, 0.5, 0.5, 0.44, 0.34, 390, 844, 10.0),
+    1.0
+  );
+  //    - Fragments right in front of the camera lens (< 2.4m) soften cleanly even outside cutout
+  const nearLensAlpha = evaluatePlayAreaCutoutSightlineAlpha(
+    0.5,
+    0.9,
+    1.0,
+    0.5,
+    0.5,
+    0.5,
+    0.44,
+    0.34,
+    390,
+    844,
+    0.9
+  );
+  assert.ok(nearLensAlpha < 0.15);
 });
 
 test('60 FPS & Zero-Glitch Governor: shadow azimuth stays invariant across (-75,-75)..(+75,+75) districts and snaps cleanly to texels', () => {

@@ -7,7 +7,7 @@ import {
 } from './gpu/PbrTextureSynthesizer';
 import {
   computeDayNightAtmosphereRig,
-  evaluateWholeScreenSightlineClearAlpha,
+  evaluatePlayAreaCutoutSightlineAlpha,
 } from './gpu/FramePerformanceGovernor';
 import {
   createTslSkyNodeMaterial,
@@ -52,10 +52,10 @@ export interface OccluderEdgeShaderUniforms {
 
 /**
  * Installs a zero-allocation GLSL shader hook on any Three.js mesh material so that when
- * `uCapyOccBlend` ramps from 0 -> 1 (triggered ONLY when the object blocks the camera-to-player sightline):
- * - Clears >= 95.6% of the entire screen (`boxNorm <= 0.978`, `discard`) so the whole screen is visible
- *   rather than leaving a cramped keyhole border around the player.
- * - Leaves at most a faint (`alpha <= 0.18`) translucent whisper on the outermost 2.2% screen border.
+ * `uCapyOccBlend` ramps from 0 -> 1 (triggered when an object blocks the player sightline or lens):
+ * - Cuts out a large, aspect-corrected feathered window around the Capybara (`uCapySightHead` -> `uCapySightTail`)
+ *   and immediate play area (`alpha = 0`, `discard`) while keeping surrounding trunks and canopies solid.
+ * - Smoothly dissolves fragments within 2.4m of the camera lens so close leaves never block the view.
  */
 export function installSightlineEdgeFadeShader(
   mat: THREE.Material,
@@ -64,14 +64,22 @@ export function installSightlineEdgeFadeShader(
   if (
     mat.userData.__occUniforms &&
     mat.userData.__occUniforms.uCapyViewport?.value === SHARED_OCCLUDER_VIEWPORT &&
-    mat.userData.__occUniforms.uCapySightHead?.value === SHARED_OCCLUDER_HEAD_CLIP
+    mat.userData.__occUniforms.uCapySightHead?.value === SHARED_OCCLUDER_HEAD_CLIP &&
+    mat.userData.__occUniforms.uCapySightTail?.value === SHARED_OCCLUDER_TAIL_CLIP
   ) {
     return mat.userData.__occUniforms as OccluderEdgeShaderUniforms;
   }
 
   const isNodeMat =
     isWebGpu || Boolean((mat as unknown as { isNodeMaterial?: boolean }).isNodeMaterial);
-  const tslBlend = isNodeMat ? upgradeMaterialWithTslSightlineFade(mat) : { value: 0.0 };
+  const tslBlend = isNodeMat
+    ? upgradeMaterialWithTslSightlineFade(
+        mat,
+        SHARED_OCCLUDER_VIEWPORT,
+        SHARED_OCCLUDER_HEAD_CLIP,
+        SHARED_OCCLUDER_TAIL_CLIP
+      )
+    : { value: 0.0 };
 
   const uniforms: OccluderEdgeShaderUniforms = {
     uCapyOccBlend: tslBlend,
@@ -96,7 +104,7 @@ export function installSightlineEdgeFadeShader(
   }
 
   const baseType = mat.type;
-  mat.customProgramCacheKey = () => `capy_occ_whole96_${baseType}`;
+  mat.customProgramCacheKey = () => `capy_occ_play_cutout_v2_${baseType}`;
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uCapyOccBlend = uniforms.uCapyOccBlend;
@@ -109,18 +117,29 @@ export function installSightlineEdgeFadeShader(
     shader.fragmentShader =
       'uniform float uCapyOccBlend;\n' +
       'uniform vec2 uCapyViewport;\n' +
-      'float capyComputeWholeScreenClearTargetAlpha() {\n' +
+      'uniform vec4 uCapySightHead;\n' +
+      'uniform vec4 uCapySightTail;\n' +
+      'float capyComputePlayAreaCutoutAlpha() {\n' +
       '  vec2 vp = uCapyViewport;\n' +
       '  if (vp.x < 10.0 || vp.y < 10.0) {\n' +
-      '    return 0.0;\n' +
+      '    return 1.0;\n' +
       '  }\n' +
+      '  float minDim = max(10.0, min(vp.x, vp.y));\n' +
+      '  vec2 scale = vp / minDim;\n' +
       '  vec2 sUv = gl_FragCoord.xy / vp;\n' +
-      '  vec2 boxNorm = abs(sUv * 2.0 - 1.0);\n' +
-      '  vec2 edgeRamp = max(boxNorm - vec2(0.978), vec2(0.0)) / 0.022;\n' +
-      '  float screenEdgeFade = clamp(length(edgeRamp), 0.0, 1.0);\n' +
-      '  screenEdgeFade = screenEdgeFade * screenEdgeFade * (3.0 - 2.0 * screenEdgeFade);\n' +
-      '  float rimOutline = mix(0.75, 1.0, screenEdgeFade);\n' +
-      '  return screenEdgeFade * rimOutline * 0.05;\n' +
+      '  vec2 p = sUv * scale;\n' +
+      '  vec2 a = uCapySightHead.xy * scale;\n' +
+      '  vec2 b = uCapySightTail.xy * scale;\n' +
+      '  vec2 ab = b - a;\n' +
+      '  float abLenSq = dot(ab, ab);\n' +
+      '  float segT = abLenSq > 0.00001 ? clamp(dot(p - a, ab) / abLenSq, 0.0, 1.0) : 0.0;\n' +
+      '  float dist = length(p - (a + ab * segT));\n' +
+      '  float innerR = clamp(uCapySightHead.w, 0.22, 0.40);\n' +
+      '  float feather = max(0.11, innerR * 0.45);\n' +
+      '  float windowAlpha = smoothstep(innerR, innerR + feather, dist);\n' +
+      '  float fragViewDepth = 1.0 / max(gl_FragCoord.w, 0.0001);\n' +
+      '  float lensAlpha = smoothstep(0.55, 2.40, fragViewDepth);\n' +
+      '  return windowAlpha * lensAlpha;\n' +
       '}\n' +
       shader.fragmentShader
         .replace(
@@ -128,7 +147,7 @@ export function installSightlineEdgeFadeShader(
           `#include <clipping_planes_fragment>
         float capyOccTargetAlpha = 1.0;
         if (uCapyOccBlend > 0.001) {
-          capyOccTargetAlpha = capyComputeWholeScreenClearTargetAlpha();
+          capyOccTargetAlpha = capyComputePlayAreaCutoutAlpha();
           if (uCapyOccBlend > 0.85 && capyOccTargetAlpha < 0.004) {
             discard;
           }
@@ -138,7 +157,7 @@ export function installSightlineEdgeFadeShader(
           '#include <dithering_fragment>',
           `#include <dithering_fragment>
         if (uCapyOccBlend > 0.001) {
-          float finalAlpha = mix(gl_FragColor.a, capyOccTargetAlpha, uCapyOccBlend);
+          float finalAlpha = mix(gl_FragColor.a, gl_FragColor.a * capyOccTargetAlpha, uCapyOccBlend);
           if (uCapyOccBlend > 0.85 && finalAlpha < 0.004) {
             discard;
           }
@@ -151,7 +170,7 @@ export function installSightlineEdgeFadeShader(
 }
 
 /**
- * Pure CPU mirror of the whole-screen sightline clear shader for telemetry & E2E verification.
+ * Pure CPU mirror of the play-area sightline cutout shader for telemetry & E2E verification.
  */
 export function evaluateSightlineEdgeAlphaAtScreenUv(
   sUvX: number,
@@ -162,16 +181,25 @@ export function evaluateSightlineEdgeAlphaAtScreenUv(
   _boundsR: number,
   viewportW: number,
   viewportH: number,
-  _headUvX: number,
-  _headUvY: number,
-  _fragViewDepth?: number
+  headUvX: number,
+  headUvY: number,
+  fragViewDepth?: number,
+  tailUvX: number = headUvX,
+  tailUvY: number = headUvY - 0.06,
+  innerRadiusNorm: number = 0.28
 ): number {
-  return evaluateWholeScreenSightlineClearAlpha(
+  return evaluatePlayAreaCutoutSightlineAlpha(
     sUvX,
     sUvY,
     occBlend,
+    headUvX,
+    headUvY,
+    tailUvX,
+    tailUvY,
+    innerRadiusNorm,
     viewportW,
-    viewportH
+    viewportH,
+    fragViewDepth
   );
 }
 
