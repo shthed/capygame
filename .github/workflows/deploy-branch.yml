@@ -196,7 +196,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: [build]
-    if: github.event.repository.has_pages == true && needs.build.outputs.skip != 'true' && github.event_name != 'pull_request' && needs.build.outputs.branch == 'main' && github.ref == 'refs/heads/main'
+    if: needs.build.outputs.skip != 'true' && github.event_name != 'pull_request' && needs.build.outputs.branch == 'main' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -301,6 +301,9 @@ jobs:
         with:
           path: pages
           name: github-pages-${{ github.run_attempt }}
+
+      - name: Wait for Pages artifact availability
+        run: sleep 5
 
       - name: Deploy to GitHub Pages
         id: deployment
