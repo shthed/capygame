@@ -1,0 +1,51 @@
+name: Bug Report
+description: Report a bug, crash, or rendering issue on capyboop.com
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve **CapyGame**! Please share what happened so we can reproduce and fix it.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where did this happen?
+      options:
+        - Cosmic Zoom / Universe Simulator
+        - Sanctuary Island / Capy-Snake
+        - Capytorio Factory
+        - Spore Lagoon / DNA Mutations
+        - Number Stampede / Yuzu Mountain
+        - Graphics / WebGPU / WebGL2
+        - Controls / Mobile UI / PWA Offline
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Browser, Device & GPU Backend
+      description: Example - Chrome 130 on Pixel 8 (WebGL2) or Desktop Firefox on Linux (WebGPU)
+      placeholder: e.g. Chrome on Android 15 (WebGL2)
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Clear description of the bug, visual glitch, or performance drop.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Optional steps to trigger the issue.
+      placeholder: |
+        1. Open capyboop.com
+        2. Click Play Capytorio
+        3. ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?

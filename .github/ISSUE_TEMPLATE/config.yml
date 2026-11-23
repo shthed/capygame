@@ -1,0 +1,17 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Play CapyGame Live (capyboop.com)
+    url: https://capyboop.com/
+    about: Open the live web app to check if an issue is already fixed in production.
+  - name: Privacy Policy
+    url: https://capyboop.com/privacy.html
+    about: Review on-device storage and offline PWA privacy details.
+  - name: Contributing & Local Setup
+    url: https://github.com/capyboop/capygame/blob/main/CONTRIBUTING.md
+    about: Learn how to run CapyGame locally, run tests, and submit a Pull Request.
+  - name: Support & FAQ
+    url: https://github.com/capyboop/capygame/blob/main/SUPPORT.md
+    about: Find help, live links, and offline/privacy answers.
+  - name: Report a Security Vulnerability
+    url: https://github.com/capyboop/capygame/security/advisories/new
+    about: Privately report security issues instead of opening a public issue.

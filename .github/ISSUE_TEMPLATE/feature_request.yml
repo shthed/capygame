@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest a new gameplay mechanic, Capytorio tool, scale band, or UI improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Universe Explorer & Scale Bands
+        - Capytorio Factory & Lua Modding
+        - Archipelago Districts & Mini-Games
+        - Controls, Camera & Mobile Ergonomics
+        - Graphics, Audio & Performance
+        - Accessibility & Settings
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem or gap does this address?
+      description: Describe what feels missing or confusing today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested improvement
+      description: How would you like it to work?
+    validations:
+      required: true
