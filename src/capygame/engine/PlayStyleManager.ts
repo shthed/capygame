@@ -786,7 +786,7 @@ export class PlayStyleManager {
 
   // --- 3. Capytorio Factory State (Far-Hemisphere Infinite Plain) ---
   public capytorioEngine: CapytorioFactoryEngine;
-  private capytorioRenderer: Capytorio3DRenderer;
+  private capytorioRenderer: Capytorio3DRenderer | null = null;
   private capytorioUiAccum: number = 0;
   private capytorioAutoSaveDirty: boolean = false;
   private capytorioAutoSaveTimer: number = 0;
@@ -831,6 +831,11 @@ export class PlayStyleManager {
   private fallGuysGhostCapy: CapyMeshGroup | null = null;
   private fallGuysGhostMat: THREE.MeshStandardMaterial | null = null;
 
+  private surfaceWorldsBuilt: boolean = false;
+  private surfaceBuildStep: number = 0;
+  private deferredBootCancel: (() => void) | null = null;
+  private pendingProceduralConfigSync: boolean = false;
+
   constructor(
     container: HTMLElement,
     initialStats: PlayerStats,
@@ -839,6 +844,7 @@ export class PlayStyleManager {
     webGpuInit?: {
       renderer?: THREE_WEBGPU.WebGPURenderer | null;
       probe: WebGpuProbeResult;
+      isSoftwareGl?: boolean;
     } | null
   ) {
     this.stats = initialStats;
@@ -846,7 +852,6 @@ export class PlayStyleManager {
     this.callbacks = callbacks;
     this.capytorioEngine = new CapytorioFactoryEngine(initialStats.capytorioFactory ?? null);
     this.capytorioEngine.beltEndSpillEnabled = Boolean(initialSettings.capytorioBeltEndSpill);
-    this.capytorioRenderer = new Capytorio3DRenderer();
     this.capytorioStepCallbacks = {
       onTechCompleted: (_techId, techName, rewardDna, _rewardCoins, isRocketLaunch) => {
         const snap = this.capytorioEngine.getUiSnapshot();
@@ -887,29 +892,39 @@ export class PlayStyleManager {
     this.performanceLog.maxFpsLimit = initialSettings.maxFpsLimit ?? 60;
     this.flightTrajectory = initialSettings.flightTrajectory === 'straight' ? 'straight' : 'spiral';
 
+    const skipCosmic =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('skip_cosmic') === '1';
+
     this.isSoftwareGl = webGpuInit?.renderer
       ? webGpuInit.probe.isFallbackAdapter
-      : (() => {
-          try {
-            const gl =
-              document.createElement('canvas').getContext('webgl2') ||
-              document.createElement('canvas').getContext('webgl');
-            if (!gl) return true;
-            const ext = gl.getExtension('WEBGL_debug_renderer_info');
-            const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-            const gpu = String(gl.getParameter(param));
-            gl.getExtension('WEBGL_lose_context')?.loseContext();
-            return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-          } catch {
-            return true;
-          }
-        })();
+      : typeof webGpuInit?.isSoftwareGl === 'boolean'
+        ? webGpuInit.isSoftwareGl
+        : (() => {
+            try {
+              const gl =
+                document.createElement('canvas').getContext('webgl2') ||
+                document.createElement('canvas').getContext('webgl');
+              if (!gl) return true;
+              const ext = gl.getExtension('WEBGL_debug_renderer_info');
+              const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+              const gpu = String(gl.getParameter(param));
+              gl.getExtension('WEBGL_lose_context')?.loseContext();
+              return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+            } catch {
+              return true;
+            }
+          })();
 
-    // 1. Scene & Camera (Long far-plane so all 5 game zones are visible in the same world)
+    // 1. Scene & Camera (Start directly in deep cosmic black when booting into Multiverse so surface sky never flashes)
     this.scene = new THREE.Scene();
     this.scene.matrixAutoUpdate = false;
-    this.scene.background = new THREE.Color(0x38bdf8);
-    this.applyFogSetting();
+    this.scene.background = new THREE.Color(skipCosmic ? 0x38bdf8 : 0x02040a);
+    if (skipCosmic) {
+      this.applyFogSetting();
+    } else {
+      this.scene.fog = null;
+    }
 
     const width = Math.max(1, container.clientWidth || window.innerWidth || 360);
     const height = Math.max(1, container.clientHeight || window.innerHeight || 640);
@@ -1036,13 +1051,15 @@ export class PlayStyleManager {
     CapyModelGenerator.setLeanTextureMode(isLowMem);
 
     // Hardware-accelerated PBR texture cache, GPU Sky Dome, 360° Alpine Mountains & Weather
+    // (Defer synthesizing 8 planetary PBR texture sets until surface worlds build so Multiverse boots instantly!)
     this.worldEnv = new RealisticWorldEnvironment(
       this.renderer,
       this.isSoftwareGl,
       ambientLight,
       hemiLight,
       dirLight,
-      this.isWebGpu
+      this.isWebGpu,
+      !skipCosmic
     );
     this.scene.add(this.worldEnv.moonLight);
     this.gpuEngine.setMoonLight(this.worldEnv.moonLight);
@@ -1081,9 +1098,12 @@ export class PlayStyleManager {
     this.heroTailAuraMesh.visible = false;
     this.heroTailAuraMesh.userData.ignoreCameraFade = true;
     this.heroCapy.add(this.heroTailAuraMesh);
+    this.heroCapy.visible = skipCosmic;
+    this.heroCapy.matrixWorldAutoUpdate = skipCosmic;
     this.scene.add(this.heroCapy);
 
     // 5. Place All 5 Game Zone Groups in the Shared 3D World
+    //    Keep all planetary surface groups hidden at Multiverse boot so Capytorio/Sanctuary never flicker!
     this.sanctuaryGroup.position.set(ZONE_LOCATIONS.sanctuary.x, 0, ZONE_LOCATIONS.sanctuary.z);
     this.sporeGroup.position.set(ZONE_LOCATIONS.spore.x, 0, ZONE_LOCATIONS.spore.z);
     // Capytorio3DRenderer manages world coordinates directly around (CAPYTORIO_WORLD_ORIGIN_X, 0, 0)
@@ -1091,34 +1111,35 @@ export class PlayStyleManager {
     this.runnerGroup.position.set(ZONE_LOCATIONS.runner.x, 0, ZONE_LOCATIONS.runner.z);
     this.fallGuysGroup.position.set(ZONE_LOCATIONS.fallguys.x, 0, ZONE_LOCATIONS.fallguys.z);
 
-    // All 5 game zones remain permanently visible in the same world
-    this.sanctuaryGroup.visible = true;
-    this.sporeGroup.visible = true;
-    this.capytorioGroup.visible = true;
-    this.runnerGroup.visible = true;
-    this.fallGuysGroup.visible = true;
+    this.worldBaseGroup.visible = skipCosmic;
+    this.worldBaseGroup.matrixWorldAutoUpdate = skipCosmic;
+    this.sanctuaryGroup.visible = skipCosmic;
+    this.sanctuaryGroup.matrixWorldAutoUpdate = skipCosmic;
+    this.sporeGroup.visible = skipCosmic;
+    this.sporeGroup.matrixWorldAutoUpdate = skipCosmic;
+    this.capytorioGroup.visible = skipCosmic;
+    this.capytorioGroup.matrixWorldAutoUpdate = skipCosmic;
+    this.runnerGroup.visible = skipCosmic;
+    this.runnerGroup.matrixWorldAutoUpdate = skipCosmic;
+    this.fallGuysGroup.visible = skipCosmic;
+    this.fallGuysGroup.matrixWorldAutoUpdate = skipCosmic;
+    this.vfxEngine.rootGroup.visible = skipCosmic;
+    this.vfxEngine.rootGroup.matrixWorldAutoUpdate = skipCosmic;
+    this.selectableCapyGroup.visible = false;
+    this.selectableCapyGroup.matrixWorldAutoUpdate = false;
 
     this.scene.add(this.worldBaseGroup);
     this.scene.add(this.sanctuaryGroup);
     this.scene.add(this.sporeGroup);
-    this.capytorioGroup.add(this.capytorioRenderer.root);
     this.scene.add(this.capytorioGroup);
     this.scene.add(this.runnerGroup);
     this.scene.add(this.fallGuysGroup);
 
-    // Build shared ocean, mountains, sky dome & connecting Grand Promenade Causeways + all 5 game zones
-    this.physicsBridge = new PhysicsWorldBridge();
-    this.buildSharedArchipelagoBase();
-    this.buildSanctuary();
-    this.buildSporeWorld();
-    this.buildCapytorioWorld();
-    this.buildRunner();
-    this.buildFallGuys();
-    this.syncWorldPhysicsColliders();
+    this.physicsBridge = new PhysicsWorldBridge(!skipCosmic);
 
-    // 6. Build Chrono-Vessel Rig & 21-Band Seamless Multi-Scale Universe Simulator
-    //    (CosmicUniverseBuilder stays suspended so only one unified cosmic renderer executes)
-    this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl, isLowMem);
+    // 6. Build Chrono-Vessel Rig & Multi-Scale Universe Simulator
+    //    (CosmicUniverseBuilder stays lazy & suspended so Multiverse boots in a fraction of the time)
+    this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl, isLowMem, !skipCosmic);
     this.cosmicBuilder.setSuspended(true);
     this.scene.add(this.cosmicBuilder.rootGroup);
     this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl, this.isWebGpu);
@@ -1126,8 +1147,8 @@ export class PlayStyleManager {
     this.scene.add(this.seamlessUniverse.celestialBackdropGroup);
     this.sanctuaryGroup.add(this.seamlessUniverse.forestGroveGroup);
     this.chronoVessel = new ChronoVesselRig();
-    this.chronoVessel.root.visible = false;
-    this.chronoVessel.root.matrixWorldAutoUpdate = false;
+    this.chronoVessel.root.visible = !skipCosmic;
+    this.chronoVessel.root.matrixWorldAutoUpdate = !skipCosmic;
     this.scene.add(this.chronoVessel.root);
 
     // Build 6 Orbital Skydiving Descent Rings for the atmosphere-to-Sanctuary glide path
@@ -1150,9 +1171,6 @@ export class PlayStyleManager {
     }
     this.scene.add(this.descentRingsGroup);
 
-    this.buildSelectableCapyHeroCircle();
-    this.prewarmOccluderShaderPrograms();
-
     // Install O(1) matrix-tree skip on hidden/disabled top-level subtrees so Three.js never
     // walks ~13,000 hidden descendants every frame.
     installFastMatrixCull(this.worldBaseGroup);
@@ -1169,30 +1187,28 @@ export class PlayStyleManager {
     installFastMatrixCull(this.chronoVessel.root);
     installFastMatrixCull(this.descentRingsGroup);
 
-    if (this.isWebGpu) {
-      convertLegacyShaderMaterialsToTsl(this.scene);
-    } else {
-      const glRenderer = this.renderer as THREE.WebGLRenderer;
-      if (!this.isSoftwareGl) {
-        glRenderer.compile(this.chronoVessel.root, this.camera, this.scene);
-        glRenderer.compile(this.heroCapy, this.camera, this.scene);
-        glRenderer.compile(this.seamlessUniverse.celestialBackdropGroup, this.camera, this.scene);
-      }
-      this.scheduleIdlePipelineWarmup();
-    }
-
-    const skipCosmic =
-      typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('skip_cosmic') === '1';
-
-    this.switchMode(this.stats.selectedPlayStyle, true);
     if (skipCosmic) {
+      this.ensureSurfaceWorldsBuilt();
+      if (this.isWebGpu) {
+        convertLegacyShaderMaterialsToTsl(this.scene);
+      } else {
+        const glRenderer = this.renderer as THREE.WebGLRenderer;
+        if (!this.isSoftwareGl) {
+          glRenderer.compile(this.chronoVessel.root, this.camera, this.scene);
+          glRenderer.compile(this.heroCapy, this.camera, this.scene);
+          glRenderer.compile(this.seamlessUniverse.celestialBackdropGroup, this.camera, this.scene);
+        }
+        this.scheduleIdlePipelineWarmup();
+      }
+      this.switchMode(this.stats.selectedPlayStyle, true);
       this.vesselMode = 'landed';
       this.chronoVessel.setMode('landed');
       this.chronoVessel.root.visible = false;
       this.setCosmicStage('playing');
     } else {
-      // Unified Future Capybara Chrono-Vessel Continuum: start directly at T = 0.00 Gyr Big Bang (10^+28m)
+      // Unified Future Capybara Chrono-Vessel Continuum:
+      // Boot DIRECTLY into the Multiverse (10^+30 m) on Frame 1 with zero Capytorio/surface flicker!
+      this.currentMode = this.stats.selectedPlayStyle;
       this.cosmicStage = 'playing';
       this.seamlessZoomActive = true;
       this.vesselMode = 'chase_pod';
@@ -1201,11 +1217,167 @@ export class PlayStyleManager {
       this.autoZoomDirection = 0;
       this.currentLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
       this.targetLogScaleMeters = MAX_UNIVERSE_LOG_METERS;
-      this.applyFogSetting();
+      this.scene.fog = null;
+      this.setSceneBackgroundHex(0x02040a);
+      this.setSkyDomeAlpha(0.0);
       this.tickSeamlessUniverse(0.016);
+      if (this.isWebGpu) {
+        convertLegacyShaderMaterialsToTsl(this.chronoVessel.root);
+      } else if (!this.isSoftwareGl) {
+        const glRenderer = this.renderer as THREE.WebGLRenderer;
+        glRenderer.compile(this.chronoVessel.root, this.camera, this.scene);
+        glRenderer.compile(this.seamlessUniverse.celestialBackdropGroup, this.camera, this.scene);
+      }
       this.emitCosmicState();
       this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
+      this.scheduleDeferredBootWork();
     }
+  }
+
+  private buildNextSurfaceStep(): boolean {
+    if (this.surfaceWorldsBuilt) return false;
+    switch (this.surfaceBuildStep) {
+      case 0:
+        this.worldEnv.ensureCoreTexturesReady();
+        this.buildSharedArchipelagoBase();
+        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.worldBaseGroup);
+        break;
+      case 1:
+        this.buildSanctuary();
+        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.sanctuaryGroup);
+        break;
+      case 2:
+        this.buildSporeWorld();
+        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.sporeGroup);
+        break;
+      case 3:
+        this.buildCapytorioWorld();
+        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.capytorioGroup);
+        break;
+      case 4:
+        this.buildRunner();
+        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.runnerGroup);
+        break;
+      case 5:
+        this.buildFallGuys();
+        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.fallGuysGroup);
+        break;
+      case 6:
+        this.physicsBridge.ensureWorkerInitialized();
+        this.syncWorldPhysicsColliders();
+        break;
+      case 7:
+        this.buildSelectableCapyHeroCircle();
+        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.selectableCapyGroup);
+        break;
+      case 8:
+        this.prewarmOccluderShaderPrograms();
+        this.surfaceWorldsBuilt = true;
+        if (this.pendingProceduralConfigSync) {
+          this.pendingProceduralConfigSync = false;
+          this.applyProceduralConfig(this.proceduralConfig, true);
+        }
+        break;
+      default:
+        this.surfaceWorldsBuilt = true;
+        return false;
+    }
+    this.surfaceBuildStep += 1;
+    // Keep surface groups hidden while still high in cosmic space
+    if (this.seamlessZoomActive && this.currentLogScaleMeters > 4.5) {
+      this.worldBaseGroup.visible = false;
+      this.worldBaseGroup.matrixWorldAutoUpdate = false;
+      this.sanctuaryGroup.visible = false;
+      this.sanctuaryGroup.matrixWorldAutoUpdate = false;
+      this.sporeGroup.visible = false;
+      this.sporeGroup.matrixWorldAutoUpdate = false;
+      this.capytorioGroup.visible = false;
+      this.capytorioGroup.matrixWorldAutoUpdate = false;
+      this.runnerGroup.visible = false;
+      this.runnerGroup.matrixWorldAutoUpdate = false;
+      this.fallGuysGroup.visible = false;
+      this.fallGuysGroup.matrixWorldAutoUpdate = false;
+      this.selectableCapyGroup.visible = false;
+      this.selectableCapyGroup.matrixWorldAutoUpdate = false;
+    }
+    return !this.surfaceWorldsBuilt;
+  }
+
+  public ensureSurfaceWorldsBuilt(): void {
+    if (!this.surfaceWorldsBuilt) {
+      while (this.buildNextSurfaceStep()) {
+        // Complete all remaining surface districts synchronously on demand
+      }
+    }
+    if (!this.isSoftwareGl) {
+      this.seamlessUniverse?.ensureWoodlandGroveBuilt();
+    }
+  }
+
+  private scheduleDeferredBootWork(): void {
+    if (typeof window === 'undefined' || this.disposed) return;
+    let cancelled = false;
+    let timerId: number | null = null;
+    let idleId: number | null = null;
+    const win = window as Window & {
+      requestIdleCallback?: (
+        cb: (deadline: { timeRemaining: () => number; didTimeout: boolean }) => void,
+        opts?: { timeout: number }
+      ) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+
+    const runChunk = () => {
+      if (cancelled || this.disposed) return;
+      // Phase 1: progressively warm remaining universe scale layers (2 per slice)
+      let moreLayers = false;
+      for (let k = 0; k < 2; k++) {
+        moreLayers = this.seamlessUniverse.warmNextPendingLayer();
+        if (!moreLayers) break;
+      }
+      if (moreLayers) {
+        scheduleNext(this.isSoftwareGl ? 90 : 35);
+        return;
+      }
+      // Do NOT build playable Capybara Forest / Capytorio districts until the user selects "Play in Forest" or "Play Capytorio".
+      if (!this.isWebGpu) {
+        this.scheduleIdlePipelineWarmup();
+      }
+    };
+
+    const scheduleNext = (delayMs: number) => {
+      if (cancelled || this.disposed) return;
+      timerId = window.setTimeout(() => {
+        timerId = null;
+        if (cancelled || this.disposed) return;
+        if (typeof win.requestIdleCallback === 'function') {
+          idleId = win.requestIdleCallback(
+            () => {
+              idleId = null;
+              runChunk();
+            },
+            { timeout: 600 }
+          );
+        } else {
+          runChunk();
+        }
+      }, delayMs);
+    };
+
+    // Let the first Multiverse frames paint smoothly before starting background warmup
+    scheduleNext(260);
+
+    this.deferredBootCancel = () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+        timerId = null;
+      }
+      if (idleId !== null && typeof win.cancelIdleCallback === 'function') {
+        win.cancelIdleCallback(idleId);
+        idleId = null;
+      }
+    };
   }
 
   private scheduleIdlePipelineWarmup(): void {
@@ -2234,6 +2406,7 @@ export class PlayStyleManager {
   }
 
   public switchMode(mode: PlayStyle, instant: boolean = false) {
+    this.ensureSurfaceWorldsBuilt();
     if (mode !== 'sanctuary' && this.placementGhost.active) {
       this.cancelBuildingPlacementGhost();
     }
@@ -2290,7 +2463,7 @@ export class PlayStyleManager {
       this.heroYaw = Math.PI;
       this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
       const initPose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
-      this.capytorioRenderer.sync(
+      this.ensureCapytorioRenderer().sync(
         this.capytorioEngine,
         CAPYTORIO_WORLD_ORIGIN_X,
         CAPYTORIO_WORLD_ORIGIN_Z + 3.0,
@@ -2738,6 +2911,9 @@ export class PlayStyleManager {
   }
 
   public setCosmicStage(stage: CosmicStage) {
+    if (stage === 'playing' || stage === 'capy_selection') {
+      this.ensureSurfaceWorldsBuilt();
+    }
     this.cosmicStage = stage;
     this.seamlessZoomActive = false;
     this.autoZoomDirection = 0;
@@ -3202,6 +3378,9 @@ export class PlayStyleManager {
   }
 
   private engageForestLandingDescent(): void {
+    if (!this.surfaceWorldsBuilt) {
+      this.ensureSurfaceWorldsBuilt();
+    }
     this.seamlessZoomActive = true;
     this.autoLandAtForestPending = true;
     this.vesselMode = 'chase_pod';
@@ -3434,8 +3613,12 @@ export class PlayStyleManager {
       if (this.sporePoolsInitialized) this.resetSporeGame();
       if (this.runnerPoolsInitialized) this.refreshRunnerCircuitGates();
       if (this.fallGuysInitialized) this.resetFallGuysGame(false);
-      this.sanitizeBuildingNonClipping();
-      this.refreshSanctuaryBuildings();
+      if (this.surfaceWorldsBuilt) {
+        this.sanitizeBuildingNonClipping();
+        this.refreshSanctuaryBuildings();
+      } else {
+        this.pendingProceduralConfigSync = true;
+      }
     }
 
     this.applyFogSetting();
@@ -3445,6 +3628,7 @@ export class PlayStyleManager {
   }
 
   public selectCapyHero(index: number, confirmAndPlay: boolean = false) {
+    this.ensureSurfaceWorldsBuilt();
     this.selectedCapyHeroIndex = THREE.MathUtils.clamp(
       index,
       0,
@@ -4567,8 +4751,16 @@ export class PlayStyleManager {
   // ============================================================================
   // 3. CAPYTORIO INFINITE FACTORY (FAR HEMISPHERE AT WORLD +1200, 0)
   // ============================================================================
+  private ensureCapytorioRenderer(): Capytorio3DRenderer {
+    if (!this.capytorioRenderer) {
+      this.capytorioRenderer = new Capytorio3DRenderer();
+      this.capytorioGroup.add(this.capytorioRenderer.root);
+    }
+    return this.capytorioRenderer;
+  }
+
   private buildCapytorioWorld() {
-    this.capytorioRenderer.sync(
+    this.ensureCapytorioRenderer().sync(
       this.capytorioEngine,
       CAPYTORIO_WORLD_ORIGIN_X,
       CAPYTORIO_WORLD_ORIGIN_Z,
@@ -7741,7 +7933,7 @@ export class PlayStyleManager {
             }
           }
         } else if (this.currentMode === 'capytorio') {
-          this.capytorioRenderer.collectOccluderCandidates(
+          this.capytorioRenderer?.collectOccluderCandidates(
             _occluderCandidates,
             this.getCapytorioCameraMode() === 'chase'
           );
@@ -10082,7 +10274,7 @@ export class PlayStyleManager {
     this.syncCapytorioConfigMultipliers();
     this.capytorioEngine.step(dt, this.capytorioStepCallbacks);
     if (this.capytorioGroup.visible) {
-      this.capytorioRenderer.sync(
+      this.ensureCapytorioRenderer().sync(
         this.capytorioEngine,
         this.camera.position.x,
         this.camera.position.z,
@@ -10762,7 +10954,7 @@ export class PlayStyleManager {
       this.getCapytorioCameraMode() === 'oblique'
         ? evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist).altitudeRadius
         : 26;
-    this.capytorioRenderer.sync(
+    this.ensureCapytorioRenderer().sync(
       this.capytorioEngine,
       zone.x + this.heroLocalPos.x,
       zone.z + this.heroLocalPos.z,
@@ -11324,36 +11516,27 @@ export class PlayStyleManager {
       }
     }
 
-    // Seamless automatic handover into live surface gameplay when steering/jumping inside Capybara Forest!
-    const hasSurfaceSteerIntent =
-      Math.abs(this.moveInput.x) > 0.06 ||
-      Math.abs(this.moveInput.z) > 0.06 ||
-      this.isJumping;
-    if (
-      this.autoZoomDirection === 0 &&
-      hasSurfaceSteerIntent &&
-      Math.abs(logVal - CAPYBARA_FOREST_LOG_METERS) <= 0.65 &&
-      Math.abs(this.targetLogScaleMeters - CAPYBARA_FOREST_LOG_METERS) <= 0.65
-    ) {
-      this.resumeSurfacePlayFromForest(false);
-      return;
+    // Only build & display playable Capybara Forest / archipelago surface worlds once the user explicitly chooses "Play in Forest" or "Play Capytorio".
+    if (this.autoLandAtForestPending && !this.surfaceWorldsBuilt) {
+      this.ensureSurfaceWorldsBuilt();
     }
 
     const orbBlend = computeOrbitalSurfaceBlend(logVal, this.isSoftwareGl);
-    const inForestWindow = orbBlend.inSurfaceWindow;
+    const showPlayableSurface = this.autoLandAtForestPending && orbBlend.inSurfaceWindow;
+    const inTerrestrialZoom = logVal >= -2.5 && logVal <= 4.7;
 
     this.cosmicBuilder.setSuspended(true);
     this.cosmicBuilder.rootGroup.visible = false;
     this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = false;
-    this.worldBaseGroup.visible = inForestWindow;
-    this.worldBaseGroup.matrixWorldAutoUpdate = inForestWindow;
-    this.sanctuaryGroup.visible = inForestWindow;
-    this.sanctuaryGroup.matrixWorldAutoUpdate = inForestWindow;
-    this.seamlessUniverse.forestGroveGroup.visible = inForestWindow;
-    this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = inForestWindow;
+    this.worldBaseGroup.visible = showPlayableSurface;
+    this.worldBaseGroup.matrixWorldAutoUpdate = showPlayableSurface;
+    this.sanctuaryGroup.visible = showPlayableSurface;
+    this.sanctuaryGroup.matrixWorldAutoUpdate = showPlayableSurface;
+    this.seamlessUniverse.forestGroveGroup.visible = showPlayableSurface;
+    this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showPlayableSurface;
 
-    // Smoothly reveal all 4 outer archipelago mini-game islands across planetary approach (zero sudden pop-in at touchdown)
-    const archVisible = orbBlend.archipelagoVisible;
+    // Only reveal outer archipelago mini-game islands during explicit surface landing descent
+    const archVisible = this.autoLandAtForestPending && orbBlend.archipelagoVisible;
     this.sporeGroup.visible = archVisible;
     this.sporeGroup.matrixWorldAutoUpdate = archVisible;
     this.capytorioGroup.visible = archVisible;
@@ -11365,36 +11548,47 @@ export class PlayStyleManager {
 
     this.selectableCapyGroup.visible = false;
     this.selectableCapyGroup.matrixWorldAutoUpdate = false;
-    this.heroCapy.visible = inForestWindow;
-    this.heroCapy.matrixWorldAutoUpdate = inForestWindow;
+    this.heroCapy.visible = showPlayableSurface;
+    this.heroCapy.matrixWorldAutoUpdate = showPlayableSurface;
     if (this.vfxEngine) {
-      this.vfxEngine.rootGroup.visible = inForestWindow;
-      this.vfxEngine.rootGroup.matrixWorldAutoUpdate = inForestWindow;
-      if (!inForestWindow) {
+      this.vfxEngine.rootGroup.visible = showPlayableSurface;
+      this.vfxEngine.rootGroup.matrixWorldAutoUpdate = showPlayableSurface;
+      if (!showPlayableSurface) {
         this.vfxEngine.godRayGroup.visible = false;
       }
     }
     if (this.dachshundGroup) {
-      const showDachshund = inForestWindow && this.currentMode === 'sanctuary';
+      const showDachshund = showPlayableSurface && this.currentMode === 'sanctuary';
       this.dachshundGroup.visible = showDachshund;
       this.dachshundGroup.matrixWorldAutoUpdate = showDachshund;
     }
     this.scene.fog = null;
 
-    // Fade atmospheric sky dome continuously during orbital plunge instead of 1-frame snap
-    this.setSkyDomeAlpha(smoothstep01(0.16, 0.86, orbBlend.terrestrialBlend));
+    // Fade atmospheric sky dome continuously during explicit landing plunge
+    this.setSkyDomeAlpha(showPlayableSurface ? smoothstep01(0.16, 0.86, orbBlend.terrestrialBlend) : 0.0);
 
     if (this.worldEnv) {
       const tb = orbBlend.terrestrialBlend;
-      if (!inForestWindow || tb <= 0.005) {
-        // Dedicated calibrated deep-space key/fill rig so UFO & cosmic bodies retain crisp contrast
-        this.worldEnv.ambientLight.intensity = 0.08;
-        this.worldEnv.hemiLight.color.setHex(0x60a5fa);
-        this.worldEnv.hemiLight.groundColor.setHex(0x0f172a);
-        this.worldEnv.hemiLight.intensity = 0.24;
+      if (!showPlayableSurface || tb <= 0.005) {
+        // Smoothly transition between deep-space key/fill rig and warm woodland daylight across Clouds -> Valley -> Glade -> Leaf
+        const gladeDaylight =
+          smoothstep01(4.9, 3.2, logVal) * smoothstep01(-3.4, -2.2, logVal);
+        this.worldEnv.ambientLight.intensity = THREE.MathUtils.lerp(0.08, 0.24, gladeDaylight);
+        _colorHelper.setHex(0x60a5fa).lerp(_colorHelper2.setHex(0xbae6fd), gladeDaylight);
+        this.worldEnv.hemiLight.color.copy(_colorHelper);
+        _colorHelper.setHex(0x0f172a).lerp(_colorHelper2.setHex(0x1e4620), gladeDaylight);
+        this.worldEnv.hemiLight.groundColor.copy(_colorHelper);
+        this.worldEnv.hemiLight.intensity = THREE.MathUtils.lerp(0.24, 0.72, gladeDaylight);
         this.worldEnv.sunLight.color.setHex(0xfffaf0);
-        this.worldEnv.sunLight.intensity = 2.45;
-        if (logVal >= 3.5 && logVal <= 14.5) {
+        this.worldEnv.sunLight.intensity = THREE.MathUtils.lerp(2.45, 1.78, gladeDaylight);
+        if (gladeDaylight > 0.05) {
+          const sunDir = this.seamlessUniverse.getSharedSunDir();
+          this.worldEnv.sunLight.position.set(
+            THREE.MathUtils.lerp(sunDir.x * 90, 32, gladeDaylight),
+            THREE.MathUtils.lerp(sunDir.y * 90, 62, gladeDaylight),
+            THREE.MathUtils.lerp(sunDir.z * 90, 28, gladeDaylight)
+          );
+        } else if (logVal >= 3.5 && logVal <= 14.5) {
           const sunDir = this.seamlessUniverse.getSharedSunDir();
           this.worldEnv.sunLight.position.set(sunDir.x * 90, sunDir.y * 90, sunDir.z * 90);
         }
@@ -11438,8 +11632,8 @@ export class PlayStyleManager {
       }
     }
 
-    // Keep sanctuary companion Capybaras & portals gently alive while zooming through the forest!
-    if (inForestWindow) {
+    // Keep sanctuary companion Capybaras gently alive during explicit landing descent
+    if (showPlayableSurface) {
       for (let i = 0; i < this.sanctuaryCapys.length; i++) {
         const buddy = this.sanctuaryCapys[i];
         if (!buddy.capy.visible) continue;
@@ -11463,9 +11657,9 @@ export class PlayStyleManager {
     }
 
     // Free orbital camera steering with mouselook / drag / WASD across every cosmic & quantum scale.
-    // Smoothly keep camera pitch above the curved planetary horizon as we approach the surface (log < 5.8).
+    // Smoothly keep camera pitch above the terrestrial ground plane from Clouds through Glade · Leaf.
     const horizonMinPitch =
-      inForestWindow
+      showPlayableSurface || inTerrestrialZoom
         ? 0.14
         : THREE.MathUtils.lerp(-0.68, 0.14, THREE.MathUtils.smoothstep(logVal, 5.8, 4.7));
     const idleLookMs = performance.now() - this.mouselookLastActiveTimeMs;
@@ -11488,11 +11682,12 @@ export class PlayStyleManager {
       idleLookMs > 900
     ) {
       if (Math.abs(this.moveInput.z) < 0.05) {
-        const comfortPitchTarget = inForestWindow
-          ? 0.34
-          : logVal >= 6.0 && logVal <= 14.5
-            ? 0.32
-            : 0.28;
+        const comfortPitchTarget =
+          showPlayableSurface || inTerrestrialZoom
+            ? 0.34
+            : logVal >= 6.0 && logVal <= 14.5
+              ? 0.32
+              : 0.28;
         this.cosmicOrbitPitch = THREE.MathUtils.damp(
           this.cosmicOrbitPitch,
           Math.max(horizonMinPitch, comfortPitchTarget),
@@ -11521,9 +11716,11 @@ export class PlayStyleManager {
     // Compute projective-invariant camera radius & smooth multi-sector focal anchor
     const canonicalRadius = 38.0;
     const chaseBaseDist = 11.4 * (this.settings.cameraDistance || 1.0);
-    const camRadius = computeContinuousDescentCamRadius(logVal, chaseBaseDist);
+    const camRadius = showPlayableSurface
+      ? computeContinuousDescentCamRadius(logVal, chaseBaseDist)
+      : canonicalRadius;
 
-    if (inForestWindow) {
+    if (showPlayableSurface) {
       const lowBlend = THREE.MathUtils.smoothstep(logVal, -0.85, -0.22);
       const highBlend = 1 - THREE.MathUtils.smoothstep(logVal, 1.85, 3.35);
       const anchorWeight = lowBlend * highBlend;
@@ -11576,12 +11773,13 @@ export class PlayStyleManager {
       _seamlessSkyColor,
       effectiveGamma,
       effectiveMarkers,
-      paletteMode
+      paletteMode,
+      this.autoLandAtForestPending
     );
     this.seamlessUniverse.rootGroup.scale.setScalar(camRadius / canonicalRadius);
 
-    // Blend background sky color cleanly across cosmic stratosphere -> daylight/night horizon
-    if (inForestWindow && orbBlend.terrestrialBlend > 0.005) {
+    // Blend background sky color cleanly across cosmic stratosphere -> daylight/night horizon during landing
+    if (showPlayableSurface && orbBlend.terrestrialBlend > 0.005) {
       if (this.worldEnv) {
         _colorHelper.copy(this.worldEnv.currentHorizonSkyColor);
       } else {
@@ -11630,7 +11828,7 @@ export class PlayStyleManager {
         _camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
         _camRight.crossVectors(_camForward, _camUp).normalize();
         const vt = computeVesselOneToOneTransform(
-          logVal,
+          showPlayableSurface ? logVal : Math.max(logVal, 3.5),
           this.vesselMode,
           this.camera.position.x,
           this.camera.position.y,
@@ -11696,8 +11894,8 @@ export class PlayStyleManager {
           this.moveInput.z + navPitchZ + this.mouselookPitchZ
         );
 
-        // Animate & check 6 Atmospheric Skydiving Descent Rings between log 5.2 and 1.0
-        const showRings = logVal >= 1.0 && logVal <= 5.2;
+        // Animate & check 6 Atmospheric Skydiving Descent Rings during explicit landing descent
+        const showRings = this.autoLandAtForestPending && logVal >= 1.0 && logVal <= 5.2;
         this.descentRingsGroup.visible = showRings;
         this.descentRingsGroup.matrixWorldAutoUpdate = showRings;
         if (showRings && this.descentRingMeshes.length === DESCENT_RING_SPECS.length) {
@@ -11979,7 +12177,7 @@ export class PlayStyleManager {
       forestSpecimenId: this.seamlessUniverse.getActiveForestSpecimenSpec().id,
       forestSpecimenLabel: this.seamlessUniverse.getActiveForestSpecimenSpec().label,
       descentRingsHit: this.descentRingsHitCount,
-      descentRingsTotal: DESCENT_RING_SPECS.length,
+      descentRingsTotal: this.autoLandAtForestPending ? DESCENT_RING_SPECS.length : 0,
       dockedOnChronoPad: this.dockedChronoVesselVisible,
     };
   }
@@ -12092,6 +12290,7 @@ export class PlayStyleManager {
   }
 
   public resumeSurfacePlayFromForest(snapCamera: boolean = true) {
+    this.ensureSurfaceWorldsBuilt();
     this.autoZoomDirection = 0;
     this.cruiseVelocityLogPerSec = 0;
     this.targetCruiseVelocityLogPerSec = 0;
@@ -12414,6 +12613,8 @@ export class PlayStyleManager {
     this.disposed = true;
     this.unsubscribeCapytorioLua?.();
     this.unsubscribeCapytorioLua = null;
+    this.deferredBootCancel?.();
+    this.deferredBootCancel = null;
     this.idleWarmupCancel?.();
     this.idleWarmupCancel = null;
     this.cancelBuildingPlacementGhost(true);

@@ -552,20 +552,8 @@ export const CapyGameView: React.FC = () => {
     getCapytorioLuaCatalogInfo()
   );
 
-  // Cosmic Genesis & Multi-Scale Universe State
-  const [cosmicStage, setCosmicStage] = useState<CosmicStage>(() => {
-    try {
-      if (
-        typeof window !== 'undefined' &&
-        new URLSearchParams(window.location.search).get('skip_cosmic') === '1'
-      ) {
-        return 'playing';
-      }
-    } catch {
-      // Ignore URL parsing issues
-    }
-    return 'singularity';
-  });
+  // Cosmic Genesis & Multi-Scale Universe State (starts directly in active Multiverse continuum unless skip_cosmic=1)
+  const [cosmicStage, setCosmicStage] = useState<CosmicStage>('playing');
   const [selectedGalaxyIdx, setSelectedGalaxyIdx] = useState<number>(0);
   const [selectedStarIdx, setSelectedStarIdx] = useState<number>(0);
   const [selectedPlanetIdx, setSelectedPlanetIdx] = useState<number>(0);
@@ -648,8 +636,17 @@ export const CapyGameView: React.FC = () => {
   const [liveZoomThumbnails, setLiveZoomThumbnails] = useState<
     Partial<Record<UniverseScaleBandId, string>>
   >({});
-  const [universeScale, setUniverseScale] = useState<UniverseScaleTelemetry>(() => ({
-    active: false,
+  const [universeScale, setUniverseScale] = useState<UniverseScaleTelemetry>(() => {
+    let skipCosmicInit = false;
+    try {
+      skipCosmicInit =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('skip_cosmic') === '1';
+    } catch {
+      skipCosmicInit = false;
+    }
+    return {
+    active: !skipCosmicInit,
     logScaleMeters: 30.0,
     targetLogScaleMeters: 30.0,
     scaleFormatted: formatPhysicalScaleMeters(30.0),
@@ -674,7 +671,8 @@ export const CapyGameView: React.FC = () => {
     galaxyMorphology: 'spiral',
     forestSpecimenId: 'leaf',
     forestSpecimenLabel: 'Leaf',
-  }));
+    };
+  });
 
   // Mobile Touch Virtual Joystick visual state
   const [touchVisual, setTouchVisual] = useState<TouchDragVisualState>({
@@ -1008,7 +1006,8 @@ export const CapyGameView: React.FC = () => {
       let webGpuInit: {
         renderer: THREE_WEBGPU.WebGPURenderer | null;
         probe: typeof webGpuProbe;
-      } = { renderer: null, probe: webGpuProbe };
+        isSoftwareGl: boolean;
+      } = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
 
       if (webGpuProbe.shouldUseWebGpu) {
         try {
@@ -1032,9 +1031,9 @@ export const CapyGameView: React.FC = () => {
               console.warn('[WebGPU Uncaptured Error]', gpuErr.error?.message ?? gpuErr);
             });
           }
-          webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe };
+          webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe, isSoftwareGl: swGl };
         } catch {
-          webGpuInit = { renderer: null, probe: webGpuProbe };
+          webGpuInit = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
         }
       }
 
@@ -4949,7 +4948,7 @@ export const CapyGameView: React.FC = () => {
                 <div className="space-y-2">
                   <p className="text-xs text-zinc-300 leading-relaxed">
                     {KID_FRIENDLY_BAND_DESCRIPTIONS[universeScale.bandId] ||
-                      'Tap Play on Island to meet your Capybara right away, or watch the Big Bang create stars!'}
+                      'Tap Play in Forest to meet your Capybara right away, or watch the Big Bang create stars!'}
                   </p>
                   <div className="flex flex-col gap-1.5">
                     <button
@@ -6596,7 +6595,7 @@ export const CapyGameView: React.FC = () => {
               ? 'bottom-44 sm:bottom-[88px] right-2'
               : 'bottom-[88px] right-2';
           } else if (isCapytorioCompactZoom) {
-            positionClass = 'bottom-[54px] right-2';
+            positionClass = 'bottom-[78px] right-2';
           } else if (showTouchDpad) {
             positionClass = 'bottom-[104px] right-3';
           } else if (gameSettings.touchControlsMode !== 'hidden') {
@@ -9625,7 +9624,7 @@ export const CapyGameView: React.FC = () => {
                 onClick={() => managerRef.current?.engageAutoLanding()}
                 className="min-h-10 sm:min-h-11 px-2 sm:px-3.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-[10px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
               >
-                Play on Island!
+                Play in Forest
               </button>
               <button
                 type="button"
@@ -9635,7 +9634,9 @@ export const CapyGameView: React.FC = () => {
               >
                 Play Capytorio
               </button>
-              {universeScale.logScaleMeters <= 5.4 && universeScale.logScaleMeters >= 0.9 && (
+              {(universeScale.descentRingsTotal ?? 0) > 0 &&
+                universeScale.logScaleMeters <= 5.4 &&
+                universeScale.logScaleMeters >= 0.9 && (
                 <span
                   data-testid="descent-rings-hud"
                   className="px-1.5 sm:px-2 py-1 sm:py-1.5 rounded-lg bg-sky-500/20 border border-sky-400/45 text-[10px] sm:text-[11px] font-mono tabular-nums text-sky-200 shrink-0"
@@ -9680,7 +9681,9 @@ export const CapyGameView: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
-                  {universeScale.logScaleMeters <= 5.4 && universeScale.logScaleMeters >= 0.9 && (
+                  {(universeScale.descentRingsTotal ?? 0) > 0 &&
+                    universeScale.logScaleMeters <= 5.4 &&
+                    universeScale.logScaleMeters >= 0.9 && (
                     <span
                       data-testid="descent-rings-hud"
                       className="px-2 py-1 rounded bg-sky-500/20 border border-sky-400/45 text-[10px] font-mono tabular-nums text-sky-200 whitespace-nowrap"
@@ -9709,7 +9712,7 @@ export const CapyGameView: React.FC = () => {
                     onClick={() => managerRef.current?.engageAutoLanding()}
                     className="px-2 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/45 text-[10px] font-mono font-semibold cursor-pointer whitespace-nowrap"
                   >
-                    Land on Pad
+                    Play in Forest
                   </button>
                   <button
                     type="button"

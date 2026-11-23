@@ -278,6 +278,7 @@ export class CosmicUniverseBuilder {
   private elapsedTime = 0;
   private flashIntensity = 0;
   private suspended = false;
+  private initialized = false;
 
   // Real-time Gravity, Fluid, Nucleosynthesis & Tracked Star Telemetry
   private genesisEpoch: CosmicGenesisEpoch = 'inflation';
@@ -308,36 +309,41 @@ export class CosmicUniverseBuilder {
   private readonly _tempV = new THREE.Vector3();
   private readonly _intersectPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-  constructor(isSoftwareGl: boolean = false, isLowMemory: boolean = false) {
+  constructor(
+    isSoftwareGl: boolean = false,
+    isLowMemory: boolean = false,
+    lazyBuild: boolean = false
+  ) {
     this.maxParticles =
       isSoftwareGl || isLowMemory ? MAX_SOFTWARE_PARTICLES : MAX_HARDWARE_PARTICLES;
     this.animatedParticleLimit = isSoftwareGl || isLowMemory ? 5000 : 14000;
     this.activeParticleCount = isSoftwareGl || isLowMemory ? 4500 : 14000;
 
-    this.particlePositions = new Float32Array(this.maxParticles * 3);
-    this.particleVelocities = new Float32Array(this.maxParticles * 3);
-    this.particleInitialVel = new Float32Array(this.maxParticles * 3);
-    this.particleColors = new Float32Array(this.maxParticles * 3);
-    this.particleMatureColors = new Float32Array(this.maxParticles * 3);
-    this.particleSizes = new Float32Array(this.maxParticles);
-    this.particleBaseSizes = new Float32Array(this.maxParticles);
+    const allocCount = lazyBuild ? 1 : this.maxParticles;
+    this.particlePositions = new Float32Array(allocCount * 3);
+    this.particleVelocities = new Float32Array(allocCount * 3);
+    this.particleInitialVel = new Float32Array(allocCount * 3);
+    this.particleColors = new Float32Array(allocCount * 3);
+    this.particleMatureColors = new Float32Array(allocCount * 3);
+    this.particleSizes = new Float32Array(allocCount);
+    this.particleBaseSizes = new Float32Array(allocCount);
 
-    this.particleStellarMass = new Float32Array(this.maxParticles);
-    this.particleInitialPop3Mass = new Float32Array(this.maxParticles);
-    this.particlePop2Mass = new Float32Array(this.maxParticles);
-    this.particlePop1Mass = new Float32Array(this.maxParticles);
-    this.particleStellarAgeGyr = new Float32Array(this.maxParticles);
-    this.particleBirthEpochGyr = new Float32Array(this.maxParticles);
-    this.particleRadialFrac = new Float32Array(this.maxParticles);
-    this.particleGeneration = new Uint8Array(this.maxParticles);
-    this.particleSupernovaCount = new Uint8Array(this.maxParticles);
-    this.particleMetallicityZ = new Float32Array(this.maxParticles);
+    this.particleStellarMass = new Float32Array(allocCount);
+    this.particleInitialPop3Mass = new Float32Array(allocCount);
+    this.particlePop2Mass = new Float32Array(allocCount);
+    this.particlePop1Mass = new Float32Array(allocCount);
+    this.particleStellarAgeGyr = new Float32Array(allocCount);
+    this.particleBirthEpochGyr = new Float32Array(allocCount);
+    this.particleRadialFrac = new Float32Array(allocCount);
+    this.particleGeneration = new Uint8Array(allocCount);
+    this.particleSupernovaCount = new Uint8Array(allocCount);
+    this.particleMetallicityZ = new Float32Array(allocCount);
 
-    this.particleHaloIndex = new Uint8Array(this.maxParticles);
-    this.particleTargetRadius = new Float32Array(this.maxParticles);
-    this.particleTargetAngle = new Float32Array(this.maxParticles);
-    this.particleTargetHeight = new Float32Array(this.maxParticles);
-    this.particleOrbitSpeed = new Float32Array(this.maxParticles);
+    this.particleHaloIndex = new Uint8Array(allocCount);
+    this.particleTargetRadius = new Float32Array(allocCount);
+    this.particleTargetAngle = new Float32Array(allocCount);
+    this.particleTargetHeight = new Float32Array(allocCount);
+    this.particleOrbitSpeed = new Float32Array(allocCount);
 
     this.rootGroup.name = 'CosmicUniverseRoot';
     this.rootGroup.add(
@@ -348,6 +354,44 @@ export class CosmicUniverseBuilder {
       this.planetOrbitGroup
     );
 
+    if (!lazyBuild) {
+      this.ensureInitialized();
+    } else {
+      this.suspended = true;
+      this.rootGroup.visible = false;
+      this.rootGroup.matrixWorldAutoUpdate = false;
+    }
+  }
+
+  public ensureInitialized(): void {
+    if (this.initialized) return;
+    this.initialized = true;
+    if (this.particlePositions.length < this.maxParticles * 3) {
+      this.particlePositions = new Float32Array(this.maxParticles * 3);
+      this.particleVelocities = new Float32Array(this.maxParticles * 3);
+      this.particleInitialVel = new Float32Array(this.maxParticles * 3);
+      this.particleColors = new Float32Array(this.maxParticles * 3);
+      this.particleMatureColors = new Float32Array(this.maxParticles * 3);
+      this.particleSizes = new Float32Array(this.maxParticles);
+      this.particleBaseSizes = new Float32Array(this.maxParticles);
+
+      this.particleStellarMass = new Float32Array(this.maxParticles);
+      this.particleInitialPop3Mass = new Float32Array(this.maxParticles);
+      this.particlePop2Mass = new Float32Array(this.maxParticles);
+      this.particlePop1Mass = new Float32Array(this.maxParticles);
+      this.particleStellarAgeGyr = new Float32Array(this.maxParticles);
+      this.particleBirthEpochGyr = new Float32Array(this.maxParticles);
+      this.particleRadialFrac = new Float32Array(this.maxParticles);
+      this.particleGeneration = new Uint8Array(this.maxParticles);
+      this.particleSupernovaCount = new Uint8Array(this.maxParticles);
+      this.particleMetallicityZ = new Float32Array(this.maxParticles);
+
+      this.particleHaloIndex = new Uint8Array(this.maxParticles);
+      this.particleTargetRadius = new Float32Array(this.maxParticles);
+      this.particleTargetAngle = new Float32Array(this.maxParticles);
+      this.particleTargetHeight = new Float32Array(this.maxParticles);
+      this.particleOrbitSpeed = new Float32Array(this.maxParticles);
+    }
     this.buildSingularity();
     this.buildTrackedStarReticleAndSupernovaPool();
     this.initializeGravityHalosAndParticles();
@@ -396,6 +440,7 @@ export class CosmicUniverseBuilder {
    * all the way to planetary system formation and surface landing.
    */
   public pickRandomTrackedStar(preferredGalaxyIdx?: number): number {
+    this.ensureInitialized();
     const primaryCount = COSMIC_GALAXIES.length;
     const starsPerPrimary = Math.floor(this.animatedParticleLimit / primaryCount);
     const targetGal =
@@ -439,6 +484,7 @@ export class CosmicUniverseBuilder {
    * and collapsing the enriched remnant nebula into the next stellar generation!
    */
   public triggerTrackedStarSupernova() {
+    this.ensureInitialized();
     const idx = this.trackedStarIndex;
     const i3 = idx * 3;
     const px = this.particlePositions[i3];
@@ -488,6 +534,41 @@ export class CosmicUniverseBuilder {
   }
 
   public getTrackedStarTelemetry(): TrackedStarTelemetry {
+    if (!this.initialized) {
+      const galaxy = COSMIC_GALAXIES[0];
+      const starSys = galaxy.starSystems[0];
+      const planet = starSys.planets[0];
+      return {
+        starIndex: 0,
+        catalogId: 'HD-00001-G1',
+        hostGalaxyIndex: 0,
+        hostGalaxyName: galaxy.name,
+        hostStarSystemIndex: 0,
+        hostStarSystemName: starSys.name,
+        hostPlanetName: planet?.name ?? 'Terra Capybara',
+        generation: 1,
+        generationLabel: 'Gen 1 · Pop III (Primordial H/He)',
+        evolutionaryStageLabel: 'Massive Primordial Core Fusion',
+        massSolar: 1.08,
+        ageGyr: 0.1,
+        tempKelvin: 5920,
+        spectralClass: 'Class G2V (Solar Main Sequence)',
+        metallicityZ: 0.0001,
+        supernovaAncestors: 0,
+        hasProtoplanetaryDisk: false,
+        elements: {
+          hydrogenPct: 75.0,
+          heliumPct: 25.0,
+          carbonOxygenPct: 0.0,
+          siliconMagnesiumPct: 0.0,
+          ironHeavyPct: 0.0,
+        },
+        posX: 0,
+        posY: 0,
+        posZ: 0,
+        velocityKmS: 420,
+      };
+    }
     const idx = this.trackedStarIndex;
     const i3 = idx * 3;
     const hIdx = this.particleHaloIndex[idx];
@@ -1372,6 +1453,7 @@ export class CosmicUniverseBuilder {
   }
 
   public populateGalaxyView(galaxyIndex: number) {
+    this.ensureInitialized();
     this.blackHoleShaderUniforms.length = Math.min(
       this.blackHoleShaderUniforms.length,
       COSMIC_GALAXIES.length
@@ -1454,6 +1536,7 @@ export class CosmicUniverseBuilder {
   }
 
   public populateStarSystemView(galaxyIndex: number, starIndex: number) {
+    this.ensureInitialized();
     this.clearGroup(this.starSystemGroup);
     this.planetNodes = [];
     this.currentActiveGalaxyIndex = galaxyIndex;
@@ -1797,6 +1880,7 @@ export class CosmicUniverseBuilder {
   }
 
   public populatePlanetOrbitView(galaxyIndex: number, starIndex: number, planetIndex: number) {
+    this.ensureInitialized();
     this.clearGroup(this.planetOrbitGroup);
     this.orbitGlobeGroup = new THREE.Group();
     this.landingBeaconMeshes = [];
@@ -1973,6 +2057,11 @@ export class CosmicUniverseBuilder {
   }
 
   public syncStageVisibility(stage: CosmicStage) {
+    if (stage === 'playing' || stage === 'capy_selection') {
+      if (!this.initialized) return;
+    } else {
+      this.ensureInitialized();
+    }
     this.rootGroup.visible = stage !== 'capy_selection' && stage !== 'playing';
     this.rootGroup.matrixWorldAutoUpdate = this.rootGroup.visible;
     this.singularityGroup.visible = stage === 'singularity' || stage === 'big_bang';
@@ -2184,6 +2273,7 @@ export class CosmicUniverseBuilder {
       this.rootGroup.visible = false;
       this.rootGroup.matrixWorldAutoUpdate = false;
     } else {
+      this.ensureInitialized();
       this.rootGroup.matrixWorldAutoUpdate = true;
     }
   }
@@ -2192,6 +2282,7 @@ export class CosmicUniverseBuilder {
     if (this.suspended || !this.rootGroup.visible) {
       return false;
     }
+    this.ensureInitialized();
     this.elapsedTime += dt;
     let shouldAdvanceToUniverseFlight = false;
 

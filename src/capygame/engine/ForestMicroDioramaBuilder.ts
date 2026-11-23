@@ -55,144 +55,189 @@ export function buildForestMicroDiorama(
   const dioramaRoot = new THREE.Group();
   parentGroup.add(dioramaRoot);
 
-  // Shared PBR material palette (low draw-call footprint + rich storybook contrast)
+  // Shared PBR material palette (natural daylight shading without bloom-clipping emissive washout)
   const mossMat = new THREE.MeshStandardMaterial({
-    color: 0x2f853b,
-    emissive: 0x0b2912,
-    emissiveIntensity: 0.28,
-    roughness: 0.85,
+    color: 0x358c3e,
+    emissive: 0x0a210f,
+    emissiveIntensity: 0.1,
+    roughness: 0.88,
   });
   const grassEdgeMat = new THREE.MeshStandardMaterial({
     color: 0x4ca644,
-    emissive: 0x123315,
-    emissiveIntensity: 0.25,
-    roughness: 0.82,
+    emissive: 0x0d2610,
+    emissiveIntensity: 0.1,
+    roughness: 0.84,
   });
   const trailMat = new THREE.MeshStandardMaterial({
     color: 0xd6b87c,
-    emissive: 0x423015,
-    emissiveIntensity: 0.22,
-    roughness: 0.9,
+    emissive: 0x2e200d,
+    emissiveIntensity: 0.08,
+    roughness: 0.92,
   });
   const creekMat = new THREE.MeshStandardMaterial({
     color: 0x38bdf8,
-    emissive: 0x0284c7,
-    emissiveIntensity: 0.36,
-    roughness: 0.14,
-    metalness: 0.18,
+    emissive: 0x0369a1,
+    emissiveIntensity: 0.16,
+    roughness: 0.16,
+    metalness: 0.14,
     transparent: true,
-    opacity: 0.86,
+    opacity: 0.88,
   });
   const barkMat = new THREE.MeshStandardMaterial({
-    color: 0x784826,
-    emissive: 0x241206,
-    emissiveIntensity: 0.22,
-    roughness: 0.92,
+    color: 0x734625,
+    emissive: 0x1a0d04,
+    emissiveIntensity: 0.08,
+    roughness: 0.94,
   });
   const woodHeartMat = new THREE.MeshStandardMaterial({
     color: 0xd99b52,
-    emissive: 0x4d2a08,
-    emissiveIntensity: 0.22,
-    roughness: 0.72,
+    emissive: 0x381e06,
+    emissiveIntensity: 0.09,
+    roughness: 0.76,
   });
   const foliageMat = new THREE.MeshStandardMaterial({
-    color: 0x2e943c,
-    emissive: 0x0b3614,
-    emissiveIntensity: 0.26,
-    roughness: 0.78,
+    color: 0x2c8a3a,
+    emissive: 0x08260e,
+    emissiveIntensity: 0.1,
+    roughness: 0.82,
   });
   const foliageLightMat = new THREE.MeshStandardMaterial({
-    color: 0x76c945,
-    emissive: 0x1e4710,
-    emissiveIntensity: 0.24,
-    roughness: 0.72,
+    color: 0x6abf40,
+    emissive: 0x16380c,
+    emissiveIntensity: 0.1,
+    roughness: 0.76,
   });
   const fernMat = new THREE.MeshStandardMaterial({
-    color: 0x16a34a,
-    emissive: 0x052e16,
-    emissiveIntensity: 0.3,
+    color: 0x1f9242,
+    emissive: 0x062411,
+    emissiveIntensity: 0.12,
     side: THREE.DoubleSide,
-    roughness: 0.45,
+    roughness: 0.55,
   });
   const whiteCreamMat = new THREE.MeshStandardMaterial({
-    color: 0xfef3c7,
-    emissive: 0x3f2e12,
-    emissiveIntensity: 0.18,
-    roughness: 0.58,
+    color: 0xf7ecd0,
+    emissive: 0x2b200d,
+    emissiveIntensity: 0.08,
+    roughness: 0.62,
   });
   const redCapMat = new THREE.MeshStandardMaterial({
-    color: 0xef4444,
-    emissive: 0x7f1d1d,
-    emissiveIntensity: 0.26,
-    roughness: 0.32,
+    color: 0xdc3b3b,
+    emissive: 0x5c1414,
+    emissiveIntensity: 0.12,
+    roughness: 0.36,
   });
   const amberFurMat = new THREE.MeshStandardMaterial({
     color: 0xd97706,
-    emissive: 0x451a03,
-    emissiveIntensity: 0.24,
-    roughness: 0.42,
-    metalness: 0.06,
+    emissive: 0x3b1502,
+    emissiveIntensity: 0.12,
+    roughness: 0.46,
+    metalness: 0.05,
   });
   const clayTerracottaMat = new THREE.MeshStandardMaterial({
     color: 0xc26d3a,
-    emissive: 0x3b1a07,
-    emissiveIntensity: 0.2,
-    roughness: 0.68,
-    metalness: 0.08,
+    emissive: 0x2b1204,
+    emissiveIntensity: 0.1,
+    roughness: 0.72,
+    metalness: 0.06,
   });
   const slateRockMat = new THREE.MeshStandardMaterial({
     color: 0x64748b,
-    emissive: 0x1e293b,
-    emissiveIntensity: 0.22,
-    roughness: 0.64,
-    metalness: 0.12,
+    emissive: 0x151e2c,
+    emissiveIntensity: 0.1,
+    roughness: 0.68,
+    metalness: 0.1,
     flatShading: true,
   });
   const quartzMat = new THREE.MeshStandardMaterial({
     color: 0xe0f2fe,
-    emissive: 0x38bdf8,
-    emissiveIntensity: 0.34,
-    roughness: 0.12,
-    metalness: 0.2,
+    emissive: 0x0ea5e9,
+    emissiveIntensity: 0.18,
+    roughness: 0.14,
+    metalness: 0.18,
     transparent: true,
     opacity: 0.88,
   });
 
   // ---------------------------------------------------------------------------
-  // 1. SUNLIT STORYBOOK FOREST GLADE STAGE, TRAILS, STREAM & CANOPY SUNBEAMS
+  // 1. SUNLIT STORYBOOK FOREST GLADE STAGE, TRAILS, STREAM & SEAMLESS GROUND
   // ---------------------------------------------------------------------------
   const terrainGroup = new THREE.Group();
   terrainGroup.position.y = -1.25;
   dioramaRoot.add(terrainGroup);
 
-  // Soft mossy glade floor disc + tapered earth underside skirt
-  const floorDisc = new THREE.Mesh(
-    new THREE.CylinderGeometry(16.6, 14.8, 0.75, isSoftwareGl ? 28 : 44),
-    mossMat
+  // Seamless wide multi-ring woodland meadow ground blending radially from sunlit glade grass -> deep forest floor (#1b4328)
+  const radSegs = isSoftwareGl ? 28 : 44;
+  const ringRadii = [0, 4.5, 9.0, 13.5, 18.0, 24.0, 32.0, 42.0, 56.0];
+  const mpVerts: number[] = [];
+  const mpColors: number[] = [];
+  const mpIndices: number[] = [];
+  const cInner = new THREE.Color(0x3a9142);
+  const cMid = new THREE.Color(0x276832);
+  const cOuter = new THREE.Color(0x1b4328);
+  const cTmp = new THREE.Color();
+  for (let ri = 0; ri < ringRadii.length; ri++) {
+    const rad = ringRadii[ri];
+    for (let si = 0; si < radSegs; si++) {
+      const ang = (si / radSegs) * Math.PI * 2;
+      const px = Math.cos(ang) * rad;
+      const pz = Math.sin(ang) * rad;
+      const rimUndul =
+        rad > 14.0
+          ? (Math.sin(ang * 3 + rad * 0.08) * 0.5 + 0.5) * Math.min(2.6, (rad - 14.0) * 0.075)
+          : 0;
+      mpVerts.push(px, rimUndul - 0.04, pz);
+      if (rad <= 14.0) {
+        cTmp.copy(cInner).lerp(cMid, rad / 14.0);
+      } else {
+        cTmp.copy(cMid).lerp(cOuter, Math.min(1.0, (rad - 14.0) / 30.0));
+      }
+      mpColors.push(cTmp.r, cTmp.g, cTmp.b);
+      if (ri < ringRadii.length - 1) {
+        const nextSi = (si + 1) % radSegs;
+        const a = ri * radSegs + si;
+        const b = ri * radSegs + nextSi;
+        const c = (ri + 1) * radSegs + si;
+        const d = (ri + 1) * radSegs + nextSi;
+        mpIndices.push(a, b, c, b, d, c);
+      }
+    }
+  }
+  const meadowPlaneGeo = new THREE.BufferGeometry();
+  meadowPlaneGeo.setAttribute('position', new THREE.Float32BufferAttribute(mpVerts, 3));
+  meadowPlaneGeo.setAttribute('color', new THREE.Float32BufferAttribute(mpColors, 3));
+  meadowPlaneGeo.setIndex(mpIndices);
+  meadowPlaneGeo.computeVertexNormals();
+  const seamlessFloorMesh = new THREE.Mesh(
+    meadowPlaneGeo,
+    new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.9,
+      metalness: 0.0,
+      side: THREE.DoubleSide,
+    })
   );
-  floorDisc.position.y = -0.38;
-  terrainGroup.add(floorDisc);
+  terrainGroup.add(seamlessFloorMesh);
 
-  // Soft golden-green atmospheric mist halo backdrop (zero hard cylinder edges)
+  // Subtle soft forest-canopy mist accent far behind the clearing (bloom-safe low opacity)
   const backCanopyGlow = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: glowTex,
-      color: 0x86efac,
-      opacity: 0.24,
+      color: 0x4ade80,
+      opacity: 0.08,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     })
   );
-  backCanopyGlow.position.set(0, 7.5, -10.5);
-  backCanopyGlow.scale.set(34, 20, 1);
+  backCanopyGlow.position.set(0, 8.8, -14.5);
+  backCanopyGlow.scale.set(28, 16, 1);
   terrainGroup.add(backCanopyGlow);
 
-  // Gentle lush center clearing hillock where active hero specimen stands
+  // Gentle lush center clearing moss mound where active hero specimen rests
   const pedestalHill = new THREE.Mesh(
-    new THREE.CylinderGeometry(3.5, 4.8, 0.42, isSoftwareGl ? 20 : 32),
+    new THREE.CylinderGeometry(3.6, 5.4, 0.38, isSoftwareGl ? 20 : 32),
     grassEdgeMat
   );
-  pedestalHill.position.y = 0.18;
+  pedestalHill.position.y = 0.14;
   terrainGroup.add(pedestalHill);
 
   // Winding golden earthen path meandering foreground -> misty sunlit horizon
@@ -406,25 +451,25 @@ export function buildForestMicroDiorama(
   fernInst.computeBoundingSphere();
   terrainGroup.add(fernInst);
 
-  // Golden Sunbeam Glow Backdrop & Soft Pollen Fireflies
+  // Soft Dappled Sunbeam Accent & Gentle Pollen Fireflies (calibrated below bloom blowout threshold)
   const sunbeamHalo = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: glowTex,
       color: 0xfef08a,
-      opacity: 0.42,
+      opacity: 0.11,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     })
   );
-  sunbeamHalo.position.set(0.5, 7.2, -9.5);
-  sunbeamHalo.scale.set(22, 16, 1);
+  sunbeamHalo.position.set(1.2, 8.6, -11.5);
+  sunbeamHalo.scale.set(18, 12, 1);
   dioramaRoot.add(sunbeamHalo);
 
-  const pollenCount = isSoftwareGl ? 28 : 64;
+  const pollenCount = isSoftwareGl ? 24 : 52;
   const pollenPos = new Float32Array(pollenCount * 3);
   for (let i = 0; i < pollenCount; i++) {
     pollenPos[i * 3] = (seededRand(i * 3 + 11) - 0.5) * 20;
-    pollenPos[i * 3 + 1] = -1.2 + seededRand(i * 3 + 12) * 8.5;
+    pollenPos[i * 3 + 1] = -1.0 + seededRand(i * 3 + 12) * 8.5;
     pollenPos[i * 3 + 2] = (seededRand(i * 3 + 13) - 0.5) * 20;
   }
   const pollenGeo = new THREE.BufferGeometry();
@@ -434,26 +479,26 @@ export function buildForestMicroDiorama(
     new THREE.PointsMaterial({
       map: glowTex,
       color: 0xfef08a,
-      size: 0.42,
-      opacity: 0.78,
+      size: 0.34,
+      opacity: 0.58,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     })
   );
   dioramaRoot.add(pollenPoints);
 
-  // Soft golden spotlight ring under whichever Hero Specimen sits at center glade pedestal
+  // Subtle dappled spotlight accent under whichever Hero Specimen sits at center glade mound
   const heroSpotlight = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: glowTex,
       color: 0xfde047,
-      opacity: 0.42,
+      opacity: 0.13,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     })
   );
-  heroSpotlight.position.set(0, 0.75, 0);
-  heroSpotlight.scale.setScalar(9.5);
+  heroSpotlight.position.set(0, -0.55, 0);
+  heroSpotlight.scale.setScalar(6.2);
   dioramaRoot.add(heroSpotlight);
 
   // ---------------------------------------------------------------------------

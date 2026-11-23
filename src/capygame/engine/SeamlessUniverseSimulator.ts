@@ -68,6 +68,7 @@ interface ScaleLayerRuntime {
   spec: UniverseScaleBandSpec;
   group: THREE.Group;
   materials: TrackedMaterialEntry[];
+  populated: boolean;
   tickFn?: (dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void;
 }
 
@@ -187,6 +188,9 @@ export class SeamlessUniverseSimulator {
   private activeProjectedMarkers: ProjectedObjectMarker[] = [];
 
   private celestialBackdropMats: TrackedMaterialEntry[] = [];
+  private glowWarmTex: THREE.CanvasTexture | null = null;
+  private glowCoolTex: THREE.CanvasTexture | null = null;
+  private nextWarmLayerIdx: number = 0;
   private elapsed: number = 0;
   private lastGammaApplied: number = -1;
 
@@ -386,8 +390,8 @@ export class SeamlessUniverseSimulator {
     installFastMatrixCull(this.celestialBackdropGroup);
 
     this.forestGroveGroup.name = 'WoodlandCapybaraForestGrove';
-    this.forestGroveGroup.visible = !isSoftwareGl;
-    this.forestGroveGroup.matrixWorldAutoUpdate = !isSoftwareGl;
+    this.forestGroveGroup.visible = false;
+    this.forestGroveGroup.matrixWorldAutoUpdate = false;
     this.forestGroveGroup.userData.ignoreCameraFade = true;
     installFastMatrixCull(this.forestGroveGroup);
 
@@ -403,10 +407,6 @@ export class SeamlessUniverseSimulator {
         isSubPixel: false,
       });
     }
-
-    if (!isSoftwareGl) {
-      this.ensureWoodlandGroveBuilt();
-    }
   }
 
   public getSharedSunDir(): THREE.Vector3 {
@@ -420,7 +420,6 @@ export class SeamlessUniverseSimulator {
   }
 
   public ensureLayersBuilt() {
-    this.ensureWoodlandGroveBuilt();
     if (this.layersBuilt) return;
     this.layersBuilt = true;
     this.buildCelestialStarBackdrop();
@@ -429,6 +428,20 @@ export class SeamlessUniverseSimulator {
       this.celestialBackdropMats = this.collectLayerMaterials(this.celestialBackdropGroup);
     }
     this.buildAllScaleLayers();
+  }
+
+  public warmNextPendingLayer(): boolean {
+    if (!this.layersBuilt) {
+      this.ensureLayersBuilt();
+    }
+    while (this.nextWarmLayerIdx < this.layers.length) {
+      const layer = this.layers[this.nextWarmLayerIdx++];
+      if (!layer.populated) {
+        this.populateScaleLayer(layer);
+        return this.nextWarmLayerIdx < this.layers.length;
+      }
+    }
+    return false;
   }
 
   // ============================================================================
@@ -649,11 +662,11 @@ export class SeamlessUniverseSimulator {
   // ============================================================================
 
   private buildAllScaleLayers() {
-    const glowWarm = this.createSoftRadialTexture(
+    this.glowWarmTex = this.createSoftRadialTexture(
       'rgba(255,252,235,1)',
       'rgba(251,191,36,0.42)'
     );
-    const glowCool = this.createSoftRadialTexture(
+    this.glowCoolTex = this.createSoftRadialTexture(
       'rgba(235,248,255,1)',
       'rgba(56,189,248,0.38)'
     );
@@ -667,106 +680,137 @@ export class SeamlessUniverseSimulator {
       group.userData.ignoreCameraFade = true;
       installFastMatrixCull(group);
 
-      let tickFn:
-        | ((dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void)
-        | undefined;
-
-      switch (spec.id) {
-        case 'multiverse':
-          tickFn = this.populateMultiverseLayer(group, glowWarm);
-          break;
-        case 'big_bang':
-          tickFn = this.populateBigBangLayer(group, glowWarm);
-          break;
-        case 'universe':
-          tickFn = this.populateUniverseManifoldLayer(group);
-          break;
-        case 'observable':
-          tickFn = this.populateObservableUniverseLayer(group);
-          break;
-        case 'cosmic_web':
-          tickFn = this.populateCosmicWebLayer(group);
-          break;
-        case 'filament':
-          tickFn = this.populateFilamentLayer(group);
-          break;
-        case 'supercluster':
-          tickFn = this.populateSuperclusterLayer(group, glowWarm);
-          break;
-        case 'cluster':
-          tickFn = this.populateClusterLayer(group, glowCool);
-          break;
-        case 'galaxy':
-          tickFn = this.populateGalaxyLayer(group, glowWarm);
-          break;
-        case 'spiral_arms':
-          tickFn = this.populateSpiralArmsLayer(group, glowCool);
-          break;
-        case 'nebulas':
-          tickFn = this.populateNebulaLayer(group, glowCool);
-          break;
-        case 'stellar_systems':
-          tickFn = this.populateSolarSystemLayer(group, glowWarm);
-          break;
-        case 'planetary_system':
-          tickFn = this.populatePlanetarySystemLayer(group);
-          break;
-        case 'planet':
-          tickFn = this.populatePlanetGlobeLayer(group);
-          break;
-        case 'atmosphere':
-          tickFn = this.populateAtmosphereLayer(group);
-          break;
-        case 'land_masses':
-          tickFn = this.populateLandMassesLayer(group);
-          break;
-        case 'ecosystems':
-          tickFn = this.populateEcosystemsLayer(group);
-          break;
-        case 'capybara_forest':
-          tickFn = this.populateForestCanopyMotesLayer(group, glowWarm);
-          break;
-        case 'leaf_fur_micro':
-          tickFn = this.populateLeafAndFurMicroLayer(group, glowWarm);
-          break;
-        case 'biological_cells':
-          tickFn = this.populateBiologicalCellsLayer(group);
-          break;
-        case 'dna_molecules':
-          tickFn = this.populateDnaHelixLayer(group, glowCool);
-          break;
-        case 'atomic_orbitals':
-          tickFn = this.populateAtomicOrbitalsLayer(group, glowCool);
-          break;
-        case 'atomic_nucleus':
-          tickFn = this.populateAtomicNucleusLayer(group, glowWarm);
-          break;
-        case 'quarks_gluons':
-          tickFn = this.populateQuarksGluonsLayer(group, glowWarm);
-          break;
-        case 'single_electron':
-          tickFn = this.populateSingleElectronLayer(group, glowCool);
-          break;
-        case 'single_photon':
-          tickFn = this.populateSinglePhotonLayer(group, glowWarm);
-          break;
-        case 'planck_quantum_foam':
-          tickFn = this.populatePlanckQuantumFoamLayer(group, glowCool);
-          break;
-      }
-
-      if (this.isWebGpu) {
-        convertLegacyShaderMaterialsToTsl(group);
-      }
-      const materials = this.collectLayerMaterials(group);
       this.rootGroup.add(group);
       this.layers.push({
         index: i,
         spec,
         group,
-        materials,
-        tickFn,
+        materials: [],
+        populated: false,
       });
+    }
+  }
+
+  private populateScaleLayer(layer: ScaleLayerRuntime): void {
+    if (layer.populated) return;
+    layer.populated = true;
+    const glowWarm =
+      this.glowWarmTex ??
+      (this.glowWarmTex = this.createSoftRadialTexture(
+        'rgba(255,252,235,1)',
+        'rgba(251,191,36,0.42)'
+      ));
+    const glowCool =
+      this.glowCoolTex ??
+      (this.glowCoolTex = this.createSoftRadialTexture(
+        'rgba(235,248,255,1)',
+        'rgba(56,189,248,0.38)'
+      ));
+
+    const { spec, group } = layer;
+    let tickFn:
+      | ((dt: number, elapsed: number, gamma: number, showMarkers: boolean) => void)
+      | undefined;
+
+    switch (spec.id) {
+      case 'multiverse':
+        tickFn = this.populateMultiverseLayer(group, glowWarm);
+        break;
+      case 'big_bang':
+        tickFn = this.populateBigBangLayer(group, glowWarm);
+        break;
+      case 'universe':
+        tickFn = this.populateUniverseManifoldLayer(group);
+        break;
+      case 'observable':
+        tickFn = this.populateObservableUniverseLayer(group);
+        break;
+      case 'cosmic_web':
+        tickFn = this.populateCosmicWebLayer(group);
+        break;
+      case 'filament':
+        tickFn = this.populateFilamentLayer(group);
+        break;
+      case 'supercluster':
+        tickFn = this.populateSuperclusterLayer(group, glowWarm);
+        break;
+      case 'cluster':
+        tickFn = this.populateClusterLayer(group, glowCool);
+        break;
+      case 'galaxy':
+        tickFn = this.populateGalaxyLayer(group, glowWarm);
+        break;
+      case 'spiral_arms':
+        tickFn = this.populateSpiralArmsLayer(group, glowCool);
+        break;
+      case 'nebulas':
+        tickFn = this.populateNebulaLayer(group, glowCool);
+        break;
+      case 'stellar_systems':
+        tickFn = this.populateSolarSystemLayer(group, glowWarm);
+        break;
+      case 'planetary_system':
+        tickFn = this.populatePlanetarySystemLayer(group);
+        break;
+      case 'planet':
+        tickFn = this.populatePlanetGlobeLayer(group);
+        break;
+      case 'atmosphere':
+        tickFn = this.populateAtmosphereLayer(group);
+        break;
+      case 'land_masses':
+        tickFn = this.populateLandMassesLayer(group);
+        break;
+      case 'ecosystems':
+        tickFn = this.populateEcosystemsLayer(group);
+        break;
+      case 'capybara_forest':
+        tickFn = this.populateForestCanopyMotesLayer(group, glowWarm);
+        break;
+      case 'leaf_fur_micro':
+        tickFn = this.populateLeafAndFurMicroLayer(group, glowWarm);
+        break;
+      case 'biological_cells':
+        tickFn = this.populateBiologicalCellsLayer(group);
+        break;
+      case 'dna_molecules':
+        tickFn = this.populateDnaHelixLayer(group, glowCool);
+        break;
+      case 'atomic_orbitals':
+        tickFn = this.populateAtomicOrbitalsLayer(group, glowCool);
+        break;
+      case 'atomic_nucleus':
+        tickFn = this.populateAtomicNucleusLayer(group, glowWarm);
+        break;
+      case 'quarks_gluons':
+        tickFn = this.populateQuarksGluonsLayer(group, glowWarm);
+        break;
+      case 'single_electron':
+        tickFn = this.populateSingleElectronLayer(group, glowCool);
+        break;
+      case 'single_photon':
+        tickFn = this.populateSinglePhotonLayer(group, glowWarm);
+        break;
+      case 'planck_quantum_foam':
+        tickFn = this.populatePlanckQuantumFoamLayer(group, glowCool);
+        break;
+    }
+
+    if (this.isWebGpu) {
+      convertLegacyShaderMaterialsToTsl(group);
+    }
+    layer.materials = this.collectLayerMaterials(group);
+    layer.tickFn = tickFn;
+
+    // Re-sync any procedural biome / galaxy morphology / forest specimen choices onto the newly built layer
+    if (this.pendingProceduralBiome) {
+      this.applyProceduralConfig(this.pendingProceduralBiome);
+    }
+    if (spec.id === 'galaxy' && this.galaxyMorphology !== 'spiral') {
+      this.setGalaxyMorphology(this.galaxyMorphology);
+    }
+    if (spec.id === 'leaf_fur_micro' && this.forestDiorama) {
+      this.forestDiorama.setActiveSpecimen(this.activeForestSpecimenId);
     }
   }
 
@@ -2945,109 +2989,579 @@ export class SeamlessUniverseSimulator {
       physicalRadiusWorldAtOneToOne: 0.001,
     });
 
-    return () => {};
+    // Sunlit parted cumulus cloud deck framing the descent from orbit down onto the emerald valley
+    const bankCount = this.isSoftwareGl ? 14 : 22;
+    const puffsPerBank = 4;
+    const cloudGeo = new THREE.SphereGeometry(2.4, 12, 8);
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xe2e8f0,
+      emissiveIntensity: 0.28,
+      roughness: 0.95,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
+    const cloudBanks = new THREE.InstancedMesh(cloudGeo, cloudMat, bankCount * puffsPerBank);
+    let instIdx = 0;
+    for (let b = 0; b < bankCount; b++) {
+      const ang = (b / bankCount) * Math.PI * 2 + seededRand(b * 11 + 3) * 0.22;
+      const dist = 16.0 + seededRand(b * 17 + 5) * 28.0;
+      const bx = Math.cos(ang) * dist;
+      const bz = Math.sin(ang) * dist;
+      // Keep a clear sunlit corridor directly in front of the descending camera (+Z near center)
+      const inCameraCorridor = bz > 14.0 && Math.abs(bx) < 13.0;
+      const adjX = inCameraCorridor ? (bx >= 0 ? bx + 13.0 : bx - 13.0) : bx;
+      const baseY = 1.8 + seededRand(b * 13 + 7) * 5.2;
+      for (let p = 0; p < puffsPerBank; p++) {
+        const ox = (p - 1.5) * 3.2 + (seededRand(instIdx * 5 + 1) - 0.5) * 1.8;
+        const oz = (seededRand(instIdx * 9 + 2) - 0.5) * 3.0;
+        const oy = (p === 1 || p === 2 ? 0.75 : 0.0) + (seededRand(instIdx * 3 + 4) - 0.5) * 0.6;
+        const sx = (p === 1 || p === 2 ? 1.95 : 1.35) + seededRand(instIdx * 7 + 3) * 0.65;
+        const sy = 0.44 + seededRand(instIdx * 13 + 6) * 0.22;
+        _dummyObj.position.set(adjX + ox, baseY + oy, bz + oz);
+        _dummyObj.scale.set(sx, sy, sx * 0.85);
+        _dummyObj.rotation.set(0, ang, 0);
+        _dummyObj.updateMatrix();
+        cloudBanks.setMatrixAt(instIdx++, _dummyObj.matrix);
+      }
+    }
+    cloudBanks.instanceMatrix.needsUpdate = true;
+    cloudBanks.computeBoundingSphere();
+    group.add(cloudBanks);
+
+    return (dt) => {
+      cloudBanks.rotation.y += dt * 0.004;
+    };
   }
 
   // --- 14. LAND MASSES & CORDILLERAS (+3.6 · 4.0 km) ---
-  // Uses the ONE continuous Capy-Earth LOD-2/LOD-3 spherical patches (zero duplicate flat island plane)
+  // Coherent emerald mountain-ringed woodland valley with winding river & parting troposphere cloud puffs
   private populateLandMassesLayer(
-    _group: THREE.Group
+    group: THREE.Group
   ): (dt: number, elapsed: number) => void {
-    return () => {};
+    const radSegs = this.isSoftwareGl ? 32 : 48;
+    const ringRadii = [0, 2.8, 6.2, 10.5, 16.0, 22.5, 30.0, 39.0, 50.0, 64.0];
+    const verts: number[] = [];
+    const colors: number[] = [];
+    const indices: number[] = [];
+    const cCenter = new THREE.Color(0x47a348); // sunlit central glade meadow
+    const cValley = new THREE.Color(0x287436); // emerald woodland basin
+    const cSlope = new THREE.Color(0x1f592d);  // deep conifer foothills
+    const cRock = new THREE.Color(0x525c68);   // alpine granite ridges
+    const cSnow = new THREE.Color(0xdbeafe);   // distant mountain snowcaps
+    const cTmp = new THREE.Color();
+
+    for (let ri = 0; ri < ringRadii.length; ri++) {
+      const r = ringRadii[ri];
+      for (let si = 0; si < radSegs; si++) {
+        const ang = (si / radSegs) * Math.PI * 2;
+        const px = Math.cos(ang) * r;
+        const pz = Math.sin(ang) * r;
+        // Calm flat valley basin around (0,0), rising into forested hills and distant cordilleras
+        const ridgeWave =
+          Math.sin(ang * 5.0 + 0.6) * 0.45 +
+          Math.cos(ang * 9.0 - 1.2) * 0.32 +
+          Math.sin(ang * 3.0 + r * 0.09) * 0.23;
+        const riverGap = Math.exp(-Math.pow((ang - 0.68) * 2.4, 2.0));
+        let h = -0.8;
+        if (r > 9.0) {
+          const tHill = Math.min(1.0, (r - 9.0) / 38.0);
+          h += (tHill * tHill * 11.5 * (0.55 + 0.55 * Math.max(0, ridgeWave))) * (1.0 - riverGap * 0.72);
+        }
+        verts.push(px, h, pz);
+
+        if (r < 5.5) {
+          cTmp.copy(cCenter).lerp(cValley, r / 5.5);
+        } else if (h < 3.6) {
+          cTmp.copy(cValley).lerp(cSlope, Math.min(1.0, (r - 5.5) / 22.0));
+        } else if (h < 7.2) {
+          cTmp.copy(cSlope).lerp(cRock, Math.min(1.0, (h - 3.6) / 3.6));
+        } else {
+          cTmp.copy(cRock).lerp(cSnow, Math.min(1.0, (h - 7.2) / 3.2));
+        }
+        colors.push(cTmp.r, cTmp.g, cTmp.b);
+
+        if (ri < ringRadii.length - 1) {
+          const nextSi = (si + 1) % radSegs;
+          const a = ri * radSegs + si;
+          const b = ri * radSegs + nextSi;
+          const c = (ri + 1) * radSegs + si;
+          const d = (ri + 1) * radSegs + nextSi;
+          indices.push(a, b, c, b, d, c);
+        }
+      }
+    }
+
+    const basinGeo = new THREE.BufferGeometry();
+    basinGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    basinGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    basinGeo.setIndex(indices);
+    basinGeo.computeVertexNormals();
+    const basinMesh = new THREE.Mesh(
+      basinGeo,
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.9,
+        metalness: 0.0,
+        side: THREE.DoubleSide,
+      })
+    );
+    group.add(basinMesh);
+
+    // Subtle instanced emerald woodland canopy clusters across the valley floor (r = 5..24) bridging cleanly into Ecosystems (2.20)
+    const canopyPatchCount = this.isSoftwareGl ? 64 : 120;
+    const canopyPatchGeo = new THREE.DodecahedronGeometry(1.15, 1);
+    const canopyPatchMat = new THREE.MeshStandardMaterial({
+      color: 0x267534,
+      roughness: 0.88,
+    });
+    const canopyPatches = new THREE.InstancedMesh(canopyPatchGeo, canopyPatchMat, canopyPatchCount);
+    for (let i = 0; i < canopyPatchCount; i++) {
+      const ang = seededRand(i * 19 + 3) * Math.PI * 2;
+      const dist = 5.2 + Math.pow(seededRand(i * 23 + 7), 0.82) * 20.0;
+      const cx = Math.cos(ang) * dist;
+      const cz = Math.sin(ang) * dist;
+      const tHill = dist > 9.0 ? Math.min(1.0, (dist - 9.0) / 38.0) : 0;
+      const ridgeWave =
+        Math.sin(ang * 5.0 + 0.6) * 0.45 +
+        Math.cos(ang * 9.0 - 1.2) * 0.32 +
+        Math.sin(ang * 3.0 + dist * 0.09) * 0.23;
+      const riverGap = Math.exp(-Math.pow((ang - 0.68) * 2.4, 2.0));
+      const baseH =
+        -0.75 +
+        tHill * tHill * 11.5 * (0.55 + 0.55 * Math.max(0, ridgeWave)) * (1.0 - riverGap * 0.72);
+      const sx = 0.85 + seededRand(i * 7 + 2) * 1.15;
+      _dummyObj.position.set(cx, baseH + 0.32 * sx, cz);
+      _dummyObj.scale.set(sx * 1.2, sx * 0.52, sx * 1.2);
+      _dummyObj.rotation.set(0, ang, 0);
+      _dummyObj.updateMatrix();
+      canopyPatches.setMatrixAt(i, _dummyObj.matrix);
+      _scratchColorA.setHex(i % 3 === 0 ? 0x2d8a3c : i % 2 === 0 ? 0x226e32 : 0x1a562a);
+      canopyPatches.setColorAt(i, _scratchColorA);
+    }
+    canopyPatches.instanceMatrix.needsUpdate = true;
+    if (canopyPatches.instanceColor) canopyPatches.instanceColor.needsUpdate = true;
+    canopyPatches.computeBoundingSphere();
+    group.add(canopyPatches);
+
+    // Winding azure river flowing past the lower-right side of the emerald clearing
+    const riverPts = [
+      new THREE.Vector3(38.0, -0.58, 30.0),
+      new THREE.Vector3(21.0, -0.58, 16.5),
+      new THREE.Vector3(9.5, -0.58, 6.8),
+      new THREE.Vector3(6.8, -0.58, -1.8),
+      new THREE.Vector3(12.5, -0.58, -14.0),
+      new THREE.Vector3(26.0, -0.58, -32.0),
+    ];
+    const riverCurve = new THREE.CatmullRomCurve3(riverPts);
+    const riverSegs = 28;
+    const rVerts: number[] = [];
+    const rIdx: number[] = [];
+    for (let i = 0; i <= riverSegs; i++) {
+      const u = i / riverSegs;
+      const p = riverCurve.getPoint(u);
+      const t = riverCurve.getTangent(u);
+      const nx = -t.z;
+      const nz = t.x;
+      const halfW = 1.65 + Math.sin(u * Math.PI) * 0.85;
+      rVerts.push(p.x - nx * halfW, p.y, p.z - nz * halfW);
+      rVerts.push(p.x + nx * halfW, p.y, p.z + nz * halfW);
+      if (i < riverSegs) {
+        const a = i * 2;
+        rIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    }
+    const riverGeo = new THREE.BufferGeometry();
+    riverGeo.setAttribute('position', new THREE.Float32BufferAttribute(rVerts, 3));
+    riverGeo.setIndex(rIdx);
+    riverGeo.computeVertexNormals();
+    const riverMesh = new THREE.Mesh(
+      riverGeo,
+      new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        emissive: 0x0369a1,
+        emissiveIntensity: 0.14,
+        roughness: 0.2,
+        metalness: 0.15,
+        side: THREE.DoubleSide,
+      })
+    );
+    group.add(riverMesh);
+
+    // Distant sunlit cumulus cloud banks framing the OUTER mountain horizon (r = 38..58) so the valley stays crystal clear
+    const bankCount = this.isSoftwareGl ? 10 : 16;
+    const puffsPerBank = 3;
+    const puffGeo = new THREE.SphereGeometry(1.85, 12, 8);
+    const puffMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xe2e8f0,
+      emissiveIntensity: 0.2,
+      roughness: 0.95,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+    });
+    const puffInst = new THREE.InstancedMesh(puffGeo, puffMat, bankCount * puffsPerBank);
+    for (let b = 0; b < bankCount; b++) {
+      const baseAng = (b / bankCount) * Math.PI * 2 + seededRand(b * 7 + 3) * 0.24;
+      const baseDist = 38.0 + seededRand(b * 11 + 5) * 18.0;
+      const baseY = 12.5 + seededRand(b * 13 + 7) * 4.5;
+      const bx = Math.cos(baseAng) * baseDist;
+      const bz = Math.sin(baseAng) * baseDist;
+      for (let p = 0; p < puffsPerBank; p++) {
+        const idx = b * puffsPerBank + p;
+        const ox = (p - 1) * 3.1 + (seededRand(idx * 5 + 1) - 0.5) * 1.4;
+        const oz = (seededRand(idx * 9 + 2) - 0.5) * 2.2;
+        const oy = (p === 1 ? 0.65 : 0) + (seededRand(idx * 3 + 4) - 0.5) * 0.5;
+        const sx = (p === 1 ? 1.85 : 1.35) + seededRand(idx * 17 + 3) * 0.55;
+        const sy = 0.52 + seededRand(idx * 13 + 6) * 0.22;
+        _dummyObj.position.set(bx + ox, baseY + oy, bz + oz);
+        _dummyObj.scale.set(sx, sy, sx * 0.85);
+        _dummyObj.rotation.set(0, baseAng, 0);
+        _dummyObj.updateMatrix();
+        puffInst.setMatrixAt(idx, _dummyObj.matrix);
+      }
+    }
+    puffInst.instanceMatrix.needsUpdate = true;
+    puffInst.computeBoundingSphere();
+    group.add(puffInst);
+
+    return (dt) => {
+      puffInst.rotation.y += dt * 0.006;
+    };
   }
 
   // --- 15. FOREST & WETLAND ECOSYSTEMS (+2.2 · 160 m) ---
-  // Outer coastal islet pine clusters framing the real 5-district archipelago without overlapping Sanctuary center
+  // Continuous emerald woodland valley & dense multi-ring canopy encircling the sunlit central Glade
   private populateEcosystemsLayer(
     group: THREE.Group
   ): (dt: number, elapsed: number) => void {
     this.ecosystemMeadowMat = new THREE.MeshStandardMaterial({
-      color: 0x166534,
+      color: 0x267d39,
       roughness: 0.86,
     });
     this.ecosystemRiverMat = new THREE.MeshStandardMaterial({
-      color: 0x0284c7,
-      roughness: 0.22,
-      metalness: 0.2,
+      color: 0x38bdf8,
+      emissive: 0x0369a1,
+      emissiveIntensity: 0.14,
+      roughness: 0.2,
+      metalness: 0.16,
+      side: THREE.DoubleSide,
     });
 
-    const isletTrunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 1.4, 7);
-    const isletTrunkMat = new THREE.MeshStandardMaterial({
-      color: 0x5c3a21,
-      roughness: 0.9,
-    });
-    const isletCrownGeo = new THREE.ConeGeometry(1.1, 2.5, 7);
-    const count = this.isSoftwareGl ? 36 : 72;
-    const trunks = new THREE.InstancedMesh(isletTrunkGeo, isletTrunkMat, count);
-    const crowns = new THREE.InstancedMesh(isletCrownGeo, this.ecosystemMeadowMat, count);
-
-    for (let i = 0; i < count; i++) {
-      // Cluster strictly on dry Sanctuary meadow perimeter (18m..32.5m) clear of causeways & open water
-      let ang = (i / count) * Math.PI * 2 + 0.14;
-      const diag = Math.abs(Math.sin(ang * 2));
-      if (diag > 0.76) {
-        ang += 0.28; // shift off diagonal causeway approaches onto grassy meadow quadrants
+    // Seamless radial forest valley floor matching Land Masses above and Forest Glade below
+    const radSegs = this.isSoftwareGl ? 28 : 44;
+    const ringRadii = [0, 3.5, 7.5, 13.0, 21.0, 32.0, 46.0, 62.0];
+    const gVerts: number[] = [];
+    const gColors: number[] = [];
+    const gIdx: number[] = [];
+    const cGlade = new THREE.Color(0x4ca644);
+    const cCanopyFloor = new THREE.Color(0x256c32);
+    const cOuterHills = new THREE.Color(0x1b4e27);
+    const cTmp = new THREE.Color();
+    for (let ri = 0; ri < ringRadii.length; ri++) {
+      const r = ringRadii[ri];
+      for (let si = 0; si < radSegs; si++) {
+        const ang = (si / radSegs) * Math.PI * 2;
+        const px = Math.cos(ang) * r;
+        const pz = Math.sin(ang) * r;
+        const hill =
+          r > 18.0
+            ? (Math.sin(ang * 4.0 + r * 0.08) * 0.5 + 0.5) * Math.min(4.8, (r - 18.0) * 0.11)
+            : 0;
+        gVerts.push(px, hill - 0.55, pz);
+        if (r < 7.5) {
+          cTmp.copy(cGlade).lerp(cCanopyFloor, r / 7.5);
+        } else {
+          cTmp.copy(cCanopyFloor).lerp(cOuterHills, Math.min(1.0, (r - 7.5) / 36.0));
+        }
+        gColors.push(cTmp.r, cTmp.g, cTmp.b);
+        if (ri < ringRadii.length - 1) {
+          const nextSi = (si + 1) % radSegs;
+          const a = ri * radSegs + si;
+          const b = ri * radSegs + nextSi;
+          const c = (ri + 1) * radSegs + si;
+          const d = (ri + 1) * radSegs + nextSi;
+          gIdx.push(a, b, c, b, d, c);
+        }
       }
-      const r = 18.5 + (i % 5) * 3.1; // 18.5m .. 30.9m: safely inside Sanctuary grass (34.5m rim)
-      const s = 0.72 + seededRand(i * 5 + 2) * 0.55;
+    }
+    const groundGeo = new THREE.BufferGeometry();
+    groundGeo.setAttribute('position', new THREE.Float32BufferAttribute(gVerts, 3));
+    groundGeo.setAttribute('color', new THREE.Float32BufferAttribute(gColors, 3));
+    groundGeo.setIndex(gIdx);
+    groundGeo.computeVertexNormals();
+    const groundMesh = new THREE.Mesh(
+      groundGeo,
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.9,
+        side: THREE.DoubleSide,
+      })
+    );
+    group.add(groundMesh);
+
+    // Matching winding creek along the lower-right bank & golden woodland footpath curving into center clearing
+    const creekPts = [
+      new THREE.Vector3(24.0, -0.45, 22.0),
+      new THREE.Vector3(12.5, -0.45, 10.2),
+      new THREE.Vector3(6.2, -0.45, 3.8),
+      new THREE.Vector3(8.5, -0.45, -5.5),
+      new THREE.Vector3(18.0, -0.45, -20.0),
+    ];
+    const creekCurve = new THREE.CatmullRomCurve3(creekPts);
+    const cSegs = 22;
+    const cVerts: number[] = [];
+    const cIdx: number[] = [];
+    for (let i = 0; i <= cSegs; i++) {
+      const u = i / cSegs;
+      const p = creekCurve.getPoint(u);
+      const t = creekCurve.getTangent(u);
+      const nx = -t.z;
+      const nz = t.x;
+      const hw = 1.45;
+      cVerts.push(p.x - nx * hw, p.y, p.z - nz * hw);
+      cVerts.push(p.x + nx * hw, p.y, p.z + nz * hw);
+      if (i < cSegs) {
+        const a = i * 2;
+        cIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    }
+    const creekGeo = new THREE.BufferGeometry();
+    creekGeo.setAttribute('position', new THREE.Float32BufferAttribute(cVerts, 3));
+    creekGeo.setIndex(cIdx);
+    creekGeo.computeVertexNormals();
+    group.add(new THREE.Mesh(creekGeo, this.ecosystemRiverMat));
+
+    const pathPts = [
+      new THREE.Vector3(-14.0, -0.46, 20.0),
+      new THREE.Vector3(-4.5, -0.46, 8.2),
+      new THREE.Vector3(0.0, -0.45, 0.0),
+      new THREE.Vector3(-1.2, -0.46, -12.0),
+      new THREE.Vector3(2.5, -0.46, -24.0),
+    ];
+    const pathCurve = new THREE.CatmullRomCurve3(pathPts);
+    const pVerts: number[] = [];
+    const pIdx: number[] = [];
+    for (let i = 0; i <= 20; i++) {
+      const u = i / 20;
+      const p = pathCurve.getPoint(u);
+      const t = pathCurve.getTangent(u);
+      const nx = -t.z;
+      const nz = t.x;
+      const hw = 0.65;
+      pVerts.push(p.x - nx * hw, p.y, p.z - nz * hw);
+      pVerts.push(p.x + nx * hw, p.y, p.z + nz * hw);
+      if (i < 20) {
+        const a = i * 2;
+        pIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    }
+    const pathGeo = new THREE.BufferGeometry();
+    pathGeo.setAttribute('position', new THREE.Float32BufferAttribute(pVerts, 3));
+    pathGeo.setIndex(pIdx);
+    pathGeo.computeVertexNormals();
+    group.add(
+      new THREE.Mesh(
+        pathGeo,
+        new THREE.MeshStandardMaterial({
+          color: 0xd6b87c,
+          roughness: 0.92,
+          side: THREE.DoubleSide,
+        })
+      )
+    );
+
+    // Dense layered broadleaf oak & conifer woodland surrounding the sunlit central Glade opening (r = 5.2..36)
+    const trunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 1.5, 6);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4226, roughness: 0.92 });
+    const oakCrownGeo = new THREE.DodecahedronGeometry(1.35, 1);
+    const pineCrownGeo = new THREE.ConeGeometry(1.1, 2.6, 7);
+
+    const oakCount = this.isSoftwareGl ? 68 : 140;
+    const pineCount = this.isSoftwareGl ? 56 : 110;
+    const oakTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, oakCount);
+    const oakCrowns = new THREE.InstancedMesh(oakCrownGeo, this.ecosystemMeadowMat, oakCount);
+    const pineTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, pineCount);
+    const pineCrowns = new THREE.InstancedMesh(pineCrownGeo, this.ecosystemMeadowMat, pineCount);
+
+    for (let i = 0; i < oakCount; i++) {
+      const ang = seededRand(i * 17 + 1) * Math.PI * 2;
+      const r = 5.2 + Math.pow(seededRand(i * 19 + 3), 0.85) * 32.0;
       const wx = Math.cos(ang) * r;
       const wz = Math.sin(ang) * r;
+      // Keep the creek channel slightly clearer
+      const nearCreek = wx > 4.5 && wx < 16.0 && wz > -4.0 && wz < 14.0 ? 2.8 : 0;
+      const fx = wx + nearCreek;
+      const s = 0.72 + seededRand(i * 7 + 5) * 0.72;
+      const baseY = -0.5 + (r > 18.0 ? Math.min(3.0, (r - 18.0) * 0.06) : 0);
 
-      _dummyObj.position.set(wx, 0.65 * s, wz);
+      _dummyObj.position.set(fx, baseY + 0.7 * s, wz);
       _dummyObj.scale.set(s, s, s);
       _dummyObj.rotation.set(0, ang, 0);
       _dummyObj.updateMatrix();
-      trunks.setMatrixAt(i, _dummyObj.matrix);
+      oakTrunks.setMatrixAt(i, _dummyObj.matrix);
 
-      _dummyObj.position.set(wx, 2.05 * s, wz);
-      _dummyObj.scale.set(s * 1.05, s * 1.15, s * 1.05);
+      _dummyObj.position.set(fx, baseY + 2.0 * s, wz);
+      _dummyObj.scale.set(s * 1.15, s * 0.86, s * 1.15);
       _dummyObj.updateMatrix();
-      crowns.setMatrixAt(i, _dummyObj.matrix);
+      oakCrowns.setMatrixAt(i, _dummyObj.matrix);
 
       _scratchColorA.setHex(
-        i % 5 === 0 ? 0x15803d : i % 7 === 0 ? 0x22c55e : 0x166534
+        i % 4 === 0 ? 0x4ca644 : i % 3 === 0 ? 0x2e8b3c : 0x236f32
       );
-      crowns.setColorAt(i, _scratchColorA);
+      oakCrowns.setColorAt(i, _scratchColorA);
     }
-    trunks.instanceMatrix.needsUpdate = true;
-    crowns.instanceMatrix.needsUpdate = true;
-    if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
-    trunks.computeBoundingSphere();
-    crowns.computeBoundingSphere();
-    group.add(trunks, crowns);
+
+    for (let i = 0; i < pineCount; i++) {
+      const ang = seededRand(i * 23 + 11) * Math.PI * 2;
+      const r = 8.5 + seededRand(i * 29 + 7) * 36.0;
+      const wx = Math.cos(ang) * r;
+      const wz = Math.sin(ang) * r;
+      const s = 0.8 + seededRand(i * 13 + 4) * 0.75;
+      const baseY = -0.5 + (r > 18.0 ? Math.min(3.5, (r - 18.0) * 0.08) : 0);
+
+      _dummyObj.position.set(wx, baseY + 0.65 * s, wz);
+      _dummyObj.scale.set(s * 0.9, s, s * 0.9);
+      _dummyObj.rotation.set(0, ang, 0);
+      _dummyObj.updateMatrix();
+      pineTrunks.setMatrixAt(i, _dummyObj.matrix);
+
+      _dummyObj.position.set(wx, baseY + 2.2 * s, wz);
+      _dummyObj.scale.set(s, s * 1.15, s);
+      _dummyObj.updateMatrix();
+      pineCrowns.setMatrixAt(i, _dummyObj.matrix);
+
+      _scratchColorA.setHex(i % 3 === 0 ? 0x166534 : 0x1e5631);
+      pineCrowns.setColorAt(i, _scratchColorA);
+    }
+
+    oakTrunks.instanceMatrix.needsUpdate = true;
+    oakCrowns.instanceMatrix.needsUpdate = true;
+    pineTrunks.instanceMatrix.needsUpdate = true;
+    pineCrowns.instanceMatrix.needsUpdate = true;
+    if (oakCrowns.instanceColor) oakCrowns.instanceColor.needsUpdate = true;
+    if (pineCrowns.instanceColor) pineCrowns.instanceColor.needsUpdate = true;
+    oakTrunks.computeBoundingSphere();
+    oakCrowns.computeBoundingSphere();
+    pineTrunks.computeBoundingSphere();
+    pineCrowns.computeBoundingSphere();
+    group.add(oakTrunks, oakCrowns, pineTrunks, pineCrowns);
 
     return () => {};
   }
 
-  // --- 16. FOREST WITH CAPYBARAS SUNLIT CANOPY MOTES (+0.8 · 6.3 m) ---
+  // --- 16. SUNLIT FOREST GLADE (+0.8 · 6.3 m) ---
+  // Coherent woodland clearing matching Ecosystems above and Glade-Leaf below (no playable Capybara Forest until selected!)
   private populateForestCanopyMotesLayer(
     group: THREE.Group,
     glowTex: THREE.CanvasTexture
   ): (dt: number, elapsed: number) => void {
-    const moteCount = this.isSoftwareGl ? 32 : 84;
+    // Outer surrounding woodland forest ring (r = 15..42) framing the ONE unified Forest Glade (ForestMicroDiorama)
+    // so zooming from Ecosystems (2.20) -> Forest Glade (0.80) -> Glade-Leaf (-2.00) has ZERO duplicate nested forests!
+    const gladeRoot = new THREE.Group();
+    gladeRoot.position.y = -0.82;
+    group.add(gladeRoot);
+
+    const trunkGeo = new THREE.CylinderGeometry(0.42, 0.72, 1.0, 7);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4226, roughness: 0.94 });
+    const oakCrownGeo = new THREE.DodecahedronGeometry(2.35, 1);
+    const pineCrownGeo = new THREE.ConeGeometry(1.9, 4.4, 7);
+    const canopyMat = new THREE.MeshStandardMaterial({ color: 0x2a7f37, roughness: 0.84 });
+
+    const oakCount = this.isSoftwareGl ? 24 : 44;
+    const pineCount = this.isSoftwareGl ? 18 : 34;
+    const oakTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, oakCount);
+    const oakCrowns = new THREE.InstancedMesh(oakCrownGeo, canopyMat, oakCount);
+    const pineTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, pineCount);
+    const pineCrowns = new THREE.InstancedMesh(pineCrownGeo, canopyMat, pineCount);
+
+    for (let i = 0; i < oakCount; i++) {
+      const ang = (i / oakCount) * Math.PI * 2 + seededRand(i * 11 + 3) * 0.25;
+      const rad = 16.5 + seededRand(i * 17 + 5) * 24.0;
+      const rawX = Math.cos(ang) * rad;
+      const tz = Math.sin(ang) * rad;
+      const tx = tz > 2.5 && Math.abs(rawX) < 14.5 ? (rawX >= 0 ? rawX + 14.5 : rawX - 14.5) : rawX;
+      const sc = 0.85 + seededRand(i * 7 + 2) * 0.55;
+      const h = 6.2 * sc;
+
+      _dummyObj.position.set(tx, h * 0.5, tz);
+      _dummyObj.scale.set(sc, h, sc);
+      _dummyObj.rotation.set(0, ang, 0);
+      _dummyObj.updateMatrix();
+      oakTrunks.setMatrixAt(i, _dummyObj.matrix);
+
+      _dummyObj.position.set(tx, h + 0.65 * sc, tz);
+      _dummyObj.scale.set(sc * 1.15, sc * 0.78, sc * 1.15);
+      _dummyObj.updateMatrix();
+      oakCrowns.setMatrixAt(i, _dummyObj.matrix);
+
+      _scratchColorA.setHex(i % 3 === 0 ? 0x3b9642 : i % 2 === 0 ? 0x267534 : 0x1d5e2b);
+      oakCrowns.setColorAt(i, _scratchColorA);
+    }
+
+    for (let i = 0; i < pineCount; i++) {
+      const ang = (i / pineCount) * Math.PI * 2 + seededRand(i * 23 + 7) * 0.3;
+      const rad = 19.0 + seededRand(i * 29 + 11) * 26.0;
+      const rawX = Math.cos(ang) * rad;
+      const tz = Math.sin(ang) * rad;
+      const tx = tz > 2.5 && Math.abs(rawX) < 15.5 ? (rawX >= 0 ? rawX + 15.5 : rawX - 15.5) : rawX;
+      const sc = 0.9 + seededRand(i * 13 + 4) * 0.65;
+      const h = 5.4 * sc;
+
+      _dummyObj.position.set(tx, h * 0.5, tz);
+      _dummyObj.scale.set(sc * 0.85, h, sc * 0.85);
+      _dummyObj.rotation.set(0, ang, 0);
+      _dummyObj.updateMatrix();
+      pineTrunks.setMatrixAt(i, _dummyObj.matrix);
+
+      _dummyObj.position.set(tx, h + 1.4 * sc, tz);
+      _dummyObj.scale.set(sc, sc * 1.15, sc);
+      _dummyObj.updateMatrix();
+      pineCrowns.setMatrixAt(i, _dummyObj.matrix);
+
+      _scratchColorA.setHex(i % 2 === 0 ? 0x166534 : 0x1e5631);
+      pineCrowns.setColorAt(i, _scratchColorA);
+    }
+
+    oakTrunks.instanceMatrix.needsUpdate = true;
+    oakCrowns.instanceMatrix.needsUpdate = true;
+    pineTrunks.instanceMatrix.needsUpdate = true;
+    pineCrowns.instanceMatrix.needsUpdate = true;
+    if (oakCrowns.instanceColor) oakCrowns.instanceColor.needsUpdate = true;
+    if (pineCrowns.instanceColor) pineCrowns.instanceColor.needsUpdate = true;
+    oakTrunks.computeBoundingSphere();
+    oakCrowns.computeBoundingSphere();
+    pineTrunks.computeBoundingSphere();
+    pineCrowns.computeBoundingSphere();
+    gladeRoot.add(oakTrunks, oakCrowns, pineTrunks, pineCrowns);
+
+    // Gentle sunlit golden canopy pollen motes
+    const moteCount = this.isSoftwareGl ? 28 : 64;
     const pos = new Float32Array(moteCount * 3);
     for (let i = 0; i < moteCount; i++) {
       pos[i * 3] = (seededRand(i * 3 + 1) - 0.5) * 18;
-      pos[i * 3 + 1] = seededRand(i * 3 + 2) * 6.5 - 1.0;
+      pos[i * 3 + 1] = seededRand(i * 3 + 2) * 6.5;
       pos[i * 3 + 2] = (seededRand(i * 3 + 3) - 0.5) * 18;
     }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const moteGeo = new THREE.BufferGeometry();
+    moteGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const motes = new THREE.Points(
-      geo,
+      moteGeo,
       new THREE.PointsMaterial({
         map: glowTex,
         color: 0xfef08a,
-        size: 0.35,
-        opacity: 0.72,
+        size: 0.32,
+        opacity: 0.55,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       })
     );
-    group.add(motes);
+    gladeRoot.add(motes);
 
     return (dt) => {
-      motes.rotation.y += dt * 0.08;
+      motes.rotation.y += dt * 0.06;
     };
   }
 
@@ -3957,7 +4471,8 @@ export class SeamlessUniverseSimulator {
     outSkyColor: THREE.Color,
     realityScaleGamma: number = 1.0,
     showObjectMarkers: boolean = false,
-    astrophysicsPalette: AstrophysicsPaletteMode = 'natural'
+    astrophysicsPalette: AstrophysicsPaletteMode = 'natural',
+    suppressGladeForSurfaceLanding: boolean = false
   ): UniverseScaleBandSpec {
     this.ensureLayersBuilt();
     this.elapsed += dt;
@@ -4052,8 +4567,6 @@ export class SeamlessUniverseSimulator {
         }
       }
 
-      const scaledDelta = deltaLog * gamma;
-
       // Neighbor-aware visibility bounds:
       // At strict 1:1 (gamma = 1.0): parent layers overlap neighboring bands seamlessly so no transition ever goes blank,
       // while giant cosmic/planet structures still fade cleanly before camera membrane intersections.
@@ -4067,6 +4580,11 @@ export class SeamlessUniverseSimulator {
       const isNebulas = layerId === 'nebulas';
       const isPlanetarySystem = layerId === 'planetary_system';
       const isPlanet = layerId === 'planet';
+      const isAtmosphere = layerId === 'atmosphere';
+      const isLandMasses = layerId === 'land_masses';
+      const isEcosystems = layerId === 'ecosystems';
+      const isForestGlade = layerId === 'capybara_forest';
+      const isLeafGlade = layerId === 'leaf_fur_micro';
       const isBiologicalCells = layerId === 'biological_cells';
       const isDna = layerId === 'dna_molecules';
       const isAtomicOrbitals = layerId === 'atomic_orbitals';
@@ -4075,6 +4593,20 @@ export class SeamlessUniverseSimulator {
       const isSingleElectron = layerId === 'single_electron';
       const isSinglePhoton = layerId === 'single_photon';
       const isPlanckFoam = layerId === 'planck_quantum_foam';
+
+      // Unified Forest Glade continuous zoom curve:
+      // Makes the ONE ForestMicroDiorama emerge smoothly inside Ecosystems (2.20), open into a wide
+      // establishing Forest Glade at 0.80 (0.66x), and glide seamlessly closer to 1.00x at Glade-Leaf (-2.00)
+      // with ZERO duplicate nested forests!
+      let scaledDelta = deltaLog * gamma;
+      if (isLeafGlade && logScaleMeters > -2.0) {
+        if (logScaleMeters <= 0.8) {
+          const tGlade = (0.8 - logScaleMeters) / 2.8;
+          scaledDelta = THREE.MathUtils.lerp(-0.18, 0.0, tGlade);
+        } else {
+          scaledDelta = -0.18 - (logScaleMeters - 0.8) * gamma;
+        }
+      }
 
       let maxExpandDex = 1.65;
       if (isMultiverse) {
@@ -4095,6 +4627,16 @@ export class SeamlessUniverseSimulator {
         maxExpandDex = 1.65;
       } else if (isPlanet) {
         maxExpandDex = 6.50;
+      } else if (isAtmosphere) {
+        maxExpandDex = 1.35;
+      } else if (isLandMasses) {
+        maxExpandDex = 1.55;
+      } else if (isEcosystems) {
+        maxExpandDex = 1.55;
+      } else if (isForestGlade) {
+        maxExpandDex = 1.35;
+      } else if (isLeafGlade) {
+        maxExpandDex = 2.15;
       } else if (isBiologicalCells) {
         maxExpandDex = 4.2;
       } else if (isDna) {
@@ -4123,6 +4665,16 @@ export class SeamlessUniverseSimulator {
         maxShrinkDex = -2.6;
       } else if (isPlanet) {
         maxShrinkDex = -3.45;
+      } else if (isAtmosphere) {
+        maxShrinkDex = -1.15;
+      } else if (isLandMasses) {
+        maxShrinkDex = -1.55;
+      } else if (isEcosystems) {
+        maxShrinkDex = -1.55;
+      } else if (isForestGlade) {
+        maxShrinkDex = -1.45;
+      } else if (isLeafGlade) {
+        maxShrinkDex = -1.45;
       } else if (isBiologicalCells) {
         maxShrinkDex = -3.2;
       } else if (isDna) {
@@ -4151,18 +4703,46 @@ export class SeamlessUniverseSimulator {
 
       let alpha = 1.0;
       if (isPlanet) {
-        // Unified Single Planet remains continuous down through stratosphere & land_masses, fading cleanly
-        // across 3.15 -> 2.15 so planetLod3 blends smoothly into Sanctuary without popping or bare water gaps
+        // Unified Single Planet remains continuous through stratosphere clouds and hands off smoothly to emerald Land Masses
         if (scaledDelta < 0) {
           alpha = smoothstep01(maxShrinkDex, -2.05, scaledDelta);
         } else {
-          alpha = smoothstep01(2.15, 3.15, logScaleMeters);
+          alpha = smoothstep01(2.85, 3.65, logScaleMeters);
         }
       } else if (isGalaxy) {
         if (scaledDelta < 0) {
           alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
         } else {
           alpha = 1.0 - smoothstep01(3.15, maxExpandDex, scaledDelta);
+        }
+      } else if (isAtmosphere) {
+        if (scaledDelta < 0) {
+          alpha = smoothstep01(maxShrinkDex, -0.25, scaledDelta);
+        } else {
+          alpha = 1.0 - smoothstep01(0.35, maxExpandDex, scaledDelta);
+        }
+      } else if (isLandMasses || isEcosystems || isForestGlade) {
+        // Coherent single-world crossfade from clouds -> valley -> canopy -> sunlit glade -> leaf
+        if (scaledDelta < 0) {
+          alpha = smoothstep01(maxShrinkDex, -0.25, scaledDelta);
+        } else {
+          const fadeStart = isForestGlade ? 0.35 : 0.45;
+          alpha = 1.0 - smoothstep01(fadeStart, maxExpandDex, scaledDelta);
+        }
+        // When user clicks "Play in Forest" or "Play Capytorio", yield cleanly to the live playable surface world
+        if (suppressGladeForSurfaceLanding) {
+          alpha *= smoothstep01(2.2, 3.4, logScaleMeters);
+        }
+      } else if (isLeafGlade) {
+        if (scaledDelta < -0.18) {
+          alpha = smoothstep01(maxShrinkDex, -0.42, scaledDelta);
+        } else if (scaledDelta <= 0.0) {
+          alpha = 1.0;
+        } else {
+          alpha = 1.0 - smoothstep01(0.35, maxExpandDex, scaledDelta);
+        }
+        if (suppressGladeForSurfaceLanding) {
+          alpha *= smoothstep01(-1.4, -2.0, logScaleMeters);
         }
       } else if (scaledDelta < 0) {
         alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
@@ -4178,25 +4758,19 @@ export class SeamlessUniverseSimulator {
       }
       alpha *= focusBoost;
 
-      // Prevent floating ecosystem pine cones over bare ocean above 2.85, and crossfade cleanly below 2.0
-      if (layer.spec.id === 'ecosystems') {
-        if (logScaleMeters > 2.45) {
-          alpha *= smoothstep01(2.85, 2.45, logScaleMeters);
-        }
-        if (logScaleMeters < 2.0) {
-          alpha *= smoothstep01(0.95, 2.05, logScaleMeters);
-        }
-      } else if (
-        (layer.spec.id === 'land_masses' || layer.spec.id === 'atmosphere') &&
-        logScaleMeters < 2.0
-      ) {
-        alpha *= smoothstep01(0.95, 2.05, logScaleMeters);
+      if (layer.spec.id === 'atmosphere' && logScaleMeters < 2.4) {
+        alpha *= smoothstep01(1.4, 2.4, logScaleMeters);
       }
 
       if (alpha <= 0.008) {
         layer.group.visible = false;
         layer.group.matrixWorldAutoUpdate = false;
         continue;
+      }
+
+      // Lazy on-demand band population (Frame 1 at Multiverse only builds Multiverse + Big Bang!)
+      if (!layer.populated) {
+        this.populateScaleLayer(layer);
       }
 
       // TRUE BASE-10 PHYSICAL SCALE RATIO (exact 10^deltaLog when gamma === 1.0!)
@@ -4238,7 +4812,8 @@ export class SeamlessUniverseSimulator {
         if (entry.shaderHubbleUniform) {
           entry.shaderHubbleUniform.value = hubbleMix;
         }
-        entry.mat.depthWrite = alpha > 0.85 && logScaleMeters > 1.85 ? entry.defaultDepthWrite : false;
+        // Preserve crisp 3D depth-sorting for opaque meshes at EVERY scale (including Forest Glade & Glade-Leaf!)
+        entry.mat.depthWrite = alpha > 0.72 ? entry.defaultDepthWrite : false;
       }
 
       if (isMultiverse && this.multiverseHomeBubbleMesh && this.multiverseHomeBubbleMat) {
@@ -4370,7 +4945,7 @@ export class SeamlessUniverseSimulator {
         );
 
         const detailScale = smoothstep01(6.8, 3.0, logScaleMeters);
-        const cloudClear = smoothstep01(5.4, 3.8, logScaleMeters);
+        const cloudClear = smoothstep01(4.75, 3.55, logScaleMeters);
 
         // 1. Full globe sphere (visible from Planetary System 8.85 down to 4.70, fading out 5.20 -> 4.70)
         const globeOpacity = alpha * smoothstep01(4.70, 5.20, logScaleMeters);

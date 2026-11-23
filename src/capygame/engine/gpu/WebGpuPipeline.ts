@@ -452,12 +452,22 @@ export async function probeWebGpuBackend(
       };
     }
 
-    // preference === 'auto': run or reuse hardware benchmark comparing WebGPU vs WebGL2
+    // preference === 'auto': reuse cached benchmark if available; only run the 24-frame benchmark when explicitly requested via Settings (forceRetest) so initial boot is instant
     const glId = queryGlRendererIdentity();
     const signature = `${GPU_BENCH_VERSION}|${desc}|${glId}`;
-    const bench =
-      (!forceRetest ? getCachedGpuBackendBenchmark(signature) : null) ??
-      (await benchmarkGpuBackends(desc, glId));
+    const cached = !forceRetest ? getCachedGpuBackendBenchmark(signature) : null;
+    if (!cached && !forceRetest) {
+      return {
+        supported: true,
+        shouldUseWebGpu: false,
+        adapterName: desc,
+        isFallbackAdapter: false,
+        features: featureList,
+        benchmarkedWinner: 'webgl2',
+        benchmarkSummary: 'Fast-boot WebGL2 (run benchmark in Settings to test WebGPU)',
+      };
+    }
+    const bench = cached ?? (await benchmarkGpuBackends(desc, glId));
 
     return {
       supported: true,

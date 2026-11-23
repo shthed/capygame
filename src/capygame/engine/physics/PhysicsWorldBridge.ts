@@ -87,8 +87,16 @@ export class PhysicsWorldBridge {
   private lastHeroWy = 0;
   private lastHeroWz = 4;
 
-  constructor() {
-    this.initWorker();
+  constructor(deferWorkerInit = false) {
+    if (!deferWorkerInit) {
+      this.initWorker();
+    }
+  }
+
+  public ensureWorkerInitialized(): void {
+    if (!this.worker) {
+      this.initWorker();
+    }
   }
 
   private initWorker(): void {

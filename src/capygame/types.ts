@@ -1674,13 +1674,13 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
   },
   {
     id: 'capybara_forest',
-    title: 'Forest with Capybaras',
-    shortLabel: 'Capybara Forest',
-    subtitle: 'Live 3D woodland sanctuary, 1.3m grazing Capybaras, Home Pool & citrus trees',
+    title: 'Sunlit Forest Glade',
+    shortLabel: 'Forest Glade',
+    subtitle: 'Sunlit woodland clearing, framing oak canopy, shallow creek & mossy trail',
     logMeters: 0.8,
-    typicalSizeLabel: '6.3 m · Woodland Clearing',
+    typicalSizeLabel: '6.3 m · Woodland Glade',
     domain: 'terrestrial',
-    skyHex: 0x38bdf8,
+    skyHex: 0x225634,
     accentHex: 0xfbbf24,
   },
   {
@@ -1691,7 +1691,7 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     logMeters: -2.0,
     typicalSizeLabel: '1.0 cm · 10^-2 m',
     domain: 'microscopic',
-    skyHex: 0x1e4d2b,
+    skyHex: 0x1b4328,
     accentHex: 0x84cc16,
   },
   {

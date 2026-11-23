@@ -252,6 +252,7 @@ export const CapytorioWorldIcon: React.FC<CapytorioWorldIconProps> = ({
 export interface CapytorioSlotTileProps {
   label: string;
   title?: string;
+  suppressNativeTitle?: boolean;
   count?: number | string;
   hotkey?: string;
   selected?: boolean;
@@ -262,6 +263,10 @@ export interface CapytorioSlotTileProps {
   color: string;
   onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onMouseEnter?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onMouseLeave?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onFocus?: (e: React.FocusEvent<HTMLButtonElement>) => void;
+  onBlur?: (e: React.FocusEvent<HTMLButtonElement>) => void;
   testId?: string;
   recentSlot?: boolean;
   compact?: boolean;
@@ -271,6 +276,7 @@ export interface CapytorioSlotTileProps {
 export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
   label,
   title,
+  suppressNativeTitle = false,
   count,
   hotkey,
   selected = false,
@@ -281,6 +287,10 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
   color,
   onClick,
   onContextMenu,
+  onMouseEnter,
+  onMouseLeave,
+  onFocus,
+  onBlur,
   testId,
   recentSlot = false,
   compact = false,
@@ -302,9 +312,14 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
       type="button"
       data-testid={testId}
       data-capytorio-recent-slot={recentSlot ? 'true' : undefined}
-      title={title ?? label}
+      title={suppressNativeTitle ? undefined : title ?? label}
+      aria-label={title ?? label}
       onClick={onClick}
       onContextMenu={onContextMenu}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onFocus={onFocus}
+      onBlur={onBlur}
       className={`relative select-none rounded-[2px] border flex flex-col items-center justify-center shrink-0 transition-colors overflow-hidden ${
         mini
           ? 'w-9 h-9'

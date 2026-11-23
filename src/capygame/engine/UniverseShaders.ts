@@ -924,34 +924,35 @@ export function createHabitablePlanetMaterial(
         float continentPedestal = exp(-pow(dSanc / 0.24, 2.0)) * 0.165;
         float islandArchipelago = exp(-pow(dSanc / 0.042, 2.0)) * 0.075;
 
-        // Multi-scale organic FBM terrain & fjord coastlines (zero radial bullseye rings!)
+        // Multi-scale organic FBM terrain & fjord coastlines (zero radial bullseye rings or high-freq hash aliasing!)
         if (detailWeight > 0.01) {
-          float regionalMtn = ridgedFbm3(p * 52.0 + warp * 0.6);
-          float coastalFbm = fbm3(p * 210.0) - 0.48;
-          float fjordCut = (fbm3(p * 680.0 + vec3(regionalMtn * 0.8)) - 0.52) * 0.14;
-          float microDetail = (noise3D(p * 1850.0) - 0.5) * 0.055;
-          cont += (coastalFbm * 0.12 + fjordCut + microDetail + (regionalMtn - 0.32) * 0.085) * detailWeight;
-          ridges = mix(ridges, clamp(ridges * 0.48 + regionalMtn * 0.65, 0.0, 1.0), detailWeight * 0.78);
-          detail = mix(detail, clamp(detail * 0.45 + (coastalFbm + 0.5) * 0.65, 0.0, 1.0), detailWeight * 0.82);
+          float regionalMtn = ridgedFbm3(p * 42.0 + warp * 0.55);
+          float coastalFbm = fbm3(p * 145.0) - 0.48;
+          float valleyDetail = (fbm3(p * 320.0 + vec3(regionalMtn * 0.6)) - 0.50) * 0.09;
+          // Gently calm extreme jagged ridge height right inside the landing valley so it reads as a lush emerald basin
+          float valleyCalm = smoothstep(0.014, 0.068, dSanc);
+          cont += (coastalFbm * 0.11 + valleyDetail + (regionalMtn - 0.34) * 0.075 * valleyCalm) * detailWeight;
+          ridges = mix(ridges, clamp(ridges * 0.48 + regionalMtn * 0.62, 0.0, 1.0), detailWeight * 0.72 * valleyCalm);
+          detail = mix(detail, clamp(detail * 0.48 + (coastalFbm + 0.5) * 0.60, 0.0, 1.0), detailWeight * 0.78);
         }
         cont += continentPedestal + islandArchipelago;
 
         float seaLevel = 0.505;
-        float coastFeather = mix(0.012, 0.0032, detailWeight);
+        float coastFeather = mix(0.012, 0.0038, detailWeight);
         float isLand = smoothstep(seaLevel - coastFeather * 0.7, seaLevel + coastFeather, cont);
         float elev = clamp((cont - seaLevel) / (1.0 - seaLevel), 0.0, 1.0);
         float mountain = pow(ridges, 1.85) * smoothstep(0.04, 0.36, elev);
 
-        // Single-pass hardware derivatives compute crisp terrain normal shading with ZERO extra FBM passes!
-        float reliefVal = cont + mountain * 0.35;
+        // Single-pass hardware derivatives compute crisp terrain normal shading without screen-space sparkle
+        float reliefVal = cont + mountain * 0.28;
         vec3 dPosX = dFdx(vWorldPos);
         vec3 dPosY = dFdy(vWorldPos);
         vec3 gradSurf = vec3(dFdx(reliefVal), dFdy(reliefVal), 0.0);
-        float bumpStrength = mix(14.0, 38.0, detailWeight) * isLand;
+        float bumpStrength = mix(10.0, 16.0, detailWeight) * isLand;
         vec3 baseN = normalize(vWorldNormal);
         vec3 tangPerturb = normalize(dPosX + vec3(1e-6)) * (-gradSurf.x * bumpStrength)
                          + normalize(dPosY + vec3(1e-6)) * (-gradSurf.y * bumpStrength);
-        vec3 N = normalize(baseN + clamp(tangPerturb, -0.55, 0.55));
+        vec3 N = normalize(baseN + clamp(tangPerturb, -0.38, 0.38));
         vec3 L = normalize(uSunDir);
         vec3 V = normalize(cameraPosition - vWorldPos);
 
@@ -969,16 +970,23 @@ export function createHabitablePlanetMaterial(
         float aridity = smoothstep(0.18, 0.40, lat) * (1.0 - smoothstep(0.40, 0.64, lat)) * smoothstep(0.42, 0.72, detail);
         aridity *= smoothstep(0.03, 0.16, dSanc);
 
-        vec3 lushForest  = vec3(0.048, 0.255, 0.082);
-        vec3 brightCanopy = vec3(0.095, 0.34, 0.115);
+        vec3 lushForest  = vec3(0.068, 0.31, 0.105);
+        vec3 brightCanopy = vec3(0.145, 0.44, 0.165);
+        vec3 gladeMeadow  = vec3(0.22, 0.54, 0.21);
         vec3 desertSand  = vec3(0.62, 0.50, 0.34);
-        vec3 alpineRock  = vec3(0.28, 0.29, 0.31);
+        vec3 alpineRock  = vec3(0.28, 0.30, 0.33);
         vec3 snowCap     = vec3(0.92, 0.96, 1.0);
 
-        vec3 landAlbedo = mix(lushForest, brightCanopy, smoothstep(0.32, 0.74, detail));
+        vec3 landAlbedo = mix(lushForest, brightCanopy, smoothstep(0.30, 0.74, detail));
         landAlbedo = mix(landAlbedo, desertSand, aridity * 0.78);
-        landAlbedo = mix(landAlbedo, alpineRock, smoothstep(0.24, 0.54, mountain + elev * 0.42));
-        landAlbedo = mix(landAlbedo, snowCap, smoothstep(0.55, 0.78, mountain + elev * 0.32));
+        float rockMask = smoothstep(0.28, 0.58, mountain + elev * 0.36) * smoothstep(0.018, 0.065, dSanc);
+        landAlbedo = mix(landAlbedo, alpineRock, rockMask);
+        landAlbedo = mix(landAlbedo, snowCap, smoothstep(0.56, 0.80, mountain + elev * 0.30) * smoothstep(0.025, 0.075, dSanc));
+        // Coherent sunlit emerald valley & central glade clearing hint around uSanctuaryDir
+        float valleyGreen = (1.0 - smoothstep(0.012, 0.055, dSanc)) * detailWeight;
+        float centerClearing = (1.0 - smoothstep(0.002, 0.011, dSanc)) * detailWeight;
+        landAlbedo = mix(landAlbedo, brightCanopy, valleyGreen * 0.45);
+        landAlbedo = mix(landAlbedo, gladeMeadow, centerClearing * 0.65);
 
         // Slim sandy coral shoreline strictly along coast threshold
         float beachMask = (1.0 - smoothstep(0.0, 0.015, elev)) * isLand * detailWeight;
@@ -1071,14 +1079,21 @@ export function createPlanetCloudMaterial(
 
         if (uDetailScale > 0.02) {
           float fineCumulus = noise3D(dir * 48.0 + vec3(uTime * 0.02, 0.0, -uTime * 0.015));
-          n = mix(n, clamp(n * 0.65 + fineCumulus * 0.48, 0.0, 1.0), clamp(uDetailScale, 0.0, 1.0) * 0.65);
+          float billow = noise3D(dir * 16.0 - vec3(uTime * 0.01, 0.0, uTime * 0.012));
+          n = mix(
+            n,
+            clamp(n * 0.45 + billow * 0.35 + fineCumulus * 0.34, 0.0, 1.0),
+            clamp(uDetailScale, 0.0, 1.0) * 0.72
+          );
         }
 
-        // Smoothly open a sunlit atmospheric descent window over Sanctuary Archipelago when entering troposphere
+        // Smoothly open a sunlit atmospheric descent window over the emerald valley framed by a rich cumulus cloud ring
         float dSanc = length(dir - normalize(uSanctuaryDir));
-        float clearWindow = mix(1.0, smoothstep(0.018, 0.145, dSanc), clamp(uCloudClear, 0.0, 1.0));
+        float approachRing = smoothstep(0.012, 0.048, dSanc) * (1.0 - smoothstep(0.11, 0.24, dSanc));
+        n = clamp(n + approachRing * clamp(uDetailScale, 0.0, 1.0) * 0.24, 0.0, 1.0);
+        float clearWindow = mix(1.0, smoothstep(0.008, 0.036, dSanc), clamp(uCloudClear, 0.0, 1.0));
 
-        float cloud = smoothstep(0.47, 0.74, n) * clearWindow;
+        float cloud = smoothstep(0.40, 0.66, n) * clearWindow;
         if (cloud < 0.01) discard;
 
         float ndl = dot(normalize(vWorldNormal), normalize(uSunDir));
@@ -1086,11 +1101,11 @@ export function createPlanetCloudMaterial(
         float sunset = exp(-pow((ndl + 0.02) * 7.5, 2.0));
 
         vec3 dayWhite = vec3(0.98, 0.99, 1.0);
-        vec3 duskCoral = vec3(0.98, 0.48, 0.24);
-        vec3 nightCloud = vec3(0.015, 0.025, 0.045);
+        vec3 duskCoral = vec3(0.98, 0.56, 0.32);
+        vec3 nightCloud = vec3(0.02, 0.035, 0.06);
 
-        vec3 col = mix(nightCloud, dayWhite * (0.35 + 0.75 * max(0.0, ndl)), day);
-        col += duskCoral * sunset * 0.48;
+        vec3 col = mix(nightCloud, dayWhite * (0.48 + 0.62 * max(0.0, ndl)), day);
+        col += duskCoral * sunset * 0.35;
         gl_FragColor = vec4(acesToneMap(col), cloud * uOpacity);
       }
     `,

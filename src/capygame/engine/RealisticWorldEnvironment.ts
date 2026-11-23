@@ -708,13 +708,23 @@ export class RealisticWorldEnvironment {
   private wettableMaterials: Array<{ mat: THREE.MeshStandardMaterial; dryRoughness: number }> = [];
   private lastAppliedWetness: number = -1;
 
+  private readonly maxTextureAnisotropy: number;
+  private coreTexturesReady: boolean = false;
+
+  public ensureCoreTexturesReady(): void {
+    if (this.coreTexturesReady) return;
+    this.coreTexturesReady = true;
+    RealisticWorldEnvironment.ensureCoreTextures(this.maxTextureAnisotropy);
+  }
+
   constructor(
     renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
     isSoftwareGl: boolean,
     ambientLight: THREE.AmbientLight,
     hemiLight: THREE.HemisphereLight,
     sunLight: THREE.DirectionalLight,
-    isWebGpu: boolean = false
+    isWebGpu: boolean = false,
+    deferCoreTextures: boolean = false
   ) {
     this.ambientLight = ambientLight;
     this.hemiLight = hemiLight;
@@ -731,7 +741,10 @@ export class RealisticWorldEnvironment {
         ? rendererAny.getMaxAnisotropy()
         : rendererAny.capabilities?.getMaxAnisotropy?.() ?? 4;
     const maxAniso = isSoftwareGl ? 1 : Math.min(8, rawAniso);
-    RealisticWorldEnvironment.ensureCoreTextures(maxAniso);
+    this.maxTextureAnisotropy = maxAniso;
+    if (!deferCoreTextures) {
+      this.ensureCoreTexturesReady();
+    }
 
     // Cool silvery directional moonlight with full shadow casting for starlight nights!
     this.moonLight = new THREE.DirectionalLight(0x93c5fd, 0.25);
