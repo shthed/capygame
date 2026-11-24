@@ -93,6 +93,17 @@ const FACTORIO_ENTITY_TO_CAPYTORIO: Record<string, string> = {
   'gun-turret': 'gun_turret',
   'laser-turret': 'laser_turret',
   'rocket-silo': 'rocket_silo',
+  pipe: 'pipe',
+  'pipe-to-ground': 'pipe_to_ground',
+  pump: 'pump',
+  'oil-refinery': 'oil_refinery',
+  'chemical-plant': 'chemical_plant',
+  rail: 'rail',
+  'straight-rail': 'rail',
+  'train-stop': 'train_stop',
+  locomotive: 'locomotive',
+  'cargo-wagon': 'cargo_wagon',
+  roboport: 'roboport',
 };
 
 const CAPYTORIO_TO_FACTORIO_ENTITY: Record<string, string> = {};

@@ -112,6 +112,19 @@ export const CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE: Record<string, CapytorioPlacea
   gun_turret: { baseType: 'inserter', tierMult: 1.5, tintHex: 0xf97316 },
   laser_turret: { baseType: 'inserter', tierMult: 2.0, tintHex: 0xef4444 },
   rocket_silo: { baseType: 'assembler', tierMult: 2.0, tintHex: 0xf59e0b },
+  // Fluids & Chemical Processing
+  pipe: { baseType: 'chest', tierMult: 1.0, tintHex: 0x94a3b8 },
+  pipe_to_ground: { baseType: 'chest', tierMult: 1.0, tintHex: 0x64748b },
+  pump: { baseType: 'chest', tierMult: 1.5, tintHex: 0x0ea5e9 },
+  oil_refinery: { baseType: 'assembler', tierMult: 2.0, tintHex: 0x334155 },
+  chemical_plant: { baseType: 'assembler', tierMult: 1.8, tintHex: 0x06b6d4 },
+  // Rail & Trains
+  rail: { baseType: 'chest', tierMult: 1.0, tintHex: 0x78716c },
+  train_stop: { baseType: 'chest', tierMult: 1.2, tintHex: 0xef4444 },
+  locomotive: { baseType: 'chest', tierMult: 2.5, tintHex: 0xdc2626 },
+  cargo_wagon: { baseType: 'chest', tierMult: 2.0, tintHex: 0xf59e0b },
+  // Robotics
+  roboport: { baseType: 'chest', tierMult: 2.0, tintHex: 0x3b82f6 },
 };
 
 export interface CapytorioFootprint {
@@ -128,24 +141,42 @@ export const CAPYTORIO_CHEST_MAX_ITEMS = CAPYTORIO_CHEST_SLOTS * CAPYTORIO_CHEST
 /**
  * Returns the canonical North/South (dir 0 or 2) tile footprint for a machine or placeable variant.
  * Classic Factorio proportions:
- * - 1x1: Transport Belts, Underground Tunnels, Inserters, Chests, Poles, Walls
- * - 2x1: Belt Splitters (dual-belt width; rotates to 1x2 when facing East/West)
- * - 2x2: Furnaces (Stone / Steel / Electric), Burner Mining Drill, Boiler, Accumulator
- * - 3x3: Electric Mining Drill, Assembling Machines, Science Labs, Generators, Solar, Nuclear, Rocket Silo
+ * - 1x1: Transport Belts, Underground Tunnels, Inserters, Chests, Poles, Walls, Pipes, Pumps, Rails, Train Stops
+ * - 2x1: Belt Splitters, Locomotives, Cargo Wagons (rotate to 1x2 when facing East/West)
+ * - 2x2: Furnaces (Stone / Steel / Electric), Burner Mining Drill, Boiler, Accumulator, Substation
+ * - 3x3: Electric Mining Drill, Assembling Machines, Oil Refinery, Chemical Plant, Roboport, Labs, Generators, Solar, Nuclear, Rocket Silo
  */
 export function getCapytorioBaseFootprint(
   baseType: CapytorioMachineType,
   variantItemId?: string
 ): CapytorioFootprint {
-  if (variantItemId === 'offshore_pump') {
+  if (
+    variantItemId === 'offshore_pump' ||
+    variantItemId === 'pipe' ||
+    variantItemId === 'pipe_to_ground' ||
+    variantItemId === 'pump' ||
+    variantItemId === 'rail' ||
+    variantItemId === 'train_stop'
+  ) {
     return { width: 1, height: 1 };
+  }
+  if (variantItemId === 'locomotive' || variantItemId === 'cargo_wagon') {
+    return { width: 2, height: 1 };
   }
   if (
     variantItemId === 'burner_mining_drill' ||
     variantItemId === 'boiler' ||
-    variantItemId === 'accumulator'
+    variantItemId === 'accumulator' ||
+    variantItemId === 'substation'
   ) {
     return { width: 2, height: 2 };
+  }
+  if (
+    variantItemId === 'oil_refinery' ||
+    variantItemId === 'chemical_plant' ||
+    variantItemId === 'roboport'
+  ) {
+    return { width: 3, height: 3 };
   }
   switch (baseType) {
     case 'splitter':

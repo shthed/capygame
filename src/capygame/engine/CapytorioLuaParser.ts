@@ -627,7 +627,15 @@ export type CapytorioItemShape =
   | 'science'
   | 'coil'
   | 'fruit'
-  | 'crate';
+  | 'crate'
+  | 'battery'
+  | 'ammo'
+  | 'grenade'
+  | 'armor'
+  | 'engine'
+  | 'barrel'
+  | 'brick'
+  | 'module';
 
 export const CAPYTORIO_ITEM_SHAPES: readonly CapytorioItemShape[] = [
   'ore',
@@ -638,6 +646,14 @@ export const CAPYTORIO_ITEM_SHAPES: readonly CapytorioItemShape[] = [
   'coil',
   'fruit',
   'crate',
+  'battery',
+  'ammo',
+  'grenade',
+  'armor',
+  'engine',
+  'barrel',
+  'brick',
+  'module',
 ];
 
 export function resolveCapytorioItemShape(
@@ -646,20 +662,59 @@ export function resolveCapytorioItemShape(
 ): CapytorioItemShape {
   if (id === 'orange' || id === 'yuzu_sap') return 'fruit';
   if (category === 'science' || id.includes('science')) return 'science';
-  if (id === 'iron_gear' || id === 'engine_unit' || id === 'electric_engine_unit' || id.includes('gear')) {
+  if (id === 'grenade' || id.includes('grenade')) return 'grenade';
+  if (id === 'battery' || id.includes('battery')) return 'battery';
+  if (id.includes('magazine') || id.includes('ammo') || id.includes('rounds')) return 'ammo';
+  if (id.includes('armor')) return 'armor';
+  if (
+    id === 'engine_unit' ||
+    id === 'electric_engine_unit' ||
+    id === 'flying_robot_frame' ||
+    id === 'logistic_robot' ||
+    id === 'construction_robot'
+  ) {
+    return 'engine';
+  }
+  if (
+    id === 'rocket_fuel' ||
+    id === 'solid_fuel' ||
+    id === 'explosives' ||
+    id.includes('barrel') ||
+    id.includes('fuel')
+  ) {
+    return 'barrel';
+  }
+  if (
+    id === 'stone_brick' ||
+    id === 'concrete' ||
+    id === 'hazard_concrete' ||
+    id === 'stone_wall' ||
+    id === 'plastic_bar' ||
+    id.includes('brick') ||
+    id.includes('concrete')
+  ) {
+    return 'brick';
+  }
+  if (
+    id.includes('module') ||
+    id === 'rocket_control_unit' ||
+    id === 'rocket_part' ||
+    id === 'repair_pack'
+  ) {
+    return 'module';
+  }
+  if (id === 'iron_gear' || id.includes('gear')) {
     return 'gear';
   }
   if (
     id === 'electronic_circuit' ||
     id === 'advanced_circuit' ||
     id === 'processing_unit' ||
-    id === 'rocket_control_unit' ||
-    id.includes('circuit') ||
-    id.includes('module')
+    id.includes('circuit')
   ) {
     return 'circuit';
   }
-  if (id === 'copper_cable' || id.includes('cable') || id.includes('wire') || id === 'pipe') {
+  if (id === 'copper_cable' || id === 'iron_stick' || id.includes('cable') || id.includes('wire')) {
     return 'coil';
   }
   if (
@@ -667,18 +722,14 @@ export function resolveCapytorioItemShape(
     id === 'coal' ||
     id === 'calcite' ||
     id === 'sulfur' ||
-    id === 'solid_fuel' ||
     id.endsWith('_ore')
   ) {
     return 'ore';
   }
   if (
     category === 'plate' ||
-    id === 'plastic_bar' ||
     id === 'low_density_structure' ||
-    id.endsWith('_plate') ||
-    id.includes('brick') ||
-    id.includes('concrete')
+    id.endsWith('_plate')
   ) {
     return 'plate';
   }
@@ -719,110 +770,110 @@ export const CURATED_CAPYTORIO_ITEMS: Record<string, CapytorioItemMeta> = {
   iron_plate: { id: 'iron_plate', name: 'Iron Plate', shortName: 'Fe Plate', category: 'plate', shape: 'plate', colorHex: 0xe2e8f0, cssColor: '#e2e8f0' },
   copper_plate: { id: 'copper_plate', name: 'Copper Plate', shortName: 'Cu Plate', category: 'plate', shape: 'plate', colorHex: 0xfb923c, cssColor: '#fb923c' },
   steel_plate: { id: 'steel_plate', name: 'Steel Plate', shortName: 'Steel', category: 'plate', shape: 'plate', colorHex: 0x64748b, cssColor: '#94a3b8' },
-  stone_brick: { id: 'stone_brick', name: 'Stone Brick', shortName: 'Brick', category: 'plate', shape: 'plate', colorHex: 0xd6d3d1, cssColor: '#d6d3d1' },
-  concrete: { id: 'concrete', name: 'Concrete', shortName: 'Concrete', category: 'plate', shape: 'plate', colorHex: 0x9ca3af, cssColor: '#9ca3af' },
-  hazard_concrete: { id: 'hazard_concrete', name: 'Hazard Concrete', shortName: 'Haz-Conc', category: 'plate', shape: 'plate', colorHex: 0xeab308, cssColor: '#eab308' },
+  stone_brick: { id: 'stone_brick', name: 'Stone Brick', shortName: 'Brick', category: 'plate', shape: 'brick', colorHex: 0xd6d3d1, cssColor: '#d6d3d1' },
+  concrete: { id: 'concrete', name: 'Concrete', shortName: 'Concrete', category: 'plate', shape: 'brick', colorHex: 0x9ca3af, cssColor: '#9ca3af' },
+  hazard_concrete: { id: 'hazard_concrete', name: 'Hazard Concrete', shortName: 'Haz-Conc', category: 'plate', shape: 'brick', colorHex: 0xeab308, cssColor: '#eab308' },
 
-  // Logistics
-  wooden_chest: { id: 'wooden_chest', name: 'Wooden Chest', shortName: 'Wood Chst', category: 'logistics', colorHex: 0xb45309, cssColor: '#b45309' },
-  iron_chest: { id: 'iron_chest', name: 'Iron Chest', shortName: 'Iron Chst', category: 'logistics', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
-  steel_chest: { id: 'steel_chest', name: 'Steel Chest', shortName: 'Steel Chst', category: 'logistics', colorHex: 0x64748b, cssColor: '#64748b' },
-  passive_provider_chest: { id: 'passive_provider_chest', name: 'Passive Provider Chest', shortName: 'Prov Chst', category: 'logistics', colorHex: 0xdc2626, cssColor: '#dc2626' },
-  requester_chest: { id: 'requester_chest', name: 'Requester Chest', shortName: 'Req Chst', category: 'logistics', colorHex: 0x2563eb, cssColor: '#2563eb' },
-  transport_belt: { id: 'transport_belt', name: 'Transport Belt', shortName: 'Belt T1', category: 'logistics', colorHex: 0xfacc15, cssColor: '#facc15' },
-  fast_transport_belt: { id: 'fast_transport_belt', name: 'Fast Transport Belt', shortName: 'Fast Belt', category: 'logistics', colorHex: 0xef4444, cssColor: '#ef4444' },
-  express_transport_belt: { id: 'express_transport_belt', name: 'Express Transport Belt', shortName: 'Exp Belt', category: 'logistics', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
-  underground_belt: { id: 'underground_belt', name: 'Underground Belt', shortName: 'UG Belt', category: 'logistics', colorHex: 0xeab308, cssColor: '#eab308' },
-  fast_underground_belt: { id: 'fast_underground_belt', name: 'Fast Underground Belt', shortName: 'Fast UG', category: 'logistics', colorHex: 0xef4444, cssColor: '#ef4444' },
-  express_underground_belt: { id: 'express_underground_belt', name: 'Express Underground Belt', shortName: 'Exp UG', category: 'logistics', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
-  splitter: { id: 'splitter', name: 'Splitter', shortName: 'Splitter', category: 'logistics', colorHex: 0xeab308, cssColor: '#eab308' },
-  fast_splitter: { id: 'fast_splitter', name: 'Fast Splitter', shortName: 'Fast Spl', category: 'logistics', colorHex: 0xef4444, cssColor: '#ef4444' },
-  express_splitter: { id: 'express_splitter', name: 'Express Splitter', shortName: 'Exp Spl', category: 'logistics', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
-  burner_inserter: { id: 'burner_inserter', name: 'Burner Inserter', shortName: 'Brn Ins', category: 'logistics', colorHex: 0x78716c, cssColor: '#78716c' },
-  inserter: { id: 'inserter', name: 'Inserter', shortName: 'Inserter', category: 'logistics', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
-  long_handed_inserter: { id: 'long_handed_inserter', name: 'Long-Handed Inserter', shortName: 'Long Ins', category: 'logistics', colorHex: 0xdc2626, cssColor: '#dc2626' },
-  fast_inserter: { id: 'fast_inserter', name: 'Fast Inserter', shortName: 'Fast Ins', category: 'logistics', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
-  bulk_inserter: { id: 'bulk_inserter', name: 'Bulk Inserter', shortName: 'Bulk Ins', category: 'logistics', colorHex: 0x22c55e, cssColor: '#22c55e' },
-  small_electric_pole: { id: 'small_electric_pole', name: 'Small Electric Pole', shortName: 'Sm Pole', category: 'logistics', colorHex: 0xa16207, cssColor: '#a16207' },
-  medium_electric_pole: { id: 'medium_electric_pole', name: 'Medium Electric Pole', shortName: 'Med Pole', category: 'logistics', colorHex: 0x64748b, cssColor: '#64748b' },
-  big_electric_pole: { id: 'big_electric_pole', name: 'Big Electric Pole', shortName: 'Big Pole', category: 'logistics', colorHex: 0x475569, cssColor: '#475569' },
-  substation: { id: 'substation', name: 'Substation', shortName: 'Substation', category: 'logistics', colorHex: 0x0284c7, cssColor: '#0284c7' },
-  pipe: { id: 'pipe', name: 'Pipe', shortName: 'Pipe', category: 'logistics', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
-  pipe_to_ground: { id: 'pipe_to_ground', name: 'Pipe to Ground', shortName: 'UG Pipe', category: 'logistics', colorHex: 0x64748b, cssColor: '#64748b' },
-  pump: { id: 'pump', name: 'Pump', shortName: 'Pump', category: 'logistics', colorHex: 0x0ea5e9, cssColor: '#0ea5e9' },
-  rail: { id: 'rail', name: 'Rail', shortName: 'Rail', category: 'logistics', colorHex: 0x78716c, cssColor: '#78716c' },
-  train_stop: { id: 'train_stop', name: 'Train Stop', shortName: 'Train Stop', category: 'logistics', colorHex: 0xef4444, cssColor: '#ef4444' },
-  locomotive: { id: 'locomotive', name: 'Locomotive', shortName: 'Locomotive', category: 'logistics', colorHex: 0xdc2626, cssColor: '#dc2626' },
-  cargo_wagon: { id: 'cargo_wagon', name: 'Cargo Wagon', shortName: 'Wagon', category: 'logistics', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
-  logistic_robot: { id: 'logistic_robot', name: 'Logistic Robot', shortName: 'Logi Bot', category: 'logistics', colorHex: 0xfbbf24, cssColor: '#fbbf24' },
-  construction_robot: { id: 'construction_robot', name: 'Construction Robot', shortName: 'Con Bot', category: 'logistics', colorHex: 0xe2e8f0, cssColor: '#e2e8f0' },
-  roboport: { id: 'roboport', name: 'Roboport', shortName: 'Roboport', category: 'logistics', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
+  // Logistics (packaged buildings use 'crate'; robots use 'engine')
+  wooden_chest: { id: 'wooden_chest', name: 'Wooden Chest', shortName: 'Wood Chst', category: 'logistics', shape: 'crate', colorHex: 0xb45309, cssColor: '#b45309' },
+  iron_chest: { id: 'iron_chest', name: 'Iron Chest', shortName: 'Iron Chst', category: 'logistics', shape: 'crate', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
+  steel_chest: { id: 'steel_chest', name: 'Steel Chest', shortName: 'Steel Chst', category: 'logistics', shape: 'crate', colorHex: 0x64748b, cssColor: '#64748b' },
+  passive_provider_chest: { id: 'passive_provider_chest', name: 'Passive Provider Chest', shortName: 'Prov Chst', category: 'logistics', shape: 'crate', colorHex: 0xdc2626, cssColor: '#dc2626' },
+  requester_chest: { id: 'requester_chest', name: 'Requester Chest', shortName: 'Req Chst', category: 'logistics', shape: 'crate', colorHex: 0x2563eb, cssColor: '#2563eb' },
+  transport_belt: { id: 'transport_belt', name: 'Transport Belt', shortName: 'Belt T1', category: 'logistics', shape: 'crate', colorHex: 0xfacc15, cssColor: '#facc15' },
+  fast_transport_belt: { id: 'fast_transport_belt', name: 'Fast Transport Belt', shortName: 'Fast Belt', category: 'logistics', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
+  express_transport_belt: { id: 'express_transport_belt', name: 'Express Transport Belt', shortName: 'Exp Belt', category: 'logistics', shape: 'crate', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
+  underground_belt: { id: 'underground_belt', name: 'Underground Belt', shortName: 'UG Belt', category: 'logistics', shape: 'crate', colorHex: 0xeab308, cssColor: '#eab308' },
+  fast_underground_belt: { id: 'fast_underground_belt', name: 'Fast Underground Belt', shortName: 'Fast UG', category: 'logistics', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
+  express_underground_belt: { id: 'express_underground_belt', name: 'Express Underground Belt', shortName: 'Exp UG', category: 'logistics', shape: 'crate', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
+  splitter: { id: 'splitter', name: 'Splitter', shortName: 'Splitter', category: 'logistics', shape: 'crate', colorHex: 0xeab308, cssColor: '#eab308' },
+  fast_splitter: { id: 'fast_splitter', name: 'Fast Splitter', shortName: 'Fast Spl', category: 'logistics', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
+  express_splitter: { id: 'express_splitter', name: 'Express Splitter', shortName: 'Exp Spl', category: 'logistics', shape: 'crate', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
+  burner_inserter: { id: 'burner_inserter', name: 'Burner Inserter', shortName: 'Brn Ins', category: 'logistics', shape: 'crate', colorHex: 0x78716c, cssColor: '#78716c' },
+  inserter: { id: 'inserter', name: 'Inserter', shortName: 'Inserter', category: 'logistics', shape: 'crate', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
+  long_handed_inserter: { id: 'long_handed_inserter', name: 'Long-Handed Inserter', shortName: 'Long Ins', category: 'logistics', shape: 'crate', colorHex: 0xdc2626, cssColor: '#dc2626' },
+  fast_inserter: { id: 'fast_inserter', name: 'Fast Inserter', shortName: 'Fast Ins', category: 'logistics', shape: 'crate', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
+  bulk_inserter: { id: 'bulk_inserter', name: 'Bulk Inserter', shortName: 'Bulk Ins', category: 'logistics', shape: 'crate', colorHex: 0x22c55e, cssColor: '#22c55e' },
+  small_electric_pole: { id: 'small_electric_pole', name: 'Small Electric Pole', shortName: 'Sm Pole', category: 'logistics', shape: 'crate', colorHex: 0xa16207, cssColor: '#a16207' },
+  medium_electric_pole: { id: 'medium_electric_pole', name: 'Medium Electric Pole', shortName: 'Med Pole', category: 'logistics', shape: 'crate', colorHex: 0x64748b, cssColor: '#64748b' },
+  big_electric_pole: { id: 'big_electric_pole', name: 'Big Electric Pole', shortName: 'Big Pole', category: 'logistics', shape: 'crate', colorHex: 0x475569, cssColor: '#475569' },
+  substation: { id: 'substation', name: 'Substation', shortName: 'Substation', category: 'logistics', shape: 'crate', colorHex: 0x0284c7, cssColor: '#0284c7' },
+  pipe: { id: 'pipe', name: 'Pipe', shortName: 'Pipe', category: 'logistics', shape: 'crate', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
+  pipe_to_ground: { id: 'pipe_to_ground', name: 'Pipe to Ground', shortName: 'UG Pipe', category: 'logistics', shape: 'crate', colorHex: 0x64748b, cssColor: '#64748b' },
+  pump: { id: 'pump', name: 'Pump', shortName: 'Pump', category: 'logistics', shape: 'crate', colorHex: 0x0ea5e9, cssColor: '#0ea5e9' },
+  rail: { id: 'rail', name: 'Rail', shortName: 'Rail', category: 'logistics', shape: 'crate', colorHex: 0x78716c, cssColor: '#78716c' },
+  train_stop: { id: 'train_stop', name: 'Train Stop', shortName: 'Train Stop', category: 'logistics', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
+  locomotive: { id: 'locomotive', name: 'Locomotive', shortName: 'Locomotive', category: 'logistics', shape: 'crate', colorHex: 0xdc2626, cssColor: '#dc2626' },
+  cargo_wagon: { id: 'cargo_wagon', name: 'Cargo Wagon', shortName: 'Wagon', category: 'logistics', shape: 'crate', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
+  logistic_robot: { id: 'logistic_robot', name: 'Logistic Robot', shortName: 'Logi Bot', category: 'logistics', shape: 'engine', colorHex: 0xfbbf24, cssColor: '#fbbf24' },
+  construction_robot: { id: 'construction_robot', name: 'Construction Robot', shortName: 'Con Bot', category: 'logistics', shape: 'engine', colorHex: 0xe2e8f0, cssColor: '#e2e8f0' },
+  roboport: { id: 'roboport', name: 'Roboport', shortName: 'Roboport', category: 'logistics', shape: 'crate', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
 
   // Production & Power
-  burner_mining_drill: { id: 'burner_mining_drill', name: 'Burner Mining Drill', shortName: 'Brn Drill', category: 'production', colorHex: 0x78716c, cssColor: '#78716c' },
-  electric_mining_drill: { id: 'electric_mining_drill', name: 'Electric Mining Drill', shortName: 'El Drill', category: 'production', colorHex: 0x0ea5e9, cssColor: '#0ea5e9' },
-  offshore_pump: { id: 'offshore_pump', name: 'Offshore Pump', shortName: 'Water Pump', category: 'production', colorHex: 0x0284c7, cssColor: '#0284c7' },
-  stone_furnace: { id: 'stone_furnace', name: 'Stone Furnace', shortName: 'Stn Furn', category: 'production', colorHex: 0xa8a29e, cssColor: '#a8a29e' },
-  steel_furnace: { id: 'steel_furnace', name: 'Steel Furnace', shortName: 'Stl Furn', category: 'production', colorHex: 0x64748b, cssColor: '#64748b' },
-  electric_furnace: { id: 'electric_furnace', name: 'Electric Furnace', shortName: 'El Furn', category: 'production', colorHex: 0xf97316, cssColor: '#f97316' },
-  assembling_machine_1: { id: 'assembling_machine_1', name: 'Assembling Machine 1', shortName: 'Asmb 1', category: 'production', colorHex: 0x60a5fa, cssColor: '#60a5fa' },
-  assembling_machine_2: { id: 'assembling_machine_2', name: 'Assembling Machine 2', shortName: 'Asmb 2', category: 'production', colorHex: 0x2563eb, cssColor: '#2563eb' },
-  assembling_machine_3: { id: 'assembling_machine_3', name: 'Assembling Machine 3', shortName: 'Asmb 3', category: 'production', colorHex: 0xeab308, cssColor: '#eab308' },
-  oil_refinery: { id: 'oil_refinery', name: 'Oil Refinery', shortName: 'Refinery', category: 'production', colorHex: 0x334155, cssColor: '#334155' },
-  chemical_plant: { id: 'chemical_plant', name: 'Chemical Plant', shortName: 'Chem Plnt', category: 'production', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
-  centrifuge: { id: 'centrifuge', name: 'Centrifuge', shortName: 'Centrifuge', category: 'production', colorHex: 0x22c55e, cssColor: '#22c55e' },
-  boiler: { id: 'boiler', name: 'Boiler', shortName: 'Boiler', category: 'production', colorHex: 0x64748b, cssColor: '#64748b' },
-  steam_engine: { id: 'steam_engine', name: 'Steam Engine', shortName: 'Steam Eng', category: 'production', colorHex: 0xef4444, cssColor: '#ef4444' },
-  steam_turbine: { id: 'steam_turbine', name: 'Steam Turbine', shortName: 'Turbine', category: 'production', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
-  solar_panel: { id: 'solar_panel', name: 'Solar Panel', shortName: 'Solar', category: 'production', colorHex: 0x1d4ed8, cssColor: '#1d4ed8' },
-  accumulator: { id: 'accumulator', name: 'Accumulator', shortName: 'Accum', category: 'production', colorHex: 0x0ea5e9, cssColor: '#0ea5e9' },
-  nuclear_reactor: { id: 'nuclear_reactor', name: 'Nuclear Reactor', shortName: 'Reactor', category: 'production', colorHex: 0x16a34a, cssColor: '#16a34a' },
-  heat_exchanger: { id: 'heat_exchanger', name: 'Heat Exchanger', shortName: 'Heat Exch', category: 'production', colorHex: 0xea580c, cssColor: '#ea580c' },
-  heat_pipe: { id: 'heat_pipe', name: 'Heat Pipe', shortName: 'Heat Pipe', category: 'production', colorHex: 0xf97316, cssColor: '#f97316' },
-  lab: { id: 'lab', name: 'Lab', shortName: 'Lab', category: 'production', colorHex: 0xa855f7, cssColor: '#a855f7' },
-  beacon: { id: 'beacon', name: 'Beacon', shortName: 'Beacon', category: 'production', colorHex: 0x38bdf8, cssColor: '#38bdf8' },
-  rocket_silo: { id: 'rocket_silo', name: 'Rocket Silo', shortName: 'Silo', category: 'rocket', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
-  repair_pack: { id: 'repair_pack', name: 'Repair Pack', shortName: 'Repair', category: 'production', colorHex: 0xeab308, cssColor: '#eab308' },
-  speed_module: { id: 'speed_module', name: 'Speed Module', shortName: 'Spd Mod', category: 'production', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
-  speed_module_2: { id: 'speed_module_2', name: 'Speed Module 2', shortName: 'Spd Mod 2', category: 'production', colorHex: 0x1d4ed8, cssColor: '#1d4ed8' },
-  efficiency_module: { id: 'efficiency_module', name: 'Efficiency Module', shortName: 'Eff Mod', category: 'production', colorHex: 0x22c55e, cssColor: '#22c55e' },
-  efficiency_module_2: { id: 'efficiency_module_2', name: 'Efficiency Module 2', shortName: 'Eff Mod 2', category: 'production', colorHex: 0x15803d, cssColor: '#15803d' },
-  productivity_module: { id: 'productivity_module', name: 'Productivity Module', shortName: 'Prd Mod', category: 'production', colorHex: 0xef4444, cssColor: '#ef4444' },
-  productivity_module_2: { id: 'productivity_module_2', name: 'Productivity Module 2', shortName: 'Prd Mod 2', category: 'production', colorHex: 0xb91c1c, cssColor: '#b91c1c' },
+  burner_mining_drill: { id: 'burner_mining_drill', name: 'Burner Mining Drill', shortName: 'Brn Drill', category: 'production', shape: 'crate', colorHex: 0x78716c, cssColor: '#78716c' },
+  electric_mining_drill: { id: 'electric_mining_drill', name: 'Electric Mining Drill', shortName: 'El Drill', category: 'production', shape: 'crate', colorHex: 0x0ea5e9, cssColor: '#0ea5e9' },
+  offshore_pump: { id: 'offshore_pump', name: 'Offshore Pump', shortName: 'Water Pump', category: 'production', shape: 'crate', colorHex: 0x0284c7, cssColor: '#0284c7' },
+  stone_furnace: { id: 'stone_furnace', name: 'Stone Furnace', shortName: 'Stn Furn', category: 'production', shape: 'crate', colorHex: 0xa8a29e, cssColor: '#a8a29e' },
+  steel_furnace: { id: 'steel_furnace', name: 'Steel Furnace', shortName: 'Stl Furn', category: 'production', shape: 'crate', colorHex: 0x64748b, cssColor: '#64748b' },
+  electric_furnace: { id: 'electric_furnace', name: 'Electric Furnace', shortName: 'El Furn', category: 'production', shape: 'crate', colorHex: 0xf97316, cssColor: '#f97316' },
+  assembling_machine_1: { id: 'assembling_machine_1', name: 'Assembling Machine 1', shortName: 'Asmb 1', category: 'production', shape: 'crate', colorHex: 0x60a5fa, cssColor: '#60a5fa' },
+  assembling_machine_2: { id: 'assembling_machine_2', name: 'Assembling Machine 2', shortName: 'Asmb 2', category: 'production', shape: 'crate', colorHex: 0x2563eb, cssColor: '#2563eb' },
+  assembling_machine_3: { id: 'assembling_machine_3', name: 'Assembling Machine 3', shortName: 'Asmb 3', category: 'production', shape: 'crate', colorHex: 0xeab308, cssColor: '#eab308' },
+  oil_refinery: { id: 'oil_refinery', name: 'Oil Refinery', shortName: 'Refinery', category: 'production', shape: 'crate', colorHex: 0x334155, cssColor: '#334155' },
+  chemical_plant: { id: 'chemical_plant', name: 'Chemical Plant', shortName: 'Chem Plnt', category: 'production', shape: 'crate', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
+  centrifuge: { id: 'centrifuge', name: 'Centrifuge', shortName: 'Centrifuge', category: 'production', shape: 'crate', colorHex: 0x22c55e, cssColor: '#22c55e' },
+  boiler: { id: 'boiler', name: 'Boiler', shortName: 'Boiler', category: 'production', shape: 'crate', colorHex: 0x64748b, cssColor: '#64748b' },
+  steam_engine: { id: 'steam_engine', name: 'Steam Engine', shortName: 'Steam Eng', category: 'production', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
+  steam_turbine: { id: 'steam_turbine', name: 'Steam Turbine', shortName: 'Turbine', category: 'production', shape: 'crate', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
+  solar_panel: { id: 'solar_panel', name: 'Solar Panel', shortName: 'Solar', category: 'production', shape: 'crate', colorHex: 0x1d4ed8, cssColor: '#1d4ed8' },
+  accumulator: { id: 'accumulator', name: 'Accumulator', shortName: 'Accum', category: 'production', shape: 'crate', colorHex: 0x0ea5e9, cssColor: '#0ea5e9' },
+  nuclear_reactor: { id: 'nuclear_reactor', name: 'Nuclear Reactor', shortName: 'Reactor', category: 'production', shape: 'crate', colorHex: 0x16a34a, cssColor: '#16a34a' },
+  heat_exchanger: { id: 'heat_exchanger', name: 'Heat Exchanger', shortName: 'Heat Exch', category: 'production', shape: 'crate', colorHex: 0xea580c, cssColor: '#ea580c' },
+  heat_pipe: { id: 'heat_pipe', name: 'Heat Pipe', shortName: 'Heat Pipe', category: 'production', shape: 'crate', colorHex: 0xf97316, cssColor: '#f97316' },
+  lab: { id: 'lab', name: 'Lab', shortName: 'Lab', category: 'production', shape: 'crate', colorHex: 0xa855f7, cssColor: '#a855f7' },
+  beacon: { id: 'beacon', name: 'Beacon', shortName: 'Beacon', category: 'production', shape: 'crate', colorHex: 0x38bdf8, cssColor: '#38bdf8' },
+  rocket_silo: { id: 'rocket_silo', name: 'Rocket Silo', shortName: 'Silo', category: 'rocket', shape: 'crate', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
+  repair_pack: { id: 'repair_pack', name: 'Repair Pack', shortName: 'Repair', category: 'production', shape: 'module', colorHex: 0xeab308, cssColor: '#eab308' },
+  speed_module: { id: 'speed_module', name: 'Speed Module', shortName: 'Spd Mod', category: 'production', shape: 'module', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
+  speed_module_2: { id: 'speed_module_2', name: 'Speed Module 2', shortName: 'Spd Mod 2', category: 'production', shape: 'module', colorHex: 0x1d4ed8, cssColor: '#1d4ed8' },
+  efficiency_module: { id: 'efficiency_module', name: 'Efficiency Module', shortName: 'Eff Mod', category: 'production', shape: 'module', colorHex: 0x22c55e, cssColor: '#22c55e' },
+  efficiency_module_2: { id: 'efficiency_module_2', name: 'Efficiency Module 2', shortName: 'Eff Mod 2', category: 'production', shape: 'module', colorHex: 0x15803d, cssColor: '#15803d' },
+  productivity_module: { id: 'productivity_module', name: 'Productivity Module', shortName: 'Prd Mod', category: 'production', shape: 'module', colorHex: 0xef4444, cssColor: '#ef4444' },
+  productivity_module_2: { id: 'productivity_module_2', name: 'Productivity Module 2', shortName: 'Prd Mod 2', category: 'production', shape: 'module', colorHex: 0xb91c1c, cssColor: '#b91c1c' },
 
   // Intermediates
-  iron_stick: { id: 'iron_stick', name: 'Iron Stick', shortName: 'Fe Stick', category: 'intermediate', shape: 'plate', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
+  iron_stick: { id: 'iron_stick', name: 'Iron Stick', shortName: 'Fe Stick', category: 'intermediate', shape: 'coil', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
   iron_gear: { id: 'iron_gear', name: 'Iron Gear Wheel', shortName: 'Gear', category: 'intermediate', shape: 'gear', colorHex: 0xcbd5e1, cssColor: '#cbd5e1' },
   copper_cable: { id: 'copper_cable', name: 'Copper Cable', shortName: 'Cable', category: 'intermediate', shape: 'coil', colorHex: 0xf97316, cssColor: '#f97316' },
   electronic_circuit: { id: 'electronic_circuit', name: 'Electronic Circuit', shortName: 'G-Circuit', category: 'intermediate', shape: 'circuit', colorHex: 0x22c55e, cssColor: '#22c55e' },
-  plastic_bar: { id: 'plastic_bar', name: 'Plastic Bar', shortName: 'Plastic', category: 'intermediate', shape: 'plate', colorHex: 0xf8fafc, cssColor: '#f8fafc' },
+  plastic_bar: { id: 'plastic_bar', name: 'Plastic Bar', shortName: 'Plastic', category: 'intermediate', shape: 'brick', colorHex: 0xf8fafc, cssColor: '#f8fafc' },
   sulfur: { id: 'sulfur', name: 'Sulfur', shortName: 'Sulfur', category: 'intermediate', shape: 'ore', colorHex: 0xfde047, cssColor: '#fde047' },
-  battery: { id: 'battery', name: 'Battery', shortName: 'Battery', category: 'intermediate', shape: 'crate', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
-  explosives: { id: 'explosives', name: 'Explosives', shortName: 'Explosiv', category: 'intermediate', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
-  engine_unit: { id: 'engine_unit', name: 'Engine Unit', shortName: 'Engine', category: 'intermediate', shape: 'gear', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
-  electric_engine_unit: { id: 'electric_engine_unit', name: 'Electric Engine Unit', shortName: 'El Eng', category: 'intermediate', shape: 'gear', colorHex: 0xef4444, cssColor: '#ef4444' },
-  flying_robot_frame: { id: 'flying_robot_frame', name: 'Flying Robot Frame', shortName: 'Bot Frm', category: 'intermediate', shape: 'crate', colorHex: 0xeab308, cssColor: '#eab308' },
+  battery: { id: 'battery', name: 'Battery', shortName: 'Battery', category: 'intermediate', shape: 'battery', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
+  explosives: { id: 'explosives', name: 'Explosives', shortName: 'Explosiv', category: 'intermediate', shape: 'barrel', colorHex: 0xef4444, cssColor: '#ef4444' },
+  engine_unit: { id: 'engine_unit', name: 'Engine Unit', shortName: 'Engine', category: 'intermediate', shape: 'engine', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
+  electric_engine_unit: { id: 'electric_engine_unit', name: 'Electric Engine Unit', shortName: 'El Eng', category: 'intermediate', shape: 'engine', colorHex: 0xef4444, cssColor: '#ef4444' },
+  flying_robot_frame: { id: 'flying_robot_frame', name: 'Flying Robot Frame', shortName: 'Bot Frm', category: 'intermediate', shape: 'engine', colorHex: 0xeab308, cssColor: '#eab308' },
   advanced_circuit: { id: 'advanced_circuit', name: 'Advanced Circuit', shortName: 'R-Circuit', category: 'intermediate', shape: 'circuit', colorHex: 0xef4444, cssColor: '#ef4444' },
   low_density_structure: { id: 'low_density_structure', name: 'Low Density Structure', shortName: 'LDS', category: 'intermediate', shape: 'plate', colorHex: 0xfbbf24, cssColor: '#fbbf24' },
-  solid_fuel: { id: 'solid_fuel', name: 'Solid Fuel', shortName: 'Solid Fl', category: 'intermediate', shape: 'ore', colorHex: 0x334155, cssColor: '#64748b' },
-  rocket_fuel: { id: 'rocket_fuel', name: 'Rocket Fuel', shortName: 'Rkt Fuel', category: 'intermediate', shape: 'crate', colorHex: 0xf43f5e, cssColor: '#f43f5e' },
-  rocket_control_unit: { id: 'rocket_control_unit', name: 'Rocket Control Unit', shortName: 'RCU', category: 'intermediate', shape: 'circuit', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
+  solid_fuel: { id: 'solid_fuel', name: 'Solid Fuel', shortName: 'Solid Fl', category: 'intermediate', shape: 'barrel', colorHex: 0x334155, cssColor: '#64748b' },
+  rocket_fuel: { id: 'rocket_fuel', name: 'Rocket Fuel', shortName: 'Rkt Fuel', category: 'intermediate', shape: 'barrel', colorHex: 0xf43f5e, cssColor: '#f43f5e' },
+  rocket_control_unit: { id: 'rocket_control_unit', name: 'Rocket Control Unit', shortName: 'RCU', category: 'intermediate', shape: 'module', colorHex: 0x06b6d4, cssColor: '#06b6d4' },
   processing_unit: { id: 'processing_unit', name: 'Processing Unit', shortName: 'Blue CPU', category: 'intermediate', shape: 'circuit', colorHex: 0x2563eb, cssColor: '#2563eb' },
-  rocket_part: { id: 'rocket_part', name: 'Rocket Part', shortName: 'Rocket Core', category: 'rocket', shape: 'crate', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
+  rocket_part: { id: 'rocket_part', name: 'Rocket Part', shortName: 'Rocket Core', category: 'rocket', shape: 'module', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
 
   // Combat & Defense
-  firearm_magazine: { id: 'firearm_magazine', name: 'Firearm Magazine', shortName: 'Ammo', category: 'combat', shape: 'crate', colorHex: 0xeab308, cssColor: '#eab308' },
-  piercing_rounds_magazine: { id: 'piercing_rounds_magazine', name: 'Piercing Rounds Mag', shortName: 'AP Ammo', category: 'combat', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
-  grenade: { id: 'grenade', name: 'Grenade', shortName: 'Grenade', category: 'combat', shape: 'fruit', colorHex: 0x4d7c0f, cssColor: '#65a30d' },
-  stone_wall: { id: 'stone_wall', name: 'Wall', shortName: 'Wall', category: 'combat', shape: 'plate', colorHex: 0xa8a29e, cssColor: '#a8a29e' },
+  firearm_magazine: { id: 'firearm_magazine', name: 'Firearm Magazine', shortName: 'Ammo', category: 'combat', shape: 'ammo', colorHex: 0xeab308, cssColor: '#eab308' },
+  piercing_rounds_magazine: { id: 'piercing_rounds_magazine', name: 'Piercing Rounds Mag', shortName: 'AP Ammo', category: 'combat', shape: 'ammo', colorHex: 0xef4444, cssColor: '#ef4444' },
+  grenade: { id: 'grenade', name: 'Grenade', shortName: 'Grenade', category: 'combat', shape: 'grenade', colorHex: 0x4d7c0f, cssColor: '#65a30d' },
+  stone_wall: { id: 'stone_wall', name: 'Wall', shortName: 'Wall', category: 'combat', shape: 'brick', colorHex: 0xa8a29e, cssColor: '#a8a29e' },
   gate: { id: 'gate', name: 'Gate', shortName: 'Gate', category: 'combat', shape: 'crate', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
   gun_turret: { id: 'gun_turret', name: 'Gun Turret', shortName: 'Gun Tur', category: 'combat', shape: 'crate', colorHex: 0xf97316, cssColor: '#f97316' },
   laser_turret: { id: 'laser_turret', name: 'Laser Turret', shortName: 'Las Tur', category: 'combat', shape: 'crate', colorHex: 0xef4444, cssColor: '#ef4444' },
   radar: { id: 'radar', name: 'Radar', shortName: 'Radar', category: 'combat', shape: 'crate', colorHex: 0x64748b, cssColor: '#64748b' },
-  light_armor: { id: 'light_armor', name: 'Light Armor', shortName: 'Lt Armor', category: 'combat', shape: 'crate', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
-  heavy_armor: { id: 'heavy_armor', name: 'Heavy Armor', shortName: 'Hv Armor', category: 'combat', shape: 'crate', colorHex: 0x475569, cssColor: '#475569' },
-  modular_armor: { id: 'modular_armor', name: 'Modular Armor', shortName: 'Mod Armor', category: 'combat', shape: 'crate', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
-  power_armor: { id: 'power_armor', name: 'Power Armor', shortName: 'Pwr Armor', category: 'combat', shape: 'crate', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
+  light_armor: { id: 'light_armor', name: 'Light Armor', shortName: 'Lt Armor', category: 'combat', shape: 'armor', colorHex: 0x94a3b8, cssColor: '#94a3b8' },
+  heavy_armor: { id: 'heavy_armor', name: 'Heavy Armor', shortName: 'Hv Armor', category: 'combat', shape: 'armor', colorHex: 0x475569, cssColor: '#475569' },
+  modular_armor: { id: 'modular_armor', name: 'Modular Armor', shortName: 'Mod Armor', category: 'combat', shape: 'armor', colorHex: 0x3b82f6, cssColor: '#3b82f6' },
+  power_armor: { id: 'power_armor', name: 'Power Armor', shortName: 'Pwr Armor', category: 'combat', shape: 'armor', colorHex: 0xf59e0b, cssColor: '#f59e0b' },
 
   // Science Packs
   automation_science: { id: 'automation_science', name: 'Automation Science Pack', shortName: 'Red Sci', category: 'science', shape: 'science', colorHex: 0xef4444, cssColor: '#ef4444' },

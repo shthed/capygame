@@ -176,6 +176,7 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
       return (
         <CapytorioMachineIcon
           machineType={m.type}
+          variantItemId={m.variantItemId}
           color={hexToCss(m.colorHex)}
           size={size}
           className="shrink-0"

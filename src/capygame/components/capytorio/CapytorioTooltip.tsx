@@ -28,6 +28,7 @@ export interface CapytorioSlotTooltipData {
   subtitle?: string;
   description?: string;
   machineType?: CapytorioMachineType;
+  variantItemId?: string;
   itemShape?: CapytorioItemShape;
   color: string;
   footprint?: string;
@@ -83,6 +84,7 @@ export const CapytorioTooltip: React.FC<CapytorioTooltipProps> = ({ hoverTooltip
           {hoverTooltip.machineType ? (
             <CapytorioMachineIcon
               machineType={hoverTooltip.machineType}
+              variantItemId={hoverTooltip.variantItemId}
               color={hoverTooltip.color}
               size={22}
             />

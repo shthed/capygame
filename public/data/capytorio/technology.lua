@@ -488,6 +488,7 @@ data:extend({
       { type = "unlock-recipe", recipe = "production-science-pack" },
       { type = "unlock-recipe", recipe = "assembling-machine-3" },
       { type = "unlock-recipe", recipe = "nuclear-reactor" },
+      { type = "unlock-recipe", recipe = "steam-turbine" },
     },
     unit = {
       count = 1,

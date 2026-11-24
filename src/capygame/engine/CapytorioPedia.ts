@@ -25,7 +25,7 @@ export type CapytorioPediaCategory =
   | 'world';
 
 export type CapytorioPediaIcon =
-  | { kind: 'machine'; machineType: CapytorioMachineType; color: string }
+  | { kind: 'machine'; machineType: CapytorioMachineType; variantItemId?: string; color: string }
   | { kind: 'item'; shape: CapytorioItemShape; color: string }
   | { kind: 'world'; worldKind: 'tree' | 'beacon' | 'terrain' }
   | { kind: 'tech'; color: string };
@@ -91,6 +91,39 @@ const RESOURCE_DESCRIPTIONS: Record<string, string> = {
     'Golden Capybara grove sap deposit. Serves as both a rich Generator biofuel and bio-chemical science reagent.',
   orange:
     'Fresh citrus harvested from Wild Citrus Trees [E]. Burns inside Steam Generators as renewable bio-fuel.',
+};
+
+const VARIANT_DESCRIPTIONS: Record<string, string> = {
+  pipe: 'Pressurized industrial fluid conduit connecting offshore pumps, boilers, refineries, and chemical plants.',
+  pipe_to_ground: 'Subterranean fluid conduit elbow that routes pipelines cleanly underneath belt buses and rail yards.',
+  pump: 'High-pressure inline impeller booster pump that regulates and accelerates pipeline flow.',
+  oil_refinery: 'Heavy 3×3 fractional distillation complex with cracking towers and flare stack for processing fuels and chemical intermediates.',
+  chemical_plant: 'Dual-chamber 3×3 chemical synthesis plant for plastic bars, sulfur, batteries, explosives, and solid fuel.',
+  rail: 'Standard-gauge steel track segment on timber sleepers for building industrial Capytorio rail corridors.',
+  train_stop: 'Automated railway station beacon and signal mast that marks loading and unloading zones along rail lines.',
+  locomotive: 'Heavy 2×1 diesel-electric Capytorio rail engine with dual roof radiator fans and high-capacity freight bay.',
+  cargo_wagon: 'Armored 2×1 railway freight car built to haul bulk plates, circuits, and ore shipments across rail corridors.',
+  roboport: '3×3 autonomous robotics hangar that launches hovering Logistic and Construction Robots to support factory automation.',
+  steam_turbine: 'High-output 3×3 multi-stage steam turbine generator paired with nuclear reactors and high-temperature steam loops.',
+  solar_panel: 'Clean 3×3 photovoltaic collector array delivering steady zero-fuel power to your factory grid.',
+  accumulator: 'High-voltage 2×2 capacitor bank that buffers surplus electrical power and stabilizes peak demand.',
+  nuclear_reactor: 'Containment-shielded 3×3 Cherenkov reactor core producing massive industrial grid power.',
+  beacon: '3×3 module transmission tower that broadcasts socketed Speed, Efficiency, or Productivity bonuses to nearby machines within 6 tiles.',
+  radar: '3×3 rotating long-range reconnaissance dish that continuously scans surrounding factory sectors.',
+  rocket_silo: '3×3 orbital launch bay with gantry arms and blast doors for assembling and launching the Capytorio Rocket.',
+  offshore_pump: 'Shoreline intake pump placed on coastal water tiles to supply cooling water to steam boilers and refineries.',
+  substation: '2×2 high-voltage transformer bay distributing power cleanly across wide factory blocks.',
+  stone_wall: 'Reinforced beveled masonry fortification block for securing factory perimeters.',
+  gate: 'Armored retractable blast gate that integrates seamlessly into Stone Wall defensive lines.',
+  gun_turret: 'Automated sentry plinth with twin rotating autocannons for perimeter defense.',
+  laser_turret: 'High-energy ruby crystal emitter turret on an armored gimbal pedestal.',
+  speed_module: 'Socketable machine upgrade that boosts crafting and mining speed by +20% (with +50% power draw).',
+  speed_module_2: 'Tier-2 socketable upgrade boosting machine speed by +35% (with +60% power draw).',
+  efficiency_module: 'Socketable machine upgrade that reduces electrical power draw by -30% (down to a 20% floor).',
+  efficiency_module_2: 'Tier-2 socketable upgrade reducing electrical power draw by -45%.',
+  productivity_module: 'Socketable machine upgrade adding +10% bonus output cycles (with -10% speed and +40% power draw).',
+  productivity_module_2: 'Tier-2 socketable upgrade adding +18% bonus output cycles.',
+  repair_pack: 'Field maintenance toolkit that restores damaged structures to 100% integrity and grants a 30s +20% tune-up speed boost.',
 };
 
 const MACHINE_TIPS: Record<CapytorioMachineType, string[]> = {
@@ -477,7 +510,9 @@ export function buildCapytorioPediaCatalog(): CapytorioPediaEntry[] {
     const tips: string[] = [];
 
     if (placeable && baseSpec) {
-      description = `${meta.name} is a ${placeable.tierMult.toFixed(2)}× tier ${baseSpec.name}. ${baseSpec.description}`;
+      description =
+        VARIANT_DESCRIPTIONS[meta.id] ??
+        `${meta.name} is a ${placeable.tierMult.toFixed(2)}× tier ${baseSpec.name}. ${baseSpec.description}`;
       sourceSummary =
         producedByRecipes.length > 0
           ? `Crafted via ${producedByRecipes[0].station === 'furnace' ? 'Foundry' : 'Assembler / Pocket'}`
@@ -495,7 +530,13 @@ export function buildCapytorioPediaCatalog(): CapytorioPediaEntry[] {
                 : '0 MW',
         }
       );
-      tips.push(...(MACHINE_TIPS[placeable.baseType] ?? []));
+      if (meta.id === 'roboport') {
+        tips.push('Store Logistic or Construction Robots in your pocket or roboport to see mini-drones hover and patrol overhead.');
+      } else if (meta.id === 'beacon') {
+        tips.push('Socket Speed, Efficiency, or Productivity Modules into a Beacon to boost machines within 6 tiles.');
+      } else {
+        tips.push(...(MACHINE_TIPS[placeable.baseType] ?? []));
+      }
       tips.push('Equip from Inventory to assign this variant into Quickbar Slot 1.');
     } else if (meta.category === 'ore' || meta.id === 'orange') {
       description =
@@ -531,7 +572,9 @@ export function buildCapytorioPediaCatalog(): CapytorioPediaEntry[] {
         sourceSummary = 'Crafted after unlocking Electromagnetics / Rocket Silo Tech';
         tips.push('Click the Launch button on the bottom toolbar once Rocket Parts are crafted.');
       } else {
-        description = `${meta.name} is an intermediate or refined industrial component defined in recipe.lua for factory automation.`;
+        description =
+          VARIANT_DESCRIPTIONS[meta.id] ??
+          `${meta.name} is an intermediate or refined industrial component defined in recipe.lua for factory automation.`;
         sourceSummary =
           producedByRecipes.length > 0
             ? producedByRecipes[0].station === 'furnace'
@@ -571,6 +614,7 @@ export function buildCapytorioPediaCatalog(): CapytorioPediaEntry[] {
         ? {
             kind: 'machine',
             machineType: placeable.baseType,
+            variantItemId: meta.id,
             color: hexToCss(placeable.tintHex ?? baseSpec?.colorHex ?? meta.colorHex),
           }
         : {

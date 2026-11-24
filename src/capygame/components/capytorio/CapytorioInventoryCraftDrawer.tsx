@@ -406,6 +406,7 @@ export const CapytorioInventoryCraftDrawer: React.FC<CapytorioInventoryCraftDraw
                         ? CAPYTORIO_MACHINE_SPECS[placeable.baseType]?.description
                         : undefined,
                       machineType: placeable?.baseType,
+                      variantItemId: placeable ? meta.id : undefined,
                       itemShape: shape,
                       color: resolvedColor,
                       footprint: fpLabel,
@@ -425,6 +426,7 @@ export const CapytorioInventoryCraftDrawer: React.FC<CapytorioInventoryCraftDraw
                       selected={isEquipped}
                       dimmed={qty === 0 && !isEquipped}
                       machineType={placeable?.baseType}
+                      variantItemId={placeable ? meta.id : undefined}
                       itemShape={shape}
                       color={resolvedColor}
                       onMouseEnter={(e) => openTip(e.currentTarget)}
@@ -774,6 +776,7 @@ export const CapytorioInventoryCraftDrawer: React.FC<CapytorioInventoryCraftDraw
                         ? CAPYTORIO_MACHINE_SPECS[placeable.baseType]?.description
                         : undefined,
                       machineType: placeable?.baseType,
+                      variantItemId: placeable ? rec.result : undefined,
                       itemShape: shape,
                       color: resolvedColor,
                       footprint: fp ? `${fp.width}×${fp.height}` : undefined,
@@ -795,6 +798,7 @@ export const CapytorioInventoryCraftDrawer: React.FC<CapytorioInventoryCraftDraw
                       selected={isSelected}
                       accent={canAfford ? 'craftable' : 'missing'}
                       machineType={placeable?.baseType}
+                      variantItemId={placeable ? rec.result : undefined}
                       itemShape={shape}
                       color={resolvedColor}
                       onMouseEnter={(e) => openTip(e.currentTarget)}

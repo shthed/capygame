@@ -3,6 +3,7 @@ import type { CapytorioItemShape, CapytorioMachineType } from '../engine/Capytor
 
 interface CapytorioMachineIconProps {
   machineType: CapytorioMachineType;
+  variantItemId?: string;
   color: string;
   size?: number;
   className?: string;
@@ -10,10 +11,261 @@ interface CapytorioMachineIconProps {
 
 export const CapytorioMachineIcon: React.FC<CapytorioMachineIconProps> = ({
   machineType,
+  variantItemId,
   color,
   size = 28,
   className = '',
 }) => {
+  if (variantItemId) {
+    switch (variantItemId) {
+      case 'small_electric_pole':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="10.4" y="4.5" width="3.2" height="16.5" rx="0.8" fill="#8b5a2b" stroke="#111317" strokeWidth="1.3" />
+            <rect x="5" y="7" width="14" height="2.4" rx="0.6" fill="#a4713c" stroke="#111317" strokeWidth="1.1" />
+            <circle cx="6.8" cy="6.2" r="1.4" fill="#e2e8f0" stroke="#111317" strokeWidth="0.9" />
+            <circle cx="17.2" cy="6.2" r="1.4" fill="#e2e8f0" stroke="#111317" strokeWidth="0.9" />
+            <path d="M5 18.5H19" stroke="#3a3f4a" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        );
+      case 'medium_electric_pole':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M9 20.5L10.8 4H13.2L15 20.5H9Z" fill="#64748b" stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+            <path d="M9.6 15.5L14.4 11M14.4 15.5L9.6 11" stroke="#cbd5e1" strokeWidth="1.1" />
+            <rect x="4.5" y="6.2" width="15" height="2.1" rx="0.5" fill={color} stroke="#111317" strokeWidth="1" />
+            <rect x="6" y="9.8" width="12" height="1.8" rx="0.5" fill="#94a3b8" stroke="#111317" strokeWidth="0.9" />
+            <circle cx="6.2" cy="5.5" r="1.3" fill="#38bdf8" stroke="#111317" strokeWidth="0.9" />
+            <circle cx="17.8" cy="5.5" r="1.3" fill="#38bdf8" stroke="#111317" strokeWidth="0.9" />
+          </svg>
+        );
+      case 'big_electric_pole':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M7 20.5L10.5 3.5H13.5L17 20.5H14.2L12 13.5L9.8 20.5H7Z" fill="#475569" stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+            <path d="M8.5 15H15.5M9.5 10.5H14.5" stroke="#cbd5e1" strokeWidth="1.1" />
+            <rect x="3" y="6.5" width="18" height="2.2" rx="0.5" fill={color} stroke="#111317" strokeWidth="1" />
+            <circle cx="4.8" cy="9.6" r="1.3" fill="#e2e8f0" stroke="#111317" strokeWidth="0.9" />
+            <circle cx="19.2" cy="9.6" r="1.3" fill="#e2e8f0" stroke="#111317" strokeWidth="0.9" />
+            <circle cx="8" cy="5.4" r="1.1" fill="#38bdf8" />
+            <circle cx="16" cy="5.4" r="1.1" fill="#38bdf8" />
+          </svg>
+        );
+      case 'substation':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="9" width="17" height="11" rx="1.2" fill="#2c323d" stroke="#111317" strokeWidth="1.4" />
+            <path d="M6.5 11V18M9.5 11V18M14.5 11V18M17.5 11V18" stroke="#64748b" strokeWidth="1.4" />
+            <rect x="6" y="4.5" width="2.8" height="4.8" rx="0.6" fill="#38bdf8" stroke="#111317" strokeWidth="1" />
+            <rect x="10.6" y="4.5" width="2.8" height="4.8" rx="0.6" fill="#38bdf8" stroke="#111317" strokeWidth="1" />
+            <rect x="15.2" y="4.5" width="2.8" height="4.8" rx="0.6" fill="#38bdf8" stroke="#111317" strokeWidth="1" />
+            <path d="M5.5 6.2H18.5" stroke="#ea580c" strokeWidth="1.5" />
+          </svg>
+        );
+      case 'stone_wall':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M3.5 9V5.5H7.5V8H10.2V5.5H13.8V8H16.5V5.5H20.5V19.5H3.5V9Z" fill="#7c8594" stroke="#111317" strokeWidth="1.4" strokeLinejoin="round" />
+            <path d="M3.5 12H20.5M3.5 15.8H20.5M9.5 12V15.8M15 12V15.8M12 15.8V19.5" stroke="#374151" strokeWidth="1.2" />
+          </svg>
+        );
+      case 'gate':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="4.5" width="4" height="15.5" rx="0.8" fill="#475569" stroke="#111317" strokeWidth="1.3" />
+            <rect x="16.5" y="4.5" width="4" height="15.5" rx="0.8" fill="#475569" stroke="#111317" strokeWidth="1.3" />
+            <rect x="7.5" y="7" width="9" height="11" fill="#334155" stroke="#111317" strokeWidth="1.2" />
+            <path d="M7.5 15.5H16.5" stroke="#facc15" strokeWidth="2.2" />
+            <path d="M12 7V18" stroke="#111317" strokeWidth="1.3" />
+          </svg>
+        );
+      case 'gun_turret':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="5" y="14.5" width="14" height="5.5" rx="1.2" fill="#334155" stroke="#111317" strokeWidth="1.4" />
+            <rect x="6.5" y="8" width="11" height="7" rx="1.5" fill={color} stroke="#111317" strokeWidth="1.3" />
+            <rect x="9.2" y="3.2" width="2.2" height="5.5" rx="0.5" fill="#cbd5e1" stroke="#111317" strokeWidth="1" />
+            <rect x="12.6" y="3.2" width="2.2" height="5.5" rx="0.5" fill="#cbd5e1" stroke="#111317" strokeWidth="1" />
+            <circle cx="12" cy="11.5" r="1.8" fill="#1e293b" />
+          </svg>
+        );
+      case 'laser_turret':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="5.5" y="14.5" width="13" height="5.5" rx="1.2" fill="#2c3038" stroke="#111317" strokeWidth="1.4" />
+            <polygon points="8,14.5 12,6.5 16,14.5" fill="#475569" stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+            <circle cx="12" cy="7.5" r="3.4" fill="#fb7185" stroke="#111317" strokeWidth="1.2" />
+            <circle cx="12" cy="7.5" r="1.4" fill="#fff1f2" />
+            <path d="M12 2.2V4.1M7 4.5L8.4 5.6M17 4.5L15.6 5.6" stroke="#f43f5e" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        );
+      case 'solar_panel':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <polygon points="4.5,6 19.5,6 21,17.5 3,17.5" fill="#1d4ed8" stroke="#111317" strokeWidth="1.4" strokeLinejoin="round" />
+            <path d="M8.5 6L7.5 17.5M12 6V17.5M15.5 6L16.5 17.5M4 10H20M3.5 14H20.5" stroke="#93c5fd" strokeWidth="1" opacity="0.85" />
+            <rect x="9.5" y="17.5" width="5" height="2.8" fill="#475569" stroke="#111317" strokeWidth="1.1" />
+          </svg>
+        );
+      case 'accumulator':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="5" y="6" width="14" height="14" rx="2.2" fill="#2b313c" stroke="#111317" strokeWidth="1.4" />
+            <rect x="7" y="9" width="10" height="2.2" rx="0.8" fill="#38bdf8" />
+            <rect x="7" y="13.5" width="10" height="2.2" rx="0.8" fill="#38bdf8" />
+            <rect x="7.5" y="3.5" width="2.8" height="3" rx="0.5" fill="#f59e0b" stroke="#111317" strokeWidth="1" />
+            <rect x="13.7" y="3.5" width="2.8" height="3" rx="0.5" fill="#f59e0b" stroke="#111317" strokeWidth="1" />
+          </svg>
+        );
+      case 'nuclear_reactor':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="4.5" width="17" height="15" rx="2" fill="#374151" stroke="#111317" strokeWidth="1.4" />
+            <circle cx="12" cy="12" r="5" fill="#10b981" stroke="#111317" strokeWidth="1.3" />
+            <circle cx="12" cy="12" r="2.2" fill="#a7f3d0" />
+            <path d="M5 6H7.5M16.5 6H19M5 18H7.5M16.5 18H19" stroke="#facc15" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+        );
+      case 'steam_turbine':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3" y="7" width="18" height="10" rx="2.5" fill="#475569" stroke="#111317" strokeWidth="1.4" />
+            <path d="M7.5 7V17M11 7V17M14.5 7V17" stroke="#cbd5e1" strokeWidth="1.5" />
+            <rect x="16" y="8.5" width="3.5" height="7" rx="0.8" fill={color} />
+            <rect x="5" y="4.5" width="5" height="2.8" rx="0.6" fill="#ea580c" stroke="#111317" strokeWidth="1" />
+          </svg>
+        );
+      case 'offshore_pump':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M3 17C5.5 15.5 8 18.5 10.5 17C13 15.5 15.5 18.5 21 17V20H3V17Z" fill="#0ea5e9" opacity="0.85" />
+            <rect x="6" y="7" width="11" height="9" rx="1.8" fill={color} stroke="#111317" strokeWidth="1.3" />
+            <path d="M12 7V4.2H17.5" stroke="#cbd5e1" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            <circle cx="11.5" cy="11.5" r="2.2" fill="#1e293b" stroke="#e2e8f0" strokeWidth="1" />
+          </svg>
+        );
+      case 'beacon':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="4" y="13.5" width="16" height="6.5" rx="1.2" fill="#334155" stroke="#111317" strokeWidth="1.4" />
+            <ellipse cx="12" cy="9.5" rx="6.2" ry="2.6" stroke="#38bdf8" strokeWidth="1.6" />
+            <ellipse cx="12" cy="9.5" rx="3.4" ry="5.2" stroke={color} strokeWidth="1.4" />
+            <circle cx="12" cy="9.5" r="2.1" fill="#38bdf8" stroke="#111317" strokeWidth="1" />
+          </svg>
+        );
+      case 'radar':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M6.5 20L10 13H14L17.5 20H6.5Z" fill="#3f4654" stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+            <path d="M6 7.5C8.5 4.2 14.5 4.2 18 8.2L12.2 13.5L6 7.5Z" fill="#cbd5e1" stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+            <path d="M12 8.2L15.5 4.5" stroke="#f59e0b" strokeWidth="1.6" strokeLinecap="round" />
+            <circle cx="15.8" cy="4.2" r="1.4" fill="#38bdf8" />
+          </svg>
+        );
+      case 'rocket_silo':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3" y="4" width="18" height="16" rx="1.6" fill="#475569" stroke="#111317" strokeWidth="1.4" />
+            <rect x="5" y="6" width="14" height="12" rx="1" fill="#181c24" stroke="#facc15" strokeWidth="1.2" />
+            <path d="M12 6.8L14.6 11.2V15.5H9.4V11.2L12 6.8Z" fill="#e2e8f0" stroke="#111317" strokeWidth="1" />
+            <path d="M9.4 13.5L7.6 16H9.4M14.6 13.5L16.4 16H14.6" fill="#ef4444" stroke="#111317" strokeWidth="0.9" />
+          </svg>
+        );
+      case 'pipe':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="8.5" y="3.5" width="7" height="17" rx="1" fill="#64748b" stroke="#111317" strokeWidth="1.3" />
+            <rect x="3.5" y="8.5" width="17" height="7" rx="1" fill="#94a3b8" stroke="#111317" strokeWidth="1.3" />
+            <circle cx="12" cy="12" r="2.6" fill={color} stroke="#111317" strokeWidth="1" />
+          </svg>
+        );
+      case 'pipe_to_ground':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M6.5 18.5V10.5C6.5 7.5 9 5.5 12 5.5H18V11.5H13.5V18.5H6.5Z" fill="#94a3b8" stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+            <rect x="4.5" y="16.5" width="11" height="3" rx="0.7" fill={color} stroke="#111317" strokeWidth="1.1" />
+            <path d="M12 13V16" stroke="#38bdf8" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+        );
+      case 'pump':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="4" y="7" width="16" height="10" rx="2.5" fill="#334155" stroke="#111317" strokeWidth="1.4" />
+            <circle cx="12" cy="12" r="4" fill={color} stroke="#111317" strokeWidth="1.2" />
+            <path d="M10.5 10L14 12L10.5 14V10Z" fill="#e2e8f0" />
+          </svg>
+        );
+      case 'oil_refinery':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="4" y="14" width="16" height="6" rx="1" fill="#334155" stroke="#111317" strokeWidth="1.3" />
+            <rect x="5.5" y="5" width="4.2" height="10" rx="1.2" fill="#94a3b8" stroke="#111317" strokeWidth="1.2" />
+            <rect x="11" y="7.5" width="3.8" height="7.5" rx="1" fill={color} stroke="#111317" strokeWidth="1.2" />
+            <rect x="16" y="4" width="2.4" height="11" rx="0.6" fill="#475569" stroke="#111317" strokeWidth="1.1" />
+            <circle cx="17.2" cy="3.2" r="1.4" fill="#f97316" />
+          </svg>
+        );
+      case 'chemical_plant':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="14.5" width="17" height="5.5" rx="1" fill="#334155" stroke="#111317" strokeWidth="1.3" />
+            <rect x="5" y="6.5" width="5.5" height="8.5" rx="2" fill="#38bdf8" stroke="#111317" strokeWidth="1.2" />
+            <rect x="13.5" y="6.5" width="5.5" height="8.5" rx="2" fill={color} stroke="#111317" strokeWidth="1.2" />
+            <path d="M10.5 9.5H13.5" stroke="#e2e8f0" strokeWidth="1.8" />
+          </svg>
+        );
+      case 'rail':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M4.5 6.5H19.5M4.5 10.2H19.5M4.5 13.8H19.5M4.5 17.5H19.5" stroke="#8b5a2b" strokeWidth="2.2" strokeLinecap="round" />
+            <path d="M7.5 3.5V20.5M16.5 3.5V20.5" stroke="#cbd5e1" strokeWidth="2.1" strokeLinecap="round" />
+          </svg>
+        );
+      case 'train_stop':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="4" y="16" width="16" height="4" rx="0.8" fill="#475569" stroke="#111317" strokeWidth="1.3" />
+            <rect x="9.5" y="6.5" width="3" height="10" fill="#cbd5e1" stroke="#111317" strokeWidth="1.1" />
+            <rect x="7" y="3.5" width="11" height="5" rx="1" fill={color} stroke="#111317" strokeWidth="1.2" />
+            <circle cx="9.8" cy="6" r="1.1" fill="#4ade80" />
+            <circle cx="14.2" cy="6" r="1.1" fill="#facc15" />
+          </svg>
+        );
+      case 'locomotive':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <path d="M3.5 10.5L6.5 7H19.5V16.5H3.5V10.5Z" fill={color} stroke="#111317" strokeWidth="1.4" strokeLinejoin="round" />
+            <rect x="6.5" y="9" width="4.2" height="3.2" rx="0.5" fill="#bae6fd" stroke="#111317" strokeWidth="0.9" />
+            <rect x="12.5" y="8.8" width="5" height="3.5" rx="0.5" fill="#334155" />
+            <circle cx="7.2" cy="17.5" r="2.1" fill="#1e293b" stroke="#cbd5e1" strokeWidth="1" />
+            <circle cx="16.2" cy="17.5" r="2.1" fill="#1e293b" stroke="#cbd5e1" strokeWidth="1" />
+          </svg>
+        );
+      case 'cargo_wagon':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="7" width="17" height="9.5" rx="1.2" fill={color} stroke="#111317" strokeWidth="1.4" />
+            <path d="M8.5 7V16.5M15.5 7V16.5M3.5 11.5H20.5" stroke="#1e293b" strokeWidth="1.2" />
+            <circle cx="7.5" cy="17.5" r="2.1" fill="#1e293b" stroke="#cbd5e1" strokeWidth="1" />
+            <circle cx="16.5" cy="17.5" r="2.1" fill="#1e293b" stroke="#cbd5e1" strokeWidth="1" />
+          </svg>
+        );
+      case 'roboport':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="9.5" width="17" height="10.5" rx="1.5" fill="#334155" stroke="#111317" strokeWidth="1.4" />
+            <rect x="6.5" y="13.5" width="11" height="5" rx="0.8" fill="#0f172a" stroke="#facc15" strokeWidth="1.1" />
+            <circle cx="8" cy="7" r="2.1" fill="#38bdf8" stroke="#111317" strokeWidth="1" />
+            <circle cx="16" cy="7" r="2.1" fill="#f59e0b" stroke="#111317" strokeWidth="1" />
+            <path d="M12 4V9.5" stroke="#cbd5e1" strokeWidth="1.6" strokeLinecap="round" />
+            <circle cx="12" cy="4" r="1.4" fill="#38bdf8" />
+          </svg>
+        );
+      default:
+        break;
+    }
+  }
+
   switch (machineType) {
     case 'drill':
       return (
@@ -194,6 +446,73 @@ export const CapytorioItemIcon: React.FC<CapytorioItemIconProps> = ({
           <circle cx="9.6" cy="11" r="1.6" fill="#ffffff" opacity="0.32" />
         </svg>
       );
+    case 'battery':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <rect x="5.5" y="6.5" width="13" height="13" rx="1.6" fill={color} stroke="#111317" strokeWidth="1.4" />
+          <rect x="7.5" y="4" width="3" height="2.8" rx="0.5" fill="#e2e8f0" stroke="#111317" strokeWidth="1" />
+          <rect x="13.5" y="4" width="3" height="2.8" rx="0.5" fill="#f59e0b" stroke="#111317" strokeWidth="1" />
+          <path d="M12.5 9.2L10 13.2H12L11.2 16.8L14.2 12.6H12.1L12.5 9.2Z" fill="#fef08a" stroke="#111317" strokeWidth="0.7" />
+        </svg>
+      );
+    case 'ammo':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <path d="M5.5 18.5L7.2 7.5H16.8L18.5 18.5H5.5Z" fill="#334155" stroke="#111317" strokeWidth="1.4" strokeLinejoin="round" />
+          <path d="M8.5 7.5L9.5 4.2L10.5 7.5M11.5 7.5L12 4L12.5 7.5M13.5 7.5L14.5 4.2L15.5 7.5" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="7.5" y="11" width="9" height="4" rx="0.6" fill={color} stroke="#111317" strokeWidth="1" />
+        </svg>
+      );
+    case 'grenade':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <circle cx="11.5" cy="13.5" r="5.6" fill={color} stroke="#111317" strokeWidth="1.4" />
+          <path d="M7.5 11.5H15.5M7.5 15.5H15.5M11.5 8V19" stroke="#111317" strokeWidth="1" opacity="0.5" />
+          <rect x="9.8" y="5.5" width="3.4" height="2.6" rx="0.5" fill="#94a3b8" stroke="#111317" strokeWidth="1" />
+          <path d="M13.2 6.2H16.5L18 11.5" stroke="#cbd5e1" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="8" cy="6.2" r="1.4" stroke="#facc15" strokeWidth="1.1" />
+        </svg>
+      );
+    case 'armor':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <path d="M6.5 6.5L9.5 4.8H14.5L17.5 6.5L19.5 10L16.8 11.8L16 19H8L7.2 11.8L4.5 10L6.5 6.5Z" fill={color} stroke="#111317" strokeWidth="1.4" strokeLinejoin="round" />
+          <path d="M9.5 8.5H14.5V13.5L12 15.5L9.5 13.5V8.5Z" fill="#1e293b" stroke="#cbd5e1" strokeWidth="0.9" />
+        </svg>
+      );
+    case 'engine':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <rect x="5" y="9" width="14" height="9" rx="1.4" fill={color} stroke="#111317" strokeWidth="1.4" />
+          <path d="M7 9L9 5.5H11.5V9M17 9L15 5.5H12.5V9" fill="#94a3b8" stroke="#111317" strokeWidth="1.2" strokeLinejoin="round" />
+          <circle cx="12" cy="13.5" r="2.6" fill="#1e293b" stroke="#e2e8f0" strokeWidth="1.1" />
+        </svg>
+      );
+    case 'barrel':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <rect x="6" y="4.5" width="12" height="15" rx="2" fill={color} stroke="#111317" strokeWidth="1.4" />
+          <path d="M5.5 9.2H18.5M5.5 14.8H18.5" stroke="#1e293b" strokeWidth="1.8" />
+          <path d="M6.5 7.5H17.5" stroke="#ffffff" strokeWidth="1" opacity="0.35" />
+        </svg>
+      );
+    case 'brick':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <polygon points="4,13.5 9.5,7.5 20,7.5 14.5,13.5" fill={color} stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+          <polygon points="4,13.5 14.5,13.5 14.5,17.5 4,17.5" fill={color} stroke="#111317" strokeWidth="1.3" strokeLinejoin="round" />
+          <polygon points="14.5,13.5 20,7.5 20,11.5 14.5,17.5" fill="#1b1d22" opacity="0.45" stroke="#111317" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'module':
+      return (
+        <svg width={size} height={size} viewBox="2 2 20 20" fill="none" className={className} aria-hidden="true">
+          <rect x="5" y="4.5" width="14" height="15" rx="1.6" fill="#232730" stroke="#111317" strokeWidth="1.4" />
+          <rect x="7.5" y="7" width="9" height="8" rx="1" fill={color} stroke="#111317" strokeWidth="1.1" />
+          <path d="M8 17.5H10M11 17.5H13M14 17.5H16" stroke="#facc15" strokeWidth="1.6" strokeLinecap="round" />
+          <circle cx="12" cy="11" r="1.8" fill="#ffffff" opacity="0.7" />
+        </svg>
+      );
     case 'crate':
     default:
       return (
@@ -259,6 +578,7 @@ export interface CapytorioSlotTileProps {
   dimmed?: boolean;
   accent?: 'none' | 'craftable' | 'missing' | 'amber';
   machineType?: CapytorioMachineType;
+  variantItemId?: string;
   itemShape?: CapytorioItemShape;
   color: string;
   onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
@@ -283,6 +603,7 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = React.memo(({
   dimmed = false,
   accent = 'none',
   machineType,
+  variantItemId,
   itemShape = 'crate',
   color,
   onClick,
@@ -342,7 +663,12 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = React.memo(({
 
       <div className="flex items-center justify-center pointer-events-none my-auto">
         {machineType ? (
-          <CapytorioMachineIcon machineType={machineType} color={color} size={iconSize} />
+          <CapytorioMachineIcon
+            machineType={machineType}
+            variantItemId={variantItemId}
+            color={color}
+            size={iconSize}
+          />
         ) : (
           <CapytorioItemIcon shape={itemShape} color={color} size={iconSize} />
         )}

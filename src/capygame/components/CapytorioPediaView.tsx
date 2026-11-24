@@ -86,6 +86,7 @@ const EntryIconView: React.FC<{
     return (
       <CapytorioMachineIcon
         machineType={icon.machineType}
+        variantItemId={icon.variantItemId}
         color={icon.color}
         size={size}
         className={className}

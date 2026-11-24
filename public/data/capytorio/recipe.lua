@@ -736,6 +736,22 @@ data:extend({
   },
   {
     type = "recipe",
+    name = "steam-turbine",
+    capytorio_label = "Steam Turbine",
+    category = "crafting",
+    subgroup = "production",
+    enabled = false,
+    energy_required = 2.6,
+    pocket_craftable = true,
+    ingredients = {
+      { type = "item", name = "iron-gear-wheel", amount = 8 },
+      { type = "item", name = "copper-plate", amount = 8 },
+      { type = "item", name = "pipe", amount = 6 },
+    },
+    results = { { type = "item", name = "steam-turbine", amount = 1 } },
+  },
+  {
+    type = "recipe",
     name = "solar-panel",
     capytorio_label = "Solar Panel",
     category = "crafting",

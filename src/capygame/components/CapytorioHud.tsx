@@ -618,6 +618,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                   {inspected ? (
                     <CapytorioMachineIcon
                       machineType={inspected.type}
+                      variantItemId={inspected.variantItemId}
                       color={hexToCss(inspectedSpec?.tintHex ?? CAPYTORIO_MACHINE_SPECS[inspected.type].colorHex)}
                       size={18}
                       className="shrink-0"
@@ -1292,6 +1293,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                                 ? CAPYTORIO_MACHINE_SPECS[placeable.baseType]?.description
                                 : undefined,
                               machineType: placeable?.baseType,
+                              variantItemId: placeable ? rec.result : undefined,
                               itemShape: shape,
                               color: resolvedColor,
                               footprint: fp ? `${fp.width}×${fp.height}` : undefined,
@@ -1313,6 +1315,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                               selected={isSel}
                               accent={hasInputs ? 'craftable' : 'none'}
                               machineType={placeable?.baseType}
+                              variantItemId={placeable ? rec.result : undefined}
                               itemShape={shape}
                               color={resolvedColor}
                               onMouseEnter={(e) => openTip(e.currentTarget)}
@@ -1502,6 +1505,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                       machineType: isMachine
                         ? (q.resultId as CapytorioMachineType)
                         : placeable?.baseType,
+                      variantItemId: !isMachine && placeable ? q.resultId : undefined,
                       itemShape: !isMachine && !placeable ? shape : undefined,
                       hint: 'Click to cancel & refund ingredients',
                     })
@@ -1515,6 +1519,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                       machineType: isMachine
                         ? (q.resultId as CapytorioMachineType)
                         : placeable?.baseType,
+                      variantItemId: !isMachine && placeable ? q.resultId : undefined,
                       itemShape: !isMachine && !placeable ? shape : undefined,
                       hint: 'Click to cancel & refund ingredients',
                     })
@@ -1545,6 +1550,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                     ) : placeable ? (
                       <CapytorioMachineIcon
                         machineType={placeable.baseType}
+                        variantItemId={q.resultId}
                         color={color}
                         size={28}
                       />

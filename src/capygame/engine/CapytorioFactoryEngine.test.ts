@@ -42,6 +42,8 @@ import {
   getSampleStarterMallAbsoluteEntries,
 } from './FactorioBlueprintCodec';
 import {
+  CAPYTORIO_ITEM_CATALOG,
+  CAPYTORIO_ITEM_SHAPES,
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   CAPYTORIO_TECHS,
@@ -51,9 +53,11 @@ import {
   RECIPE_BY_ID,
   TECH_BY_ID,
   applyCapytorioLuaSources,
+  getCapytorioFootprint,
   getCapytorioItemMeta,
   getCapytorioSmeltSpec,
 } from './CapytorioData';
+import { DEDICATED_CAPYTORIO_VARIANT_MODELS } from './capytorio/CapytorioVariantModels';
 import { parseCapytorioLuaCatalog } from './CapytorioLuaParser';
 import {
   buildCapytorioPediaCatalog,
@@ -939,8 +943,8 @@ test('Capytorio3DRenderer: low-profile machines are immune to camera-fade, share
     }
     // 3 furnaces share exact same 6 cached geometries (plinth, kiln, chimney, hearth, capRing, outPort)
     assert.ok(furnaceGeos.size <= 6, `Expected <=6 shared furnace geometries across 3 furnaces, got ${furnaceGeos.size}`);
-    // 3 inserters share plinth + inserter parts + 8 held-item shapes (never multiplied by 3!)
-    assert.ok(inserterGeos.size <= 22, `Expected pooled inserter geometries, got ${inserterGeos.size}`);
+    // 3 inserters share plinth + inserter parts + 16 held-item shapes (never multiplied by 3!)
+    assert.ok(inserterGeos.size <= 32, `Expected pooled inserter geometries, got ${inserterGeos.size}`);
 
     // 3. Ground deck stays opaque at normal factory altitude for clean early-Z and SSAO depth
     const deckMesh = renderer3d.root.children.find(
@@ -2398,9 +2402,9 @@ test('Factorio blueprint import uses exact matches only, warns on skipped entiti
       version: 281479278886912,
       entities: [
         { entity_number: 1, name: 'transport-belt', position: { x: 0.5, y: 0.5 }, direction: 2 },
-        { entity_number: 2, name: 'roboport', position: { x: 4, y: 4 } },
-        { entity_number: 3, name: 'straight-rail', position: { x: 6, y: 6 } },
-        { entity_number: 4, name: 'straight-rail', position: { x: 8, y: 6 } },
+        { entity_number: 2, name: 'se-space-elevator', position: { x: 4, y: 4 } },
+        { entity_number: 3, name: 'bob-beacon-3', position: { x: 6, y: 6 } },
+        { entity_number: 4, name: 'bob-beacon-3', position: { x: 8, y: 6 } },
         { entity_number: 5, name: 'kr-crusher', position: { x: 10, y: 6 } },
         {
           entity_number: 6,
@@ -2423,18 +2427,18 @@ test('Factorio blueprint import uses exact matches only, warns on skipped entiti
   assert.equal(engine.clipboardToolState, 'paste');
 
   const skipMap = new Map(res.skippedEntities.map((s) => [s.name, s.count]));
-  assert.equal(skipMap.get('straight-rail'), 2);
-  assert.equal(skipMap.get('roboport'), 1);
+  assert.equal(skipMap.get('bob-beacon-3'), 2);
+  assert.equal(skipMap.get('se-space-elevator'), 1);
   assert.equal(skipMap.get('kr-crusher'), 1);
 
   // 100% unsupported entities returns ok: false with skipped report
   const unsupportedOnly = JSON.stringify({
     blueprint: {
       item: 'blueprint',
-      label: 'Rails Only',
+      label: 'Modded Only',
       entities: [
-        { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 0 } },
-        { entity_number: 2, name: 'train-stop', position: { x: 2, y: 0 } },
+        { entity_number: 1, name: 'kr-crusher', position: { x: 0, y: 0 } },
+        { entity_number: 2, name: 'se-space-elevator', position: { x: 2, y: 0 } },
       ],
     },
   });
@@ -2482,7 +2486,7 @@ test('Factorio Blueprint Book (including nested books) imports every blueprint a
                   entities: [
                     { entity_number: 1, name: 'transport-belt', position: { x: 0.5, y: 0.5 }, direction: 2 },
                     { entity_number: 2, name: 'splitter', position: { x: 1.5, y: 1 }, direction: 2 },
-                    { entity_number: 3, name: 'roboport', position: { x: 5, y: 5 } },
+                    { entity_number: 3, name: 'kr-crusher', position: { x: 5, y: 5 } },
                   ],
                 },
               },
@@ -2648,6 +2652,316 @@ test('Capytorio3DRenderer lowers terrain deck resolution to 64x64 segments while
     renderer.dispose();
   }
 });
+
+test('100% of CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE entries (including steam_turbine and 10 new infrastructure buildings) have craftable recipes', () => {
+  const recipeResults = new Set(CAPYTORIO_RECIPES.map((r) => r.result));
+  const missing: string[] = [];
+  for (const itemId of Object.keys(CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE)) {
+    if (!recipeResults.has(itemId)) {
+      missing.push(itemId);
+    }
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `Expected all placeable buildings to have recipes, missing: ${missing.join(', ')}`
+  );
+  const turbineRec = RECIPE_BY_ID.get('steam_turbine');
+  assert.ok(turbineRec, 'steam_turbine recipe is loaded from recipe.lua');
+  assert.equal(
+    turbineRec.requiredTechId,
+    'production_science',
+    'production_science unlocks steam_turbine'
+  );
+});
+
+test('All 10 new infrastructure buildings place with exact footprints, round-trip through Factorio 0e blueprints, and refund 100% on demolish', async () => {
+  const engine = new CapytorioFactoryEngine();
+  const newBuildings: Array<{
+    id: string;
+    expectedW: number;
+    expectedH: number;
+    factorioName: string;
+  }> = [
+    { id: 'pipe', expectedW: 1, expectedH: 1, factorioName: 'pipe' },
+    { id: 'pipe_to_ground', expectedW: 1, expectedH: 1, factorioName: 'pipe-to-ground' },
+    { id: 'pump', expectedW: 1, expectedH: 1, factorioName: 'pump' },
+    { id: 'oil_refinery', expectedW: 3, expectedH: 3, factorioName: 'oil-refinery' },
+    { id: 'chemical_plant', expectedW: 3, expectedH: 3, factorioName: 'chemical-plant' },
+    { id: 'rail', expectedW: 1, expectedH: 1, factorioName: 'straight-rail' },
+    { id: 'train_stop', expectedW: 1, expectedH: 1, factorioName: 'train-stop' },
+    { id: 'locomotive', expectedW: 2, expectedH: 1, factorioName: 'locomotive' },
+    { id: 'cargo_wagon', expectedW: 2, expectedH: 1, factorioName: 'cargo-wagon' },
+    { id: 'roboport', expectedW: 3, expectedH: 3, factorioName: 'roboport' },
+  ];
+
+  const placedCoords: Array<{ id: string; gx: number; gz: number }> = [];
+  let cursorGx = 14;
+  for (const spec of newBuildings) {
+    engine.addPocketItem(spec.id, 3);
+    const fpN = getCapytorioFootprint(
+      CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[spec.id].baseType,
+      spec.id,
+      0
+    );
+    assert.equal(fpN.width, spec.expectedW, `${spec.id} North width`);
+    assert.equal(fpN.height, spec.expectedH, `${spec.id} North height`);
+
+    if (spec.expectedW === 2 && spec.expectedH === 1) {
+      const fpE = getCapytorioFootprint(
+        CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[spec.id].baseType,
+        spec.id,
+        1
+      );
+      assert.equal(fpE.width, 1, `${spec.id} East width`);
+      assert.equal(fpE.height, 2, `${spec.id} East height`);
+    }
+
+    let placed = false;
+    for (let gz = -6; gz <= 20 && !placed; gz += 4) {
+      if (engine.canFootprintFit(cursorGx, gz, fpN.width, fpN.height)) {
+        const res = engine.placeMachine(spec.id, cursorGx, gz, 0);
+        assert.equal(res.ok, true, `Should place ${spec.id} at (${cursorGx}, ${gz})`);
+        placedCoords.push({ id: spec.id, gx: cursorGx, gz });
+        placed = true;
+      }
+    }
+    assert.equal(placed, true, `Found clear spot for ${spec.id}`);
+    cursorGx += 5;
+  }
+
+  // Blueprint round-trip of all 10 new buildings
+  const rawBlueprint = JSON.stringify({
+    blueprint: {
+      item: 'blueprint',
+      label: 'All 10 Infrastructure Buildings',
+      entities: newBuildings.map((b, idx) => ({
+        entity_number: idx + 1,
+        name: b.factorioName,
+        position: { x: idx * 5 + 0.5, y: 0.5 },
+        direction: 0,
+      })),
+    },
+  });
+  const decoded = await decodeFactorioBlueprintString(rawBlueprint);
+  assert.equal(decoded.ok, true);
+  assert.equal(decoded.importedEntityCount, 10);
+  assert.equal(decoded.skippedTotalCount, 0);
+  const reencoded = await encodeFactorioBlueprintString(decoded.blueprints[0]);
+  assert.ok(reencoded.startsWith('0e'));
+  const roundTripped = await decodeFactorioBlueprintString(reencoded);
+  assert.equal(roundTripped.ok, true);
+  assert.equal(roundTripped.importedEntityCount, 10);
+  assert.deepEqual(
+    roundTripped.blueprints[0].entries.map((e) => e.toolId).sort(),
+    newBuildings.map((b) => b.id).sort()
+  );
+
+  // Demolish all 10 and confirm 100% pocket refund
+  for (const p of placedCoords) {
+    const before = engine.getPocketItemCount(p.id);
+    const demolished = engine.demolishAt(p.gx, p.gz);
+    assert.ok(demolished !== null, `Demolish ${p.id}`);
+    assert.equal(engine.getPocketItemCount(p.id), before + 1, `100% refund for ${p.id}`);
+  }
+});
+
+test('Modules socket into machines & beacons with real speed/efficiency/productivity effects, and repair_pack restores integrity + overclock', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.addPocketItem('assembling_machine_2', 1);
+  engine.addPocketItem('beacon', 1);
+  engine.addPocketItem('speed_module', 2);
+  engine.addPocketItem('efficiency_module', 1);
+  engine.addPocketItem('productivity_module', 1);
+  engine.addPocketItem('repair_pack', 2);
+
+  let asmGx = 16;
+  let asmGz = 0;
+  for (let gx = 12; gx <= 40; gx += 4) {
+    if (engine.canFootprintFit(gx, 0, 3, 3) && engine.canFootprintFit(gx + 4, 0, 3, 3)) {
+      asmGx = gx;
+      asmGz = 0;
+      break;
+    }
+  }
+  assert.equal(engine.placeMachine('assembling_machine_2', asmGx, asmGz, 0).ok, true);
+  const asm = engine.getMachineAt(asmGx, asmGz)!;
+  assert.ok(asm, 'Assembler placed');
+
+  const baseMods = engine.computeMachineModuleModifiers(asm);
+  assert.equal(baseMods.speedMult, 1);
+  assert.equal(baseMods.powerMult, 1);
+  assert.equal(baseMods.prodBonus, 0);
+
+  // Socket 1 speed_module + 1 productivity_module
+  assert.equal(engine.installModuleOnMachine(asmGx, asmGz, 'speed_module').ok, true);
+  assert.equal(engine.installModuleOnMachine(asmGx, asmGz, 'productivity_module').ok, true);
+  assert.equal(engine.getPocketItemCount('speed_module'), 1);
+  assert.equal(engine.getPocketItemCount('productivity_module'), 0);
+  const modDirect = engine.computeMachineModuleModifiers(asm);
+  assert.ok(
+    modDirect.speedMult > 1.05,
+    `Speed boosted by speed_module (+0.20 - 0.10 = 1.10), got ${modDirect.speedMult}`
+  );
+  assert.ok(
+    modDirect.prodBonus >= 0.1,
+    `Productivity boosted by productivity_module, got ${modDirect.prodBonus}`
+  );
+
+  // Place nearby Beacon within 6 tiles and socket speed_module -> aura adds half-strength speed
+  assert.equal(engine.placeMachine('beacon', asmGx + 4, asmGz, 0).ok, true);
+  assert.equal(engine.installModuleOnMachine(asmGx + 4, asmGz, 'speed_module').ok, true);
+  const modWithBeacon = engine.computeMachineModuleModifiers(asm);
+  assert.ok(
+    modWithBeacon.speedMult > modDirect.speedMult + 0.05,
+    `Nearby beacon broadcasts speed aura (${modDirect.speedMult} -> ${modWithBeacon.speedMult})`
+  );
+
+  // Repair pack restores damaged integrity to 100 and grants 30s +20% tune-up overclock
+  assert.equal(engine.damageMachineAt(asmGx, asmGz, 45), 55);
+  assert.equal(asm.integrity, 55);
+  const repairRes = engine.useRepairPackAt(asmGx, asmGz);
+  assert.equal(repairRes.ok, true);
+  assert.equal(repairRes.restored, 45);
+  assert.equal(asm.integrity, 100);
+  assert.ok((asm.overclockTimer ?? 0) >= 29.5);
+  assert.equal(engine.getPocketItemCount('repair_pack'), 1);
+  const modRepaired = engine.computeMachineModuleModifiers(asm);
+  assert.ok(
+    modRepaired.speedMult > modWithBeacon.speedMult + 0.15,
+    'Repair overclock boosts speed by +20%'
+  );
+
+  // Demolishing machine refunds socketed modules too
+  const speedBefore = engine.getPocketItemCount('speed_module');
+  const prodBefore = engine.getPocketItemCount('productivity_module');
+  assert.ok(engine.demolishAt(asmGx, asmGz) !== null);
+  assert.equal(engine.getPocketItemCount('speed_module'), speedBefore + 1);
+  assert.equal(engine.getPocketItemCount('productivity_module'), prodBefore + 1);
+});
+
+test('Capytorio3DRenderer constructs distinct procedural 3D meshes & ghosts for all 29 dedicated variants and calibrates all 16 item shapes at Y = 0', () => {
+  const renderer = new Capytorio3DRenderer();
+  try {
+    const engine = new CapytorioFactoryEngine();
+    const internal = renderer as unknown as {
+      createCompositeMachineMesh: (type: string, variantItemId?: string) => THREE.Group;
+      createGhostMachineGroup: (type: string, variantItemId?: string) => THREE.Group;
+      itemGeosByShape: Record<string, THREE.BufferGeometry>;
+    };
+
+    // 1. All 29 dedicated building variants produce distinct meshKey groups & transparent ghosts
+    assert.equal(DEDICATED_CAPYTORIO_VARIANT_MODELS.size, 29);
+    const seenGeoSignatures = new Set<string>();
+    for (const variantId of DEDICATED_CAPYTORIO_VARIANT_MODELS) {
+      const mapping = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[variantId];
+      assert.ok(mapping, `Variant ${variantId} exists in CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE`);
+      const grp = internal.createCompositeMachineMesh(mapping.baseType, variantId);
+      assert.equal(grp.userData.meshKey, variantId);
+      let meshCount = 0;
+      const geoUuids: string[] = [];
+      grp.traverse((n) => {
+        if (n instanceof THREE.Mesh) {
+          meshCount++;
+          geoUuids.push(n.geometry.uuid);
+        }
+      });
+      assert.ok(
+        meshCount >= 2,
+        `Variant ${variantId} should compose multiple sub-meshes (got ${meshCount})`
+      );
+      seenGeoSignatures.add(geoUuids.sort().join(','));
+
+      const ghost = internal.createGhostMachineGroup(mapping.baseType, variantId);
+      assert.equal(ghost.userData.meshKey, variantId);
+      assert.ok(
+        ((ghost.userData.ghostPrimaryMeshes as THREE.Mesh[])?.length ?? 0) +
+          ((ghost.userData.ghostAccentMeshes as THREE.Mesh[])?.length ?? 0) >=
+          2,
+        `Variant ${variantId} ghost converts sub-meshes cleanly`
+      );
+    }
+    assert.equal(
+      seenGeoSignatures.size,
+      DEDICATED_CAPYTORIO_VARIANT_MODELS.size,
+      'Every one of the 29 dedicated variants has a unique procedural geometry signature'
+    );
+
+    // 2. Verify live sync() animates roboport hovering drones, radar dish, sentry turret, and steam turbine
+    engine.addPocketItem('roboport', 1);
+    engine.addPocketItem('logistic_robot', 4);
+    engine.addPocketItem('radar', 1);
+    engine.addPocketItem('laser_turret', 1);
+    engine.addPocketItem('steam_turbine', 1);
+    const spots: Array<{ id: string; gx: number; gz: number }> = [];
+    let sx = 12;
+    for (const vid of ['roboport', 'radar', 'laser_turret', 'steam_turbine']) {
+      const fp = getCapytorioFootprint(CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[vid].baseType, vid, 0);
+      for (let gz = -4; gz <= 20; gz += 4) {
+        if (engine.canFootprintFit(sx, gz, fp.width, fp.height)) {
+          if (engine.placeMachine(vid, sx, gz, 0).ok) {
+            spots.push({ id: vid, gx: sx, gz });
+            break;
+          }
+        }
+      }
+      sx += 5;
+    }
+    assert.equal(spots.length, 4);
+    renderer.sync(
+      engine,
+      capytorioGridToWorldX(18),
+      capytorioGridToWorldZ(0),
+      1 / 60,
+      2.5,
+      true,
+      40
+    );
+    const activeMap = (renderer as unknown as { activeMachineGroups: Map<string, THREE.Group> })
+      .activeMachineGroups;
+    const roboSpot = spots.find((s) => s.id === 'roboport')!;
+    const roboGroup = activeMap.get(tileKey(roboSpot.gx, roboSpot.gz));
+    assert.ok(roboGroup, 'Roboport synced to activeMachineGroups');
+    const drones = roboGroup.userData.roboDrones as THREE.Object3D[];
+    assert.equal(drones.length, 4);
+    assert.equal(drones.filter((d) => d.visible).length, 4, 'All 4 roboport drones visible & hovering');
+
+    // 3. Verify all 16 CAPYTORIO_ITEM_SHAPES geometries exist, are grounded at Y = 0, and fit belt slot pitch
+    assert.equal(CAPYTORIO_ITEM_SHAPES.length, 16);
+    for (const shape of CAPYTORIO_ITEM_SHAPES) {
+      const geo = internal.itemGeosByShape[shape];
+      assert.ok(geo instanceof THREE.BufferGeometry, `Geometry exists for item shape ${shape}`);
+      geo.computeBoundingBox();
+      const bb = geo.boundingBox!;
+      assert.ok(Math.abs(bb.min.y) < 0.01, `Shape ${shape} grounded at Y = 0 (min.y=${bb.min.y})`);
+      const sizeX = bb.max.x - bb.min.x;
+      const sizeZ = bb.max.z - bb.min.z;
+      assert.ok(sizeX <= 0.78, `Shape ${shape} width fits belt lane (sizeX=${sizeX.toFixed(3)})`);
+      assert.ok(
+        sizeZ >= 0.45 && sizeZ <= 0.72,
+        `Shape ${shape} Z pitch calibrated for belt lanes (sizeZ=${sizeZ.toFixed(3)})`
+      );
+    }
+
+    // 4. Verify non-building curated items never fall back to 'crate' (crate reserved only for packaged buildings)
+    const nonBuildingCrates: string[] = [];
+    for (const meta of Object.values(CAPYTORIO_ITEM_CATALOG)) {
+      const isPackagedBuilding =
+        Boolean(CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[meta.id]) || meta.category === 'production';
+      if (!isPackagedBuilding && meta.shape === 'crate') {
+        nonBuildingCrates.push(meta.id);
+      }
+    }
+    assert.deepEqual(
+      nonBuildingCrates,
+      [],
+      `Non-building items should not use 'crate': ${nonBuildingCrates.join(', ')}`
+    );
+  } finally {
+    renderer.dispose();
+  }
+});
+
 
 
 

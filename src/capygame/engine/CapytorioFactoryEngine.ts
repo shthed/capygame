@@ -240,6 +240,9 @@ export interface CapytorioMachine {
   inserterFilters?: CapytorioItemId[];
   inserterStackLimit?: number | null;
   chestSlotLimit?: number | null;
+  modules?: CapytorioItemId[];
+  integrity?: number; // 0..100 structural condition (restored by repair_pack)
+  overclockTimer?: number; // Seconds of +20% maintenance tune-up boost from repair_pack
   inputBuffer: Partial<Record<CapytorioItemId, number>>;
   outputBuffer: Partial<Record<CapytorioItemId, number>>;
   beltItems: CapytorioBeltItem[];
@@ -276,6 +279,8 @@ export interface CapytorioSerializedState {
     inserterFilters?: CapytorioItemId[];
     inserterStackLimit?: number | null;
     chestSlotLimit?: number | null;
+    modules?: CapytorioItemId[];
+    integrity?: number;
     inputBuffer?: Partial<Record<CapytorioItemId, number>>;
     outputBuffer?: Partial<Record<CapytorioItemId, number>>;
     beltItems?: Array<{
@@ -357,6 +362,11 @@ export interface CapytorioInspectedMachineDetail {
   beltCurveShape: CapytorioBeltCurveShape;
   beltSpeedItemsPerSec: number;
   beltItemsByType: CapytorioTileItemCount[];
+  moduleSlots?: number;
+  modules?: CapytorioItemId[];
+  integrity?: number;
+  overclockTimer?: number;
+  roboportFleetCount?: number;
 }
 
 export type CapytorioTileInspectionKind =
@@ -776,6 +786,55 @@ function getDefaultAssemblerRecipeId(): CapytorioRecipeId {
     if (r.station === 'assembler' && r.unlockedByDefault) return r.id;
   }
   return CAPYTORIO_RECIPES[0]?.id ?? 'iron_gear';
+}
+
+export interface CapytorioModuleModifiers {
+  speedMult: number;
+  powerMult: number;
+  prodBonus: number;
+}
+
+const _moduleModScratch: CapytorioModuleModifiers = {
+  speedMult: 1,
+  powerMult: 1,
+  prodBonus: 0,
+};
+
+export function isCapytorioModuleItem(itemId: string): boolean {
+  return (
+    itemId === 'speed_module' ||
+    itemId === 'speed_module_2' ||
+    itemId === 'efficiency_module' ||
+    itemId === 'efficiency_module_2' ||
+    itemId === 'productivity_module' ||
+    itemId === 'productivity_module_2'
+  );
+}
+
+function accumulateSingleModuleEffect(
+  modId: string,
+  scale: number,
+  acc: CapytorioModuleModifiers
+): void {
+  if (modId === 'speed_module') {
+    acc.speedMult += 0.3 * scale;
+    acc.powerMult += 0.2 * scale;
+  } else if (modId === 'speed_module_2') {
+    acc.speedMult += 0.5 * scale;
+    acc.powerMult += 0.3 * scale;
+  } else if (modId === 'efficiency_module') {
+    acc.powerMult -= 0.3 * scale;
+  } else if (modId === 'efficiency_module_2') {
+    acc.powerMult -= 0.5 * scale;
+  } else if (modId === 'productivity_module') {
+    acc.prodBonus += 0.15 * scale;
+    acc.powerMult += 0.25 * scale;
+    acc.speedMult -= 0.05 * scale;
+  } else if (modId === 'productivity_module_2') {
+    acc.prodBonus += 0.25 * scale;
+    acc.powerMult += 0.35 * scale;
+    acc.speedMult -= 0.1 * scale;
+  }
 }
 
 export class CapytorioFactoryEngine {
@@ -1905,6 +1964,154 @@ export class CapytorioFactoryEngine {
     return m.inserterFilterMode === 'blacklist' ? !listed : listed;
   }
 
+  public getMachineModuleSlotLimit(m: CapytorioMachine): number {
+    if (m.variantItemId === 'beacon' || m.variantItemId === 'rocket_silo') return 4;
+    if (
+      m.type === 'assembler' ||
+      m.type === 'furnace' ||
+      (m.type === 'drill' && m.variantItemId !== 'offshore_pump') ||
+      (m.type === 'lab' && m.variantItemId !== 'radar')
+    ) {
+      return 2;
+    }
+    return 0;
+  }
+
+  public installModuleOnMachine(
+    gx: number,
+    gz: number,
+    moduleItemId: CapytorioItemId
+  ): { ok: boolean; reason?: string } {
+    if (!isCapytorioModuleItem(moduleItemId)) {
+      return { ok: false, reason: 'Item is not a supported factory module' };
+    }
+    const m = this.getMachineAt(gx, gz);
+    if (!m) {
+      return { ok: false, reason: 'No building at target tile' };
+    }
+    const limit = this.getMachineModuleSlotLimit(m);
+    if (limit <= 0) {
+      return { ok: false, reason: 'This building does not accept upgrade modules' };
+    }
+    if (!m.modules) m.modules = [];
+    if (m.modules.length >= limit) {
+      return { ok: false, reason: `All ${limit} module slots are full` };
+    }
+    if (this.getPocketItemCount(moduleItemId) < 1) {
+      return { ok: false, reason: `No ${getCapytorioItemMeta(moduleItemId).name} in pocket` };
+    }
+    this.consumePocketItem(moduleItemId, 1);
+    m.modules.push(moduleItemId);
+    this.powerDirty = true;
+    this.topologyRevision++;
+    this.recomputePowerMetrics();
+    return { ok: true };
+  }
+
+  public removeModuleFromMachine(gx: number, gz: number, slotIndex: number): CapytorioItemId | null {
+    const m = this.getMachineAt(gx, gz);
+    if (!m || !m.modules || slotIndex < 0 || slotIndex >= m.modules.length) return null;
+    const [removed] = m.modules.splice(slotIndex, 1);
+    if (removed) {
+      this.addPocketItem(removed, 1);
+      this.powerDirty = true;
+      this.topologyRevision++;
+      this.recomputePowerMetrics();
+    }
+    return removed ?? null;
+  }
+
+  /**
+   * Computes combined speed, power, and productivity modifiers for a machine from its
+   * socketed modules, nearby placed Beacons (within 6 tiles), and maintenance overclock.
+   * Writes into `out` with zero heap allocations when supplied.
+   */
+  public computeMachineModuleModifiers(
+    m: CapytorioMachine,
+    out: CapytorioModuleModifiers = { speedMult: 1, powerMult: 1, prodBonus: 0 }
+  ): CapytorioModuleModifiers {
+    out.speedMult = 1.0;
+    out.powerMult = 1.0;
+    out.prodBonus = 0.0;
+
+    if (m.modules && m.modules.length > 0) {
+      for (let i = 0; i < m.modules.length; i++) {
+        accumulateSingleModuleEffect(m.modules[i], 1.0, out);
+      }
+    }
+
+    // Apply aura from nearby placed Beacons (50% of beacon module effects + 15% base speed broadcast)
+    if (m.variantItemId !== 'beacon' && this.getMachineModuleSlotLimit(m) > 0) {
+      this.ensureMachineList();
+      for (let i = 0; i < this.machineStepList.length; i++) {
+        const other = this.machineStepList[i];
+        if (other.variantItemId !== 'beacon') continue;
+        const dx = other.gx - m.gx;
+        const dz = other.gz - m.gz;
+        if (dx * dx + dz * dz <= 36) {
+          out.speedMult += 0.15;
+          if (other.modules && other.modules.length > 0) {
+            for (let j = 0; j < other.modules.length; j++) {
+              const bMod = other.modules[j];
+              // Beacons transmit speed & efficiency (canonical Factorio rule)
+              if (bMod.startsWith('speed_') || bMod.startsWith('efficiency_')) {
+                accumulateSingleModuleEffect(bMod, 0.5, out);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if ((m.overclockTimer ?? 0) > 0) {
+      out.speedMult += 0.2;
+    }
+
+    if (out.speedMult < 0.25) out.speedMult = 0.25;
+    if (out.powerMult < 0.2) out.powerMult = 0.2;
+    if (out.prodBonus < 0) out.prodBonus = 0;
+    return out;
+  }
+
+  public damageMachineAt(gx: number, gz: number, amount: number): number {
+    const m = this.getMachineAt(gx, gz);
+    if (!m) return 0;
+    const cur = m.integrity ?? 100;
+    const next = Math.max(10, Math.min(100, Math.round(cur - Math.max(0, amount))));
+    m.integrity = next;
+    return next;
+  }
+
+  public useRepairPackAt(
+    gx: number,
+    gz: number
+  ): { ok: boolean; reason?: string; restored: number; overclockSec: number } {
+    const m = this.getMachineAt(gx, gz);
+    if (!m) {
+      return { ok: false, reason: 'No building at target tile to repair', restored: 0, overclockSec: 0 };
+    }
+    if (this.getPocketItemCount('repair_pack') < 1) {
+      return { ok: false, reason: 'Craft a Repair Pack first', restored: 0, overclockSec: 0 };
+    }
+    const prev = m.integrity ?? 100;
+    const restored = Math.max(0, 100 - prev);
+    this.consumePocketItem('repair_pack', 1);
+    m.integrity = 100;
+    m.overclockTimer = 30.0;
+    this.score += 10;
+    return { ok: true, restored, overclockSec: 30.0 };
+  }
+
+  public getRoboportFleetCount(m: CapytorioMachine): number {
+    if (m.variantItemId !== 'roboport') return 0;
+    const stored =
+      (m.outputBuffer.logistic_robot ?? 0) + (m.outputBuffer.construction_robot ?? 0);
+    const pocket =
+      this.getPocketItemCount('logistic_robot') + this.getPocketItemCount('construction_robot');
+    // Always maintain 2 ambient station drones on a placed Roboport, scaling up to 6 with crafted bots
+    return Math.min(6, Math.max(2, stored + Math.min(4, pocket)));
+  }
+
   /**
    * Factorio `Shift + Right-Click` Entity Settings Copy.
    */
@@ -2043,6 +2250,11 @@ export class CapytorioFactoryEngine {
     }
     if (m.holdingItem) {
       this.addPocketItem(m.holdingItem, 1);
+    }
+    if (m.modules && m.modules.length > 0) {
+      for (let i = 0; i < m.modules.length; i++) {
+        this.addPocketItem(m.modules[i], 1);
+      }
     }
     this.unregisterMachineOccupancy(m);
     this.machines.delete(anchorKey);
@@ -3304,7 +3516,33 @@ export class CapytorioFactoryEngine {
       const m = this.machineStepList[i];
       const spec = CAPYTORIO_MACHINE_SPECS[m.type];
       const tierMult = m.tierMult ?? 1.0;
-      demand += spec.powerDemandMw;
+      let baseDemand = spec.powerDemandMw;
+      if (m.variantItemId === 'roboport') {
+        baseDemand = 0.5;
+      } else if (m.variantItemId === 'beacon') {
+        baseDemand = 1.2;
+      } else if (m.variantItemId === 'radar') {
+        baseDemand = 0.4;
+      } else if (m.variantItemId === 'pump') {
+        baseDemand = 0.15;
+      } else if (
+        m.variantItemId === 'stone_wall' ||
+        m.variantItemId === 'gate' ||
+        m.variantItemId === 'small_electric_pole' ||
+        m.variantItemId === 'medium_electric_pole' ||
+        m.variantItemId === 'big_electric_pole' ||
+        m.variantItemId === 'substation' ||
+        m.variantItemId === 'pipe' ||
+        m.variantItemId === 'pipe_to_ground' ||
+        m.variantItemId === 'rail' ||
+        m.variantItemId === 'train_stop'
+      ) {
+        baseDemand = 0;
+      }
+      if (baseDemand > 0) {
+        const mods = this.computeMachineModuleModifiers(m, _moduleModScratch);
+        demand += baseDemand * mods.powerMult;
+      }
       if (m.type === 'generator') {
         if (m.fuelTimer > 0) activeGenerators++;
         supply += (m.fuelTimer > 0 ? spec.powerSupplyMw : 1.5) * tierMult * genBonus;
@@ -3694,6 +3932,9 @@ export class CapytorioFactoryEngine {
 
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
+      if ((m.overclockTimer ?? 0) > 0) {
+        m.overclockTimer = Math.max(0, (m.overclockTimer ?? 0) - clampedDt);
+      }
       const mTierMult = m.tierMult ?? 1.0;
       const fGx = m.gx + DIR_DX[m.dir];
       const fGz = m.gz + DIR_DZ[m.dir];
@@ -3704,7 +3945,8 @@ export class CapytorioFactoryEngine {
         const oreTile = this.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height);
         const bufferedOut = this.countMapValues(m.outputBuffer);
         if (oreTile && bufferedOut < 4) {
-          m.craftProgress += (clampedDt * craftRate * mTierMult) / 2.2;
+          const mods = this.computeMachineModuleModifiers(m, _moduleModScratch);
+          m.craftProgress += (clampedDt * craftRate * mTierMult * mods.speedMult) / 2.2;
           if (m.craftProgress >= 1.0) {
             m.craftProgress -= 1.0;
             const mined = this.depleteOreAt(oreTile.gx, oreTile.gz, 1);
@@ -3712,7 +3954,7 @@ export class CapytorioFactoryEngine {
               m.outputBuffer[mined] = (m.outputBuffer[mined] ?? 0) + 1;
               this.totalProduced += 1;
               this.score += 1;
-              m.productivityProgress += prodBonus;
+              m.productivityProgress += prodBonus + mods.prodBonus;
               if (m.productivityProgress >= 1.0) {
                 m.productivityProgress -= 1.0;
                 m.outputBuffer[mined] = (m.outputBuffer[mined] ?? 0) + 1;
@@ -3752,7 +3994,8 @@ export class CapytorioFactoryEngine {
         if (activeInput && smeltSpec && outCount < 16) {
           const rec = RECIPE_BY_ID.get(smeltSpec.recipeId);
           const craftSec = rec?.craftTimeSec ?? 1.6;
-          m.craftProgress += (clampedDt * craftRate * mTierMult) / craftSec;
+          const mods = this.computeMachineModuleModifiers(m, _moduleModScratch);
+          m.craftProgress += (clampedDt * craftRate * mTierMult * mods.speedMult) / craftSec;
           if (m.craftProgress >= 1.0) {
             m.craftProgress -= 1.0;
             m.inputBuffer[activeInput] = (m.inputBuffer[activeInput] ?? smeltSpec.inputCount) - smeltSpec.inputCount;
@@ -3760,7 +4003,7 @@ export class CapytorioFactoryEngine {
             m.outputBuffer[smeltSpec.result] = (m.outputBuffer[smeltSpec.result] ?? 0) + (rec?.resultCount ?? 1);
             this.totalProduced += rec?.resultCount ?? 1;
             this.score += 3 * (rec?.resultCount ?? 1);
-            m.productivityProgress += prodBonus;
+            m.productivityProgress += prodBonus + mods.prodBonus;
             if (m.productivityProgress >= 1.0) {
               m.productivityProgress -= 1.0;
               m.outputBuffer[smeltSpec.result] = (m.outputBuffer[smeltSpec.result] ?? 0) + (rec?.resultCount ?? 1);
@@ -3805,7 +4048,8 @@ export class CapytorioFactoryEngine {
           }
           const outCount = this.countMapValues(m.outputBuffer);
           if (hasAll && outCount < 20) {
-            m.craftProgress += (clampedDt * craftRate * mTierMult) / rec.craftTimeSec;
+            const mods = this.computeMachineModuleModifiers(m, _moduleModScratch);
+            m.craftProgress += (clampedDt * craftRate * mTierMult * mods.speedMult) / rec.craftTimeSec;
             if (m.craftProgress >= 1.0) {
               m.craftProgress -= 1.0;
               for (let j = 0; j < rec.ingredients.length; j++) {
@@ -3818,7 +4062,7 @@ export class CapytorioFactoryEngine {
               this.score += 6 * rec.resultCount;
               callbacks?.onMilestoneItem?.(rec.result, rec.resultCount);
 
-              m.productivityProgress += prodBonus;
+              m.productivityProgress += prodBonus + mods.prodBonus;
               if (m.productivityProgress >= 1.0) {
                 m.productivityProgress -= 1.0;
                 m.outputBuffer[rec.result] = (m.outputBuffer[rec.result] ?? 0) + rec.resultCount;
@@ -3851,14 +4095,15 @@ export class CapytorioFactoryEngine {
           }
         }
       } else if (m.type === 'lab') {
-        if (this.activeTechId) {
+        if (this.activeTechId && m.variantItemId !== 'beacon' && m.variantItemId !== 'radar') {
           const tech = TECH_BY_ID.get(this.activeTechId);
           if (tech) {
             let consumedPack = false;
+            const mods = this.computeMachineModuleModifiers(m, _moduleModScratch);
             for (const [sciId, reqCount] of Object.entries(tech.cost) as Array<[CapytorioItemId, number]>) {
               const deliv = this.techDelivered[sciId] ?? 0;
               if (deliv < reqCount && (m.inputBuffer[sciId] ?? 0) > 0) {
-                m.craftProgress += (clampedDt * craftRate) / 1.4;
+                m.craftProgress += (clampedDt * craftRate * mods.speedMult) / 1.4;
                 if (m.craftProgress >= 1.0) {
                   m.craftProgress -= 1.0;
                   m.inputBuffer[sciId] = (m.inputBuffer[sciId] ?? 1) - 1;
@@ -4852,6 +5097,12 @@ export class CapytorioFactoryEngine {
         beltCurveShape: curveShape,
         beltSpeedItemsPerSec,
         beltItemsByType,
+        moduleSlots: this.getMachineModuleSlotLimit(machine),
+        modules: machine.modules ? [...machine.modules] : [],
+        integrity: machine.integrity ?? 100,
+        overclockTimer: +(machine.overclockTimer ?? 0).toFixed(1),
+        roboportFleetCount:
+          machine.variantItemId === 'roboport' ? this.getRoboportFleetCount(machine) : undefined,
       };
     }
 

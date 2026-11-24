@@ -34,6 +34,12 @@ import {
   type CapytorioMachine,
   type CapytorioTerrainSample,
 } from './CapytorioFactoryEngine';
+import {
+  DEDICATED_CAPYTORIO_VARIANT_MODELS,
+  buildDedicatedVariantModel,
+  variantSkipsDefaultPlinth,
+  type CapytorioVariantMaterials,
+} from './capytorio/CapytorioVariantModels';
 
 const TERRAIN_DECK_SEGS = 64;
 const TERRAIN_DECK_BASE_TILES = 128;
@@ -68,18 +74,7 @@ const _color = new THREE.Color();
 const _activeKeysScratch = new Set<string>();
 const _blueprintStockScratch = new Map<string, number>();
 const _ghostBeltLookup = new Map<string, CapytorioBlueprintEntry>();
-const _ghostUsedCounts: Record<CapytorioMachineType, number> = {
-  drill: 0,
-  belt: 0,
-  inserter: 0,
-  furnace: 0,
-  assembler: 0,
-  generator: 0,
-  lab: 0,
-  splitter: 0,
-  tunnel: 0,
-  chest: 0,
-};
+const _ghostUsedCountsByKey = new Map<string, number>();
 const _beltTierCounts: [number, number, number] = [0, 0, 0];
 const _curvedLeftTierCounts: [number, number, number] = [0, 0, 0];
 const _curvedRightTierCounts: [number, number, number] = [0, 0, 0];
@@ -93,6 +88,14 @@ const _shapeCounts: Record<CapytorioItemShape, number> = {
   coil: 0,
   fruit: 0,
   crate: 0,
+  battery: 0,
+  ammo: 0,
+  grenade: 0,
+  armor: 0,
+  engine: 0,
+  barrel: 0,
+  brick: 0,
+  module: 0,
 };
 
 const _scaleScratch: [number, number, number] = [1, 1, 1];
@@ -104,14 +107,26 @@ const _altBadgeScratch = {
   warn: false,
 };
 
+function resolveMachineMeshKey(type: CapytorioMachineType, variantItemId?: string): string {
+  if (variantItemId && DEDICATED_CAPYTORIO_VARIANT_MODELS.has(variantItemId)) {
+    return variantItemId;
+  }
+  return type;
+}
+
 function resolveMachineVisualScale(
   type: CapytorioMachineType,
+  variantItemId: string | undefined,
   width: number,
   height: number,
   out: [number, number, number]
 ): void {
-  if (type === 'splitter') {
-    // Splitter mesh is constructed natively at 2x1 local proportions
+  if (
+    type === 'splitter' ||
+    variantItemId === 'locomotive' ||
+    variantItemId === 'cargo_wagon'
+  ) {
+    // Splitter, locomotive, and cargo wagon meshes are constructed natively at 2x1 local proportions
     out[0] = 1.0;
     out[1] = 1.0;
     out[2] = 1.0;
@@ -878,7 +893,114 @@ function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometr
     geo.scale(1.04, 0.90, 1.02);
     return groundGeometryBottomAtZero(geo);
   }
-  // 'crate'
+  if (shape === 'battery') {
+    const cell = createChamferedBoxGeometry(0.42, 0.34, 0.61, 0.045);
+    cell.translate(0, 0.17, 0);
+    const collar = new THREE.BoxGeometry(0.38, 0.05, 0.54);
+    collar.translate(0, 0.35, 0);
+    const termA = new THREE.CylinderGeometry(0.065, 0.072, 0.1, 8);
+    termA.translate(0, 0.41, -0.15);
+    const termB = new THREE.CylinderGeometry(0.065, 0.072, 0.1, 8);
+    termB.translate(0, 0.41, 0.15);
+    return groundGeometryBottomAtZero(mergeSimpleIndexedGeometries([cell, collar, termA, termB]));
+  }
+  if (shape === 'ammo') {
+    const mag = createChamferedBoxGeometry(0.36, 0.17, 0.61, 0.035);
+    mag.translate(0, 0.09, 0);
+    const ribA = new THREE.BoxGeometry(0.39, 0.05, 0.09);
+    ribA.translate(0, 0.12, -0.16);
+    const ribB = new THREE.BoxGeometry(0.39, 0.05, 0.09);
+    ribB.translate(0, 0.12, 0.16);
+    const tipA = new THREE.ConeGeometry(0.052, 0.14, 6);
+    tipA.rotateX(-Math.PI * 0.5);
+    tipA.translate(-0.08, 0.16, -0.24);
+    const tipB = new THREE.ConeGeometry(0.052, 0.14, 6);
+    tipB.rotateX(-Math.PI * 0.5);
+    tipB.translate(0.08, 0.16, -0.24);
+    return groundGeometryBottomAtZero(mergeSimpleIndexedGeometries([mag, ribA, ribB, tipA, tipB]));
+  }
+  if (shape === 'grenade') {
+    const body = new THREE.IcosahedronGeometry(0.255, 0);
+    body.scale(0.98, 0.96, 1.06);
+    body.translate(0, 0.24, -0.02);
+    const neck = new THREE.CylinderGeometry(0.095, 0.115, 0.11, 8);
+    neck.translate(0, 0.49, -0.02);
+    const lever = new THREE.BoxGeometry(0.075, 0.24, 0.14);
+    lever.rotateX(0.32);
+    lever.translate(0, 0.44, 0.19);
+    const ring = new THREE.TorusGeometry(0.075, 0.022, 6, 10);
+    ring.translate(0.11, 0.51, -0.02);
+    return groundGeometryBottomAtZero(mergeSimpleIndexedGeometries([body, neck, lever, ring]));
+  }
+  if (shape === 'armor') {
+    const torso = createChamferedBoxGeometry(0.46, 0.20, 0.61, 0.05);
+    torso.translate(0, 0.11, 0);
+    const pauldronL = createChamferedBoxGeometry(0.18, 0.17, 0.26, 0.04);
+    pauldronL.translate(-0.26, 0.15, -0.13);
+    const pauldronR = createChamferedBoxGeometry(0.18, 0.17, 0.26, 0.04);
+    pauldronR.translate(0.26, 0.15, -0.13);
+    const chestPlate = createChamferedBoxGeometry(0.32, 0.08, 0.34, 0.025);
+    chestPlate.translate(0, 0.22, -0.04);
+    return groundGeometryBottomAtZero(
+      mergeSimpleIndexedGeometries([torso, pauldronL, pauldronR, chestPlate])
+    );
+  }
+  if (shape === 'engine') {
+    const block = createChamferedBoxGeometry(0.38, 0.22, 0.61, 0.04);
+    block.translate(0, 0.11, 0);
+    const bankL = new THREE.BoxGeometry(0.18, 0.16, 0.44);
+    bankL.rotateZ(0.42);
+    bankL.translate(-0.15, 0.25, -0.02);
+    const bankR = new THREE.BoxGeometry(0.18, 0.16, 0.44);
+    bankR.rotateZ(-0.42);
+    bankR.translate(0.15, 0.25, -0.02);
+    const flywheel = new THREE.CylinderGeometry(0.18, 0.18, 0.08, 12);
+    flywheel.rotateX(Math.PI * 0.5);
+    flywheel.translate(0, 0.18, 0.265);
+    return groundGeometryBottomAtZero(
+      mergeSimpleIndexedGeometries([block, bankL, bankR, flywheel])
+    );
+  }
+  if (shape === 'barrel') {
+    const drum = new THREE.CylinderGeometry(0.285, 0.285, 0.44, 12);
+    drum.translate(0, 0.22, 0);
+    const hoopLow = new THREE.TorusGeometry(0.288, 0.022, 6, 14);
+    hoopLow.rotateX(Math.PI * 0.5);
+    hoopLow.translate(0, 0.13, 0);
+    const hoopHigh = new THREE.TorusGeometry(0.288, 0.022, 6, 14);
+    hoopHigh.rotateX(Math.PI * 0.5);
+    hoopHigh.translate(0, 0.31, 0);
+    const bung = new THREE.CylinderGeometry(0.05, 0.05, 0.05, 8);
+    bung.translate(0.1, 0.45, -0.08);
+    return groundGeometryBottomAtZero(
+      mergeSimpleIndexedGeometries([drum, hoopLow, hoopHigh, bung])
+    );
+  }
+  if (shape === 'brick') {
+    const base = createChamferedBoxGeometry(0.42, 0.17, 0.61, 0.032);
+    base.translate(0, 0.085, 0);
+    const frogA = new THREE.BoxGeometry(0.26, 0.035, 0.16);
+    frogA.translate(0, 0.18, -0.14);
+    const frogB = new THREE.BoxGeometry(0.26, 0.035, 0.16);
+    frogB.translate(0, 0.18, 0.14);
+    return groundGeometryBottomAtZero(mergeSimpleIndexedGeometries([base, frogA, frogB]));
+  }
+  if (shape === 'module') {
+    const body = createChamferedBoxGeometry(0.44, 0.14, 0.61, 0.035);
+    body.translate(0, 0.07, 0);
+    const core = createChamferedBoxGeometry(0.24, 0.09, 0.30, 0.02);
+    core.translate(0, 0.16, 0.03);
+    const pinBar = new THREE.BoxGeometry(0.32, 0.06, 0.09);
+    pinBar.translate(0, 0.06, -0.26);
+    const finL = new THREE.BoxGeometry(0.06, 0.08, 0.42);
+    finL.translate(-0.18, 0.15, 0.02);
+    const finR = new THREE.BoxGeometry(0.06, 0.08, 0.42);
+    finR.translate(0.18, 0.15, 0.02);
+    return groundGeometryBottomAtZero(
+      mergeSimpleIndexedGeometries([body, core, pinBar, finL, finR])
+    );
+  }
+  // 'crate' (reserved for packaged placeable buildings/structures)
   const c = 0.28;
   const body = createChamferedBoxGeometry(c * 2, 0.28, c * 2, 0.045);
   body.translate(0, 0.16, 0);
@@ -1042,13 +1164,13 @@ export class Capytorio3DRenderer {
   private treeCanopyInstanced: THREE.InstancedMesh;
   private treeOrangeInstanced: THREE.InstancedMesh;
 
-  // Pooled composite machine groups
+  // Pooled composite machine groups (keyed by variant meshKey so every building variant has its own pool)
   private readonly activeMachineGroups = new Map<string, THREE.Group>();
-  private readonly inactivePoolByType = new Map<CapytorioMachineType, THREE.Group[]>();
+  private readonly inactivePoolByType = new Map<string, THREE.Group[]>();
 
   // Pooled transparent 3D blueprint ghost models (zero per-frame allocations)
   private readonly ghostRoot = new THREE.Group();
-  private readonly ghostPoolByType = new Map<CapytorioMachineType, THREE.Group[]>();
+  private readonly ghostPoolByType = new Map<string, THREE.Group[]>();
   private ghostValidPrimaryMat: THREE.MeshStandardMaterial;
   private ghostValidAccentMat: THREE.MeshStandardMaterial;
   private ghostInvalidPrimaryMat: THREE.MeshStandardMaterial;
@@ -1108,6 +1230,14 @@ export class Capytorio3DRenderer {
   private matGeneratorFireboxActive: THREE.MeshStandardMaterial;
   private matLabCoreIdle: THREE.MeshStandardMaterial;
   private matLabCoreActive: THREE.MeshStandardMaterial;
+  private matTimber: THREE.MeshStandardMaterial;
+  private matCeramicWhite: THREE.MeshStandardMaterial;
+  private matSolarBlue: THREE.MeshStandardMaterial;
+  private matCyanGlow: THREE.MeshStandardMaterial;
+  private matEmeraldGlow: THREE.MeshStandardMaterial;
+  private matRubyGlow: THREE.MeshStandardMaterial;
+  private matConcrete: THREE.MeshStandardMaterial;
+  private readonly variantMats: CapytorioVariantMaterials;
   private industrialPlateBumpTex: THREE.CanvasTexture | null = null;
   private beaconOrb: THREE.Object3D | null = null;
   private beaconDishRing: THREE.Object3D | null = null;
@@ -1251,6 +1381,71 @@ export class Capytorio3DRenderer {
       emissiveIntensity: 1.9,
       roughness: 0.16,
     });
+    this.matTimber = new THREE.MeshStandardMaterial({
+      color: 0x8b5a2b,
+      roughness: 0.86,
+      metalness: 0.04,
+    });
+    this.matCeramicWhite = new THREE.MeshStandardMaterial({
+      color: 0xe2e8f0,
+      roughness: 0.22,
+      metalness: 0.12,
+    });
+    this.matSolarBlue = new THREE.MeshStandardMaterial({
+      color: 0x1d4ed8,
+      emissive: 0x0f172a,
+      emissiveIntensity: 0.35,
+      roughness: 0.14,
+      metalness: 0.62,
+    });
+    this.matCyanGlow = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x06b6d4,
+      emissiveIntensity: 1.35,
+      roughness: 0.18,
+      metalness: 0.15,
+    });
+    this.matEmeraldGlow = new THREE.MeshStandardMaterial({
+      color: 0x34d399,
+      emissive: 0x10b981,
+      emissiveIntensity: 1.65,
+      roughness: 0.16,
+      metalness: 0.15,
+    });
+    this.matRubyGlow = new THREE.MeshStandardMaterial({
+      color: 0xfb7185,
+      emissive: 0xe11d48,
+      emissiveIntensity: 1.6,
+      roughness: 0.16,
+      metalness: 0.2,
+    });
+    this.matConcrete = new THREE.MeshStandardMaterial({
+      color: 0x7c8594,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.03,
+      roughness: 0.9,
+      metalness: 0.06,
+    });
+    this.variantMats = {
+      steelDark: this.matSteelDark,
+      steelLight: this.matSteelLight,
+      brass: this.matBrass,
+      hazardYellow: this.matHazardYellow,
+      brick: this.matBrick,
+      copper: this.matCopper,
+      labGlass: this.matLabGlass,
+      darkVoid: this.matDarkVoid,
+      statusLampIdle: this.matStatusLampIdle,
+      statusLampOn: this.matStatusLampOn,
+      furnaceHearthIdle: this.matFurnaceHearthIdle,
+      timber: this.matTimber,
+      ceramicWhite: this.matCeramicWhite,
+      solarBlue: this.matSolarBlue,
+      cyanGlow: this.matCyanGlow,
+      emeraldGlow: this.matEmeraldGlow,
+      rubyGlow: this.matRubyGlow,
+      concrete: this.matConcrete,
+    };
     this.sharedMaterials.push(
       this.matSteelDark,
       this.matSteelLight,
@@ -1267,7 +1462,14 @@ export class Capytorio3DRenderer {
       this.matGeneratorFireboxIdle,
       this.matGeneratorFireboxActive,
       this.matLabCoreIdle,
-      this.matLabCoreActive
+      this.matLabCoreActive,
+      this.matTimber,
+      this.matCeramicWhite,
+      this.matSolarBlue,
+      this.matCyanGlow,
+      this.matEmeraldGlow,
+      this.matRubyGlow,
+      this.matConcrete
     );
 
     // 1. Infinite Snapping Recessed-Basin Terrain Deck (Meadow Grass, Sandy Shores, Lakes, Rivers & Oceans)
@@ -1628,7 +1830,7 @@ export class Capytorio3DRenderer {
     );
     this.sharedMaterials.push(beltChassisMat, beltRailMat, beltSideBridgeMat);
 
-    // 4. Instanced Moving Items (8 distinct 3D shape archetypes with Factorio contrast colors)
+    // 4. Instanced Moving Items (16 distinct 3D shape archetypes with Factorio contrast colors)
     const shapeGeos = {} as Record<CapytorioItemShape, THREE.BufferGeometry>;
     const shapePools = {} as Record<CapytorioItemShape, THREE.InstancedMesh>;
     const shapeMaterials: Record<CapytorioItemShape, { roughness: number; metalness: number }> = {
@@ -1640,6 +1842,14 @@ export class Capytorio3DRenderer {
       coil: { roughness: 0.22, metalness: 0.82 },
       fruit: { roughness: 0.46, metalness: 0.05 },
       crate: { roughness: 0.44, metalness: 0.34 },
+      battery: { roughness: 0.26, metalness: 0.64 },
+      ammo: { roughness: 0.28, metalness: 0.82 },
+      grenade: { roughness: 0.56, metalness: 0.48 },
+      armor: { roughness: 0.34, metalness: 0.72 },
+      engine: { roughness: 0.32, metalness: 0.78 },
+      barrel: { roughness: 0.38, metalness: 0.62 },
+      brick: { roughness: 0.88, metalness: 0.08 },
+      module: { roughness: 0.24, metalness: 0.42 },
     };
 
     for (let i = 0; i < CAPYTORIO_ITEM_SHAPES.length; i++) {
@@ -2041,15 +2251,49 @@ export class Capytorio3DRenderer {
       _altBadgeScratch.warn = true;
       return true;
     }
-    if (m.type === 'generator' && m.fuelTimer <= 0) {
-      _altBadgeScratch.key = 'warn:nofuel';
-      _altBadgeScratch.label = 'NO FUEL';
-      _altBadgeScratch.sub = 'COAL';
-      _altBadgeScratch.accent = '#f59e0b';
-      _altBadgeScratch.warn = true;
-      return true;
+    if (m.type === 'generator') {
+      if (m.variantItemId === 'solar_panel') {
+        _altBadgeScratch.key = 'gen:solar';
+        _altBadgeScratch.label = 'SOLAR';
+        _altBadgeScratch.sub = 'PV';
+        _altBadgeScratch.accent = '#38bdf8';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      if (m.variantItemId === 'accumulator') {
+        _altBadgeScratch.key = 'gen:accum';
+        _altBadgeScratch.label = 'BATT';
+        _altBadgeScratch.sub = 'CAP';
+        _altBadgeScratch.accent = '#22d3ee';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      if (m.variantItemId === 'nuclear_reactor') {
+        _altBadgeScratch.key = 'gen:nuclear';
+        _altBadgeScratch.label = 'NUKE';
+        _altBadgeScratch.sub = 'CORE';
+        _altBadgeScratch.accent = '#34d399';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      if (m.fuelTimer <= 0) {
+        _altBadgeScratch.key = 'warn:nofuel';
+        _altBadgeScratch.label = 'NO FUEL';
+        _altBadgeScratch.sub = 'COAL';
+        _altBadgeScratch.accent = '#f59e0b';
+        _altBadgeScratch.warn = true;
+        return true;
+      }
     }
     if (m.type === 'drill') {
+      if (m.variantItemId === 'offshore_pump' || m.variantItemId === 'pump') {
+        _altBadgeScratch.key = `pump:${m.variantItemId}`;
+        _altBadgeScratch.label = m.variantItemId === 'offshore_pump' ? 'WATER' : 'FLUID';
+        _altBadgeScratch.sub = 'PUMP';
+        _altBadgeScratch.accent = '#38bdf8';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
       const fp = engine.getMachineFootprint(m);
       const ore = engine.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height);
       if (!ore) {
@@ -2161,6 +2405,15 @@ export class Capytorio3DRenderer {
       return true;
     }
     if (m.type === 'chest') {
+      if (m.variantItemId === 'roboport') {
+        const fleet = engine.getRoboportFleetCount(m);
+        _altBadgeScratch.key = `roboport:${fleet}`;
+        _altBadgeScratch.label = 'PORT';
+        _altBadgeScratch.sub = `${fleet} BOT`;
+        _altBadgeScratch.accent = '#fb923c';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
       let topItem: string | null = null;
       let topCount = 0;
       for (const k in m.outputBuffer) {
@@ -2190,6 +2443,23 @@ export class Capytorio3DRenderer {
       return true;
     }
     if (m.type === 'lab') {
+      if (m.variantItemId === 'beacon') {
+        const modCount = m.modules?.length ?? 0;
+        _altBadgeScratch.key = `beacon:${modCount}`;
+        _altBadgeScratch.label = 'BEACON';
+        _altBadgeScratch.sub = modCount > 0 ? `${modCount} MOD` : 'AURA';
+        _altBadgeScratch.accent = '#22d3ee';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
+      if (m.variantItemId === 'radar') {
+        _altBadgeScratch.key = 'radar:scan';
+        _altBadgeScratch.label = 'RADAR';
+        _altBadgeScratch.sub = 'SCAN';
+        _altBadgeScratch.accent = '#38bdf8';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
       _altBadgeScratch.key = 'lab:sci';
       _altBadgeScratch.label = 'LAB';
       _altBadgeScratch.sub = 'TECH';
@@ -2352,72 +2622,103 @@ export class Capytorio3DRenderer {
     }
   }
 
-  private acquireMachineGroup(type: CapytorioMachineType): THREE.Group {
-    const pool = this.inactivePoolByType.get(type);
+  private acquireMachineGroup(type: CapytorioMachineType, variantItemId?: string): THREE.Group {
+    const meshKey = resolveMachineMeshKey(type, variantItemId);
+    const pool = this.inactivePoolByType.get(meshKey);
     if (pool && pool.length > 0) {
       const g = pool.pop()!;
       g.visible = true;
       return g;
     }
-    return this.createCompositeMachineMesh(type);
+    return this.createCompositeMachineMesh(type, variantItemId);
   }
 
-  private releaseMachineGroup(type: CapytorioMachineType, group: THREE.Group): void {
+  private releaseMachineGroup(meshKey: string, group: THREE.Group): void {
     group.visible = false;
     this.root.remove(group);
-    let pool = this.inactivePoolByType.get(type);
+    let pool = this.inactivePoolByType.get(meshKey);
     if (!pool) {
       pool = [];
-      this.inactivePoolByType.set(type, pool);
+      this.inactivePoolByType.set(meshKey, pool);
     }
     pool.push(group);
   }
 
-  private createCompositeMachineMesh(type: CapytorioMachineType): THREE.Group {
+  private createCompositeMachineMesh(
+    type: CapytorioMachineType,
+    variantItemId?: string
+  ): THREE.Group {
     const g = new THREE.Group();
     const spec = CAPYTORIO_MACHINE_SPECS[type];
-    const accentMat = this.getCachedAccentMat(spec.colorHex);
+    const meshKey = resolveMachineMeshKey(type, variantItemId);
+    const variantSpec = variantItemId ? resolveCapytorioPlaceableSpec(variantItemId) : null;
+    const initialTint = variantSpec?.tintHex ?? spec.colorHex;
+    const accentMat = this.getCachedAccentMat(initialTint);
     const accentMeshes: THREE.Mesh[] = [];
+    g.userData.meshKey = meshKey;
+    g.userData.machineType = type;
     g.userData.accentMeshes = accentMeshes;
-    g.userData.appliedTintHex = spec.colorHex;
+    g.userData.appliedTintHex = initialTint;
     g.userData.__occluderRoot = g;
     g.userData.ignoreCameraFade = true;
 
     // Stepped cast-iron plinth with corner anchor bolts sitting flush on y = 0
-    const plinth = new THREE.Mesh(
-      type === 'splitter'
-        ? this.getCachedMachineGeo('plinth_splitter_2x1', () => {
-            const w = CAPYTORIO_TILE_SIZE * 2 - 0.24;
-            const d = CAPYTORIO_TILE_SIZE - 0.14;
-            const lower = createChamferedBoxGeometry(w, 0.16, d, 0.14);
-            lower.translate(0, 0.08, 0);
-            const upper = createChamferedBoxGeometry(w - 0.14, 0.1, d - 0.14, 0.1);
-            upper.translate(0, 0.2, 0);
-            return mergeSimpleIndexedGeometries([lower, upper]);
-          })
-        : this.getCachedMachineGeo('plinth', () => {
-            const parts: THREE.BufferGeometry[] = [];
-            const lower = createChamferedBoxGeometry(2.12, 0.15, 2.12, 0.16);
-            lower.translate(0, 0.075, 0);
-            parts.push(lower);
-            const upper = createChamferedBoxGeometry(1.94, 0.1, 1.94, 0.14);
-            upper.translate(0, 0.195, 0);
-            parts.push(upper);
-            const boltOff = 0.88;
-            for (const bx of [-boltOff, boltOff]) {
-              for (const bz of [-boltOff, boltOff]) {
-                const pad = new THREE.CylinderGeometry(0.11, 0.14, 0.16, 6);
-                pad.translate(bx, 0.12, bz);
-                parts.push(pad);
+    if (!variantSkipsDefaultPlinth(variantItemId)) {
+      const plinth = new THREE.Mesh(
+        type === 'splitter'
+          ? this.getCachedMachineGeo('plinth_splitter_2x1', () => {
+              const w = CAPYTORIO_TILE_SIZE * 2 - 0.24;
+              const d = CAPYTORIO_TILE_SIZE - 0.14;
+              const lower = createChamferedBoxGeometry(w, 0.16, d, 0.14);
+              lower.translate(0, 0.08, 0);
+              const upper = createChamferedBoxGeometry(w - 0.14, 0.1, d - 0.14, 0.1);
+              upper.translate(0, 0.2, 0);
+              return mergeSimpleIndexedGeometries([lower, upper]);
+            })
+          : this.getCachedMachineGeo('plinth', () => {
+              const parts: THREE.BufferGeometry[] = [];
+              const lower = createChamferedBoxGeometry(2.12, 0.15, 2.12, 0.16);
+              lower.translate(0, 0.075, 0);
+              parts.push(lower);
+              const upper = createChamferedBoxGeometry(1.94, 0.1, 1.94, 0.14);
+              upper.translate(0, 0.195, 0);
+              parts.push(upper);
+              const boltOff = 0.88;
+              for (const bx of [-boltOff, boltOff]) {
+                for (const bz of [-boltOff, boltOff]) {
+                  const pad = new THREE.CylinderGeometry(0.11, 0.14, 0.16, 6);
+                  pad.translate(bx, 0.12, bz);
+                  parts.push(pad);
+                }
               }
-            }
-            return mergeSimpleIndexedGeometries(parts);
-          }),
-      this.matSteelDark
-    );
-    plinth.castShadow = true;
-    plinth.receiveShadow = true;
-    g.add(plinth);
+              return mergeSimpleIndexedGeometries(parts);
+            }),
+        this.matSteelDark
+      );
+      plinth.castShadow = true;
+      plinth.receiveShadow = true;
+      g.add(plinth);
+    }
+
+    // Dedicated procedural 3D silhouette for distinct placeable building variants
+    if (
+      variantItemId &&
+      DEDICATED_CAPYTORIO_VARIANT_MODELS.has(variantItemId) &&
+      buildDedicatedVariantModel(variantItemId, g, {
+        getCachedGeo: (key, builder) => this.getCachedMachineGeo(key, builder),
+        chamferedBox: (w, h, d, bevel = 0.08) => createChamferedBoxGeometry(w, h, d, bevel),
+        mergeGeos: (geos) => mergeSimpleIndexedGeometries(geos),
+        mats: this.variantMats,
+        accentMat,
+        accentMeshes,
+      })
+    ) {
+      g.traverse((node) => {
+        node.userData.__occluderRoot = g;
+        node.userData.ignoreCameraFade = true;
+      });
+      return g;
+    }
 
     if (type === 'drill') {
       // Heavy A-frame truss mining rig + hydraulic guide pistons + fluted auger + hazard chute
@@ -3432,7 +3733,10 @@ export class Capytorio3DRenderer {
     return g;
   }
 
-  private createGhostMachineGroup(type: CapytorioMachineType): THREE.Group {
+  private createGhostMachineGroup(
+    type: CapytorioMachineType,
+    variantItemId?: string
+  ): THREE.Group {
     const primaryMeshes: THREE.Mesh[] = [];
     const accentMeshes: THREE.Mesh[] = [];
     const deckMeshes: THREE.Mesh[] = [];
@@ -3440,6 +3744,7 @@ export class Capytorio3DRenderer {
     if (type === 'belt') {
       const g = new THREE.Group();
       g.userData.machineType = 'belt';
+      g.userData.meshKey = 'belt';
 
       const straight = new THREE.Group();
       const sChassis = new THREE.Mesh(this.beltChassisGeo, this.ghostValidPrimaryMat);
@@ -3494,12 +3799,12 @@ export class Capytorio3DRenderer {
       return g;
     }
 
-    const g = this.createCompositeMachineMesh(type);
+    const g = this.createCompositeMachineMesh(type, variantItemId);
     const rawAccentMeshes = (g.userData.accentMeshes as THREE.Mesh[] | undefined) ?? [];
     const accentSet = new Set<THREE.Mesh>(rawAccentMeshes);
 
     // Pose inserter arm leaning forward toward -Z drop direction so ghost orientation is unmistakable
-    if (type === 'inserter') {
+    if (type === 'inserter' && !g.userData.isSentryTurret) {
       const turret = g.userData.turret as THREE.Group | undefined;
       const shoulder = g.userData.shoulderPivot as THREE.Group | undefined;
       const elbow = g.userData.elbowPivot as THREE.Group | undefined;
@@ -3522,6 +3827,14 @@ export class Capytorio3DRenderer {
       }
     }
 
+    // Hide pooled hovering robo-drones inside transparent blueprint ghosts
+    const roboDrones = g.userData.roboDrones as THREE.Object3D[] | undefined;
+    if (roboDrones) {
+      for (let i = 0; i < roboDrones.length; i++) {
+        roboDrones[i].visible = false;
+      }
+    }
+
     g.traverse((node) => {
       node.userData.ignoreCameraFade = true;
       if ((node as THREE.Mesh).isMesh) {
@@ -3539,7 +3852,11 @@ export class Capytorio3DRenderer {
           origMat === this.matGeneratorFireboxIdle ||
           origMat === this.matLabCoreIdle ||
           origMat === this.matStatusLampIdle ||
-          origMat === this.matStatusLampOn;
+          origMat === this.matStatusLampOn ||
+          origMat === this.matCyanGlow ||
+          origMat === this.matEmeraldGlow ||
+          origMat === this.matRubyGlow ||
+          origMat === this.matCeramicWhite;
         if (isAccent) {
           mesh.material = this.ghostValidAccentMat;
           accentMeshes.push(mesh);
@@ -3559,18 +3876,19 @@ export class Capytorio3DRenderer {
     return g;
   }
 
-  private acquireGhostGroup(type: CapytorioMachineType): THREE.Group {
-    let pool = this.ghostPoolByType.get(type);
+  private acquireGhostGroup(type: CapytorioMachineType, variantItemId?: string): THREE.Group {
+    const meshKey = resolveMachineMeshKey(type, variantItemId);
+    let pool = this.ghostPoolByType.get(meshKey);
     if (!pool) {
       pool = [];
-      this.ghostPoolByType.set(type, pool);
+      this.ghostPoolByType.set(meshKey, pool);
     }
-    const idx = _ghostUsedCounts[type];
-    _ghostUsedCounts[type] = idx + 1;
+    const idx = _ghostUsedCountsByKey.get(meshKey) ?? 0;
+    _ghostUsedCountsByKey.set(meshKey, idx + 1);
     if (idx < pool.length) {
       return pool[idx];
     }
-    const created = this.createGhostMachineGroup(type);
+    const created = this.createGhostMachineGroup(type, variantItemId);
     pool.push(created);
     return created;
   }
@@ -4023,18 +4341,23 @@ export class Capytorio3DRenderer {
         }
       } else {
         _activeKeysScratch.add(k);
+        const meshKey = resolveMachineMeshKey(m.type, m.variantItemId);
         let group = this.activeMachineGroups.get(k);
-        if (!group || group.userData.machineType !== m.type) {
+        if (!group || group.userData.meshKey !== meshKey) {
           if (group) {
-            this.releaseMachineGroup(group.userData.machineType as CapytorioMachineType, group);
+            this.releaseMachineGroup(
+              (group.userData.meshKey as string) ?? (group.userData.machineType as string),
+              group
+            );
           }
-          group = this.acquireMachineGroup(m.type);
+          group = this.acquireMachineGroup(m.type, m.variantItemId);
+          group.userData.meshKey = meshKey;
           group.userData.machineType = m.type;
           this.activeMachineGroups.set(k, group);
           this.root.add(group);
         }
 
-        resolveMachineVisualScale(m.type, fp.width, fp.height, _scaleScratch);
+        resolveMachineVisualScale(m.type, m.variantItemId, fp.width, fp.height, _scaleScratch);
         group.position.set(wx, 0, wz);
         group.rotation.y = rotY;
         group.scale.set(
@@ -4057,7 +4380,54 @@ export class Capytorio3DRenderer {
         }
 
         // Zero-allocation mechanical animations & 2-bone analytical inserter IK
-        if (m.type === 'drill' && group.userData.spinPart) {
+        if (group.userData.isPumpImpeller && group.userData.spinPart) {
+          const impeller = group.userData.spinPart as THREE.Object3D;
+          const speed = Math.max(0.25, engine.powerEfficiency);
+          impeller.rotation.y = timeSec * 6.0 * speed;
+        } else if (group.userData.isSentryTurret && group.userData.turret) {
+          const turret = group.userData.turret as THREE.Object3D;
+          turret.rotation.y = Math.sin(timeSec * 0.9 + m.id * 1.73) * 0.85;
+        } else if (group.userData.isRadarDish) {
+          if (group.userData.spinPart) {
+            (group.userData.spinPart as THREE.Object3D).rotation.y =
+              timeSec * (1.35 * Math.max(0.2, engine.powerEfficiency));
+          }
+          const roboDrones = group.userData.roboDrones as THREE.Object3D[] | undefined;
+          if (roboDrones) {
+            const fleet = engine.getRoboportFleetCount(m);
+            const activeDrones = fleet < roboDrones.length ? fleet : roboDrones.length;
+            for (let di = 0; di < roboDrones.length; di++) {
+              const drone = roboDrones[di];
+              if (di < activeDrones) {
+                drone.visible = true;
+                const phase = timeSec * (0.95 + di * 0.22) + di * 1.57 + m.id * 0.43;
+                const radius = 0.72 + (di % 2) * 0.24;
+                const dx = Math.cos(phase) * radius;
+                const dz = Math.sin(phase * 1.5) * (radius * 0.76);
+                drone.position.set(dx, 1.55 + Math.sin(phase * 2.1) * 0.14 + di * 0.08, dz);
+                drone.rotation.y = Math.atan2(-Math.sin(phase), Math.cos(phase * 1.5) * 1.5);
+              } else {
+                drone.visible = false;
+              }
+            }
+          }
+        } else if (group.userData.isBeaconAntennas) {
+          const beaconRate = Math.max(0.25, engine.powerEfficiency);
+          const ringA = group.userData.labRingA as THREE.Object3D | undefined;
+          const ringB = group.userData.labRingB as THREE.Object3D | undefined;
+          const emitter = group.userData.spinPart as THREE.Object3D | undefined;
+          if (ringA) {
+            ringA.rotation.x = 0.55;
+            ringA.rotation.y = timeSec * 2.4 * beaconRate;
+          }
+          if (ringB) {
+            ringB.rotation.z = -0.55;
+            ringB.rotation.y = -timeSec * 3.1 * beaconRate;
+          }
+          if (emitter) {
+            emitter.rotation.y = timeSec * 2.0 * beaconRate;
+          }
+        } else if (m.type === 'drill' && group.userData.spinPart) {
           const auger = group.userData.spinPart as THREE.Object3D;
           const drillSpeed = engine.powerEfficiency;
           auger.rotation.y = timeSec * 5.8 * drillSpeed;
@@ -4087,7 +4457,16 @@ export class Capytorio3DRenderer {
         } else if (m.type === 'generator') {
           if (group.userData.flywheel) {
             const genRate = m.fuelTimer > 0 ? 7.5 : 1.4;
-            (group.userData.flywheel as THREE.Object3D).rotation.x = timeSec * genRate;
+            const fw = group.userData.flywheel as THREE.Object3D;
+            if (group.userData.flywheelAxisZ) {
+              fw.rotation.z = timeSec * genRate;
+            } else {
+              fw.rotation.x = timeSec * genRate;
+            }
+          }
+          if (group.userData.nuclearCore) {
+            const pulse = 1 + Math.sin(timeSec * 2.8 + m.id) * 0.032;
+            (group.userData.nuclearCore as THREE.Object3D).scale.set(pulse, 1, pulse);
           }
           const fireboxMesh = group.userData.fireboxMesh as THREE.Mesh | undefined;
           if (fireboxMesh) {
@@ -4257,6 +4636,14 @@ export class Capytorio3DRenderer {
           if (hearthMesh.material !== desiredMat) {
             hearthMesh.material = desiredMat;
           }
+        } else if (m.type === 'chest') {
+          // Locomotive roof radiator fans (zero allocation)
+          if (group.userData.gearA) {
+            (group.userData.gearA as THREE.Object3D).rotation.y = timeSec * 4.8;
+          }
+          if (group.userData.gearB) {
+            (group.userData.gearB as THREE.Object3D).rotation.y = -timeSec * 4.8;
+          }
         }
       }
 
@@ -4370,7 +4757,10 @@ export class Capytorio3DRenderer {
     // Release out-of-range or demolished composite machine groups back to pool
     for (const [k, group] of this.activeMachineGroups) {
       if (!_activeKeysScratch.has(k)) {
-        this.releaseMachineGroup(group.userData.machineType as CapytorioMachineType, group);
+        this.releaseMachineGroup(
+          (group.userData.meshKey as string) ?? (group.userData.machineType as string),
+          group
+        );
         this.activeMachineGroups.delete(k);
       }
     }
@@ -4490,16 +4880,9 @@ export class Capytorio3DRenderer {
     }
 
     // 4b. Pooled 3D Selection Footprint & Transparent 3D Blueprint Ghost Items (zero per-frame allocations)
-    _ghostUsedCounts.drill = 0;
-    _ghostUsedCounts.belt = 0;
-    _ghostUsedCounts.inserter = 0;
-    _ghostUsedCounts.furnace = 0;
-    _ghostUsedCounts.assembler = 0;
-    _ghostUsedCounts.generator = 0;
-    _ghostUsedCounts.lab = 0;
-    _ghostUsedCounts.splitter = 0;
-    _ghostUsedCounts.tunnel = 0;
-    _ghostUsedCounts.chest = 0;
+    this.ghostPoolByType.forEach((_pool, meshKey) => {
+      _ghostUsedCountsByKey.set(meshKey, 0);
+    });
 
     let bpTileCount = 0;
     if (showCursorAndRing && isPasteMode && engine.clipboard) {
@@ -4589,8 +4972,14 @@ export class Capytorio3DRenderer {
         this.blueprintTileInstanced.setColorAt(bpTileCount, _color);
         bpTileCount++;
 
-        const ghostGroup = this.acquireGhostGroup(entry.baseType);
-        resolveMachineVisualScale(entry.baseType, efp.width, efp.height, _scaleScratch);
+        const ghostGroup = this.acquireGhostGroup(entry.baseType, entry.toolId);
+        resolveMachineVisualScale(
+          entry.baseType,
+          entry.toolId,
+          efp.width,
+          efp.height,
+          _scaleScratch
+        );
         ghostGroup.position.set(wx, 0, wz);
         ghostGroup.rotation.set(0, dirToRotY(entry.dir), 0);
         ghostGroup.scale.set(
@@ -4634,8 +5023,8 @@ export class Capytorio3DRenderer {
     }
 
     // Hide any unused pooled transparent 3D ghost models
-    this.ghostPoolByType.forEach((pool, mType) => {
-      const used = _ghostUsedCounts[mType];
+    this.ghostPoolByType.forEach((pool, meshKey) => {
+      const used = _ghostUsedCountsByKey.get(meshKey) ?? 0;
       for (let i = used; i < pool.length; i++) {
         pool[i].visible = false;
       }

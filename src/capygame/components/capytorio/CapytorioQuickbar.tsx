@@ -135,6 +135,7 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
             ) : selectedPlaceable ? (
               <CapytorioMachineIcon
                 machineType={selectedPlaceable.baseType}
+                variantItemId={selectedPlaceable.isBaseMachine ? undefined : selectedPlaceable.id}
                 color={hexToCss(selectedPlaceable.tintHex)}
                 size={14}
                 className="shrink-0"
@@ -198,6 +199,7 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
                   subtitle: `Quickbar [${hotkey}]`,
                   description: resolved.description,
                   machineType: resolved.baseType,
+                  variantItemId: resolved.isBaseMachine ? undefined : resolved.id,
                   color: hexToCss(resolved.tintHex),
                   footprint: `${fp.width}×${fp.height}`,
                   stockCount: count,
@@ -217,6 +219,7 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
                   selected={selected}
                   dimmed={count === 0 && !selected}
                   machineType={resolved.baseType}
+                  variantItemId={resolved.isBaseMachine ? undefined : resolved.id}
                   color={hexToCss(resolved.tintHex)}
                   onMouseEnter={(e) => openBarTip(e.currentTarget)}
                   onFocus={(e) => openBarTip(e.currentTarget)}

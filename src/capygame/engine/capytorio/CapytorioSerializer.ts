@@ -84,6 +84,8 @@ export function serializeCapytorioEngineState(
       inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
       inserterStackLimit: m.inserterStackLimit,
       chestSlotLimit: m.chestSlotLimit,
+      modules: m.modules && m.modules.length > 0 ? [...m.modules] : undefined,
+      integrity: typeof m.integrity === 'number' && m.integrity < 100 ? m.integrity : undefined,
       inputBuffer: { ...m.inputBuffer },
       outputBuffer: { ...m.outputBuffer },
       beltItems: m.beltItems.map((bi) => ({
@@ -320,6 +322,11 @@ export function hydrateCapytorioEngineState(
             : sm.type === 'chest'
               ? null
               : undefined,
+        modules: Array.isArray(sm.modules) ? sm.modules.slice(0, 4) : undefined,
+        integrity:
+          typeof sm.integrity === 'number' && Number.isFinite(sm.integrity)
+            ? Math.max(10, Math.min(100, Math.round(sm.integrity)))
+            : undefined,
         inputBuffer: sm.inputBuffer ? { ...sm.inputBuffer } : {},
         outputBuffer: sm.outputBuffer ? { ...sm.outputBuffer } : {},
         beltItems: Array.isArray(sm.beltItems)
