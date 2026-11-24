@@ -106,6 +106,8 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
+    entries: ['index.html'],
+    noDiscovery: true,
     holdUntilCrawlEnd: false,
     esbuildOptions: {
       sourcemap: false,
@@ -143,7 +145,15 @@ export default defineConfig({
     allowedHosts: true,
     hmr: false,
     watch: {
-      ignored: ['**/.playwright-cli/**', '**/.aistudio/**', '**/dist/**', '**/docs/**'],
+      ignored: [
+        '**/node_modules/**',
+        '**/.playwright-cli/**',
+        '**/.aistudio/**',
+        '**/dist/**',
+        '**/docs/**',
+        '**/scripts/**',
+        '**/public/assets/**',
+      ],
     },
   },
 });
