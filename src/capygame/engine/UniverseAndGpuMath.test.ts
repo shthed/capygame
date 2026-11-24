@@ -49,6 +49,9 @@ import {
   type IndirectDrawBatchSpec,
   type VolumetricShaftProjection,
 } from './gpu/GpuCullingAndClusterMath';
+import { HardwareGpuEngine } from './gpu/HardwareGpuEngine';
+import { disposeObject3DTree } from './gpu/ThreeDisposal';
+import { installSightlineEdgeFadeShader } from './RealisticWorldEnvironment';
 
 test('Flight throttle gears & 3-button media controls (Fast Forward, Play/Pause, Rewind) run slow and steady', () => {
   let cruiseVel = 0; // Hover
@@ -424,4 +427,171 @@ test('Capytorio top-down zoom climbs past low surface cutoff to planetary sub-pi
   }
   assert.equal(closeDist, CAPYTORIO_ZOOM_MIN_DIST);
 });
+
+test('HardwareGpuEngine composerFaulted circuit-breaker falls back cleanly and resets only on preset change or context restore', () => {
+  const listeners = new Map<string, Set<(e: Event) => void>>();
+  let directRenderCount = 0;
+  let pixelRatio = 1;
+  const mockRenderer = {
+    domElement: {
+      addEventListener: (ev: string, fn: (e: Event) => void) => {
+        if (!listeners.has(ev)) listeners.set(ev, new Set());
+        listeners.get(ev)!.add(fn);
+      },
+      removeEventListener: (ev: string, fn: (e: Event) => void) => {
+        listeners.get(ev)?.delete(fn);
+      },
+    },
+    capabilities: { isWebGL2: true, maxTextureSize: 4096, getMaxAnisotropy: () => 8 },
+    getContext: () => ({
+      RENDERER: 0x1f01,
+      getExtension: () => null,
+      getParameter: () => 'Mock Software GL',
+    }),
+    getPixelRatio: () => pixelRatio,
+    setPixelRatio: (pr: number) => {
+      pixelRatio = pr;
+    },
+    setSize: () => {},
+    setRenderTarget: () => {},
+    render: () => {
+      directRenderCount++;
+    },
+    shadowMap: { enabled: false, autoUpdate: false, type: THREE.PCFSoftShadowMap, needsUpdate: false },
+    toneMapping: THREE.ACESFilmicToneMapping,
+    toneMappingExposure: 1.0,
+    info: { render: { calls: 0, triangles: 0 }, memory: { textures: 0, geometries: 0 } },
+  } as unknown as THREE.WebGLRenderer;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 1000);
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+
+  const engine = new HardwareGpuEngine(
+    mockRenderer,
+    scene,
+    camera,
+    sunLight,
+    true, // isSoftwareGl=true keeps PMREM pure CPU DataTexture with no real GL context
+    1280,
+    720,
+    { postProcessingEnabled: true, visualFilterPreset: 'cinema_filmic' }
+  );
+
+  // Inject a failing mock composer & passes to exercise the circuit-breaker deterministically
+  let composerRenderAttempts = 0;
+  let bloomDisposed = 0;
+  let masterDisposed = 0;
+  let outputDisposed = 0;
+  let fxaaDisposed = 0;
+  const enginePriv = engine as unknown as Record<string, unknown>;
+  enginePriv.composer = {
+    render: () => {
+      composerRenderAttempts++;
+      throw new Error('Simulated mobile FBO incomplete error');
+    },
+    dispose: () => {},
+    setPixelRatio: () => {},
+    setSize: () => {},
+  };
+  enginePriv.bloomPass = { dispose: () => { bloomDisposed++; }, enabled: true, strength: 0.24, resolution: new THREE.Vector2(640, 360) };
+  enginePriv.masterFilterPass = { dispose: () => { masterDisposed++; }, uniforms: {} };
+  enginePriv.outputPass = { dispose: () => { outputDisposed++; } };
+  enginePriv.fxaaPass = { dispose: () => { fxaaDisposed++; }, enabled: true, material: { uniforms: { resolution: { value: new THREE.Vector2() } } } };
+
+  let rebuildCalls = 0;
+  let healthyComposerRenders = 0;
+  enginePriv.rebuildComposer = () => {
+    rebuildCalls++;
+    enginePriv.composer = {
+      render: () => {
+        healthyComposerRenders++;
+      },
+      dispose: () => {},
+      setPixelRatio: () => {},
+      setSize: () => {},
+    };
+  };
+
+  assert.equal(engine.isComposerFaulted(), false);
+
+  // Frame 1: composer throws -> circuit-breaker trips, passes disposed, falls back to direct render
+  engine.render();
+  assert.equal(composerRenderAttempts, 1);
+  assert.equal(engine.isComposerFaulted(), true);
+  assert.equal(directRenderCount, 1);
+  assert.equal(bloomDisposed, 1);
+  assert.equal(masterDisposed, 1);
+  assert.equal(outputDisposed, 1);
+  assert.equal(fxaaDisposed, 1);
+
+  // Frames 2..5: stays in clean direct-render fallback with ZERO composer rebuild attempts
+  const rebuildsAfterFault = rebuildCalls;
+  engine.render();
+  engine.render();
+  engine.render();
+  assert.equal(composerRenderAttempts, 1);
+  assert.equal(rebuildCalls, rebuildsAfterFault);
+  assert.equal(directRenderCount, 4);
+
+  // Generic applyConfig does NOT clear composerFaulted
+  engine.applyConfig({ bloomStrength: 0.3 });
+  assert.equal(engine.isComposerFaulted(), true);
+
+  // Explicit graphics preset change resets composerFaulted and rebuilds composer
+  engine.applyQualityPreset('balanced');
+  assert.equal(engine.isComposerFaulted(), false);
+  assert.equal(rebuildCalls, rebuildsAfterFault + 1);
+
+  // Trip again and verify webglcontextrestored resets composerFaulted and renders via restored composer
+  enginePriv.composerFaulted = true;
+  assert.equal(engine.isComposerFaulted(), true);
+  const restoredHandlers = listeners.get('webglcontextrestored');
+  assert.ok(restoredHandlers && restoredHandlers.size === 1);
+  for (const h of restoredHandlers) h(new Event('webglcontextrestored'));
+  assert.equal(engine.isComposerFaulted(), false);
+  assert.ok(healthyComposerRenders >= 1);
+
+  engine.dispose();
+});
+
+test('disposeObject3DTree disposes cloned __occMaterial and __origMaterial, and installSightlineEdgeFadeShader chains onBeforeCompile', () => {
+  const root = new THREE.Group();
+  const origMat = new THREE.MeshStandardMaterial();
+  const occMat = origMat.clone();
+  let origDisposed = 0;
+  let occDisposed = 0;
+  origMat.dispose = () => { origDisposed++; };
+  occMat.dispose = () => { occDisposed++; };
+
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), origMat);
+  mesh.userData.__origMaterial = origMat;
+  mesh.userData.__occMaterial = occMat;
+  root.add(mesh);
+
+  disposeObject3DTree(root);
+  assert.equal(origDisposed, 1);
+  assert.equal(occDisposed, 1);
+  assert.equal(mesh.userData.__origMaterial, undefined);
+  assert.equal(mesh.userData.__occMaterial, undefined);
+
+  // Verify installSightlineEdgeFadeShader chains pre-existing onBeforeCompile
+  const chainedMat = new THREE.MeshStandardMaterial();
+  let prevCalled = false;
+  chainedMat.onBeforeCompile = (shader) => {
+    prevCalled = true;
+    shader.fragmentShader = '// PREV_HOOK\n' + shader.fragmentShader;
+  };
+  installSightlineEdgeFadeShader(chainedMat, false);
+  const mockShader = {
+    uniforms: {} as Record<string, unknown>,
+    vertexShader: '',
+    fragmentShader: '#include <clipping_planes_fragment>\nvoid main() {}',
+  };
+  chainedMat.onBeforeCompile(mockShader as unknown as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer);
+  assert.equal(prevCalled, true);
+  assert.ok(mockShader.fragmentShader.includes('// PREV_HOOK'));
+  assert.ok(mockShader.fragmentShader.includes('capyComputeThirdPersonOccDensity'));
+});
+
 

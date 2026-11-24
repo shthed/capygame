@@ -75,8 +75,6 @@ export default defineConfig({
       'react/jsx-dev-runtime',
       'lucide-react',
       'three',
-      'clsx',
-      'tailwind-merge',
     ],
   },
   server: {

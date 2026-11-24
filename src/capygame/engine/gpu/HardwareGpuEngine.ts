@@ -360,6 +360,7 @@ export class HardwareGpuEngine {
   private activeMsaaSamples: number = 0;
   private activeShadowMapSize: number = 2048;
   private contextLost: boolean = false;
+  private composerFaulted: boolean = false;
   private elapsedTime: number = 0;
   private forceSoftwarePostProcess: boolean = false;
   private lastSnappedShadowX: number = Number.NaN;
@@ -529,6 +530,7 @@ export class HardwareGpuEngine {
     };
     this.onContextRestoredHandler = () => {
       this.contextLost = false;
+      this.composerFaulted = false;
       if (!this.isWebGpu && (!this.isSoftwareGl || this.shouldActivateComposer())) {
         this.rebuildComposer();
       }
@@ -649,10 +651,7 @@ export class HardwareGpuEngine {
     if (this.isWebGpu) return;
     try {
       const glRenderer = this.renderer as THREE.WebGLRenderer;
-      this.renderPass?.dispose();
-      this.composer?.dispose();
-      this.renderTarget?.dispose();
-      this.sceneCaptureTarget?.dispose();
+      this.disposeComposerTargets();
 
       const desiredMsaa =
         this.config.antiAliasing === 'msaa_fxaa'
@@ -705,12 +704,16 @@ export class HardwareGpuEngine {
       this.syncFxaaResolution();
       this.composer.addPass(this.fxaaPass);
     } catch {
-      this.composer = null;
+      this.disposeComposerTargets();
     }
   }
 
   private disposeComposerTargets(): void {
     this.renderPass?.dispose();
+    this.bloomPass?.dispose();
+    this.masterFilterPass?.dispose();
+    this.outputPass?.dispose();
+    this.fxaaPass?.dispose();
     this.composer?.dispose();
     this.renderTarget?.dispose();
     this.sceneCaptureTarget?.dispose();
@@ -768,6 +771,7 @@ export class HardwareGpuEngine {
   }
 
   public applyQualityPreset(preset: GpuQualityPreset): GpuPipelineConfig {
+    this.composerFaulted = false;
     let next: GpuPipelineConfig;
     if (preset === 'performance') {
       next = {
@@ -1245,8 +1249,12 @@ export class HardwareGpuEngine {
     this.idleWarmupDone = complete;
   }
 
+  public isComposerFaulted(): boolean {
+    return this.composerFaulted;
+  }
+
   private shouldActivateComposer(): boolean {
-    if (!this.config.postProcessingEnabled || this.contextLost) {
+    if (!this.config.postProcessingEnabled || this.contextLost || this.composerFaulted) {
       return false;
     }
     if (this.isWebGpu) return true;
@@ -1288,7 +1296,8 @@ export class HardwareGpuEngine {
       try {
         this.composer.render();
       } catch {
-        // Fallback to direct render if mobile FBO or post-process pass throws
+        // Trip circuit-breaker and fall back cleanly to direct rendering until preset change or context restore
+        this.composerFaulted = true;
         this.disposeComposerTargets();
         this.renderer.setRenderTarget(null);
         this.renderer.render(this.scene, this.camera);
@@ -1447,11 +1456,7 @@ export class HardwareGpuEngine {
       );
     }
     this.webGpuPipeline?.dispose();
-    this.renderPass?.dispose();
-    this.composer?.dispose();
-    this.renderTarget?.dispose();
-    this.sceneCaptureTarget?.dispose();
-    this.depthTexture?.dispose();
+    this.disposeComposerTargets();
     this.heroContactShadowMesh.geometry.dispose();
     this.heroContactShadowMat.dispose();
   }

@@ -83,9 +83,13 @@ self.addEventListener('install', (event) => {
                           seenSubAssets.add(fileName);
                           const workerUrl = new URL('./assets/' + fileName, self.location).href;
                           if (workerUrl === bundleUrl) continue;
-                          const workerResp = await fetch(workerUrl, { cache: 'no-cache' });
-                          if (workerResp.ok) {
-                            await cache.put(workerUrl, workerResp);
+                          try {
+                            const workerResp = await fetch(workerUrl, { cache: 'no-cache' });
+                            if (workerResp.ok) {
+                              await cache.put(workerUrl, workerResp);
+                            }
+                          } catch (subAssetErr) {
+                            console.warn('[ServiceWorker] Failed to cache sub-asset:', workerUrl, subAssetErr);
                           }
                         }
                       }
@@ -173,11 +177,12 @@ self.addEventListener('fetch', (event) => {
           }
           return networkResponse;
         } catch (networkError) {
-          // Offline navigation fallback: try matching the requested URL, or fallback to index.html
+          // Offline navigation fallback: scope lookup strictly to CACHE_NAME
+          const cache = await caches.open(CACHE_NAME);
           const cachedResponse =
-            (await caches.match(request, { ignoreSearch: true })) ||
-            (await caches.match(new URL('./index.html', self.location).href, { ignoreSearch: true })) ||
-            (await caches.match(new URL('./', self.location).href, { ignoreSearch: true }));
+            (await cache.match(request, { ignoreSearch: true })) ||
+            (await cache.match(new URL('./index.html', self.location).href, { ignoreSearch: true })) ||
+            (await cache.match(new URL('./', self.location).href, { ignoreSearch: true }));
           if (cachedResponse) {
             return cachedResponse;
           }
@@ -249,8 +254,8 @@ self.addEventListener('fetch', (event) => {
 
       try {
         const response = await fetch(request);
-        // Cache valid responses within our origin or opaque no-cors responses
-        if (response && (response.status === 200 || response.type === 'opaque')) {
+        // Cache only valid same-origin 200 responses (avoid caching opaque cross-origin responses)
+        if (response && url.origin === self.location.origin && response.status === 200) {
           try {
             await cache.put(request, response.clone());
           } catch (cacheErr) {

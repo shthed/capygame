@@ -1024,13 +1024,6 @@ export const CapyGameView: React.FC = () => {
             wgpuRenderer.dispose();
             return;
           }
-          const gpuDev = (wgpuRenderer.backend as { device?: GPUDevice })?.device;
-          if (gpuDev && typeof gpuDev.addEventListener === 'function') {
-            gpuDev.addEventListener('uncapturederror', (evt: Event) => {
-              const gpuErr = evt as { error?: { message?: string } };
-              console.warn('[WebGPU Uncaptured Error]', gpuErr.error?.message ?? gpuErr);
-            });
-          }
           webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe, isSoftwareGl: swGl };
         } catch {
           webGpuInit = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };

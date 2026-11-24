@@ -113,9 +113,20 @@ export function installSightlineEdgeFadeShader(
   }
 
   const baseType = mat.type;
-  mat.customProgramCacheKey = () => `capy_occ_bayer_dither_v3_${baseType}`;
+  const prevOnBeforeCompile = mat.onBeforeCompile;
+  const prevCustomProgramCacheKey = mat.customProgramCacheKey;
+  mat.customProgramCacheKey = () => {
+    const prevKey =
+      typeof prevCustomProgramCacheKey === 'function' ? prevCustomProgramCacheKey.call(mat) : '';
+    return prevKey
+      ? `${prevKey}|capy_occ_bayer_dither_v3_${baseType}`
+      : `capy_occ_bayer_dither_v3_${baseType}`;
+  };
 
-  mat.onBeforeCompile = (shader) => {
+  mat.onBeforeCompile = (shader, renderer) => {
+    if (typeof prevOnBeforeCompile === 'function') {
+      prevOnBeforeCompile.call(mat, shader, renderer);
+    }
     shader.uniforms.uCapyOccBlend = uniforms.uCapyOccBlend;
     shader.uniforms.uCapyOccBounds = uniforms.uCapyOccBounds;
     shader.uniforms.uCapyViewport = uniforms.uCapyViewport;

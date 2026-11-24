@@ -1406,10 +1406,10 @@ test('Capytorio3DRenderer renders transparent 3D ghost models (and hides arrows)
   }
   assert.ok(transparentMeshCount >= 10, 'Ghost models contain composite 3D geometry parts');
 
-  // Verify legacy arrow-only paste instanced mesh is hidden (count === 0)
-  const arrowInstanced = (renderer as unknown as { blueprintArrowInstanced: THREE.InstancedMesh })
+  // Verify dead arrow-only paste instanced mesh has been removed in favor of 3D ghosts
+  const arrowInstanced = (renderer as unknown as { blueprintArrowInstanced?: THREE.InstancedMesh })
     .blueprintArrowInstanced;
-  assert.equal(arrowInstanced.count, 0, 'Arrow-only paste markers are disabled in favor of 3D ghosts');
+  assert.equal(arrowInstanced, undefined, 'Dead arrow-only paste mesh is removed in favor of 3D ghosts');
 
   // Exiting paste mode hides all pooled 3D ghosts cleanly
   engine.clearClipboard();

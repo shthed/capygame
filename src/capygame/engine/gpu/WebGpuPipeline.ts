@@ -1144,15 +1144,16 @@ export class WebGpuPostAndComputePipeline {
     const workingColor = this.config.bloomEnabled
       ? (() => {
           this.builtWithBloom = true;
+          const refBloomStrength = Math.max(0.24, this.config.bloomStrength || 0);
           const bloomPass = bloom(
             withVolumetricRays,
-            this.config.bloomStrength ?? 0.24,
+            refBloomStrength,
             0.42,
             0.82
           );
           return withVolumetricRays.add(
             clamp(bloomPass, vec4(0.0), vec4(16.0)).mul(
-              this.uBloomStrength.div(Math.max(0.01, this.config.bloomStrength || 0.24))
+              this.uBloomStrength.div(refBloomStrength)
             )
           );
         })()

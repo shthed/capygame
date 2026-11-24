@@ -1074,13 +1074,14 @@ export class Capytorio3DRenderer {
   private inspectRingMesh: THREE.Mesh;
   private bpTileMat: THREE.MeshBasicMaterial;
   private blueprintTileInstanced: THREE.InstancedMesh;
-  private blueprintArrowInstanced: THREE.InstancedMesh;
+  private lastBlueprintTileCount = 0;
 
   // Pooled 3D Alt-Mode sprite badges (zero per-frame allocations)
   private readonly altModeRoot = new THREE.Group();
   private readonly altModeSpritePool: THREE.Sprite[] = [];
   private readonly altModeMatCache = new Map<string, THREE.SpriteMaterial>();
   private readonly altModeTexCache = new Map<string, THREE.CanvasTexture>();
+  private readonly altModePlaceholderMat: THREE.SpriteMaterial;
 
   // Shared geometries, textures & materials for composite machines
   private sharedMaterials: THREE.Material[] = [];
@@ -1116,6 +1117,12 @@ export class Capytorio3DRenderer {
   private lastTerrainRadius = -1;
   private lastTerrainTopoRev = -1;
   private lastTerrainSubPixel = -1;
+  // Static belt/rail InstancedMesh dirty-cache (skips redundant matrix rebuilds & GPU buffer uploads)
+  private lastBeltTopoRev = -1;
+  private lastBeltCamX = Number.NaN;
+  private lastBeltCamZ = Number.NaN;
+  private lastBeltVisibleMeters = -1;
+  private lastBeltSubPixel = -1;
 
   constructor() {
     this.root.name = 'Capytorio3DRendererRoot';
@@ -1791,23 +1798,13 @@ export class Capytorio3DRenderer {
     this.blueprintTileInstanced.userData.ignoreCameraFade = true;
     this.root.add(this.blueprintTileInstanced);
 
-    const bpArrowGeo = new THREE.ConeGeometry(0.36, 0.85, 4);
-    bpArrowGeo.rotateX(-Math.PI * 0.5);
-    const bpArrowMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+    this.altModePlaceholderMat = new THREE.SpriteMaterial({
       transparent: true,
-      opacity: 0.85,
+      opacity: 0,
+      depthTest: false,
       depthWrite: false,
     });
-    this.blueprintArrowInstanced = new THREE.InstancedMesh(
-      bpArrowGeo,
-      bpArrowMat,
-      MAX_BLUEPRINT_GHOST_TILES
-    );
-    this.blueprintArrowInstanced.frustumCulled = false;
-    this.blueprintArrowInstanced.count = 0;
-    this.blueprintArrowInstanced.userData.ignoreCameraFade = true;
-    this.root.add(this.blueprintArrowInstanced);
+    this.altModePlaceholderMat.userData.sharedAsset = true;
 
     // Translucent 3D holographic ghost materials for blueprint placement preview
     this.ghostValidPrimaryMat = new THREE.MeshStandardMaterial({
@@ -1880,12 +1877,12 @@ export class Capytorio3DRenderer {
     this.altModeRoot.userData.ignoreCameraFade = true;
     this.root.add(this.altModeRoot);
 
-    this.sharedGeometries.push(ghostPlateGeo, arrowGeo, ringGeo, bpTileGeo, bpArrowGeo);
+    this.sharedGeometries.push(ghostPlateGeo, arrowGeo, ringGeo, bpTileGeo);
     this.sharedMaterials.push(
       this.cursorFrameMat,
       ringMat,
       bpTileMat,
-      bpArrowMat,
+      this.altModePlaceholderMat,
       this.ghostValidPrimaryMat,
       this.ghostValidAccentMat,
       this.ghostInvalidPrimaryMat,
@@ -1897,7 +1894,7 @@ export class Capytorio3DRenderer {
 
   private getOrCreateAltModeSprite(idx: number): THREE.Sprite {
     while (this.altModeSpritePool.length <= idx) {
-      const sprite = new THREE.Sprite();
+      const sprite = new THREE.Sprite(this.altModePlaceholderMat);
       sprite.visible = false;
       sprite.renderOrder = 12;
       sprite.userData.ignoreCameraFade = true;
@@ -1915,7 +1912,35 @@ export class Capytorio3DRenderer {
     isWarn: boolean
   ): THREE.SpriteMaterial {
     const existing = this.altModeMatCache.get(key);
-    if (existing) return existing;
+    if (existing) {
+      // Refresh LRU recency on hit
+      this.altModeMatCache.delete(key);
+      this.altModeMatCache.set(key, existing);
+      return existing;
+    }
+
+    // Enforce 128-entry LRU eviction cap so badge textures/materials never grow unbounded
+    while (this.altModeMatCache.size >= 128) {
+      const oldestKey = this.altModeMatCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      const evictedMat = this.altModeMatCache.get(oldestKey);
+      this.altModeMatCache.delete(oldestKey);
+      if (evictedMat) {
+        for (let i = 0; i < this.altModeSpritePool.length; i++) {
+          const sp = this.altModeSpritePool[i];
+          if (sp.material === evictedMat) {
+            sp.material = this.altModePlaceholderMat;
+            sp.visible = false;
+          }
+        }
+        evictedMat.dispose();
+      }
+      const evictedTex = this.altModeTexCache.get(oldestKey);
+      if (evictedTex) {
+        this.altModeTexCache.delete(oldestKey);
+        evictedTex.dispose();
+      }
+    }
 
     let tex: THREE.CanvasTexture | null = null;
     if (typeof document !== 'undefined') {
@@ -3847,6 +3872,22 @@ export class Capytorio3DRenderer {
       (MAX_VISIBLE_RADIUS_TILES + 4) * CAPYTORIO_TILE_SIZE,
       altitudeRadius * 1.5
     );
+    const beltsDirty =
+      engine.topologyRevision !== this.lastBeltTopoRev ||
+      !Number.isFinite(this.lastBeltCamX) ||
+      Math.abs(camX - this.lastBeltCamX) > CAPYTORIO_TILE_SIZE * 2 ||
+      Math.abs(camZ - this.lastBeltCamZ) > CAPYTORIO_TILE_SIZE * 2 ||
+      Math.abs(maxVisibleMeters - this.lastBeltVisibleMeters) > 4.0 ||
+      Math.abs(subPixelShrink - this.lastBeltSubPixel) > 0.004;
+    const beltVisibleMeters = maxVisibleMeters + CAPYTORIO_TILE_SIZE * 4;
+    if (beltsDirty) {
+      this.lastBeltTopoRev = engine.topologyRevision;
+      this.lastBeltCamX = camX;
+      this.lastBeltCamZ = camZ;
+      this.lastBeltVisibleMeters = maxVisibleMeters;
+      this.lastBeltSubPixel = subPixelShrink;
+    }
+
     const beltHalfSpanX = CAPYTORIO_TILE_SIZE * 0.88 * 0.5 - 0.055; // 1.045m from tile center
     const renderItemsAtScale = altitudeRadius <= 1800;
     const showAltMode = engine.altModeEnabled && altitudeRadius <= 420;
@@ -3857,7 +3898,8 @@ export class Capytorio3DRenderer {
       const fp = engine.getMachineFootprint(m);
       const wx = capytorioMachineCenterWorldX(m.gx, fp.width);
       const wz = capytorioMachineCenterWorldZ(m.gz, fp.height);
-      if (Math.abs(wx - camX) > maxVisibleMeters || Math.abs(wz - camZ) > maxVisibleMeters) {
+      const visLimit = m.type === 'belt' ? beltVisibleMeters : maxVisibleMeters;
+      if (Math.abs(wx - camX) > visLimit || Math.abs(wz - camZ) > visLimit) {
         continue;
       }
 
@@ -3866,9 +3908,15 @@ export class Capytorio3DRenderer {
       const rightDx = -fwdDz;
       const rightDz = fwdDx;
       const rotY = dirToRotY(m.dir);
-      const curveShape = m.type === 'belt' ? getBeltCurveShape(engine.occupancyGrid, m) : 'straight';
+      const curveShape =
+        m.type === 'belt' && (beltsDirty || (renderItemsAtScale && m.beltItems.length > 0))
+          ? getBeltCurveShape(engine.occupancyGrid, m)
+          : 'straight';
 
       if (m.type === 'belt') {
+        if (!beltsDirty) {
+          // Static belt geometry already uploaded; fall through directly to dynamic belt items below
+        } else {
         const tierMult = m.tierMult ?? 1.0;
         const tierIdx: 0 | 1 | 2 =
           m.variantItemId === 'express_transport_belt' || tierMult >= 2.8
@@ -3969,6 +4017,7 @@ export class Capytorio3DRenderer {
             this.beltSideBridgeInstanced.setMatrixAt(beltSideBridgeCount, _dummy.matrix);
             beltSideBridgeCount++;
           }
+        }
         }
       } else {
         _activeKeysScratch.add(k);
@@ -4324,43 +4373,45 @@ export class Capytorio3DRenderer {
       }
     }
 
-    this.beltChassisInstanced.count = beltChassisCount;
-    this.beltChassisInstanced.instanceMatrix.needsUpdate = true;
-    this.beltRailSideInstanced.count = beltRailSideCount;
-    this.beltRailSideInstanced.instanceMatrix.needsUpdate = true;
-    if (this.beltRailSideInstanced.instanceColor) {
-      this.beltRailSideInstanced.instanceColor.needsUpdate = true;
-    }
-    this.beltSideBridgeInstanced.count = beltSideBridgeCount;
-    this.beltSideBridgeInstanced.instanceMatrix.needsUpdate = true;
+    if (beltsDirty) {
+      this.beltChassisInstanced.count = beltChassisCount;
+      this.beltChassisInstanced.instanceMatrix.needsUpdate = true;
+      this.beltRailSideInstanced.count = beltRailSideCount;
+      this.beltRailSideInstanced.instanceMatrix.needsUpdate = true;
+      if (this.beltRailSideInstanced.instanceColor) {
+        this.beltRailSideInstanced.instanceColor.needsUpdate = true;
+      }
+      this.beltSideBridgeInstanced.count = beltSideBridgeCount;
+      this.beltSideBridgeInstanced.instanceMatrix.needsUpdate = true;
 
-    this.beltChassisCurveLeftInstanced.count = beltCurvedLeftCount;
-    this.beltChassisCurveLeftInstanced.instanceMatrix.needsUpdate = true;
-    this.beltChassisCurveRightInstanced.count = beltCurvedRightCount;
-    this.beltChassisCurveRightInstanced.instanceMatrix.needsUpdate = true;
-    this.beltRailCurveLeftInstanced.count = beltCurvedLeftCount;
-    this.beltRailCurveLeftInstanced.instanceMatrix.needsUpdate = true;
-    if (this.beltRailCurveLeftInstanced.instanceColor) {
-      this.beltRailCurveLeftInstanced.instanceColor.needsUpdate = true;
-    }
-    this.beltRailCurveRightInstanced.count = beltCurvedRightCount;
-    this.beltRailCurveRightInstanced.instanceMatrix.needsUpdate = true;
-    if (this.beltRailCurveRightInstanced.instanceColor) {
-      this.beltRailCurveRightInstanced.instanceColor.needsUpdate = true;
-    }
+      this.beltChassisCurveLeftInstanced.count = beltCurvedLeftCount;
+      this.beltChassisCurveLeftInstanced.instanceMatrix.needsUpdate = true;
+      this.beltChassisCurveRightInstanced.count = beltCurvedRightCount;
+      this.beltChassisCurveRightInstanced.instanceMatrix.needsUpdate = true;
+      this.beltRailCurveLeftInstanced.count = beltCurvedLeftCount;
+      this.beltRailCurveLeftInstanced.instanceMatrix.needsUpdate = true;
+      if (this.beltRailCurveLeftInstanced.instanceColor) {
+        this.beltRailCurveLeftInstanced.instanceColor.needsUpdate = true;
+      }
+      this.beltRailCurveRightInstanced.count = beltCurvedRightCount;
+      this.beltRailCurveRightInstanced.instanceMatrix.needsUpdate = true;
+      if (this.beltRailCurveRightInstanced.instanceColor) {
+        this.beltRailCurveRightInstanced.instanceColor.needsUpdate = true;
+      }
 
-    for (let t = 0; t < 3; t++) {
-      const dm = this.beltDeckInstancedByTier[t];
-      dm.count = _beltTierCounts[t];
-      dm.instanceMatrix.needsUpdate = true;
+      for (let t = 0; t < 3; t++) {
+        const dm = this.beltDeckInstancedByTier[t];
+        dm.count = _beltTierCounts[t];
+        dm.instanceMatrix.needsUpdate = true;
 
-      const clm = this.beltDeckCurveLeftByTier[t];
-      clm.count = _curvedLeftTierCounts[t];
-      clm.instanceMatrix.needsUpdate = true;
+        const clm = this.beltDeckCurveLeftByTier[t];
+        clm.count = _curvedLeftTierCounts[t];
+        clm.instanceMatrix.needsUpdate = true;
 
-      const crm = this.beltDeckCurveRightByTier[t];
-      crm.count = _curvedRightTierCounts[t];
-      crm.instanceMatrix.needsUpdate = true;
+        const crm = this.beltDeckCurveRightByTier[t];
+        crm.count = _curvedRightTierCounts[t];
+        crm.instanceMatrix.needsUpdate = true;
+      }
     }
 
     for (let sIdx = 0; sIdx < CAPYTORIO_ITEM_SHAPES.length; sIdx++) {
@@ -4449,7 +4500,6 @@ export class Capytorio3DRenderer {
     _ghostUsedCounts.chest = 0;
 
     let bpTileCount = 0;
-    const bpArrowCount = 0;
     if (showCursorAndRing && isPasteMode && engine.clipboard) {
       this.bpTileMat.opacity = 0.22;
       _blueprintStockScratch.clear();
@@ -4589,15 +4639,13 @@ export class Capytorio3DRenderer {
       }
     });
 
-    this.blueprintTileInstanced.count = bpTileCount;
-    this.blueprintTileInstanced.instanceMatrix.needsUpdate = true;
-    if (this.blueprintTileInstanced.instanceColor) {
-      this.blueprintTileInstanced.instanceColor.needsUpdate = true;
-    }
-    this.blueprintArrowInstanced.count = bpArrowCount;
-    this.blueprintArrowInstanced.instanceMatrix.needsUpdate = true;
-    if (this.blueprintArrowInstanced.instanceColor) {
-      this.blueprintArrowInstanced.instanceColor.needsUpdate = true;
+    if (bpTileCount > 0 || this.lastBlueprintTileCount > 0) {
+      this.blueprintTileInstanced.count = bpTileCount;
+      this.blueprintTileInstanced.instanceMatrix.needsUpdate = true;
+      if (this.blueprintTileInstanced.instanceColor) {
+        this.blueprintTileInstanced.instanceColor.needsUpdate = true;
+      }
+      this.lastBlueprintTileCount = bpTileCount;
     }
 
     // 5. Universal Inspected Tile / Entity Selection Halo (scaled to multi-tile footprint)

@@ -164,6 +164,14 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
       wasmReady = true;
     }
 
+    if (world) {
+      world.free();
+      world = null;
+    }
+    staticHandles = [];
+    hammerBodies = [];
+    seeSawBody = null;
+
     world = new RAPIER.World({ x: 0.0, y: -24.0, z: 0.0 });
     buildStaticColliders(world, msg.colliders.circles, msg.colliders.boxes);
     initDynamicArenaBodies(world);
@@ -179,6 +187,8 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
       Atomics.store(sabInt32, 5, FLUID_GRID_CELL_COUNT);
     } else {
       transportMode = 'transferable_worker';
+      sabInt32 = null;
+      sabFloat32 = null;
     }
 
     const readyReply: PhysicsWorkerOutboundMessage = {

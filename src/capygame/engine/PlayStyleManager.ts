@@ -583,7 +583,19 @@ export class PlayStyleManager {
   public occludedObjectsFadedCount: number = 0;
   private fadedOccluderMeshes: THREE.Mesh[] = [];
   private currentFrameOccluders = new Set<THREE.Mesh>();
+  private currentFrameOccluderList: THREE.Mesh[] = [];
   private currentFrameOccludedEntities = new Set<THREE.Object3D>();
+  // Frame-local scalar scratch for zero-allocation sightline checks
+  private occCamX = 0;
+  private occCamY = 0;
+  private occCamZ = 0;
+  private occHeadX = 0;
+  private occHeadY = 0;
+  private occHeadZ = 0;
+  private occTorsoX = 0;
+  private occTorsoY = 0;
+  private occTorsoZ = 0;
+  private occPlayerPlaneDepth = 1;
 
   // Zero-Allocation Solid-Body Slight Squash State (clamped to +-6%)
   public heroSoftSquash: number = 0;
@@ -7488,7 +7500,10 @@ export class PlayStyleManager {
     for (let i = 0; i < meshes.length; i++) {
       const m = meshes[i];
       if (!m.visible) continue;
-      this.currentFrameOccluders.add(m);
+      if (!this.currentFrameOccluders.has(m)) {
+        this.currentFrameOccluders.add(m);
+        this.currentFrameOccluderList.push(m);
+      }
       addedAny = true;
     }
     if (addedAny) {
@@ -7681,8 +7696,65 @@ export class PlayStyleManager {
     );
   }
 
+  private blocksPlayerCorridor(
+    sx: number,
+    sy: number,
+    sz: number,
+    radius: number
+  ): boolean {
+    return (
+      doesSphereBlockPlayerSightline(
+        sx,
+        sy,
+        sz,
+        radius,
+        this.occCamX,
+        this.occCamY,
+        this.occCamZ,
+        this.occHeadX,
+        this.occHeadY,
+        this.occHeadZ,
+        0.35
+      ) ||
+      doesSphereBlockPlayerSightline(
+        sx,
+        sy,
+        sz,
+        radius,
+        this.occCamX,
+        this.occCamY,
+        this.occCamZ,
+        this.occTorsoX,
+        this.occTorsoY,
+        this.occTorsoZ,
+        0.35
+      )
+    );
+  }
+
+  private isRightInFrontOfLens(
+    sx: number,
+    sy: number,
+    sz: number,
+    radius: number
+  ): boolean {
+    const relX = sx - this.occCamX;
+    const relY = sy - this.occCamY;
+    const relZ = sz - this.occCamZ;
+    const fwd = relX * _camForward.x + relY * _camForward.y + relZ * _camForward.z;
+    const maxLensDepth = Math.min(2.6, Math.max(0.4, this.occPlayerPlaneDepth - 0.35));
+    if (fwd <= -radius * 0.45 || fwd >= maxLensDepth) return false;
+    const clampedFwd = Math.max(0, fwd);
+    const px = relX - _camForward.x * clampedFwd;
+    const py = relY - _camForward.y * clampedFwd;
+    const pz = relZ - _camForward.z * clampedFwd;
+    const lensRadius = radius + 0.55;
+    return px * px + py * py + pz * pz <= lensRadius * lensRadius;
+  }
+
   public updateHeadLineOfSightTransparency(dt: number) {
     this.currentFrameOccluders.clear();
+    this.currentFrameOccluderList.length = 0;
     this.currentFrameOccludedEntities.clear();
 
     this.renderer.getDrawingBufferSize(_rendererSizeVec2);
@@ -7790,59 +7862,16 @@ export class PlayStyleManager {
       const horizDirX = horizLen > 0.1 ? horizDx / horizLen : 0;
       const horizDirZ = horizLen > 0.1 ? horizDz / horizLen : -1;
       const playerPlaneDepth = Math.max(0.6, Math.min(headDepth, torsoDepth));
-
-      const blocksPlayerCorridor = (
-        sx: number,
-        sy: number,
-        sz: number,
-        radius: number
-      ): boolean =>
-        doesSphereBlockPlayerSightline(
-          sx,
-          sy,
-          sz,
-          radius,
-          camX,
-          camY,
-          camZ,
-          headX,
-          headY,
-          headZ,
-          0.35
-        ) ||
-        doesSphereBlockPlayerSightline(
-          sx,
-          sy,
-          sz,
-          radius,
-          camX,
-          camY,
-          camZ,
-          torsoX,
-          torsoY,
-          torsoZ,
-          0.35
-        );
-
-      const isRightInFrontOfLens = (
-        sx: number,
-        sy: number,
-        sz: number,
-        radius: number
-      ): boolean => {
-        const relX = sx - camX;
-        const relY = sy - camY;
-        const relZ = sz - camZ;
-        const fwd = relX * _camForward.x + relY * _camForward.y + relZ * _camForward.z;
-        const maxLensDepth = Math.min(2.6, Math.max(0.4, playerPlaneDepth - 0.35));
-        if (fwd <= -radius * 0.45 || fwd >= maxLensDepth) return false;
-        const clampedFwd = Math.max(0, fwd);
-        const px = relX - _camForward.x * clampedFwd;
-        const py = relY - _camForward.y * clampedFwd;
-        const pz = relZ - _camForward.z * clampedFwd;
-        const lensRadius = radius + 0.55;
-        return px * px + py * py + pz * pz <= lensRadius * lensRadius;
-      };
+      this.occCamX = camX;
+      this.occCamY = camY;
+      this.occCamZ = camZ;
+      this.occHeadX = headX;
+      this.occHeadY = headY;
+      this.occHeadZ = headZ;
+      this.occTorsoX = torsoX;
+      this.occTorsoY = torsoY;
+      this.occTorsoZ = torsoZ;
+      this.occPlayerPlaneDepth = playerPlaneDepth;
 
       if (centerDist > 0.45) {
         _occluderCandidates.length = 0;
@@ -7865,9 +7894,9 @@ export class PlayStyleManager {
 
             const trunkCheckRadius = Math.max(0.28, tr.trunkRadius * 1.05);
             const blocksTrunkOrLens =
-              isRightInFrontOfLens(wx, th * 0.65, wz, Math.max(0.75, cr * 0.58)) ||
-              blocksPlayerCorridor(wx, th * 0.34, wz, trunkCheckRadius) ||
-              blocksPlayerCorridor(wx, th * 0.68, wz, trunkCheckRadius * 0.92);
+              this.isRightInFrontOfLens(wx, th * 0.65, wz, Math.max(0.75, cr * 0.58)) ||
+              this.blocksPlayerCorridor(wx, th * 0.34, wz, trunkCheckRadius) ||
+              this.blocksPlayerCorridor(wx, th * 0.68, wz, trunkCheckRadius * 0.92);
 
             if (blocksTrunkOrLens) {
               this.markObjectHierarchyOccluded(tr.rootGroup);
@@ -7892,8 +7921,8 @@ export class PlayStyleManager {
               (postWx - camX) * horizDirX + (postWz - camZ) * horizDirZ;
             if (postProj > -0.6 && postProj < horizLen - 0.25) {
               if (
-                isRightInFrontOfLens(postWx, 1.45, postWz, 0.85) ||
-                blocksPlayerCorridor(postWx, 1.55, postWz, 0.72)
+                this.isRightInFrontOfLens(postWx, 1.45, postWz, 0.85) ||
+                this.blocksPlayerCorridor(postWx, 1.55, postWz, 0.72)
               ) {
                 this.markObjectHierarchyOccluded(this.homePool.tapFixtureGroup);
               } else if (
@@ -7927,9 +7956,9 @@ export class PlayStyleManager {
             }
 
             const blocks =
-              isRightInFrontOfLens(wx, bHeight * 0.55, wz, bRadius * 0.85) ||
-              blocksPlayerCorridor(wx, bHeight * 0.45, wz, bRadius * 0.78) ||
-              blocksPlayerCorridor(wx, bHeight * 0.85, wz, bRadius * 0.82);
+              this.isRightInFrontOfLens(wx, bHeight * 0.55, wz, bRadius * 0.85) ||
+              this.blocksPlayerCorridor(wx, bHeight * 0.45, wz, bRadius * 0.78) ||
+              this.blocksPlayerCorridor(wx, bHeight * 0.85, wz, bRadius * 0.82);
 
             if (blocks) {
               this.markObjectHierarchyOccluded(bm);
@@ -7952,9 +7981,9 @@ export class PlayStyleManager {
             const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
             if (horizProj <= -1.8 || horizProj >= horizLen - 0.25) continue;
             if (
-              isRightInFrontOfLens(wx, 2.2, wz, 1.65) ||
-              blocksPlayerCorridor(wx, 2.1, wz, 1.65) ||
-              blocksPlayerCorridor(wx, 3.6, wz, 1.45)
+              this.isRightInFrontOfLens(wx, 2.2, wz, 1.65) ||
+              this.blocksPlayerCorridor(wx, 2.1, wz, 1.65) ||
+              this.blocksPlayerCorridor(wx, 3.6, wz, 1.45)
             ) {
               this.markObjectHierarchyOccluded(p.mesh);
             } else if (
@@ -7974,8 +8003,8 @@ export class PlayStyleManager {
             if (horizProj <= -f.radius || horizProj >= horizLen - 0.25) continue;
             if (
               (f.radius >= 0.48 || f.y > 0.75) &&
-              (isRightInFrontOfLens(wx, f.y, wz, f.radius * 0.95) ||
-                blocksPlayerCorridor(wx, f.y, wz, f.radius * 0.95))
+              (this.isRightInFrontOfLens(wx, f.y, wz, f.radius * 0.95) ||
+                this.blocksPlayerCorridor(wx, f.y, wz, f.radius * 0.95))
             ) {
               this.markObjectHierarchyOccluded(f.mesh);
             } else {
@@ -7997,7 +8026,7 @@ export class PlayStyleManager {
             const wz = zz + buddy.position.z;
             const horizProj = (wx - camX) * horizDirX + (wz - camZ) * horizDirZ;
             if (horizProj <= -0.8 || horizProj >= horizLen - 0.25) continue;
-            if (isRightInFrontOfLens(wx, 0.7, wz, 0.75)) {
+            if (this.isRightInFrontOfLens(wx, 0.7, wz, 0.75)) {
               this.markObjectHierarchyOccluded(buddy);
             } else if (
               distSqPointToSegment2D(wx, wz, camX, camZ, headX, headZ) <= 1.69
@@ -8127,13 +8156,14 @@ export class PlayStyleManager {
     const fadeOutRate = Math.min(1, dt * 14);
     const restoreRate = Math.min(1, dt * 10);
 
-    this.currentFrameOccluders.forEach((mesh) => {
+    for (let i = 0; i < this.currentFrameOccluderList.length; i++) {
+      const mesh = this.currentFrameOccluderList[i];
       if (!mesh.userData.__inOccluderList) {
         mesh.userData.__inOccluderList = true;
         this.fadedOccluderMeshes.push(mesh);
       }
       this.setMeshOccluderBlend(mesh, 1.0, fadeOutRate);
-    });
+    }
 
     for (let i = this.fadedOccluderMeshes.length - 1; i >= 0; i--) {
       const mesh = this.fadedOccluderMeshes[i];

@@ -2,7 +2,6 @@ import {
   CAPYTORIO_CHEST_ITEMS_PER_SLOT,
   CAPYTORIO_CHEST_MAX_ITEMS,
   CAPYTORIO_CHEST_SLOTS,
-  CAPYTORIO_CHUNK_SIZE,
   CAPYTORIO_HOTBAR_ORDER,
   CAPYTORIO_MACHINE_SPECS,
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
@@ -25,12 +24,61 @@ import {
 } from './CapytorioData';
 import {
   createSampleStarterMallBlueprint,
-  decodeFactorioBlueprintString,
-  encodeFactorioBlueprintBookString,
-  encodeFactorioBlueprintString,
   getSampleStarterMallAbsoluteEntries,
   type FactorioBlueprintImportResult,
 } from './FactorioBlueprintCodec';
+import {
+  isCapytorioWaterTerrain,
+  sampleCapytorioBaseResource,
+  sampleCapytorioTerrain,
+  sampleCapytorioTerrainDetail,
+  sampleCapytorioTreeAt,
+  type CapytorioTerrainSample,
+  type CapytorioTerrainType,
+} from './capytorio/CapytorioTerrainGen';
+import {
+  cancelCraftQueueItem as cancelCraftQueueItemInHost,
+  enqueueMachineCraft as enqueueMachineCraftInHost,
+  enqueuePocketCraft as enqueuePocketCraftInHost,
+  getMaxAffordableCraftBatches as getMaxAffordableCraftBatchesInHost,
+  stepCraftingQueue as stepCraftingQueueInHost,
+  type CapytorioCraftingQueueHost,
+} from './capytorio/CapytorioCraftingQueue';
+import {
+  buildBlueprintLabel as buildBlueprintLabelPure,
+  computeBlueprintBounds as computeBlueprintBoundsPure,
+  deleteBlueprintFromLibrary as deleteBlueprintFromLibraryInHost,
+  evaluateBlueprintPlacementAt as evaluateBlueprintPlacementAtInHost,
+  exportBlueprintLibraryAsFactorioBookStringFromHost,
+  exportBlueprintToFactorioStringFromHost,
+  exportFactoryToFactorioStringFromHost,
+  flipBlueprintEntriesHorizontal,
+  flipBlueprintEntriesVertical,
+  importFactorioBlueprintStringIntoHost,
+  pasteBlueprintAt as pasteBlueprintAtInHost,
+  recordBlueprintToLibrary as recordBlueprintToLibraryInHost,
+  rotateBlueprintEntries90,
+  selectBlueprintFromLibrary as selectBlueprintFromLibraryInHost,
+  selectMachinesInBox as selectMachinesInBoxInHost,
+  selectMachinesInPolygon as selectMachinesInPolygonInHost,
+  type CapytorioBlueprintHost,
+} from './capytorio/CapytorioBlueprintService';
+import {
+  hydrateCapytorioEngineState,
+  sanitizeCapytorioSerializedState,
+  serializeCapytorioEngineState,
+  type CapytorioSerializerHost,
+} from './capytorio/CapytorioSerializer';
+
+export {
+  isCapytorioWaterTerrain,
+  sampleCapytorioBaseResource,
+  sampleCapytorioTerrain,
+  sampleCapytorioTerrainDetail,
+  sampleCapytorioTreeAt,
+  type CapytorioTerrainSample,
+  type CapytorioTerrainType,
+};
 
 export const MAX_RECENT_CAPYTORIO_TOOLS = 10;
 export const MAX_CAPYTORIO_BLUEPRINT_LIBRARY = 100;
@@ -711,341 +759,8 @@ export function evalBeltItemLocalPose(
   outPose[2] = theta; // At p=0 (theta=PI/2), heading West (-X) = +PI/2; exits -Z = 0
 }
 
-function hashInt2D(x: number, z: number, seed: number): number {
-  let h = (x * 374761393 + z * 668265263 + seed * 1442695041) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  h = h ^ (h >>> 16);
-  return (h >>> 0) / 4294967296;
-}
-
-function smoothstepClamp(edge0: number, edge1: number, x: number): number {
-  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-/** Smooth deterministic 2D value noise returning [-1, +1] with zero allocations. */
-function valueNoise2D(x: number, z: number, seed: number): number {
-  const ix = Math.floor(x);
-  const iz = Math.floor(z);
-  const fx = x - ix;
-  const fz = z - iz;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uz = fz * fz * (3 - 2 * fz);
-
-  const n00 = hashInt2D(ix, iz, seed);
-  const n10 = hashInt2D(ix + 1, iz, seed);
-  const n01 = hashInt2D(ix, iz + 1, seed);
-  const n11 = hashInt2D(ix + 1, iz + 1, seed);
-
-  const nx0 = n00 + (n10 - n00) * ux;
-  const nx1 = n01 + (n11 - n01) * ux;
-  return (nx0 + (nx1 - nx0) * uz) * 2.0 - 1.0;
-}
-
-/** 3-octave deterministic fractional Brownian motion returning approximately [-1, +1]. */
-function fbm2D(x: number, z: number, seed: number, octaves: number = 3): number {
-  let sum = 0;
-  let amp = 0.56;
-  let freq = 1.0;
-  let norm = 0;
-  for (let i = 0; i < octaves; i++) {
-    sum += valueNoise2D(x * freq, z * freq, seed + i * 97) * amp;
-    norm += amp;
-    freq *= 2.03;
-    amp *= 0.48;
-  }
-  return sum / norm;
-}
-
-export type CapytorioTerrainType =
-  | 'grass'
-  | 'sand'
-  | 'shallow_water'
-  | 'river'
-  | 'lake'
-  | 'ocean';
-
-export interface CapytorioTerrainSample {
-  type: CapytorioTerrainType;
-  isWater: boolean;
-  /** World Y elevation in meters (-0.02 flat buildable land .. -0.82 deep ocean bed) */
-  elevationY: number;
-  /** Normalized water depth 0 (dry land) .. 1 (deep pelagic ocean) */
-  waterDepth: number;
-  /** Normalized shoreline sand blend 0 (lush meadow grass) .. 1 (warm coastal sand) */
-  sandBlend: number;
-}
-
-export function isCapytorioWaterTerrain(type: CapytorioTerrainType): boolean {
-  return type === 'shallow_water' || type === 'river' || type === 'lake' || type === 'ocean';
-}
-
-const _terrainScratch: CapytorioTerrainSample = {
-  type: 'grass',
-  isWater: false,
-  elevationY: -0.02,
-  waterDepth: 0,
-  sandBlend: 0,
-};
-
-/**
- * Deterministic infinite Capytorio hydrology & terrain generator producing:
- * - Lush buildable starter meadow around (0, 0) (r <= 13 tiles)
- * - Scenic inland Freshwater Lakes (both flanking the starter plain & procedurally across the infinite map)
- * - Continuous meandering Rivers flowing across plains into lakes & oceans
- * - Sweeping Oceans with turquoise shallow bays and golden sandy beaches
- *
- * Accepts an optional caller-owned scratch struct `out` for zero-allocation vertex sampling.
- */
-export function sampleCapytorioTerrainDetail(
-  gx: number,
-  gz: number,
-  out: CapytorioTerrainSample = _terrainScratch
-): CapytorioTerrainSample {
-  const rOrigin = Math.hypot(gx, gz);
-  // Guarantee starter base & all 5 starter ore patches stay 100% dry buildable land
-  if (rOrigin <= 12.6) {
-    out.type = 'grass';
-    out.isWater = false;
-    out.elevationY = -0.02;
-    out.waterDepth = 0;
-    out.sandBlend = 0;
-    return out;
-  }
-
-  // Smooth mask keeping r <= 13.2 dry and gently unlocking water past r = 15.5
-  const starterMask = smoothstepClamp(12.8, 15.6, rOrigin);
-
-  // 1. CONTINENTAL OCEAN FIELD (infinite macro continents & ocean basins + western archipelago coast)
-  const cWarpX = fbm2D(gx * 0.0085, gz * 0.0085, 1301, 2) * 18.0;
-  const cWarpZ = fbm2D(gx * 0.0085 + 29.4, gz * 0.0085 - 17.8, 1307, 2) * 18.0;
-  let continent = fbm2D((gx + cWarpX) * 0.009, (gz + cWarpZ) * 0.009, 1319, 3);
-
-  // Blend in a sweeping organic Southern Ocean Bay starting ~36 tiles South of spawn
-  const southBayDx = (gx - 6.0 + cWarpX * 0.85) * 0.82;
-  const southBayDz = (gz - 92.0 + cWarpZ * 0.75) * 1.0;
-  const southBayDist = Math.hypot(southBayDx, southBayDz);
-  const southCoastPerturb =
-    6.5 * Math.sin(gx * 0.055 + 0.4) +
-    3.5 * Math.cos(gx * 0.12 - 0.8) +
-    fbm2D(gx * 0.04, gz * 0.04, 1409, 2) * 5.2;
-  const southBayPush = smoothstepClamp(64.0, 38.0, southBayDist + southCoastPerturb);
-  if (southBayPush > 0.001) {
-    continent = Math.min(continent, 0.24 - southBayPush * 0.94);
-  }
-
-  // Western coast facing Sanctuary across the archipelago sea (world x < 516 => gx < -273)
-  if (gx < -262) {
-    const westPush = smoothstepClamp(-262, -278, gx);
-    continent = Math.min(continent, 0.2 - westPush * 0.95);
-  }
-
-  // Lift continent near starter peninsula (r < 34) so starter plain sits on solid coastal landmass
-  const starterPeninsulaLift = (1.0 - smoothstepClamp(24.0, 42.0, rOrigin)) * 0.42;
-  const oceanElev = continent + starterPeninsulaLift;
-
-  // 2. MEANDERING RIVERS (infinite domain-warped zero-contour river network + starter eastern river)
-  const rWarpX = fbm2D(gx * 0.022 + 7.1, gz * 0.022 - 5.3, 2111, 2) * 13.0;
-  const rWarpZ = fbm2D(gx * 0.022 - 13.4, gz * 0.022 + 9.2, 2129, 2) * 13.0;
-  const procRiverAbs = Math.abs(
-    fbm2D((gx + rWarpX) * 0.0155 + 0.48, (gz + rWarpZ) * 0.0155 - 0.22, 2143, 3)
-  );
-  // Width ~3.0 tiles in grid space
-  const procRiverNorm = procRiverAbs / 0.052; // < 1.0 => inside river channel
-
-  // Scenic Starter Valley River curving East of the starter plain into the Southern Ocean Bay
-  const starterRiverCenterX =
-    28.5 +
-    3.8 * Math.sin(gz * 0.075 + 0.45) +
-    1.8 * Math.cos(gz * 0.038 - 0.6) +
-    fbm2D(gx * 0.06, gz * 0.06, 2207, 2) * 1.4;
-  const starterRiverFade =
-    smoothstepClamp(66.0, 44.0, Math.abs(gz - 2.0)) * starterMask;
-  const starterRiverHalfW = 2.25 + 0.45 * Math.sin(gz * 0.11);
-  const starterRiverNorm =
-    starterRiverFade > 0.05
-      ? Math.abs(gx - starterRiverCenterX) / (starterRiverHalfW * starterRiverFade)
-      : 99.0;
-
-  const riverNorm = Math.min(procRiverNorm / Math.max(0.001, starterMask), starterRiverNorm);
-
-  // 3. INLAND LAKES (infinite warped lake basins + two scenic starter lakes West of base)
-  const lWarpX = fbm2D(gx * 0.036, gz * 0.036, 3301, 2) * 5.2;
-  const lWarpZ = fbm2D(gx * 0.036 + 19.2, gz * 0.036 - 11.8, 3313, 2) * 5.2;
-  const procLakeField = fbm2D((gx + lWarpX) * 0.028, (gz + lWarpZ) * 0.028, 3323, 3);
-
-  // Scenic SW Lake around (-21, 14) & NW Lake around (-19, -20)
-  const lakeShapeNoise = fbm2D(gx * 0.11, gz * 0.11, 3407, 2) * 2.1;
-  const dSwLake = Math.hypot((gx + 21.5) * 0.90, (gz - 14.5) * 1.06) + lakeShapeNoise;
-  const dNwLake = Math.hypot((gx + 19.0) * 1.02, (gz + 20.5) * 0.94) + lakeShapeNoise * 0.85;
-  const rawStarterLake = Math.max(
-    1.0 - dSwLake / 7.2,
-    1.0 - dNwLake / 6.2
-  );
-  const starterLakeFactor = rawStarterLake > 0 ? rawStarterLake * starterMask : -9.0;
-
-  // Compute effective signed lake depth (> 0 means submerged lake water)
-  const procLakeDepth = (-0.33 - procLakeField) * 3.4 * starterMask;
-  const lakeDepthVal = Math.max(procLakeDepth, starterLakeFactor);
-
-  // --- COMBINE INTO UNIFIED HYDROLOGICAL ELEVATION & BIOME ---
-  // Ocean thresholds: < -0.25 ocean, -0.25..-0.15 shallow_water, -0.15..-0.05 sand
-  const oceanDepth = (-0.15 - oceanElev) * 3.1 * starterMask;
-  const riverDepth = (1.0 - riverNorm) * 0.95;
-
-  const maxWaterSignal = Math.max(oceanDepth, lakeDepthVal, riverDepth);
-
-  if (maxWaterSignal > 0.0) {
-    // Determine dominant water body type & smooth recessed bed depth
-    let type: CapytorioTerrainType = 'shallow_water';
-    let depth01 = Math.max(0.08, Math.min(1.0, maxWaterSignal));
-
-    if (oceanDepth >= lakeDepthVal && oceanDepth >= riverDepth) {
-      type = oceanElev < -0.25 ? 'ocean' : 'shallow_water';
-      depth01 = type === 'ocean'
-        ? Math.min(1.0, 0.45 + (-0.25 - oceanElev) * 1.65)
-        : Math.max(0.10, Math.min(0.45, oceanDepth * 0.95));
-    } else if (riverDepth >= lakeDepthVal) {
-      type = riverNorm < 0.76 ? 'river' : 'shallow_water';
-      depth01 = Math.max(0.16, Math.min(0.66, (1.0 - riverNorm) * 0.78));
-    } else {
-      type = lakeDepthVal > 0.20 ? 'lake' : 'shallow_water';
-      depth01 = Math.max(0.12, Math.min(0.76, lakeDepthVal * 0.94));
-    }
-
-    // Smooth recessed bed from -0.32 (water's edge) down to -0.86 (deep ocean floor, cleanly above global oceanMesh at -0.95)
-    out.type = type;
-    out.isWater = true;
-    out.waterDepth = depth01;
-    out.elevationY = -0.32 - depth01 * 0.54;
-    out.sandBlend = 1.0 - smoothstepClamp(0.0, 0.35, depth01);
-    return out;
-  }
-
-  // Dry land: compute smooth golden sandy beach / riverbank margin around every body of water
-  const oceanSand = smoothstepClamp(-0.04, -0.15, oceanElev) * starterMask;
-  const riverSand = smoothstepClamp(1.62, 1.0, riverNorm) * starterMask;
-  const lakeSand = Math.max(
-    smoothstepClamp(-0.18, -0.33, procLakeField) * starterMask,
-    smoothstepClamp(-0.32, 0.0, rawStarterLake) * starterMask
-  );
-  const sandBlend = Math.max(oceanSand, riverSand, lakeSand);
-
-  out.type = sandBlend >= 0.42 ? 'sand' : 'grass';
-  out.isWater = false;
-  out.waterDepth = 0;
-  // Gentle beach slope right near the water line (-0.02 flat land dipping smoothly toward -0.11 at shoreline)
-  out.elevationY = -0.02 - Math.pow(sandBlend, 2.2) * 0.09;
-  out.sandBlend = sandBlend;
-  return out;
-}
-
-export function sampleCapytorioTerrain(gx: number, gz: number): CapytorioTerrainType {
-  return sampleCapytorioTerrainDetail(gx, gz, _terrainScratch).type;
-}
-
-const PROC_RESOURCES: readonly CapytorioItemId[] = [
-  'iron_ore',
-  'copper_ore',
-  'coal',
-  'calcite',
-  'yuzu_sap',
-];
-
-/**
- * Deterministic infinite procedural resource map.
- * - Guarantees 5 rich starter ore patches immediately around landing center (0, 0)
- *   so the player arrives on a crisp, blank mineralized plain ready to build from scratch.
- * - Generates unbounded additional patches across every 16x16 chunk in all directions!
- * - Never spawns mineral veins underwater (lakes, rivers, oceans).
- */
-export function sampleCapytorioBaseResource(
-  gx: number,
-  gz: number
-): { resource: CapytorioItemId; initialAmount: number } | null {
-  // Keep exact spawn pad clear so hero stands on clean solid limestone ground
-  if (Math.abs(gx) <= 2 && Math.abs(gz) <= 2) {
-    return null;
-  }
-  // Never spawn ore deposits inside lakes, rivers, or oceans
-  if (isCapytorioWaterTerrain(sampleCapytorioTerrain(gx, gz))) {
-    return null;
-  }
-
-  // Starter Quadrant Patches (within r <= 12 tiles of (0,0)):
-  // NW: Iron Ore
-  const dIron = Math.hypot(gx - -5.5, gz - -5.5);
-  if (dIron <= 3.1) {
-    return { resource: 'iron_ore', initialAmount: Math.round(1400 - dIron * 160) };
-  }
-  // NE: Copper Ore
-  const dCopper = Math.hypot(gx - 5.5, gz - -5.5);
-  if (dCopper <= 3.1) {
-    return { resource: 'copper_ore', initialAmount: Math.round(1400 - dCopper * 160) };
-  }
-  // SW: Coal Seam
-  const dCoal = Math.hypot(gx - -5.5, gz - 5.5);
-  if (dCoal <= 3.1) {
-    return { resource: 'coal', initialAmount: Math.round(1400 - dCoal * 160) };
-  }
-  // SE: Volcanic Calcite & Bio-Yuzu Nutrient Groves side-by-side
-  const dCalcite = Math.hypot(gx - 4.5, gz - 5.5);
-  if (dCalcite <= 2.35) {
-    return { resource: 'calcite', initialAmount: Math.round(1200 - dCalcite * 160) };
-  }
-  const dYuzu = Math.hypot(gx - 9.2, gz - 4.0);
-  if (dYuzu <= 2.35) {
-    return { resource: 'yuzu_sap', initialAmount: Math.round(1200 - dYuzu * 160) };
-  }
-
-  // Infinite procedural chunk veins outside immediate center (gx, gz in (-Inf..+Inf))
-  if (Math.hypot(gx, gz) < 12.5) {
-    return null;
-  }
-
-  const cx = Math.floor(gx / CAPYTORIO_CHUNK_SIZE);
-  const cz = Math.floor(gz / CAPYTORIO_CHUNK_SIZE);
-
-  // Check neighbor chunks up to +/-1 so blobs cross chunk borders seamlessly
-  for (let ncx = cx - 1; ncx <= cx + 1; ncx++) {
-    for (let ncz = cz - 1; ncz <= cz + 1; ncz++) {
-      const spawnRoll = hashInt2D(ncx, ncz, 9101);
-      if (spawnRoll > 0.68) continue; // ~68% of 16x16 chunks host a resource deposit
-
-      const blobCx = ncx * CAPYTORIO_CHUNK_SIZE + 4 + hashInt2D(ncx, ncz, 202) * 8;
-      const blobCz = ncz * CAPYTORIO_CHUNK_SIZE + 4 + hashInt2D(ncx, ncz, 303) * 8;
-      const radius = 2.4 + hashInt2D(ncx, ncz, 404) * 2.1;
-      const d = Math.hypot(gx - blobCx, gz - blobCz);
-      if (d <= radius) {
-        const resIdx = Math.floor(hashInt2D(ncx, ncz, 505) * PROC_RESOURCES.length);
-        const res = PROC_RESOURCES[resIdx % PROC_RESOURCES.length];
-        const distMult = 1.0 + Math.min(4.0, Math.hypot(gx, gz) * 0.025);
-        return {
-          resource: res,
-          initialAmount: Math.max(400, Math.round((1200 - d * 120) * distMult)),
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Deterministic tropical citrus trees across the lush Capytorio meadow.
- * Keeps the central landing pad (|gx|<=3, |gz|<=3) and mineral ore patches completely clear
- * while forming natural groves across the infinite plain.
- */
-export function sampleCapytorioTreeAt(gx: number, gz: number): boolean {
-  if (Math.abs(gx) <= 3 && Math.abs(gz) <= 3) return false;
-  const terrain = sampleCapytorioTerrain(gx, gz);
-  if (isCapytorioWaterTerrain(terrain) || terrain === 'sand') return false;
-  if (sampleCapytorioBaseResource(gx, gz) !== null) return false;
-  const groveNoise = Math.sin(gx * 0.23 + 0.5) * Math.cos(gz * 0.21 - 0.3);
-  if (groveNoise < -0.35) return false;
-  const h = hashInt2D(gx, gz, 7719);
-  return h < 0.125;
-}
+// Terrain generation, hydrology, ore veins, and tree sampling live in ./capytorio/CapytorioTerrainGen.ts
+// and are re-exported above to preserve 100% backwards-compatible imports.
 
 function getDefaultTechId(): CapytorioTechId | null {
   return CAPYTORIO_TECHS[0]?.id ?? null;
@@ -1144,7 +859,230 @@ export class CapytorioFactoryEngine {
   /** Monotonic revision incremented on machine placement/demolish/rotate, tree harvest, ore depletion, reset, or hydrate */
   public topologyRevision = 1;
 
+  // Dirty-tracking state to avoid redundant 60 Hz recomputations & allocations
+  private powerDirty = true;
+  private lastPowerTopologyRevision = -1;
+  private lastPowerBiofluxUnlocked = false;
+  private lastActiveGeneratorCount = -1;
+  private lastMilestoneTopoRev = -1;
+  private lastMilestoneTotalProduced = -1;
+  private lastMilestoneUnlockedCount = -1;
+  private lastMilestoneRocketLaunches = -1;
+  private lastMilestoneOreCount = -1;
+  private lastMilestoneSciCount = -1;
+  private lastMilestoneHasTechDelivered = false;
+  private lastMilestoneActiveGenerators = -1;
+  private spilledSeparationDirty = false;
+
+  // Cached zero-allocation subsystem host adapters
+  private readonly craftingQueueHost: CapytorioCraftingQueueHost;
+  private readonly blueprintHost: CapytorioBlueprintHost;
+  private readonly serializerHost: CapytorioSerializerHost;
+
   constructor(initialState?: CapytorioSerializedState | null) {
+    const self = this;
+    this.craftingQueueHost = {
+      pocketItems: this.pocketItems,
+      pocketMachines: this.pocketMachines,
+      craftingQueue: this.craftingQueue,
+      get totalProduced() {
+        return self.totalProduced;
+      },
+      set totalProduced(v: number) {
+        self.totalProduced = v;
+      },
+      get score() {
+        return self.score;
+      },
+      set score(v: number) {
+        self.score = v;
+      },
+      allocateCraftQueueUid: () => this.nextCraftQueueUid++,
+      isRecipeUnlocked: (recipeId) => this.isRecipeUnlocked(recipeId),
+      addPocketItem: (item, count) => this.addPocketItem(item, count),
+      consumePocketItem: (item, count) => this.consumePocketItem(item, count),
+      recordRecentTool: (toolId) => this.recordRecentTool(toolId),
+      getCraftSpeedMultiplier: () => this.getCraftSpeedMultiplier(),
+    };
+
+    this.blueprintHost = {
+      machines: this.machines,
+      pocketItems: this.pocketItems,
+      pocketMachines: this.pocketMachines,
+      presetBlueprints: this.presetBlueprints,
+      previewSelectedKeys: this.previewSelectedKeys,
+      get clipboardToolState() {
+        return self.clipboardToolState;
+      },
+      set clipboardToolState(v) {
+        self.clipboardToolState = v;
+      },
+      get clipboard() {
+        return self.clipboard;
+      },
+      set clipboard(v) {
+        self.clipboard = v;
+      },
+      get pasteAnchor() {
+        return self.pasteAnchor;
+      },
+      set pasteAnchor(v) {
+        self.pasteAnchor = v;
+      },
+      get blueprintLibrary() {
+        return self.blueprintLibrary;
+      },
+      set blueprintLibrary(v) {
+        self.blueprintLibrary = v;
+      },
+      get activeBlueprintId() {
+        return self.activeBlueprintId;
+      },
+      set activeBlueprintId(v) {
+        self.activeBlueprintId = v;
+      },
+      get undoCutSnapshot() {
+        return self.undoCutSnapshot;
+      },
+      set undoCutSnapshot(v) {
+        self.undoCutSnapshot = v;
+      },
+      allocateBlueprintUid: () => this.nextBlueprintUid++,
+      getMachineFootprint: (m) => this.getMachineFootprint(m),
+      getMachineAt: (gx, gz) => this.getMachineAt(gx, gz),
+      canFootprintFit: (gx, gz, width, height, ignoreMachine, allowWater) =>
+        this.canFootprintFit(gx, gz, width, height, ignoreMachine, allowWater),
+      findFirstOreInFootprint: (gx, gz, width, height) =>
+        this.findFirstOreInFootprint(gx, gz, width, height),
+      selectBlueprintFromLibrary: (id) => this.selectBlueprintFromLibrary(id),
+      beginHistoryBatch: (label) => this.beginHistoryBatch(label),
+      commitHistoryBatch: (overrideLabel) => this.commitHistoryBatch(overrideLabel),
+      placeMachine: (toolOrType, gx, gz, dir, recipeId) =>
+        this.placeMachine(toolOrType, gx, gz, dir, recipeId),
+      setAssemblerRecipeAt: (gx, gz, recipeId) => this.setAssemblerRecipeAt(gx, gz, recipeId),
+      applyConfigSnapshotToMachine: (m, src) => this.applyConfigSnapshotToMachine(m, src),
+    };
+
+    this.serializerHost = {
+      machines: this.machines,
+      occupancyGrid: this.occupancyGrid,
+      spilledItems: this.spilledItems,
+      oreRemainingOverrides: this.oreRemainingOverrides,
+      harvestedTrees: this.harvestedTrees,
+      pocketItems: this.pocketItems,
+      pocketMachines: this.pocketMachines,
+      unlockedTechs: this.unlockedTechs,
+      completedMilestones: this.completedMilestones,
+      craftingQueue: this.craftingQueue,
+      get recentTools() {
+        return self.recentTools;
+      },
+      set recentTools(v) {
+        self.recentTools = v;
+      },
+      get activeTechId() {
+        return self.activeTechId;
+      },
+      set activeTechId(v) {
+        self.activeTechId = v;
+      },
+      get techDelivered() {
+        return self.techDelivered;
+      },
+      set techDelivered(v) {
+        self.techDelivered = v;
+      },
+      get blueprintLibrary() {
+        return self.blueprintLibrary;
+      },
+      set blueprintLibrary(v) {
+        self.blueprintLibrary = v;
+      },
+      get activeBlueprintId() {
+        return self.activeBlueprintId;
+      },
+      set activeBlueprintId(v) {
+        self.activeBlueprintId = v;
+      },
+      get altModeEnabled() {
+        return self.altModeEnabled;
+      },
+      set altModeEnabled(v) {
+        self.altModeEnabled = v;
+      },
+      get rocketLaunches() {
+        return self.rocketLaunches;
+      },
+      set rocketLaunches(v) {
+        self.rocketLaunches = v;
+      },
+      get totalProduced() {
+        return self.totalProduced;
+      },
+      set totalProduced(v) {
+        self.totalProduced = v;
+      },
+      get score() {
+        return self.score;
+      },
+      set score(v) {
+        self.score = v;
+      },
+      get lastReportedScore() {
+        return self.lastReportedScore;
+      },
+      set lastReportedScore(v) {
+        self.lastReportedScore = v;
+      },
+      get pasteAnchor() {
+        return self.pasteAnchor;
+      },
+      set pasteAnchor(v) {
+        self.pasteAnchor = v;
+      },
+      get undoStack() {
+        return self.undoStack;
+      },
+      set undoStack(v) {
+        self.undoStack = v;
+      },
+      get redoStack() {
+        return self.redoStack;
+      },
+      set redoStack(v) {
+        self.redoStack = v;
+      },
+      get activeHistoryBatch() {
+        return self.activeHistoryBatch;
+      },
+      set activeHistoryBatch(v) {
+        self.activeHistoryBatch = v as typeof self.activeHistoryBatch;
+      },
+      get entitySettingsClipboard() {
+        return self.entitySettingsClipboard;
+      },
+      set entitySettingsClipboard(v) {
+        self.entitySettingsClipboard = v;
+      },
+      get topologyRevision() {
+        return self.topologyRevision;
+      },
+      set topologyRevision(v) {
+        self.topologyRevision = v;
+      },
+      allocateMachineId: () => this.nextMachineId++,
+      allocateBeltItemUid: () => this.nextBeltItemUid++,
+      allocateSpilledItemUid: () => this.nextSpilledItemUid++,
+      allocateBlueprintUid: () => this.nextBlueprintUid++,
+      getRecentTools: () => this.getRecentTools(),
+      registerMachineOccupancy: (m) => this.registerMachineOccupancy(m),
+      markHydratedAndRecomputePower: () => {
+        this.machineListDirty = true;
+        this.powerDirty = true;
+        this.recomputePowerMetrics();
+      },
+    };
+
     if (initialState && initialState.version === 1) {
       this.hydrate(initialState);
     } else {
@@ -1582,368 +1520,34 @@ export class CapytorioFactoryEngine {
     this.altModeEnabled = enabled;
   }
 
-  private findPocketRecipeForItem(itemId: CapytorioItemId): (typeof CAPYTORIO_RECIPES)[number] | null {
-    const direct = RECIPE_BY_ID.get(itemId);
-    if (direct && direct.pocketCraftable && direct.result === itemId && this.isRecipeUnlocked(direct.id)) {
-      return direct;
-    }
-    for (let i = 0; i < CAPYTORIO_RECIPES.length; i++) {
-      const r = CAPYTORIO_RECIPES[i];
-      if (r.result === itemId && r.pocketCraftable && this.isRecipeUnlocked(r.id)) {
-        return r;
-      }
-    }
-    return null;
-  }
-
-  private planRecursiveIngredients(
-    ingredients: ReadonlyArray<{ item: CapytorioItemId; count: number }>,
-    simStock: Map<CapytorioItemId, number>,
-    visiting: Set<CapytorioItemId>,
-    stepsOut: Array<{
-      recipeId: CapytorioRecipeId;
-      resultId: CapytorioItemId;
-      resultName: string;
-      resultCountPerBatch: number;
-      batches: number;
-      craftTimeSec: number;
-      directConsumed: Array<{ item: CapytorioItemId; count: number }>;
-      surplusToPocket: number;
-    }>
-  ): { ok: boolean; directConsumed: Array<{ item: CapytorioItemId; count: number }> } {
-    const directConsumedMap = new Map<CapytorioItemId, number>();
-
-    for (let i = 0; i < ingredients.length; i++) {
-      const ing = ingredients[i];
-      const have = simStock.get(ing.item) ?? 0;
-      const takeExisting = Math.min(have, ing.count);
-      if (takeExisting > 0) {
-        simStock.set(ing.item, have - takeExisting);
-        directConsumedMap.set(ing.item, (directConsumedMap.get(ing.item) ?? 0) + takeExisting);
-      }
-      const shortfall = ing.count - takeExisting;
-      if (shortfall > 0) {
-        if (visiting.has(ing.item)) return { ok: false, directConsumed: [] };
-        const subRec = this.findPocketRecipeForItem(ing.item);
-        if (!subRec) return { ok: false, directConsumed: [] };
-        visiting.add(ing.item);
-        const subBatches = Math.ceil(shortfall / Math.max(1, subRec.resultCount));
-        const scaledSubIngs = subRec.ingredients.map((si) => ({
-          item: si.item,
-          count: si.count * subBatches,
-        }));
-        const subPlan = this.planRecursiveIngredients(scaledSubIngs, simStock, visiting, stepsOut);
-        visiting.delete(ing.item);
-        if (!subPlan.ok) return { ok: false, directConsumed: [] };
-        const produced = subBatches * Math.max(1, subRec.resultCount);
-        const surplus = Math.max(0, produced - shortfall);
-        if (surplus > 0) {
-          simStock.set(ing.item, (simStock.get(ing.item) ?? 0) + surplus);
-        }
-        stepsOut.push({
-          recipeId: subRec.id,
-          resultId: subRec.result,
-          resultName: subRec.name,
-          resultCountPerBatch: Math.max(1, subRec.resultCount),
-          batches: subBatches,
-          craftTimeSec: Math.max(0.25, subRec.craftTimeSec * 0.5),
-          directConsumed: subPlan.directConsumed,
-          surplusToPocket: surplus,
-        });
-      }
-    }
-
-    const directConsumed: Array<{ item: CapytorioItemId; count: number }> = [];
-    for (const [item, count] of directConsumedMap.entries()) {
-      if (count > 0) directConsumed.push({ item, count });
-    }
-    return { ok: true, directConsumed };
-  }
-
   public getMaxAffordableCraftBatches(
     kind: 'recipe' | 'machine',
     id: string,
     cap: number = 25
   ): number {
-    let ingredients: Array<{ item: CapytorioItemId; count: number }> = [];
-    if (kind === 'recipe') {
-      const rec = RECIPE_BY_ID.get(id as CapytorioRecipeId);
-      if (!rec || !rec.pocketCraftable || !this.isRecipeUnlocked(rec.id)) return 0;
-      ingredients = rec.ingredients;
-    } else {
-      const spec = CAPYTORIO_MACHINE_SPECS[id as CapytorioMachineType];
-      if (!spec) return 0;
-      ingredients = (Object.entries(spec.craftCost) as Array<[CapytorioItemId, number]>).map(
-        ([item, count]) => ({ item, count })
-      );
-    }
-
-    const simStock = new Map<CapytorioItemId, number>();
-    for (const [k, v] of Object.entries(this.pocketItems) as Array<[CapytorioItemId, number]>) {
-      if (v > 0) simStock.set(k, v);
-    }
-    let count = 0;
-    while (count < cap) {
-      const snap = new Map(simStock);
-      const steps: Array<{
-        recipeId: CapytorioRecipeId;
-        resultId: CapytorioItemId;
-        resultName: string;
-        resultCountPerBatch: number;
-        batches: number;
-        craftTimeSec: number;
-        directConsumed: Array<{ item: CapytorioItemId; count: number }>;
-        surplusToPocket: number;
-      }> = [];
-      const res = this.planRecursiveIngredients(ingredients, snap, new Set(), steps);
-      if (!res.ok) break;
-      simStock.clear();
-      for (const [k, v] of snap.entries()) simStock.set(k, v);
-      count++;
-    }
-    return count;
+    return getMaxAffordableCraftBatchesInHost(this.craftingQueueHost, kind, id, cap);
   }
 
   public enqueuePocketCraft(
     recipeId: CapytorioRecipeId,
     batches: number = 1
   ): { ok: boolean; queuedBatches: number; queuedIntermediates: number } {
-    const rec = RECIPE_BY_ID.get(recipeId);
-    if (!rec || !rec.pocketCraftable || !this.isRecipeUnlocked(recipeId) || batches < 1) {
-      return { ok: false, queuedBatches: 0, queuedIntermediates: 0 };
-    }
-    let queuedBatches = 0;
-    let queuedIntermediates = 0;
-    const maxLoop = Math.min(50, Math.floor(batches));
-
-    for (let b = 0; b < maxLoop; b++) {
-      const simStock = new Map<CapytorioItemId, number>();
-      for (const [k, v] of Object.entries(this.pocketItems) as Array<[CapytorioItemId, number]>) {
-        if (v > 0) simStock.set(k, v);
-      }
-      const subSteps: Array<{
-        recipeId: CapytorioRecipeId;
-        resultId: CapytorioItemId;
-        resultName: string;
-        resultCountPerBatch: number;
-        batches: number;
-        craftTimeSec: number;
-        directConsumed: Array<{ item: CapytorioItemId; count: number }>;
-        surplusToPocket: number;
-      }> = [];
-      const plan = this.planRecursiveIngredients(
-        rec.ingredients,
-        simStock,
-        new Set([rec.result]),
-        subSteps
-      );
-      if (!plan.ok) break;
-
-      // Deduct all direct raw pocket materials upfront
-      for (let s = 0; s < subSteps.length; s++) {
-        const dc = subSteps[s].directConsumed;
-        for (let k = 0; k < dc.length; k++) {
-          this.consumePocketItem(dc[k].item, dc[k].count);
-        }
-      }
-      for (let k = 0; k < plan.directConsumed.length; k++) {
-        this.consumePocketItem(plan.directConsumed[k].item, plan.directConsumed[k].count);
-      }
-
-      const parentUid = this.nextCraftQueueUid++;
-      for (let s = 0; s < subSteps.length; s++) {
-        const st = subSteps[s];
-        this.craftingQueue.push({
-          uid: this.nextCraftQueueUid++,
-          kind: 'recipe',
-          recipeId: st.recipeId,
-          resultId: st.resultId,
-          resultName: st.resultName,
-          resultCountPerBatch: st.resultCountPerBatch,
-          batchesTotal: st.batches,
-          batchesRemaining: st.batches,
-          craftTimeSec: st.craftTimeSec,
-          progress: 0,
-          isIntermediate: true,
-          parentUid,
-          reservedPerBatch: st.directConsumed,
-        });
-        queuedIntermediates += st.batches;
-      }
-
-      this.craftingQueue.push({
-        uid: parentUid,
-        kind: 'recipe',
-        recipeId: rec.id,
-        resultId: rec.result,
-        resultName: rec.name,
-        resultCountPerBatch: Math.max(1, rec.resultCount),
-        batchesTotal: 1,
-        batchesRemaining: 1,
-        craftTimeSec: Math.max(0.25, rec.craftTimeSec * 0.5),
-        progress: 0,
-        isIntermediate: false,
-        reservedPerBatch: plan.directConsumed,
-      });
-      queuedBatches++;
-    }
-
-    return { ok: queuedBatches > 0, queuedBatches, queuedIntermediates };
+    return enqueuePocketCraftInHost(this.craftingQueueHost, recipeId, batches);
   }
 
   public enqueueMachineCraft(
     type: CapytorioMachineType,
     count: number = 1
   ): { ok: boolean; queuedBatches: number; queuedIntermediates: number } {
-    const spec = CAPYTORIO_MACHINE_SPECS[type];
-    if (!spec || count < 1) {
-      return { ok: false, queuedBatches: 0, queuedIntermediates: 0 };
-    }
-    const ingredients = (Object.entries(spec.craftCost) as Array<[CapytorioItemId, number]>).map(
-      ([item, amt]) => ({ item, count: amt })
-    );
-    let queuedBatches = 0;
-    let queuedIntermediates = 0;
-    const maxLoop = Math.min(50, Math.floor(count));
-
-    for (let b = 0; b < maxLoop; b++) {
-      const simStock = new Map<CapytorioItemId, number>();
-      for (const [k, v] of Object.entries(this.pocketItems) as Array<[CapytorioItemId, number]>) {
-        if (v > 0) simStock.set(k, v);
-      }
-      const subSteps: Array<{
-        recipeId: CapytorioRecipeId;
-        resultId: CapytorioItemId;
-        resultName: string;
-        resultCountPerBatch: number;
-        batches: number;
-        craftTimeSec: number;
-        directConsumed: Array<{ item: CapytorioItemId; count: number }>;
-        surplusToPocket: number;
-      }> = [];
-      const plan = this.planRecursiveIngredients(ingredients, simStock, new Set(), subSteps);
-      if (!plan.ok) break;
-
-      for (let s = 0; s < subSteps.length; s++) {
-        const dc = subSteps[s].directConsumed;
-        for (let k = 0; k < dc.length; k++) {
-          this.consumePocketItem(dc[k].item, dc[k].count);
-        }
-      }
-      for (let k = 0; k < plan.directConsumed.length; k++) {
-        this.consumePocketItem(plan.directConsumed[k].item, plan.directConsumed[k].count);
-      }
-
-      const parentUid = this.nextCraftQueueUid++;
-      for (let s = 0; s < subSteps.length; s++) {
-        const st = subSteps[s];
-        this.craftingQueue.push({
-          uid: this.nextCraftQueueUid++,
-          kind: 'recipe',
-          recipeId: st.recipeId,
-          resultId: st.resultId,
-          resultName: st.resultName,
-          resultCountPerBatch: st.resultCountPerBatch,
-          batchesTotal: st.batches,
-          batchesRemaining: st.batches,
-          craftTimeSec: st.craftTimeSec,
-          progress: 0,
-          isIntermediate: true,
-          parentUid,
-          reservedPerBatch: st.directConsumed,
-        });
-        queuedIntermediates += st.batches;
-      }
-
-      this.craftingQueue.push({
-        uid: parentUid,
-        kind: 'machine',
-        machineType: type,
-        resultId: type,
-        resultName: spec.name,
-        resultCountPerBatch: 1,
-        batchesTotal: 1,
-        batchesRemaining: 1,
-        craftTimeSec: 0.55,
-        progress: 0,
-        isIntermediate: false,
-        reservedPerBatch: plan.directConsumed,
-      });
-      queuedBatches++;
-    }
-
-    return { ok: queuedBatches > 0, queuedBatches, queuedIntermediates };
+    return enqueueMachineCraftInHost(this.craftingQueueHost, type, count);
   }
 
   public cancelCraftQueueItem(uid: number): { ok: boolean; cancelledCount: number } {
-    const idx = this.craftingQueue.findIndex((q) => q.uid === uid);
-    if (idx < 0) return { ok: false, cancelledCount: 0 };
-    const target = this.craftingQueue[idx];
-    const rootUid = target.isIntermediate && target.parentUid !== undefined ? target.parentUid : target.uid;
-
-    let cancelledCount = 0;
-    for (let i = this.craftingQueue.length - 1; i >= 0; i--) {
-      const q = this.craftingQueue[i];
-      if (q.uid === rootUid || q.parentUid === rootUid) {
-        // Refund 100% of reserved materials for uncrafted batches
-        const frac = q.batchesTotal > 0 ? q.batchesRemaining / q.batchesTotal : 1;
-        for (let r = 0; r < q.reservedPerBatch.length; r++) {
-          const entry = q.reservedPerBatch[r];
-          const refund = Math.max(0, Math.round(entry.count * frac));
-          if (refund > 0) this.addPocketItem(entry.item, refund);
-        }
-        this.craftingQueue.splice(i, 1);
-        cancelledCount++;
-      }
-    }
-    return { ok: cancelledCount > 0, cancelledCount };
+    return cancelCraftQueueItemInHost(this.craftingQueueHost, uid);
   }
 
   private stepCraftingQueue(dt: number, callbacks?: CapytorioStepCallbacks): void {
-    if (this.craftingQueue.length === 0) return;
-    const head = this.craftingQueue[0];
-    const speed = Math.max(0.5, this.getCraftSpeedMultiplier());
-    head.progress += (dt * speed) / Math.max(0.15, head.craftTimeSec);
-    if (head.progress < 1.0) return;
-
-    head.progress -= 1.0;
-    head.batchesRemaining -= 1;
-
-    if (!head.isIntermediate) {
-      if (head.kind === 'machine' && head.machineType) {
-        this.pocketMachines[head.machineType] =
-          (this.pocketMachines[head.machineType] ?? 0) + head.resultCountPerBatch;
-        this.recordRecentTool(head.machineType);
-      } else if (Object.prototype.hasOwnProperty.call(CAPYTORIO_MACHINE_SPECS, head.resultId)) {
-        const mType = head.resultId as CapytorioMachineType;
-        this.pocketMachines[mType] = (this.pocketMachines[mType] ?? 0) + head.resultCountPerBatch;
-        this.recordRecentTool(mType);
-      } else {
-        this.addPocketItem(head.resultId, head.resultCountPerBatch);
-        if (CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[head.resultId]) {
-          this.recordRecentTool(head.resultId);
-        }
-      }
-      this.totalProduced += head.resultCountPerBatch;
-      this.score += 5 * head.resultCountPerBatch;
-      callbacks?.onCraftQueueCompleted?.(head.resultId, head.resultCountPerBatch);
-    } else if (head.batchesRemaining <= 0 && head.parentUid !== undefined) {
-      // Completed intermediate: check if parent still exists; if not, deliver to pocket
-      const parent = this.craftingQueue.find((q) => q.uid === head.parentUid);
-      if (parent) {
-        // Track completed intermediate on parent so cancelling parent later refunds the crafted intermediate!
-        const totalOut = head.batchesTotal * head.resultCountPerBatch;
-        const existingRes = parent.reservedPerBatch.find((r) => r.item === head.resultId);
-        if (existingRes) existingRes.count += totalOut;
-        else parent.reservedPerBatch.push({ item: head.resultId, count: totalOut });
-      } else {
-        this.addPocketItem(head.resultId, head.batchesTotal * head.resultCountPerBatch);
-      }
-    }
-
-    if (head.batchesRemaining <= 0) {
-      this.craftingQueue.shift();
-    }
+    stepCraftingQueueInHost(this.craftingQueueHost, dt, callbacks);
   }
 
   public handMineAt(gx: number, gz: number, yieldCount: number = 2): CapytorioItemId | null {
@@ -2821,37 +2425,11 @@ export class CapytorioFactoryEngine {
   }
 
   public selectBlueprintFromLibrary(id: string): CapytorioSavedBlueprint | null {
-    const found = this.getBlueprintById(id);
-    if (!found || found.entries.length === 0) return null;
-    this.clipboard = {
-      mode: 'copy',
-      entries: found.entries.map((e) => ({
-        ...e,
-        inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
-      })),
-      canUndoCut: false,
-      blueprintId: found.id,
-      label: found.label,
-    };
-    this.activeBlueprintId = found.id;
-    this.clipboardToolState = 'paste';
-    this.pasteAnchor = null;
-    this.previewSelectedKeys.clear();
-    this.undoCutSnapshot.length = 0;
-    return found;
+    return selectBlueprintFromLibraryInHost(this.blueprintHost, id);
   }
 
   public deleteBlueprintFromLibrary(id: string): boolean {
-    const idx = this.blueprintLibrary.findIndex((bp) => bp.id === id);
-    if (idx < 0) return false;
-    this.blueprintLibrary.splice(idx, 1);
-    if (this.activeBlueprintId === id) {
-      this.activeBlueprintId = null;
-    }
-    if (this.clipboard?.blueprintId === id) {
-      this.clipboard.blueprintId = null;
-    }
-    return true;
+    return deleteBlueprintFromLibraryInHost(this.blueprintHost, id);
   }
 
   public clearBlueprintLibrary(): void {
@@ -2870,45 +2448,7 @@ export class CapytorioFactoryEngine {
   public async importFactorioBlueprintString(
     rawInput: string
   ): Promise<FactorioBlueprintImportResult & { addedIds: string[] }> {
-    const decoded = await decodeFactorioBlueprintString(rawInput);
-    if (!decoded.ok || decoded.blueprints.length === 0) {
-      return { ...decoded, addedIds: [] };
-    }
-
-    const now = Date.now();
-    const added: CapytorioSavedBlueprint[] = [];
-    for (let i = 0; i < decoded.blueprints.length; i++) {
-      const bp = decoded.blueprints[i];
-      const saved: CapytorioSavedBlueprint = {
-        id: `bp_imp_${now.toString(36)}_${this.nextBlueprintUid++}`,
-        label: bp.label,
-        sourceMode: 'import',
-        createdAt: now + i,
-        width: bp.width,
-        height: bp.height,
-        entries: bp.entries.map((e) => ({
-          ...e,
-          inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
-        })),
-      };
-      added.push(saved);
-    }
-
-    // Prepend imported blueprints in book order so index 0 appears first in library
-    this.blueprintLibrary.unshift(...added);
-    if (this.blueprintLibrary.length > MAX_CAPYTORIO_BLUEPRINT_LIBRARY) {
-      this.blueprintLibrary.length = MAX_CAPYTORIO_BLUEPRINT_LIBRARY;
-    }
-
-    const firstId = added[0]?.id;
-    if (firstId) {
-      this.selectBlueprintFromLibrary(firstId);
-    }
-
-    return {
-      ...decoded,
-      addedIds: added.map((b) => b.id),
-    };
+    return importFactorioBlueprintStringIntoHost(this.blueprintHost, rawInput);
   }
 
   /** Exports any saved blueprint or built-in preset as a genuine Factorio `0e...` string. */
@@ -2919,26 +2459,7 @@ export class CapytorioFactoryEngine {
     entityCount: number;
     error?: string;
   }> {
-    const bp = this.getBlueprintById(id);
-    if (!bp || bp.entries.length === 0) {
-      return {
-        ok: false,
-        label: '',
-        encoded: '',
-        entityCount: 0,
-        error: 'Blueprint not found or empty.',
-      };
-    }
-    const encoded = await encodeFactorioBlueprintString({
-      label: bp.label,
-      entries: bp.entries,
-    });
-    return {
-      ok: true,
-      label: bp.label,
-      encoded,
-      entityCount: bp.entries.length,
-    };
+    return exportBlueprintToFactorioStringFromHost(this.blueprintHost, id);
   }
 
   /** Serializes every machine currently built on the map into a Factorio `0e...` blueprint string. */
@@ -2949,47 +2470,7 @@ export class CapytorioFactoryEngine {
     entityCount: number;
     error?: string;
   }> {
-    const allMachines = Array.from(this.machines.values());
-    if (allMachines.length === 0) {
-      return {
-        ok: false,
-        label,
-        encoded: '',
-        entityCount: 0,
-        error: 'No buildings placed on the factory floor yet.',
-      };
-    }
-
-    let minGx = allMachines[0].gx;
-    let minGz = allMachines[0].gz;
-    for (let i = 1; i < allMachines.length; i++) {
-      if (allMachines[i].gx < minGx) minGx = allMachines[i].gx;
-      if (allMachines[i].gz < minGz) minGz = allMachines[i].gz;
-    }
-
-    const entries: CapytorioBlueprintEntry[] = allMachines.map((m) => ({
-      dx: m.gx - minGx,
-      dz: m.gz - minGz,
-      toolId: m.variantItemId ?? m.type,
-      baseType: m.type,
-      dir: m.dir,
-      recipeId: m.recipeId,
-      splitterInputPriority: m.splitterInputPriority,
-      splitterOutputPriority: m.splitterOutputPriority,
-      splitterFilterItem: m.splitterFilterItem,
-      inserterFilterMode: m.inserterFilterMode,
-      inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
-      inserterStackLimit: m.inserterStackLimit,
-      chestSlotLimit: m.chestSlotLimit,
-    }));
-
-    const encoded = await encodeFactorioBlueprintString({ label, entries });
-    return {
-      ok: true,
-      label,
-      encoded,
-      entityCount: entries.length,
-    };
+    return exportFactoryToFactorioStringFromHost(this.blueprintHost, label);
   }
 
   /** Packages the player's Blueprint Library (or built-in presets if library is empty) into a Factorio Blueprint Book string. */
@@ -3003,27 +2484,7 @@ export class CapytorioFactoryEngine {
     entityCount: number;
     error?: string;
   }> {
-    const source =
-      this.blueprintLibrary.length > 0 ? this.blueprintLibrary : this.presetBlueprints;
-    if (source.length === 0) {
-      return {
-        ok: false,
-        label: bookLabel,
-        encoded: '',
-        blueprintCount: 0,
-        entityCount: 0,
-        error: 'No blueprints available to export.',
-      };
-    }
-    const encoded = await encodeFactorioBlueprintBookString(source, bookLabel);
-    const entityCount = source.reduce((acc, bp) => acc + bp.entries.length, 0);
-    return {
-      ok: true,
-      label: bookLabel,
-      encoded,
-      blueprintCount: source.length,
-      entityCount,
-    };
+    return exportBlueprintLibraryAsFactorioBookStringFromHost(this.blueprintHost, bookLabel);
   }
 
   /**
@@ -3128,170 +2589,31 @@ export class CapytorioFactoryEngine {
   }
 
   private buildBlueprintLabel(entries: ReadonlyArray<CapytorioBlueprintEntry>): string {
-    if (entries.length === 0) return 'Empty Blueprint';
-    const counts = new Map<string, number>();
-    let firstRecipeName: string | null = null;
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      const spec = resolveCapytorioPlaceableSpec(e.toolId);
-      const name = spec?.shortName ?? CAPYTORIO_MACHINE_SPECS[e.baseType]?.shortName ?? e.baseType;
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-      if (!firstRecipeName && e.baseType === 'assembler' && e.recipeId) {
-        const rec = RECIPE_BY_ID.get(e.recipeId);
-        if (rec) firstRecipeName = rec.name;
-      }
-    }
-    const ranked = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-    if (ranked.length === 1) {
-      const [name, qty] = ranked[0];
-      if (firstRecipeName && entries.length <= 2) {
-        return `${name} · ${firstRecipeName}`;
-      }
-      return qty === 1 ? name : `${name} ×${qty}`;
-    }
-    const topTwo = ranked
-      .slice(0, 2)
-      .map(([name, qty]) => (qty > 1 ? `${name} ×${qty}` : name))
-      .join(' + ');
-    return ranked.length > 2 ? `${topTwo} +${ranked.length - 2}` : topTwo;
+    return buildBlueprintLabelPure(entries);
   }
 
   private computeBlueprintBounds(entries: ReadonlyArray<CapytorioBlueprintEntry>): {
     width: number;
     height: number;
   } {
-    if (entries.length === 0) return { width: 0, height: 0 };
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minZ = Infinity;
-    let maxZ = -Infinity;
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      const fp = getCapytorioToolFootprint(e.toolId, e.dir);
-      if (e.dx < minX) minX = e.dx;
-      if (e.dx + fp.width - 1 > maxX) maxX = e.dx + fp.width - 1;
-      if (e.dz < minZ) minZ = e.dz;
-      if (e.dz + fp.height - 1 > maxZ) maxZ = e.dz + fp.height - 1;
-    }
-    return {
-      width: maxX - minX + 1,
-      height: maxZ - minZ + 1,
-    };
+    return computeBlueprintBoundsPure(entries);
   }
 
   private recordBlueprintToLibrary(
     entries: ReadonlyArray<CapytorioBlueprintEntry>,
     sourceMode: 'copy' | 'cut'
   ): CapytorioSavedBlueprint {
-    const clonedEntries = entries.map((e) => ({
-      ...e,
-      inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
-    }));
-    const bounds = this.computeBlueprintBounds(clonedEntries);
-    const saved: CapytorioSavedBlueprint = {
-      id: `bp_${Date.now().toString(36)}_${this.nextBlueprintUid++}`,
-      label: this.buildBlueprintLabel(clonedEntries),
-      sourceMode,
-      createdAt: Date.now(),
-      width: bounds.width,
-      height: bounds.height,
-      entries: clonedEntries,
-    };
-    this.blueprintLibrary.unshift(saved);
-    if (this.blueprintLibrary.length > MAX_CAPYTORIO_BLUEPRINT_LIBRARY) {
-      this.blueprintLibrary.length = MAX_CAPYTORIO_BLUEPRINT_LIBRARY;
-    }
-    this.activeBlueprintId = saved.id;
-    return saved;
+    return recordBlueprintToLibraryInHost(this.blueprintHost, entries, sourceMode);
   }
 
   public selectMachinesInBox(gxA: number, gzA: number, gxB: number, gzB: number): CapytorioMachine[] {
-    const minX = Math.min(gxA, gxB);
-    const maxX = Math.max(gxA, gxB);
-    const minZ = Math.min(gzA, gzB);
-    const maxZ = Math.max(gzA, gzB);
-    const out: CapytorioMachine[] = [];
-    for (const m of this.machines.values()) {
-      const fp = this.getMachineFootprint(m);
-      const mMaxX = m.gx + fp.width - 1;
-      const mMaxZ = m.gz + fp.height - 1;
-      if (mMaxX >= minX && m.gx <= maxX && mMaxZ >= minZ && m.gz <= maxZ) {
-        out.push(m);
-      }
-    }
-    return out;
+    return selectMachinesInBoxInHost(this.blueprintHost, gxA, gzA, gxB, gzB);
   }
 
   public selectMachinesInPolygon(
     points: ReadonlyArray<{ gx: number; gz: number }>
   ): CapytorioMachine[] {
-    const n = points.length;
-    if (n === 0) return [];
-    if (n === 1) {
-      const m = this.getMachineAt(Math.round(points[0].gx), Math.round(points[0].gz));
-      return m ? [m] : [];
-    }
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minZ = Infinity;
-    let maxZ = -Infinity;
-    for (let i = 0; i < n; i++) {
-      const pt = points[i];
-      if (pt.gx < minX) minX = pt.gx;
-      if (pt.gx > maxX) maxX = pt.gx;
-      if (pt.gz < minZ) minZ = pt.gz;
-      if (pt.gz > maxZ) maxZ = pt.gz;
-    }
-    const pad = 1.15;
-    const brushDistSq = 0.68 * 0.68;
-    const out: CapytorioMachine[] = [];
-
-    for (const m of this.machines.values()) {
-      const fp = this.getMachineFootprint(m);
-      const px = m.gx + (fp.width - 1) * 0.5;
-      const pz = m.gz + (fp.height - 1) * 0.5;
-      if (px < minX - pad || px > maxX + pad || pz < minZ - pad || pz > maxZ + pad) continue;
-
-      let touched = false;
-      for (let i = 0; i < n - 1; i++) {
-        const ax = points[i].gx;
-        const az = points[i].gz;
-        const bx = points[i + 1].gx;
-        const bz = points[i + 1].gz;
-        const abx = bx - ax;
-        const abz = bz - az;
-        const lenSq = abx * abx + abz * abz;
-        const t = lenSq > 1e-6 ? Math.max(0, Math.min(1, ((px - ax) * abx + (pz - az) * abz) / lenSq)) : 0;
-        const cx = ax + abx * t;
-        const cz = az + abz * t;
-        const dSq = (px - cx) * (px - cx) + (pz - cz) * (pz - cz);
-        if (dSq <= brushDistSq) {
-          touched = true;
-          break;
-        }
-      }
-      if (touched) {
-        out.push(m);
-        continue;
-      }
-
-      if (n >= 3) {
-        let inside = false;
-        for (let i = 0, j = n - 1; i < n; j = i++) {
-          const xi = points[i].gx;
-          const zi = points[i].gz;
-          const xj = points[j].gx;
-          const zj = points[j].gz;
-          const intersects =
-            zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi + 1e-9) + xi;
-          if (intersects) inside = !inside;
-        }
-        if (inside) {
-          out.push(m);
-        }
-      }
-    }
-    return out;
+    return selectMachinesInPolygonInHost(this.blueprintHost, points);
   }
 
   public previewSelectionBox(gxA: number, gzA: number, gxB: number, gzB: number): number {
@@ -3386,151 +2708,24 @@ export class CapytorioFactoryEngine {
 
   public rotateBlueprint90(ccw: boolean = false): boolean {
     if (!this.clipboard || this.clipboard.entries.length === 0) return false;
-    for (let i = 0; i < this.clipboard.entries.length; i++) {
-      const e = this.clipboard.entries[i];
-      const oldFp = getCapytorioToolFootprint(e.toolId, e.dir);
-      const cx = e.dx + (oldFp.width - 1) * 0.5;
-      const cz = e.dz + (oldFp.height - 1) * 0.5;
-      let ncx: number;
-      let ncz: number;
-      if (ccw) {
-        // 90 deg CCW in Capytorio (+X East, +Z South): (cx, cz) -> (cz, -cx)
-        ncx = cz;
-        ncz = -cx;
-        e.dir = ((e.dir + 3) & 3) as CapytorioDirection;
-      } else {
-        // 90 deg CW in Capytorio (+X East, +Z South): (cx, cz) -> (-cz, cx)
-        ncx = -cz;
-        ncz = cx;
-        e.dir = ((e.dir + 1) & 3) as CapytorioDirection;
-      }
-      const newFp = getCapytorioToolFootprint(e.toolId, e.dir);
-      e.dx = Math.round(ncx - (newFp.width - 1) * 0.5);
-      e.dz = Math.round(ncz - (newFp.height - 1) * 0.5);
-    }
-    return true;
+    return rotateBlueprintEntries90(this.clipboard.entries, ccw);
   }
 
   public flipBlueprintHorizontal(): boolean {
     if (!this.clipboard || this.clipboard.entries.length === 0) return false;
-    for (let i = 0; i < this.clipboard.entries.length; i++) {
-      const e = this.clipboard.entries[i];
-      const fp = getCapytorioToolFootprint(e.toolId, e.dir);
-      const cx = e.dx + (fp.width - 1) * 0.5;
-      e.dx = Math.round(-cx - (fp.width - 1) * 0.5);
-      if (e.dir === 1) e.dir = 3;
-      else if (e.dir === 3) e.dir = 1;
-      if (e.baseType === 'splitter') {
-        if (e.splitterInputPriority === 'left') e.splitterInputPriority = 'right';
-        else if (e.splitterInputPriority === 'right') e.splitterInputPriority = 'left';
-        if (e.splitterOutputPriority === 'left') e.splitterOutputPriority = 'right';
-        else if (e.splitterOutputPriority === 'right') e.splitterOutputPriority = 'left';
-      }
-    }
-    return true;
+    return flipBlueprintEntriesHorizontal(this.clipboard.entries);
   }
 
   public flipBlueprintVertical(): boolean {
     if (!this.clipboard || this.clipboard.entries.length === 0) return false;
-    for (let i = 0; i < this.clipboard.entries.length; i++) {
-      const e = this.clipboard.entries[i];
-      const fp = getCapytorioToolFootprint(e.toolId, e.dir);
-      const cz = e.dz + (fp.height - 1) * 0.5;
-      e.dz = Math.round(-cz - (fp.height - 1) * 0.5);
-      if (e.dir === 0) e.dir = 2;
-      else if (e.dir === 2) e.dir = 0;
-      if (e.baseType === 'splitter') {
-        if (e.splitterInputPriority === 'left') e.splitterInputPriority = 'right';
-        else if (e.splitterInputPriority === 'right') e.splitterInputPriority = 'left';
-        if (e.splitterOutputPriority === 'left') e.splitterOutputPriority = 'right';
-        else if (e.splitterOutputPriority === 'right') e.splitterOutputPriority = 'left';
-      }
-    }
-    return true;
+    return flipBlueprintEntriesVertical(this.clipboard.entries);
   }
 
   public evaluateBlueprintPlacementAt(
     originGx: number,
     originGz: number
   ): CapytorioBlueprintPlacementCheck[] {
-    if (!this.clipboard || this.clipboard.entries.length === 0) return [];
-    const remainingStock = new Map<string, number>();
-    const plannedTiles = new Set<string>();
-    const results: CapytorioBlueprintPlacementCheck[] = [];
-
-    for (let i = 0; i < this.clipboard.entries.length; i++) {
-      const entry = this.clipboard.entries[i];
-      const gx = originGx + entry.dx;
-      const gz = originGz + entry.dz;
-      const fp = getCapytorioToolFootprint(entry.toolId, entry.dir);
-      const key = tileKey(gx, gz);
-      const existingAnchor = this.machines.get(key);
-      if (existingAnchor) {
-        if (existingAnchor.type === 'assembler' && entry.baseType === 'assembler' && entry.recipeId) {
-          results.push({ entry, gx, gz, valid: true });
-        } else {
-          results.push({ entry, gx, gz, valid: false, reason: 'occupied' });
-        }
-        continue;
-      }
-
-      let blocked = !this.canFootprintFit(
-        gx,
-        gz,
-        fp.width,
-        fp.height,
-        undefined,
-        entry.toolId === 'offshore_pump'
-      );
-      if (!blocked) {
-        for (let dx = 0; dx < fp.width && !blocked; dx++) {
-          for (let dz = 0; dz < fp.height; dz++) {
-            if (plannedTiles.has(tileKey(gx + dx, gz + dz))) {
-              blocked = true;
-              break;
-            }
-          }
-        }
-      }
-      if (blocked) {
-        results.push({ entry, gx, gz, valid: false, reason: 'occupied' });
-        continue;
-      }
-      if (
-        entry.baseType === 'drill' &&
-        entry.toolId !== 'offshore_pump' &&
-        !this.findFirstOreInFootprint(gx, gz, fp.width, fp.height)
-      ) {
-        results.push({ entry, gx, gz, valid: false, reason: 'needs_ore' });
-        continue;
-      }
-      const resolved = resolveCapytorioPlaceableSpec(entry.toolId);
-      if (!resolved) {
-        results.push({ entry, gx, gz, valid: false, reason: 'no_stock' });
-        continue;
-      }
-      const stockKey = resolved.isBaseMachine
-        ? `m:${resolved.baseType}`
-        : `i:${resolved.id}`;
-      let avail = remainingStock.get(stockKey);
-      if (avail === undefined) {
-        avail = resolved.isBaseMachine
-          ? this.pocketMachines[resolved.baseType] ?? 0
-          : this.pocketItems[resolved.id] ?? 0;
-      }
-      if (avail <= 0) {
-        results.push({ entry, gx, gz, valid: false, reason: 'no_stock' });
-        continue;
-      }
-      remainingStock.set(stockKey, avail - 1);
-      for (let dx = 0; dx < fp.width; dx++) {
-        for (let dz = 0; dz < fp.height; dz++) {
-          plannedTiles.add(tileKey(gx + dx, gz + dz));
-        }
-      }
-      results.push({ entry, gx, gz, valid: true });
-    }
-    return results;
+    return evaluateBlueprintPlacementAtInHost(this.blueprintHost, originGx, originGz);
   }
 
   public pasteBlueprintAtAnchor(): {
@@ -3550,99 +2745,7 @@ export class CapytorioFactoryEngine {
     originGx: number,
     originGz: number
   ): { placedCount: number; skippedCount: number; updatedRecipesCount: number } {
-    if (!this.clipboard || this.clipboard.entries.length === 0) {
-      return { placedCount: 0, skippedCount: 0, updatedRecipesCount: 0 };
-    }
-    const entries = this.clipboard.entries;
-    const wasCut = this.clipboard.mode === 'cut';
-    let placedCount = 0;
-    let skippedCount = 0;
-    let updatedRecipesCount = 0;
-    const remainingEntries: CapytorioBlueprintEntry[] = [];
-    const remainingCutSnapshots: CapytorioMachineUndoSnapshot[] = [];
-
-    this.beginHistoryBatch('Paste blueprint');
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const gx = originGx + entry.dx;
-      const gz = originGz + entry.dz;
-      const key = tileKey(gx, gz);
-      const existing = this.machines.get(key);
-      if (existing) {
-        if (
-          existing.type === 'assembler' &&
-          entry.baseType === 'assembler' &&
-          entry.recipeId &&
-          existing.recipeId !== entry.recipeId
-        ) {
-          if (this.setAssemblerRecipeAt(gx, gz, entry.recipeId)) {
-            updatedRecipesCount++;
-          } else {
-            skippedCount++;
-            if (wasCut) {
-              remainingEntries.push(entry);
-              if (this.undoCutSnapshot[i]) {
-                remainingCutSnapshots.push(this.undoCutSnapshot[i]);
-              }
-            }
-          }
-        } else {
-          skippedCount++;
-          if (wasCut) {
-            remainingEntries.push(entry);
-            if (this.undoCutSnapshot[i]) {
-              remainingCutSnapshots.push(this.undoCutSnapshot[i]);
-            }
-          }
-        }
-        continue;
-      }
-
-      const placed = this.placeMachine(entry.toolId, gx, gz, entry.dir, entry.recipeId);
-      if (placed.ok && placed.machine) {
-        placedCount++;
-        if (entry.baseType === 'assembler' && entry.recipeId) {
-          this.setAssemblerRecipeAt(gx, gz, entry.recipeId);
-        } else if (entry.baseType === 'splitter' || entry.baseType === 'inserter' || entry.baseType === 'chest') {
-          this.applyConfigSnapshotToMachine(placed.machine, entry);
-        }
-      } else {
-        skippedCount++;
-        if (wasCut) {
-          remainingEntries.push(entry);
-          if (this.undoCutSnapshot[i]) {
-            remainingCutSnapshots.push(this.undoCutSnapshot[i]);
-          }
-        }
-      }
-    }
-    const totalApplied = placedCount + updatedRecipesCount;
-    this.commitHistoryBatch(
-      `Paste ${totalApplied} building${totalApplied === 1 ? '' : 's'}`
-    );
-
-    if (totalApplied > 0) {
-      this.pasteAnchor = null;
-    }
-
-    if (wasCut) {
-      if (skippedCount === 0 && (placedCount > 0 || updatedRecipesCount > 0)) {
-        this.clipboard = null;
-        this.clipboardToolState = 'off';
-        this.pasteAnchor = null;
-        this.undoCutSnapshot.length = 0;
-      } else if (totalApplied > 0 && remainingEntries.length > 0) {
-        this.clipboard = {
-          ...this.clipboard,
-          entries: remainingEntries,
-          canUndoCut: remainingCutSnapshots.length > 0,
-        };
-        this.undoCutSnapshot = remainingCutSnapshots;
-        this.clipboardToolState = 'paste';
-      }
-    }
-
-    return { placedCount, skippedCount, updatedRecipesCount };
+    return pasteBlueprintAtInHost(this.blueprintHost, originGx, originGz);
   }
 
   public undoCut(): { restoredCount: number } {
@@ -3946,6 +3049,53 @@ export class CapytorioFactoryEngine {
     };
   }
 
+  private hasAnyTechDelivered(): boolean {
+    for (const k in this.techDelivered) {
+      if ((this.techDelivered[k as CapytorioItemId] ?? 0) > 0) return true;
+    }
+    return false;
+  }
+
+  private evaluateMilestonesIfDirty(
+    activeGenerators: number,
+    callbacks?: CapytorioStepCallbacks
+  ): void {
+    if (this.completedMilestones.size >= 6) return;
+    const totalSci =
+      (this.pocketItems.automation_science ?? 0) +
+      (this.pocketItems.logistic_science ?? 0) +
+      (this.pocketItems.metallurgic_science ?? 0) +
+      (this.pocketItems.agricultural_science ?? 0) +
+      (this.pocketItems.electromagnetic_science ?? 0);
+    const totalOreMined =
+      (this.pocketItems.iron_ore ?? 0) +
+      (this.pocketItems.copper_ore ?? 0) +
+      (this.pocketItems.calcite ?? 0) +
+      (this.pocketItems.yuzu_sap ?? 0);
+    const hasTechDelivered = this.hasAnyTechDelivered();
+    if (
+      this.topologyRevision === this.lastMilestoneTopoRev &&
+      this.totalProduced === this.lastMilestoneTotalProduced &&
+      this.unlockedTechs.size === this.lastMilestoneUnlockedCount &&
+      this.rocketLaunches === this.lastMilestoneRocketLaunches &&
+      totalOreMined === this.lastMilestoneOreCount &&
+      totalSci === this.lastMilestoneSciCount &&
+      hasTechDelivered === this.lastMilestoneHasTechDelivered &&
+      activeGenerators === this.lastMilestoneActiveGenerators
+    ) {
+      return;
+    }
+    this.lastMilestoneTopoRev = this.topologyRevision;
+    this.lastMilestoneTotalProduced = this.totalProduced;
+    this.lastMilestoneUnlockedCount = this.unlockedTechs.size;
+    this.lastMilestoneRocketLaunches = this.rocketLaunches;
+    this.lastMilestoneOreCount = totalOreMined;
+    this.lastMilestoneSciCount = totalSci;
+    this.lastMilestoneHasTechDelivered = hasTechDelivered;
+    this.lastMilestoneActiveGenerators = activeGenerators;
+    this.evaluateMilestones(callbacks);
+  }
+
   public evaluateMilestones(callbacks?: CapytorioStepCallbacks): CapytorioMilestoneStatus[] {
     let drillCount = 0;
     let beltCount = 0;
@@ -3972,6 +3122,7 @@ export class CapytorioFactoryEngine {
       (this.pocketItems.copper_ore ?? 0) +
       (this.pocketItems.calcite ?? 0) +
       (this.pocketItems.yuzu_sap ?? 0);
+    const hasTechDelivered = this.hasAnyTechDelivered();
 
     const defs: Array<{ id: string; label: string; hint: string; met: boolean }> = [
       {
@@ -4007,7 +3158,7 @@ export class CapytorioFactoryEngine {
         met:
           this.completedMilestones.has('research_lab') ||
           this.unlockedTechs.size >= 1 ||
-          (labCount >= 1 && (totalSci >= 1 || Object.keys(this.techDelivered).length > 0)),
+          (labCount >= 1 && (totalSci >= 1 || hasTechDelivered)),
       },
       {
         id: 'launch_rocket',
@@ -4145,7 +3296,9 @@ export class CapytorioFactoryEngine {
     this.ensureMachineList();
     let supply = 0;
     let demand = 0;
-    const genBonus = this.unlockedTechs.has('bioflux_chemistry') ? 1.25 : 1.0;
+    let activeGenerators = 0;
+    const biofluxUnlocked = this.unlockedTechs.has('bioflux_chemistry');
+    const genBonus = biofluxUnlocked ? 1.25 : 1.0;
 
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
@@ -4153,6 +3306,7 @@ export class CapytorioFactoryEngine {
       const tierMult = m.tierMult ?? 1.0;
       demand += spec.powerDemandMw;
       if (m.type === 'generator') {
+        if (m.fuelTimer > 0) activeGenerators++;
         supply += (m.fuelTimer > 0 ? spec.powerSupplyMw : 1.5) * tierMult * genBonus;
       }
     }
@@ -4167,6 +3321,10 @@ export class CapytorioFactoryEngine {
       // Gentle floor so even an unpowered starter setup trickles along rather than freezing dead
       this.powerEfficiency = Math.max(0.35, supply / demand);
     }
+    this.lastPowerTopologyRevision = this.topologyRevision;
+    this.lastPowerBiofluxUnlocked = biofluxUnlocked;
+    this.lastActiveGeneratorCount = activeGenerators;
+    this.powerDirty = false;
   }
 
   private tryAcceptItemIntoTarget(
@@ -4481,8 +3639,9 @@ export class CapytorioFactoryEngine {
     this.ensureMachineList();
     this.stepCraftingQueue(clampedDt, callbacks);
 
-    // Update fuel timers & recompute power
+    // Update fuel timers & recompute power only when power-relevant state changes
     let anyFuelChanged = false;
+    let activeGenerators = 0;
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
       if (m.type !== 'generator') continue;
@@ -4508,8 +3667,18 @@ export class CapytorioFactoryEngine {
           anyFuelChanged = true;
         }
       }
+      if (m.fuelTimer > 0) {
+        activeGenerators++;
+      }
     }
-    if (anyFuelChanged || this.machineStepList.length > 0) {
+    const biofluxNow = this.unlockedTechs.has('bioflux_chemistry');
+    if (
+      anyFuelChanged ||
+      this.powerDirty ||
+      this.topologyRevision !== this.lastPowerTopologyRevision ||
+      biofluxNow !== this.lastPowerBiofluxUnlocked ||
+      activeGenerators !== this.lastActiveGeneratorCount
+    ) {
       this.recomputePowerMetrics();
     }
 
@@ -5273,7 +4442,7 @@ export class CapytorioFactoryEngine {
     }
 
     this.stepSpilledItems(clampedDt);
-    this.evaluateMilestones(callbacks);
+    this.evaluateMilestonesIfDirty(activeGenerators, callbacks);
 
     if (this.score !== this.lastReportedScore) {
       this.lastReportedScore = this.score;
@@ -5340,11 +4509,15 @@ export class CapytorioFactoryEngine {
       settled: false,
       ageSec: 0,
     });
+    this.spilledSeparationDirty = true;
   }
 
   private stepSpilledItems(dt: number): void {
     const count = this.spilledItems.length;
-    if (count === 0) return;
+    if (count === 0) {
+      this.spilledSeparationDirty = false;
+      return;
+    }
 
     const gravity = 14.5;
     const restitution = 0.28;
@@ -5352,6 +4525,7 @@ export class CapytorioFactoryEngine {
     const airDrag = Math.exp(-0.9 * dt);
     const minSep = 0.34;
     const minSepSq = minSep * minSep;
+    let unsettledCount = 0;
 
     for (let i = 0; i < count; i++) {
       const sp = this.spilledItems[i];
@@ -5398,10 +4572,20 @@ export class CapytorioFactoryEngine {
           sp.vx *= airDrag;
           sp.vz *= airDrag;
         }
+        if (!sp.settled) {
+          unsettledCount++;
+          this.spilledSeparationDirty = true;
+        }
       }
     }
 
+    // Skip O(N^2) pairwise collision loop once all spilled items are settled and separated
+    if (unsettledCount === 0 && !this.spilledSeparationDirty) {
+      return;
+    }
+
     // Gentle local pile separation so spilled items fan out instead of stacking on one point
+    let anySeparated = false;
     for (let i = 0; i < count; i++) {
       const a = this.spilledItems[i];
       if (a.y > 0.12) continue;
@@ -5426,8 +4610,12 @@ export class CapytorioFactoryEngine {
           a.lz -= dz * overlap;
           b.lx += dx * overlap;
           b.lz += dz * overlap;
+          anySeparated = true;
         }
       }
+    }
+    if (unsettledCount === 0 && !anySeparated) {
+      this.spilledSeparationDirty = false;
     }
   }
 
@@ -5977,381 +5165,14 @@ export class CapytorioFactoryEngine {
   }
 
   public serialize(): CapytorioSerializedState {
-    const machinesOut: CapytorioSerializedState['machines'] = [];
-    for (const m of this.machines.values()) {
-      machinesOut.push({
-        type: m.type,
-        variantItemId: m.variantItemId,
-        tierMult: m.tierMult,
-        gx: m.gx,
-        gz: m.gz,
-        dir: m.dir,
-        recipeId: m.recipeId,
-        splitterInputPriority: m.splitterInputPriority,
-        splitterOutputPriority: m.splitterOutputPriority,
-        splitterFilterItem: m.splitterFilterItem,
-        inserterFilterMode: m.inserterFilterMode,
-        inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
-        inserterStackLimit: m.inserterStackLimit,
-        chestSlotLimit: m.chestSlotLimit,
-        inputBuffer: { ...m.inputBuffer },
-        outputBuffer: { ...m.outputBuffer },
-        beltItems: m.beltItems.map((bi) => ({
-          item: bi.item,
-          progress: +bi.progress.toFixed(2),
-          lane: bi.lane === 1 ? 1 : 0,
-          squish: bi.squish ? +bi.squish.toFixed(2) : undefined,
-          edgeProgress: bi.edgeProgress ? +bi.edgeProgress.toFixed(2) : undefined,
-        })),
-      });
-    }
-    const spilledOut =
-      this.spilledItems.length > 0
-        ? this.spilledItems.slice(0, MAX_CAPYTORIO_SPILLED_ITEMS).map((sp) => ({
-            item: sp.item,
-            lx: +sp.lx.toFixed(2),
-            y: +sp.y.toFixed(2),
-            lz: +sp.lz.toFixed(2),
-            ry: +sp.ry.toFixed(2),
-          }))
-        : undefined;
-    const blueprintsOut =
-      this.blueprintLibrary.length > 0
-        ? this.blueprintLibrary.slice(0, MAX_CAPYTORIO_BLUEPRINT_LIBRARY).map((bp) => ({
-            id: bp.id,
-            label: bp.label,
-            sourceMode: bp.sourceMode,
-            createdAt: bp.createdAt,
-            width: bp.width,
-            height: bp.height,
-            entries: bp.entries.map((e) => ({
-              dx: e.dx,
-              dz: e.dz,
-              toolId: e.toolId,
-              baseType: e.baseType,
-              dir: e.dir,
-              recipeId: e.recipeId,
-              splitterInputPriority: e.splitterInputPriority,
-              splitterOutputPriority: e.splitterOutputPriority,
-              splitterFilterItem: e.splitterFilterItem,
-              inserterFilterMode: e.inserterFilterMode,
-              inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
-              inserterStackLimit: e.inserterStackLimit,
-              chestSlotLimit: e.chestSlotLimit,
-            })),
-          }))
-        : undefined;
-    return {
-      version: 1,
-      machines: machinesOut,
-      spilledItems: spilledOut,
-      depletions: Array.from(this.oreRemainingOverrides.entries()),
-      harvestedTrees: Array.from(this.harvestedTrees.values()),
-      recentTools: this.getRecentTools(),
-      pocketItems: { ...this.pocketItems },
-      pocketMachines: { ...this.pocketMachines },
-      unlockedTechs: Array.from(this.unlockedTechs),
-      activeTechId: this.activeTechId,
-      techDelivered: { ...this.techDelivered },
-      completedMilestones: Array.from(this.completedMilestones),
-      blueprintLibrary: blueprintsOut,
-      altModeEnabled: this.altModeEnabled,
-      rocketLaunches: this.rocketLaunches,
-      totalProduced: this.totalProduced,
-      score: this.score,
-    };
+    return serializeCapytorioEngineState(this.serializerHost);
   }
 
   public hydrate(raw: CapytorioSerializedState): void {
-    this.machines.clear();
-    this.occupancyGrid.clear();
-    this.spilledItems.length = 0;
-    this.oreRemainingOverrides.clear();
-    this.harvestedTrees.clear();
-    this.pasteAnchor = null;
-    this.undoStack.length = 0;
-    this.redoStack.length = 0;
-    this.activeHistoryBatch = null;
-    this.craftingQueue.length = 0;
-    this.entitySettingsClipboard = null;
-    this.altModeEnabled = typeof raw.altModeEnabled === 'boolean' ? raw.altModeEnabled : true;
-    this.topologyRevision++;
-    for (const k of Object.keys(this.pocketItems) as CapytorioItemId[]) {
-      delete this.pocketItems[k];
-    }
-    for (const m of CAPYTORIO_HOTBAR_ORDER) {
-      this.pocketMachines[m] = 0;
-    }
-
-    if (raw.pocketItems) {
-      for (const [k, v] of Object.entries(raw.pocketItems) as Array<[CapytorioItemId, number]>) {
-        if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
-          this.pocketItems[k] = Math.round(v);
-        }
-      }
-    }
-    if (raw.pocketMachines) {
-      for (const m of CAPYTORIO_HOTBAR_ORDER) {
-        const val = raw.pocketMachines[m];
-        this.pocketMachines[m] =
-          typeof val === 'number' && Number.isFinite(val) ? Math.max(0, Math.round(val)) : 0;
-      }
-    }
-    if (Array.isArray(raw.depletions)) {
-      for (let i = 0; i < raw.depletions.length; i++) {
-        const pair = raw.depletions[i];
-        if (Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'number') {
-          this.oreRemainingOverrides.set(pair[0], Math.max(0, Math.round(pair[1])));
-        }
-      }
-    }
-    if (Array.isArray(raw.harvestedTrees)) {
-      for (let i = 0; i < raw.harvestedTrees.length; i++) {
-        if (typeof raw.harvestedTrees[i] === 'string') {
-          this.harvestedTrees.add(raw.harvestedTrees[i]);
-        }
-      }
-    }
-    if (Array.isArray(raw.recentTools)) {
-      const cleaned: string[] = [];
-      for (let i = 0; i < raw.recentTools.length && cleaned.length < MAX_RECENT_CAPYTORIO_TOOLS; i++) {
-        const tid = raw.recentTools[i];
-        if (typeof tid === 'string' && resolveCapytorioPlaceableSpec(tid) && !cleaned.includes(tid)) {
-          cleaned.push(tid);
-        }
-      }
-      for (let i = 0; i < CAPYTORIO_HOTBAR_ORDER.length && cleaned.length < MAX_RECENT_CAPYTORIO_TOOLS; i++) {
-        if (!cleaned.includes(CAPYTORIO_HOTBAR_ORDER[i])) {
-          cleaned.push(CAPYTORIO_HOTBAR_ORDER[i]);
-        }
-      }
-      this.recentTools = cleaned;
-    } else {
-      this.recentTools = [...CAPYTORIO_HOTBAR_ORDER];
-    }
-    this.unlockedTechs.clear();
-    if (Array.isArray(raw.unlockedTechs)) {
-      for (let i = 0; i < raw.unlockedTechs.length; i++) {
-        if (TECH_BY_ID.has(raw.unlockedTechs[i])) {
-          this.unlockedTechs.add(raw.unlockedTechs[i]);
-        }
-      }
-    }
-    this.completedMilestones.clear();
-    if (Array.isArray(raw.completedMilestones)) {
-      for (let i = 0; i < raw.completedMilestones.length; i++) {
-        if (typeof raw.completedMilestones[i] === 'string') {
-          this.completedMilestones.add(raw.completedMilestones[i]);
-        }
-      }
-    }
-    this.activeTechId =
-      raw.activeTechId && TECH_BY_ID.has(raw.activeTechId) ? raw.activeTechId : getDefaultTechId();
-    this.techDelivered = raw.techDelivered ? { ...raw.techDelivered } : {};
-    this.rocketLaunches = Math.max(0, Math.round(raw.rocketLaunches || 0));
-    this.totalProduced = Math.max(0, Math.round(raw.totalProduced || 0));
-    this.score = Math.max(0, Math.round(raw.score || 0));
-    this.lastReportedScore = this.score;
-
-    if (Array.isArray(raw.machines)) {
-      for (let i = 0; i < raw.machines.length; i++) {
-        const sm = raw.machines[i];
-        if (!sm || typeof sm.gx !== 'number' || typeof sm.gz !== 'number') continue;
-        if (!CAPYTORIO_MACHINE_SPECS[sm.type]) continue;
-        const maxBeltCap =
-          sm.type === 'splitter' ? CAPYTORIO_BELT_MAX_ITEMS_PER_TILE * 2 : CAPYTORIO_BELT_MAX_ITEMS_PER_TILE;
-        const machine: CapytorioMachine = {
-          id: this.nextMachineId++,
-          type: sm.type,
-          variantItemId: sm.variantItemId,
-          tierMult: sm.tierMult,
-          gx: Math.round(sm.gx),
-          gz: Math.round(sm.gz),
-          dir: ((sm.dir ?? 1) & 3) as CapytorioDirection,
-          recipeId: sm.recipeId,
-          craftProgress: 0,
-          productivityProgress: 0,
-          fuelTimer: 0,
-          armSwing: 0,
-          armExtend: 0,
-          inserterPhase: sm.type === 'inserter' ? 'idle_pickup' : undefined,
-          holdingItem: null,
-          splitterToggle: 0,
-          splitterInputToggle: 0,
-          splitterInputPriority:
-            sm.splitterInputPriority === 'left' || sm.splitterInputPriority === 'right'
-              ? sm.splitterInputPriority
-              : sm.type === 'splitter'
-                ? 'none'
-                : undefined,
-          splitterOutputPriority:
-            sm.splitterOutputPriority === 'left' || sm.splitterOutputPriority === 'right'
-              ? sm.splitterOutputPriority
-              : sm.type === 'splitter'
-                ? 'none'
-                : undefined,
-          splitterFilterItem:
-            sm.type === 'splitter' ? (sm.splitterFilterItem ?? null) : undefined,
-          inserterFilterMode:
-            sm.inserterFilterMode === 'blacklist'
-              ? 'blacklist'
-              : sm.type === 'inserter'
-                ? 'whitelist'
-                : undefined,
-          inserterFilters:
-            sm.type === 'inserter' && Array.isArray(sm.inserterFilters)
-              ? sm.inserterFilters.slice(0, 5)
-              : sm.type === 'inserter'
-                ? []
-                : undefined,
-          inserterStackLimit:
-            sm.type === 'inserter' &&
-            typeof sm.inserterStackLimit === 'number' &&
-            Number.isFinite(sm.inserterStackLimit)
-              ? Math.max(1, Math.min(12, Math.round(sm.inserterStackLimit)))
-              : sm.type === 'inserter'
-                ? null
-                : undefined,
-          chestSlotLimit:
-            sm.type === 'chest' &&
-            typeof sm.chestSlotLimit === 'number' &&
-            Number.isFinite(sm.chestSlotLimit)
-              ? Math.max(1, Math.min(CAPYTORIO_CHEST_SLOTS, Math.round(sm.chestSlotLimit)))
-              : sm.type === 'chest'
-                ? null
-                : undefined,
-          inputBuffer: sm.inputBuffer ? { ...sm.inputBuffer } : {},
-          outputBuffer: sm.outputBuffer ? { ...sm.outputBuffer } : {},
-          beltItems: Array.isArray(sm.beltItems)
-            ? sm.beltItems.slice(0, maxBeltCap).map((b) => ({
-                uid: this.nextBeltItemUid++,
-                item: b.item,
-                progress: b.progress,
-                lane: b.lane === 1 ? 1 : 0,
-                squish: 0,
-                edgeProgress:
-                  typeof b.edgeProgress === 'number' && Number.isFinite(b.edgeProgress)
-                    ? Math.max(0, Math.min(1, b.edgeProgress))
-                    : 0,
-              }))
-            : [],
-        };
-        this.machines.set(tileKey(machine.gx, machine.gz), machine);
-        this.registerMachineOccupancy(machine);
-      }
-    }
-
-    if (Array.isArray(raw.spilledItems)) {
-      for (let i = 0; i < raw.spilledItems.length && this.spilledItems.length < MAX_CAPYTORIO_SPILLED_ITEMS; i++) {
-        const sp = raw.spilledItems[i];
-        if (
-          !sp ||
-          typeof sp.item !== 'string' ||
-          typeof sp.lx !== 'number' ||
-          !Number.isFinite(sp.lx) ||
-          typeof sp.lz !== 'number' ||
-          !Number.isFinite(sp.lz)
-        ) {
-          continue;
-        }
-        const cleanY = typeof sp.y === 'number' && Number.isFinite(sp.y) ? Math.max(0, Math.min(8, sp.y)) : 0;
-        const cleanRy = typeof sp.ry === 'number' && Number.isFinite(sp.ry) ? sp.ry : 0;
-        this.spilledItems.push({
-          uid: this.nextSpilledItemUid++,
-          item: sp.item as CapytorioItemId,
-          lx: sp.lx,
-          y: cleanY,
-          lz: sp.lz,
-          vx: 0,
-          vy: 0,
-          vz: 0,
-          rx: 0,
-          ry: cleanRy,
-          rz: 0,
-          vrx: 0,
-          vrz: 0,
-          squish: 0,
-          settled: cleanY <= 0.01,
-          ageSec: 0,
-        });
-      }
-    }
-
-    this.blueprintLibrary = [];
-    this.activeBlueprintId = null;
-    if (Array.isArray(raw.blueprintLibrary)) {
-      for (
-        let i = 0;
-        i < raw.blueprintLibrary.length && this.blueprintLibrary.length < MAX_CAPYTORIO_BLUEPRINT_LIBRARY;
-        i++
-      ) {
-        const bp = raw.blueprintLibrary[i];
-        if (!bp || !Array.isArray(bp.entries) || bp.entries.length === 0) continue;
-        const cleanEntries: CapytorioBlueprintEntry[] = [];
-        for (let j = 0; j < bp.entries.length && cleanEntries.length < 256; j++) {
-          const e = bp.entries[j];
-          if (
-            !e ||
-            typeof e.dx !== 'number' ||
-            !Number.isFinite(e.dx) ||
-            typeof e.dz !== 'number' ||
-            !Number.isFinite(e.dz) ||
-            typeof e.toolId !== 'string' ||
-            !CAPYTORIO_MACHINE_SPECS[e.baseType]
-          ) {
-            continue;
-          }
-          cleanEntries.push({
-            dx: Math.round(e.dx),
-            dz: Math.round(e.dz),
-            toolId: e.toolId,
-            baseType: e.baseType,
-            dir: ((e.dir ?? 1) & 3) as CapytorioDirection,
-            recipeId: typeof e.recipeId === 'string' && RECIPE_BY_ID.has(e.recipeId) ? e.recipeId : undefined,
-            splitterInputPriority: e.splitterInputPriority,
-            splitterOutputPriority: e.splitterOutputPriority,
-            splitterFilterItem: e.splitterFilterItem,
-            inserterFilterMode: e.inserterFilterMode,
-            inserterFilters: Array.isArray(e.inserterFilters) ? e.inserterFilters.slice(0, 5) : undefined,
-            inserterStackLimit: e.inserterStackLimit,
-            chestSlotLimit: e.chestSlotLimit,
-          });
-        }
-        if (cleanEntries.length === 0) continue;
-        const bounds = this.computeBlueprintBounds(cleanEntries);
-        this.blueprintLibrary.push({
-          id:
-            typeof bp.id === 'string' && bp.id.trim().length > 0
-              ? bp.id.trim().slice(0, 64)
-              : `bp_h_${this.nextBlueprintUid++}`,
-          label:
-            typeof bp.label === 'string' && bp.label.trim().length > 0
-              ? bp.label.trim().slice(0, 80)
-              : this.buildBlueprintLabel(cleanEntries),
-          sourceMode:
-            bp.sourceMode === 'cut'
-              ? 'cut'
-              : bp.sourceMode === 'import'
-                ? 'import'
-                : 'copy',
-          createdAt:
-            typeof bp.createdAt === 'number' && Number.isFinite(bp.createdAt) ? bp.createdAt : Date.now(),
-          width: bounds.width,
-          height: bounds.height,
-          entries: cleanEntries,
-        });
-      }
-    }
-
-    this.machineListDirty = true;
-    this.recomputePowerMetrics();
+    hydrateCapytorioEngineState(this.serializerHost, raw);
   }
 }
 
 export function sanitizeCapytorioState(raw: unknown): CapytorioSerializedState | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const candidate = raw as CapytorioSerializedState;
-  if (candidate.version !== 1) return undefined;
-  const eng = new CapytorioFactoryEngine(candidate);
-  return eng.serialize();
+  return sanitizeCapytorioSerializedState(raw, (candidate) => new CapytorioFactoryEngine(candidate));
 }
