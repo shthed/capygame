@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import * as THREE_WEBGPU from 'three/webgpu';
+import type * as THREE_WEBGPU from 'three/webgpu';
 import { HEAD_ORANGE_VARIETIES, WeatherType } from '../types';
 import {
   PbrSurfaceMaterialKind,
@@ -9,11 +9,7 @@ import {
   computeDayNightAtmosphereRig,
   evaluatePlayAreaCutoutSightlineAlpha,
 } from './gpu/FramePerformanceGovernor';
-import {
-  createTslSkyNodeMaterial,
-  createTslWaterPhysicalNodeMaterial,
-  upgradeMaterialWithTslSightlineFade,
-} from './gpu/WebGpuPipeline';
+import { getWebGpuRuntime } from './gpu/WebGpuRuntime';
 import { enforceWeatherParticleCameraClearance } from './physics/QuadrupedGaitSolver';
 
 // Zero-allocation scratch helpers for GPU particle & shader updates
@@ -83,14 +79,16 @@ export function installSightlineEdgeFadeShader(
     mat.userData.__origDepthWrite = mat.depthWrite;
   }
 
-  const tslBlend = isNodeMat
-    ? upgradeMaterialWithTslSightlineFade(
-        mat,
-        SHARED_OCCLUDER_VIEWPORT,
-        SHARED_OCCLUDER_HEAD_CLIP,
-        SHARED_OCCLUDER_TAIL_CLIP
-      )
-    : { value: 0.0 };
+  const webGpuRt = isNodeMat ? getWebGpuRuntime() : null;
+  const tslBlend =
+    isNodeMat && webGpuRt
+      ? webGpuRt.upgradeMaterialWithTslSightlineFade(
+          mat,
+          SHARED_OCCLUDER_VIEWPORT,
+          SHARED_OCCLUDER_HEAD_CLIP,
+          SHARED_OCCLUDER_TAIL_CLIP
+        )
+      : { value: 0.0 };
 
   const uniforms: OccluderEdgeShaderUniforms = {
     uCapyOccBlend: tslBlend,
@@ -444,8 +442,9 @@ export class RealisticWorldEnvironment {
     isWebGpu: boolean = false
   ): THREE.MeshPhysicalMaterial {
     const waterNorms = PbrTextureSynthesizer.getWaterNormalMaps();
-    if (isWebGpu) {
-      const mat = createTslWaterPhysicalNodeMaterial({
+    const webGpuRt = isWebGpu ? getWebGpuRuntime() : null;
+    if (isWebGpu && webGpuRt) {
+      const mat = webGpuRt.createTslWaterPhysicalNodeMaterial({
         baseColorHex: 0x0369a1,
         normalMap: waterNorms.primary,
         clearcoatNormalMap: waterNorms.secondary,
@@ -499,8 +498,9 @@ export class RealisticWorldEnvironment {
     }
   ): THREE.MeshPhysicalMaterial {
     const waterNorms = PbrTextureSynthesizer.getWaterNormalMaps();
-    if (options?.isWebGpu) {
-      const mat = createTslWaterPhysicalNodeMaterial({
+    const webGpuRt = options?.isWebGpu ? getWebGpuRuntime() : null;
+    if (options?.isWebGpu && webGpuRt) {
+      const mat = webGpuRt.createTslWaterPhysicalNodeMaterial({
         baseColorHex: options?.colorHex ?? 0x0ea5e9,
         normalMap: waterNorms.primary,
         clearcoatNormalMap: waterNorms.secondary,
@@ -801,9 +801,11 @@ export class RealisticWorldEnvironment {
     };
 
     // 1. Hardware-Accelerated Atmospheric Sky Dome Shader (WGSL TSL on WebGPU / GLSL on WebGL2)
-    this.skyMaterial = this.isWebGpu
-      ? createTslSkyNodeMaterial(skyUniforms)
-      : new THREE.ShaderMaterial({
+    const skyWebGpuRt = this.isWebGpu ? getWebGpuRuntime() : null;
+    this.skyMaterial =
+      this.isWebGpu && skyWebGpuRt
+        ? (skyWebGpuRt.createTslSkyNodeMaterial(skyUniforms) as THREE_WEBGPU.MeshBasicNodeMaterial)
+        : new THREE.ShaderMaterial({
           side: THREE.BackSide,
           depthWrite: false,
           transparent: true,

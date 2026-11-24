@@ -42,7 +42,7 @@ import {
   SANCTUARY_SURFACE_LON_DEG,
   installFastMatrixCull,
 } from './gpu/FramePerformanceGovernor';
-import { convertLegacyShaderMaterialsToTsl } from './gpu/WebGpuPipeline';
+import { getWebGpuRuntime } from './gpu/WebGpuRuntime';
 import {
   buildForestMicroDiorama,
   ForestMicroDioramaHandle,
@@ -424,7 +424,7 @@ export class SeamlessUniverseSimulator {
     this.layersBuilt = true;
     this.buildCelestialStarBackdrop();
     if (this.isWebGpu) {
-      convertLegacyShaderMaterialsToTsl(this.celestialBackdropGroup);
+      getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.celestialBackdropGroup);
       this.celestialBackdropMats = this.collectLayerMaterials(this.celestialBackdropGroup);
     }
     this.buildAllScaleLayers();
@@ -797,7 +797,7 @@ export class SeamlessUniverseSimulator {
     }
 
     if (this.isWebGpu) {
-      convertLegacyShaderMaterialsToTsl(group);
+      getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(group);
     }
     layer.materials = this.collectLayerMaterials(group);
     layer.tickFn = tickFn;

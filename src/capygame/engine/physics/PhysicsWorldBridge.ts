@@ -86,6 +86,8 @@ export class PhysicsWorldBridge {
   private lastHeroWx = 0;
   private lastHeroWy = 0;
   private lastHeroWz = 4;
+  private pausedSuspended = false;
+  private hadWorkerBeforePause = false;
 
   constructor(deferWorkerInit = false) {
     if (!deferWorkerInit) {
@@ -566,11 +568,49 @@ export class PhysicsWorldBridge {
     };
   }
 
+  /**
+   * Terminates the off-thread Rapier3D Wasm physics worker and releases shared/transfer buffers
+   * while the game is paused so zero background CPU and Wasm heap RAM are consumed.
+   */
+  public suspendForPause(): void {
+    if (this.pausedSuspended) return;
+    this.pausedSuspended = true;
+    this.hadWorkerBeforePause = Boolean(this.worker);
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.workerReady = false;
+    this.workerInFlight = false;
+    this.sab = null;
+    this.sabInt32 = null;
+    this.sabFloat32 = null;
+  }
+
+  /**
+   * Restores the Rapier3D Wasm physics worker and static colliders when resuming from pause.
+   */
+  public resumeFromPause(): void {
+    if (!this.pausedSuspended) return;
+    this.pausedSuspended = false;
+    if (this.hadWorkerBeforePause && !this.worker) {
+      this.hadWorkerBeforePause = false;
+      this.initWorker();
+    }
+  }
+
+  public isPausedSuspended(): boolean {
+    return this.pausedSuspended;
+  }
+
   public dispose(): void {
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
     }
     this.workerReady = false;
+    this.sab = null;
+    this.sabInt32 = null;
+    this.sabFloat32 = null;
   }
 }

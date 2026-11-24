@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { INITIAL_PLAYER_STATS, UNIVERSE_SCALE_BANDS } from '../types';
 import { ProgressionService } from '../services/ProgressionService';
 import { ShallowWaterFluidSolver } from './physics/ContiguousWorldTopology';
+import { PhysicsWorldBridge } from './physics/PhysicsWorldBridge';
+import { GamePauseController } from './GamePauseController';
 import {
   CAPYTORIO_OBLIQUE_BASE_RADIUS_M,
   CAPYTORIO_ORBIT_HANDOFF_DIST,
@@ -685,23 +687,29 @@ test('HardwareGpuEngine enforces mutually exclusive sun/moon shadows, skips Rect
   engine.dispose();
 });
 
-test('PbrTextureSynthesizer packs roughness (G) and AO (R/B) into one shared ORM DataTexture and uses 256x256 in lean mode', () => {
+test('PbrTextureSynthesizer packs roughness (G) and AO (R/B) into one shared ORM DataTexture and uses 64/128 resolutions', () => {
   PbrTextureSynthesizer.clearSurfaceCache();
   try {
-    // Lean / mobile mode -> 256x256 packed ORM
+    // Lean / mobile mode -> 64x64 packed ORM + 64x64 normal maps
     PbrTextureSynthesizer.setLeanTextureMode(true);
-    assert.equal(PbrTextureSynthesizer.getSurfaceMapResolution(), 256);
+    assert.equal(PbrTextureSynthesizer.getSurfaceMapResolution(), 64);
 
     const leanMaps = PbrTextureSynthesizer.getSurfaceMaps('grass');
-    assert.equal(leanMaps.normal.image.width, 256);
-    assert.equal(leanMaps.normal.image.height, 256);
-    assert.equal(leanMaps.orm.image.width, 256);
-    assert.equal(leanMaps.orm.image.height, 256);
+    assert.equal(leanMaps.normal.image.width, 64);
+    assert.equal(leanMaps.normal.image.height, 64);
+    assert.equal(leanMaps.orm.image.width, 64);
+    assert.equal(leanMaps.orm.image.height, 64);
     assert.equal(leanMaps.roughness, leanMaps.orm, 'roughness shares single ORM DataTexture');
     assert.equal(leanMaps.ao, leanMaps.orm, 'ao shares single ORM DataTexture');
 
+    const leanWater = PbrTextureSynthesizer.getWaterNormalMaps();
+    assert.equal(leanWater.primary.image.width, 64);
+    assert.equal(leanWater.secondary.image.width, 64);
+    assert.equal(PbrTextureSynthesizer.getCapyFurNormalMap().image.width, 64);
+    assert.equal(PbrTextureSynthesizer.getCitrusPeelNormalMap().image.width, 64);
+
     const data = leanMaps.orm.image.data as Uint8Array;
-    assert.equal(data.length, 256 * 256 * 4);
+    assert.equal(data.length, 64 * 64 * 4);
     // Verify R === B (AO channel parity), G > 0 (roughness packed), A === 255
     for (let i = 0; i < 64; i++) {
       const idx = i * 4;
@@ -710,16 +718,128 @@ test('PbrTextureSynthesizer packs roughness (G) and AO (R/B) into one shared ORM
       assert.equal(data[idx + 3], 255);
     }
 
-    // Desktop mode -> 512x512 packed ORM
+    // Desktop mode -> 128x128 packed ORM + 128x128 water/fur/citrus normal maps
     PbrTextureSynthesizer.setLeanTextureMode(false);
-    assert.equal(PbrTextureSynthesizer.getSurfaceMapResolution(), 512);
+    PbrTextureSynthesizer.clearSurfaceCache();
+    assert.equal(PbrTextureSynthesizer.getSurfaceMapResolution(), 128);
     const deskMaps = PbrTextureSynthesizer.getSurfaceMaps('cobble');
-    assert.equal(deskMaps.orm.image.width, 512);
+    assert.equal(deskMaps.orm.image.width, 128);
     assert.equal(deskMaps.roughness, deskMaps.ao);
+
+    const deskWater = PbrTextureSynthesizer.getWaterNormalMaps();
+    assert.equal(deskWater.primary.image.width, 128);
+    assert.equal(deskWater.secondary.image.width, 128);
+    assert.equal(PbrTextureSynthesizer.getCapyFurNormalMap().image.width, 128);
+    assert.equal(PbrTextureSynthesizer.getCitrusPeelNormalMap().image.width, 128);
   } finally {
     PbrTextureSynthesizer.setLeanTextureMode(false);
     PbrTextureSynthesizer.clearSurfaceCache();
   }
+});
+
+test('GamePauseController transitions deterministically between running and paused states', () => {
+  const ctrl = new GamePauseController();
+  assert.equal(ctrl.isPaused, false);
+  assert.equal(ctrl.getSnapshot().totalPausedMs, 0);
+
+  // Pausing once succeeds; pausing again is idempotent
+  assert.equal(ctrl.pause(1000), true);
+  assert.equal(ctrl.pause(1200), false);
+  assert.equal(ctrl.isPaused, true);
+  assert.equal(ctrl.getSnapshot().pauseCount, 1);
+
+  // Resuming accumulates duration and transitions back cleanly
+  const res1 = ctrl.resume(2500);
+  assert.equal(res1.resumed, true);
+  assert.equal(res1.pausedDurationMs, 1500);
+  assert.equal(ctrl.resume(2600).resumed, false);
+  assert.equal(ctrl.isPaused, false);
+  assert.equal(ctrl.getSnapshot().totalPausedMs, 1500);
+
+  // Toggle flips state cleanly
+  assert.equal(ctrl.toggle(3000), true);
+  assert.equal(ctrl.isPaused, true);
+  assert.equal(ctrl.toggle(3400), false);
+  assert.equal(ctrl.isPaused, false);
+  assert.equal(ctrl.getSnapshot().totalPausedMs, 1900);
+});
+
+test('HardwareGpuEngine boots with fast IBL, defers PMREM upgrade, and frees composer FBOs on pause', () => {
+  let pixelRatio = 1;
+  const mockRenderer = {
+    domElement: {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    },
+    capabilities: { isWebGL2: true, maxTextureSize: 4096, getMaxAnisotropy: () => 8 },
+    getContext: () => ({
+      RENDERER: 0x1f01,
+      getExtension: () => null,
+      getParameter: () => 'Mock Hardware GL',
+    }),
+    getPixelRatio: () => pixelRatio,
+    setPixelRatio: (pr: number) => {
+      pixelRatio = pr;
+    },
+    setSize: () => {},
+    setRenderTarget: () => {},
+    render: () => {},
+    shadowMap: { enabled: false, autoUpdate: false, type: THREE.PCFSoftShadowMap, needsUpdate: false },
+    toneMapping: THREE.ACESFilmicToneMapping,
+    toneMappingExposure: 1.0,
+    info: { render: { calls: 0, triangles: 0 }, memory: { textures: 0, geometries: 0 } },
+  } as unknown as THREE.WebGLRenderer;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 1000);
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+  scene.add(sunLight);
+
+  const engine = new HardwareGpuEngine(mockRenderer, scene, camera, sunLight, false, 1280, 720, {
+    qualityPreset: 'balanced',
+    postProcessingEnabled: false,
+  });
+
+  // Boots with fast 64x32 IBL (not full PMREM cubemap)
+  assert.equal(engine.isPmremUpgraded(), false);
+  assert.ok(scene.environment !== null, 'Fast boot IBL environment is populated immediately');
+  assert.equal(
+    (scene.environment as THREE.DataTexture).image.width,
+    64,
+    'Fast boot IBL uses instant 64x32 DataTexture before deferred PMREM upgrade'
+  );
+
+  // Attach a fake composer and verify suspendForPause() disposes it cleanly
+  let composerDisposed = false;
+  const enginePriv = engine as unknown as {
+    composer: { dispose: () => void; render: () => void } | null;
+  };
+  enginePriv.composer = {
+    dispose: () => {
+      composerDisposed = true;
+    },
+    render: () => {},
+  };
+
+  engine.suspendForPause();
+  assert.equal(composerDisposed, true, 'Composer FBOs disposed on pause to release VRAM');
+  assert.equal(enginePriv.composer, null);
+
+  engine.resumeFromPause();
+  engine.dispose();
+});
+
+test('PhysicsWorldBridge suspends cleanly on pause and resets suspended flag on resume', () => {
+  const bridge = new PhysicsWorldBridge();
+  assert.equal(bridge.isPausedSuspended(), false);
+
+  bridge.suspendForPause();
+  assert.equal(bridge.isPausedSuspended(), true);
+  assert.equal(bridge.getTelemetry().workerActive, false);
+
+  bridge.resumeFromPause();
+  assert.equal(bridge.isPausedSuspended(), false);
+  bridge.dispose();
 });
 
 test('LiveTelemetryStore publishes telemetry snapshots to subscribers cleanly without coupling to parent state', () => {

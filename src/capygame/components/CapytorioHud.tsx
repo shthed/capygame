@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   Check,
@@ -9,6 +9,8 @@ import {
   FlipHorizontal2,
   FlipVertical2,
   Menu,
+  Pause,
+  Play,
   Redo2,
   RotateCcw,
   Scissors,
@@ -50,8 +52,12 @@ import {
   CapytorioSlotTile,
   CapytorioWorldIcon,
 } from './CapytorioSlotIcon';
-import { CapytorioEntityInfoPanel } from './CapytorioEntityInfoPanel';
-import { CapytorioPediaView } from './CapytorioPediaView';
+const LazyCapytorioEntityInfoPanel = React.lazy(() =>
+  import('./CapytorioEntityInfoPanel').then((m) => ({ default: m.CapytorioEntityInfoPanel }))
+);
+const LazyCapytorioPediaView = React.lazy(() =>
+  import('./CapytorioPediaView').then((m) => ({ default: m.CapytorioPediaView }))
+);
 import {
   CapytorioTooltip,
   DIR_LABELS,
@@ -87,6 +93,8 @@ export interface CapytorioHudProps {
   isTopBarVisible: boolean;
   onToggleTopBar: () => void;
   onOpenSettings: () => void;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
   pointerHoverActive: boolean;
   drawerTab: CapytorioDrawerTab;
   setDrawerTab: React.Dispatch<React.SetStateAction<CapytorioDrawerTab>>;
@@ -186,6 +194,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
   isTopBarVisible,
   onToggleTopBar,
   onOpenSettings,
+  isPaused = false,
+  onTogglePause,
   pointerHoverActive,
   drawerTab,
   setDrawerTab,
@@ -499,6 +509,21 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
           >
             <BookOpen className="w-3.5 h-3.5" />
           </button>
+
+          {onTogglePause && (
+            <button
+              type="button"
+              data-testid="capytorio-pause-btn"
+              title={isPaused ? 'Resume Simulation [P]' : 'Pause Simulation & Save CPU/RAM [P]'}
+              aria-label={isPaused ? 'Resume Game' : 'Pause Game'}
+              onClick={onTogglePause}
+              className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${
+                isPaused ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+              }`}
+            >
+              {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+            </button>
+          )}
 
           <button
             type="button"
@@ -1382,47 +1407,51 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
 
           {/* CAPYTORIOPEDIA ENCYCLOPEDIA & HELP WINDOW (Alt + Left-Click anywhere) */}
           {drawerTab === 'pedia' && (
-            <CapytorioPediaView
-              entryId={pediaEntryId}
-              contextInfo={pediaContextInfo}
-              snap={snap}
-              luaCatalogInfo={luaCatalogInfo}
-              searchFocusNonce={searchFocusNonce}
-              onNavigateEntry={(nextId) => onOpenPedia(nextId, pediaContextInfo)}
-              onClose={() => setDrawerTab('none')}
-              onSelectTool={onSelectTool}
-              onCraftMachine={onCraftMachine}
-              onCraftRecipe={onCraftRecipe}
-              onSelectTech={onSelectTech}
-            />
+            <Suspense fallback={null}>
+              <LazyCapytorioPediaView
+                entryId={pediaEntryId}
+                contextInfo={pediaContextInfo}
+                snap={snap}
+                luaCatalogInfo={luaCatalogInfo}
+                searchFocusNonce={searchFocusNonce}
+                onNavigateEntry={(nextId) => onOpenPedia(nextId, pediaContextInfo)}
+                onClose={() => setDrawerTab('none')}
+                onSelectTool={onSelectTool}
+                onCraftMachine={onCraftMachine}
+                onCraftRecipe={onCraftRecipe}
+                onSelectTech={onSelectTech}
+              />
+            </Suspense>
           )}
         </div>
       )}
 
       {/* FACTORIO TOP-RIGHT LIVE ENTITY / TILE INFO WINDOW */}
       {drawerTab === 'none' && activeInfoTarget && (
-        <CapytorioEntityInfoPanel
-          info={activeInfoTarget}
-          isPinned={isInfoPinned}
-          isTopBarVisible={isTopBarVisible}
-          entitySettingsClipboard={snap.entitySettingsClipboard}
-          onClearPin={onClearInspection}
-          onOpenMachineModal={(gx, gz) => {
-            onInspectTileAt(gx, gz);
-            setDrawerTab('inspect');
-          }}
-          onRotateMachineAt={onRotateMachineAt}
-          onDemolishMachineAt={onDemolishMachineAt}
-          onMineTileAt={onMineTileAt}
-          onTakeOutputs={onTakeOutputs}
-          onCollectAllOutputs={onCollectAllOutputs}
-          onOpenPedia={(nextId, ctx) => onOpenPedia(nextId, ctx)}
-          onCopyEntitySettings={onCopyEntitySettings}
-          onPasteEntitySettings={onPasteEntitySettings}
-          onSetSplitterConfig={onSetSplitterConfig}
-          onSetInserterConfig={onSetInserterConfig}
-          onSetChestSlotLimit={onSetChestSlotLimit}
-        />
+        <Suspense fallback={null}>
+          <LazyCapytorioEntityInfoPanel
+            info={activeInfoTarget}
+            isPinned={isInfoPinned}
+            isTopBarVisible={isTopBarVisible}
+            entitySettingsClipboard={snap.entitySettingsClipboard}
+            onClearPin={onClearInspection}
+            onOpenMachineModal={(gx, gz) => {
+              onInspectTileAt(gx, gz);
+              setDrawerTab('inspect');
+            }}
+            onRotateMachineAt={onRotateMachineAt}
+            onDemolishMachineAt={onDemolishMachineAt}
+            onMineTileAt={onMineTileAt}
+            onTakeOutputs={onTakeOutputs}
+            onCollectAllOutputs={onCollectAllOutputs}
+            onOpenPedia={(nextId, ctx) => onOpenPedia(nextId, ctx)}
+            onCopyEntitySettings={onCopyEntitySettings}
+            onPasteEntitySettings={onPasteEntitySettings}
+            onSetSplitterConfig={onSetSplitterConfig}
+            onSetInserterConfig={onSetInserterConfig}
+            onSetChestSlotLimit={onSetChestSlotLimit}
+          />
+        </Suspense>
       )}
 
       {/* BOTTOM-LEFT REAL-TIME HAND-CRAFTING QUEUE STRIP (Factorio style, click to cancel & refund) */}

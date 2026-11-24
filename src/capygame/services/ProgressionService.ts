@@ -34,7 +34,7 @@ import {
   type BountyEventType,
 } from '../engine/GameplayFunMath';
 
-import { sanitizeCapytorioState } from '../engine/CapytorioFactoryEngine';
+import { sanitizeCapytorioStateShallow } from '../engine/capytorio/CapytorioStateGuard';
 
 const SAVE_KEY = 'capy_game_save_v3';
 const LEGACY_SAVE_KEY_V2 = 'capy_game_save_v2';
@@ -213,7 +213,7 @@ export class ProgressionService {
       ),
       highScoreRunner: cleanNum(parsed.highScoreRunner, 0, 0),
       highScoreFallGuys: cleanNum(parsed.highScoreFallGuys, 0, 0),
-      capytorioFactory: sanitizeCapytorioState(parsed.capytorioFactory),
+      capytorioFactory: sanitizeCapytorioStateShallow(parsed.capytorioFactory),
       upgrades: {
         herdSize: cleanNum(rawUpgrades.herdSize, INITIAL_PLAYER_STATS.upgrades.herdSize, 1),
         yuzuMagnet: cleanNum(rawUpgrades.yuzuMagnet, INITIAL_PLAYER_STATS.upgrades.yuzuMagnet, 1),

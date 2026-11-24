@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import * as THREE_WEBGPU from 'three/webgpu';
+import type * as THREE_WEBGPU from 'three/webgpu';
 import {
   CapyModelGenerator,
   CapyMeshGroup,
@@ -90,11 +90,8 @@ import { NativeBridge } from '../../services/NativeBridge';
 import { AaaWorldVfxEngine } from './gpu/AaaWorldVfxEngine';
 import { HardwareGpuEngine } from './gpu/HardwareGpuEngine';
 import { PbrTextureSynthesizer } from './gpu/PbrTextureSynthesizer';
-import {
-  WebGpuPostAndComputePipeline,
-  WebGpuProbeResult,
-  convertLegacyShaderMaterialsToTsl,
-} from './gpu/WebGpuPipeline';
+import type { WebGpuPostAndComputePipeline } from './gpu/WebGpuPipeline';
+import { getWebGpuRuntime, type WebGpuProbeResult } from './gpu/WebGpuRuntime';
 import { PhysicsWorldBridge } from './physics/PhysicsWorldBridge';
 import {
   CONTIGUOUS_BRIDGES,
@@ -173,40 +170,40 @@ import {
   smoothstep01,
   tickComboDecay,
 } from './GameplayFunMath';
-import {
-  CAPYTORIO_MACHINE_SPECS,
-  CAPYTORIO_TILE_SIZE,
-  CAPYTORIO_WORLD_ORIGIN_X,
-  CAPYTORIO_WORLD_ORIGIN_Z,
-  ensureLiveCapytorioLuaSync,
-  getCapytorioItemMeta,
-  subscribeCapytorioLuaChanges,
-  type CapytorioDirection,
-  type CapytorioItemId,
-  type CapytorioMachineType,
-  type CapytorioRecipeId,
-  type CapytorioTechId,
+import type {
+  CapytorioDirection,
+  CapytorioItemId,
+  CapytorioMachineType,
+  CapytorioRecipeId,
+  CapytorioTechId,
 } from './CapytorioData';
-import {
+import type {
+  CapytorioClipboardToolState,
   CapytorioFactoryEngine,
-  capytorioGridToWorldX,
-  capytorioGridToWorldZ,
-  getCapytorioPlacementAnchor,
-  resolveCapytorioPlaceableSpec,
-  worldToCapytorioGridX,
-  worldToCapytorioGridZ,
-  type CapytorioClipboardToolState,
-  type CapytorioInserterFilterMode,
-  type CapytorioSavedBlueprint,
-  type CapytorioSelectionShape,
-  type CapytorioSerializedState,
-  type CapytorioSplitterPriority,
-  type CapytorioStepCallbacks,
-  type CapytorioTileInspection,
-  type CapytorioUiSnapshot,
+  CapytorioInserterFilterMode,
+  CapytorioSavedBlueprint,
+  CapytorioSelectionShape,
+  CapytorioSerializedState,
+  CapytorioSplitterPriority,
+  CapytorioStepCallbacks,
+  CapytorioTileInspection,
+  CapytorioUiSnapshot,
 } from './CapytorioFactoryEngine';
-import { resolvePediaIdFromTileInspection } from './CapytorioPedia';
-import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
+import type { Capytorio3DRenderer } from './CapytorioMeshBuilder';
+import {
+  CAPYTORIO_TILE_SIZE_CONST as CAPYTORIO_TILE_SIZE,
+  CAPYTORIO_WORLD_ORIGIN_X_CONST as CAPYTORIO_WORLD_ORIGIN_X,
+  CAPYTORIO_WORLD_ORIGIN_Z_CONST as CAPYTORIO_WORLD_ORIGIN_Z,
+  capytorioGridToWorldXLite as capytorioGridToWorldX,
+  capytorioGridToWorldZLite as capytorioGridToWorldZ,
+  worldToCapytorioGridXLite as worldToCapytorioGridX,
+  worldToCapytorioGridZLite as worldToCapytorioGridZ,
+} from './capytorio/CapytorioStateGuard';
+import {
+  getLoadedCapytorioRuntime,
+  loadCapytorioRuntime,
+  type CapytorioRuntimeBundle,
+} from './capytorio/CapytorioModuleLoader';
 
 const CAPYTORIO_OBLIQUE_PITCH_RAD = (68 * Math.PI) / 180;
 const CAPYTORIO_HIGH_ORBIT_PITCH_RAD = (84 * Math.PI) / 180;
@@ -797,8 +794,10 @@ export class PlayStyleManager {
   private sporeDashCooldown: number = 0;
   private sporeLargeCritterKnockbackCd: number = 0;
 
-  // --- 3. Capytorio Factory State (Far-Hemisphere Infinite Plain) ---
-  public capytorioEngine: CapytorioFactoryEngine;
+  // --- 3. Capytorio Factory State (Lazily Loaded on Mode Entry) ---
+  public capytorioEngine: CapytorioFactoryEngine | null = null;
+  private capytorioRuntime: CapytorioRuntimeBundle | null = null;
+  private capytorioLoadPromise: Promise<CapytorioFactoryEngine | null> | null = null;
   private capytorioRenderer: Capytorio3DRenderer | null = null;
   private capytorioUiAccum: number = 0;
   private capytorioAutoSaveDirty: boolean = false;
@@ -806,6 +805,8 @@ export class PlayStyleManager {
   private pendingLandingPlayStyle: PlayStyle = 'sanctuary';
   private readonly capytorioStepCallbacks: CapytorioStepCallbacks;
   private unsubscribeCapytorioLua: (() => void) | null = null;
+  private heroCapyBuilt: boolean = false;
+  private isPausedState: boolean = false;
 
   // --- 4. Runner State ---
   private runnerHerdMeshes: CapyMeshGroup[] = [];
@@ -863,12 +864,10 @@ export class PlayStyleManager {
     this.stats = initialStats;
     this.settings = initialSettings;
     this.callbacks = callbacks;
-    this.capytorioEngine = new CapytorioFactoryEngine(initialStats.capytorioFactory ?? null);
-    this.capytorioEngine.beltEndSpillEnabled = Boolean(initialSettings.capytorioBeltEndSpill);
     this.capytorioStepCallbacks = {
       onTechCompleted: (_techId, techName, rewardDna, _rewardCoins, isRocketLaunch) => {
-        const snap = this.capytorioEngine.getUiSnapshot();
-        this.awardProgress(rewardDna, 'capytorio', snap.score);
+        const snap = this.capytorioEngine?.getUiSnapshot();
+        this.awardProgress(rewardDna, 'capytorio', snap?.score ?? 0);
         if (isRocketLaunch) {
           AudioService.playCapytorioRocketLaunch();
         } else {
@@ -885,8 +884,8 @@ export class PlayStyleManager {
         this.markCapytorioDirty();
       },
       onMilestoneItem: (itemId, count) => {
-        const meta = getCapytorioItemMeta(itemId);
-        if (meta.category === 'science') {
+        const meta = this.capytorioRuntime?.getCapytorioItemMeta(itemId);
+        if (meta?.category === 'science') {
           this.callbacks.onBountyEvent?.('capytorio_pack', count);
         }
       },
@@ -903,10 +902,6 @@ export class PlayStyleManager {
         this.awardProgress(0, 'capytorio', score);
       },
     };
-    ensureLiveCapytorioLuaSync();
-    this.unsubscribeCapytorioLua = subscribeCapytorioLuaChanges(() => {
-      this.emitCapytorioSnapshot();
-    });
     this.performanceLog.lock60FpsEnabled = initialSettings.lock60FpsGovernor !== false;
     this.performanceLog.fpsTarget = initialSettings.fpsTarget ?? 60;
     this.performanceLog.maxFpsLimit = initialSettings.maxFpsLimit ?? 60;
@@ -1032,13 +1027,14 @@ export class PlayStyleManager {
     dirLight.shadow.normalBias = 0.024;
     this.scene.add(dirLight);
     if (this.isWebGpu && webGpuInit?.probe) {
-      this.webGpuPipeline = new WebGpuPostAndComputePipeline(
-        this.renderer as THREE_WEBGPU.WebGPURenderer,
-        this.scene,
-        this.camera,
-        webGpuInit.probe.adapterName,
-        gpuCfg as GpuPipelineConfig
-      );
+      this.webGpuPipeline =
+        getWebGpuRuntime()?.createWebGpuPostAndComputePipeline(
+          this.renderer,
+          this.scene,
+          this.camera,
+          webGpuInit.probe.adapterName,
+          gpuCfg as GpuPipelineConfig
+        ) ?? null;
     }
 
     this.gpuEngine = new HardwareGpuEngine(
@@ -1086,23 +1082,13 @@ export class PlayStyleManager {
     this.scene.add(this.worldEnv.moonLight);
     this.gpuEngine.setMoonLight(this.worldEnv.moonLight);
 
-    // 4. Hero Capybara (Ultra-Detailed with Dynamic 60 FPS LOD & Signature Head Orange)
+    // 4. Hero Capybara (Defer full 3D mesh synthesis & shader compile until after Frame 1 paints in Multiverse mode)
     this.currentCapyLodTier = this.settings.autoCapyLod
       ? 3
       : (this.settings.manualCapyLodTier ?? 3);
     this.activeHeadOrangeIndex =
       CapyModelGenerator.skinDefaultOrangeIndex[this.stats.activeSkin] ?? 0;
-    const initVariety = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex];
 
-    this.heroCapy = CapyModelGenerator.createCapybara(
-      this.stats.activeHat,
-      1.0,
-      this.stats.activeSkin,
-      this.stats.activeMutations,
-      this.currentCapyLodTier,
-      initVariety.colorHex,
-      false
-    );
     this.heroTailAuraMat = new THREE.MeshBasicMaterial({
       color: 0x22d3ee,
       transparent: true,
@@ -1119,7 +1105,28 @@ export class PlayStyleManager {
     this.heroTailAuraMesh.position.set(0, 0.06, -0.58);
     this.heroTailAuraMesh.visible = false;
     this.heroTailAuraMesh.userData.ignoreCameraFade = true;
-    this.heroCapy.add(this.heroTailAuraMesh);
+
+    if (skipCosmic) {
+      const initVariety = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex];
+      this.heroCapy = CapyModelGenerator.createCapybara(
+        this.stats.activeHat,
+        1.0,
+        this.stats.activeSkin,
+        this.stats.activeMutations,
+        this.currentCapyLodTier,
+        initVariety.colorHex,
+        false
+      );
+      this.heroCapy.add(this.heroTailAuraMesh);
+      this.heroCapyBuilt = true;
+    } else {
+      const placeholder = new THREE.Group() as CapyMeshGroup;
+      placeholder.name = 'HeroCapyDeferredPlaceholder';
+      placeholder.userData = {} as CapyMeshGroup['userData'];
+      placeholder.add(this.heroTailAuraMesh);
+      this.heroCapy = placeholder;
+      this.heroCapyBuilt = false;
+    }
     this.heroCapy.visible = skipCosmic;
     this.heroCapy.matrixWorldAutoUpdate = skipCosmic;
     this.scene.add(this.heroCapy);
@@ -1212,7 +1219,7 @@ export class PlayStyleManager {
     if (skipCosmic) {
       this.ensureSurfaceWorldsBuilt();
       if (this.isWebGpu) {
-        convertLegacyShaderMaterialsToTsl(this.scene);
+        getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.scene);
       } else {
         const glRenderer = this.renderer as THREE.WebGLRenderer;
         if (!this.isSoftwareGl) {
@@ -1244,7 +1251,7 @@ export class PlayStyleManager {
       this.setSkyDomeAlpha(0.0);
       this.tickSeamlessUniverse(0.016);
       if (this.isWebGpu) {
-        convertLegacyShaderMaterialsToTsl(this.chronoVessel.root);
+        getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.chronoVessel.root);
       } else if (!this.isSoftwareGl) {
         const glRenderer = this.renderer as THREE.WebGLRenderer;
         glRenderer.compile(this.chronoVessel.root, this.camera, this.scene);
@@ -1256,33 +1263,105 @@ export class PlayStyleManager {
     }
   }
 
+  public ensureHeroCapyBuilt(): void {
+    if (this.heroCapyBuilt) return;
+    this.heroCapyBuilt = true;
+    const prev = this.heroCapy;
+    const prevPos = prev.position.clone();
+    const prevRot = prev.rotation.clone();
+    const prevScale = prev.scale.clone();
+    const prevVisible = prev.visible;
+    const prevAutoUpdate = prev.matrixWorldAutoUpdate;
+
+    const activeVariety = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex] ?? HEAD_ORANGE_VARIETIES[0];
+    const built = CapyModelGenerator.createCapybara(
+      this.stats.activeHat,
+      1.0,
+      this.stats.activeSkin,
+      this.stats.activeMutations,
+      this.currentCapyLodTier,
+      activeVariety.colorHex,
+      false
+    );
+    built.position.copy(prevPos);
+    built.rotation.copy(prevRot);
+    built.scale.copy(prevScale);
+    built.visible = prevVisible;
+    built.matrixWorldAutoUpdate = prevAutoUpdate;
+    built.add(this.heroTailAuraMesh);
+
+    if (prev.parent) {
+      prev.parent.remove(prev);
+    }
+    this.heroCapy = built;
+    this.scene.add(this.heroCapy);
+    installFastMatrixCull(this.heroCapy);
+    this.syncDachshundSkinAndOrange();
+
+    if (this.isWebGpu) {
+      getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.heroCapy);
+    } else if (!this.isSoftwareGl) {
+      try {
+        const glRenderer = this.renderer as THREE.WebGLRenderer;
+        glRenderer.compile(this.heroCapy, this.camera, this.scene);
+      } catch {
+        // Ignore shader precompile issues in headless contexts
+      }
+    }
+  }
+
+  public setPaused(paused: boolean): void {
+    if (this.isPausedState === paused) return;
+    this.isPausedState = paused;
+    if (paused) {
+      this.moveInput.x = 0;
+      this.moveInput.z = 0;
+      this.isJumping = false;
+      this.pointerTargetX = null;
+      this.autoZoomDirection = 0;
+      ProgressionService.flushPendingSave();
+      this.physicsBridge?.suspendForPause();
+      this.gpuEngine?.suspendForPause();
+      AudioService.suspendForPause();
+    } else {
+      this.physicsBridge?.resumeFromPause();
+      this.gpuEngine?.resumeFromPause();
+      AudioService.resumeFromPause();
+    }
+  }
+
+  public isPaused(): boolean {
+    return this.isPausedState;
+  }
+
   private buildNextSurfaceStep(): boolean {
     if (this.surfaceWorldsBuilt) return false;
     switch (this.surfaceBuildStep) {
       case 0:
+        this.ensureHeroCapyBuilt();
         this.worldEnv.ensureCoreTexturesReady();
         this.buildSharedArchipelagoBase();
-        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.worldBaseGroup);
+        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.worldBaseGroup);
         break;
       case 1:
         this.buildSanctuary();
-        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.sanctuaryGroup);
+        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.sanctuaryGroup);
         break;
       case 2:
         this.buildSporeWorld();
-        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.sporeGroup);
+        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.sporeGroup);
         break;
       case 3:
         this.buildCapytorioWorld();
-        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.capytorioGroup);
+        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.capytorioGroup);
         break;
       case 4:
         this.buildRunner();
-        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.runnerGroup);
+        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.runnerGroup);
         break;
       case 5:
         this.buildFallGuys();
-        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.fallGuysGroup);
+        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.fallGuysGroup);
         break;
       case 6:
         this.physicsBridge.ensureWorkerInitialized();
@@ -1290,7 +1369,7 @@ export class PlayStyleManager {
         break;
       case 7:
         this.buildSelectableCapyHeroCircle();
-        if (this.isWebGpu) convertLegacyShaderMaterialsToTsl(this.selectableCapyGroup);
+        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.selectableCapyGroup);
         break;
       case 8:
         this.prewarmOccluderShaderPrograms();
@@ -1326,6 +1405,7 @@ export class PlayStyleManager {
   }
 
   public ensureSurfaceWorldsBuilt(): void {
+    this.ensureHeroCapyBuilt();
     if (!this.surfaceWorldsBuilt) {
       while (this.buildNextSurfaceStep()) {
         // Complete all remaining surface districts synchronously on demand
@@ -1350,7 +1430,19 @@ export class PlayStyleManager {
     };
 
     const runChunk = () => {
-      if (cancelled || this.disposed) return;
+      if (cancelled || this.disposed || this.isPausedState) return;
+      // Phase 0a: Upgrade fast 64x32 boot IBL to full prefiltered PMREM cubemap after Frame 1 paints
+      if (!this.gpuEngine.isPmremUpgraded() && !this.isSoftwareGl) {
+        this.gpuEngine.upgradeEnvironmentToPmrem();
+        scheduleNext(45);
+        return;
+      }
+      // Phase 0b: Build & pre-compile deferred heroCapy off the Frame-1 critical path
+      if (!this.heroCapyBuilt) {
+        this.ensureHeroCapyBuilt();
+        scheduleNext(45);
+        return;
+      }
       // Phase 1: progressively warm remaining universe scale layers (2 per slice)
       let moreLayers = false;
       for (let k = 0; k < 2; k++) {
@@ -2488,20 +2580,24 @@ export class PlayStyleManager {
       this.heroLocalPos.set(0, 0, 3.0);
       this.heroYaw = Math.PI;
       this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
-      const initPose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
-      this.ensureCapytorioRenderer().sync(
-        this.capytorioEngine,
-        CAPYTORIO_WORLD_ORIGIN_X,
-        CAPYTORIO_WORLD_ORIGIN_Z + 3.0,
-        0.016,
-        this.worldEnv?.elapsedSeconds ?? 0,
-        true,
-        this.getCapytorioCameraMode() === 'oblique' ? initPose.altitudeRadius : 26
-      );
+      if (this.capytorioEngine) {
+        const initPose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
+        this.ensureCapytorioRenderer()?.sync(
+          this.capytorioEngine,
+          CAPYTORIO_WORLD_ORIGIN_X,
+          CAPYTORIO_WORLD_ORIGIN_Z + 3.0,
+          0.016,
+          this.worldEnv?.elapsedSeconds ?? 0,
+          true,
+          this.getCapytorioCameraMode() === 'oblique' ? initPose.altitudeRadius : 26
+        );
+        this.emitCapytorioSnapshot();
+      } else {
+        void this.ensureCapytorioLoaded();
+      }
       this.callbacks.onModeNotification?.(
         'Capytorio Frontier (+1200, 0) • Blank infinite ore field! Click to place Drills [1], Belts [2], Furnaces [4] & Generators [6].'
       );
-      this.emitCapytorioSnapshot();
     } else if (mode === 'runner') {
       this.heroLocalPos.set(0, 0, 0);
       this.heroYaw = Math.PI;
@@ -2658,14 +2754,16 @@ export class PlayStyleManager {
         this.activeHeadOrangeIndex =
           CapyModelGenerator.skinDefaultOrangeIndex[newStats.activeSkin] ?? 0;
       }
-      const activeOrange = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex];
-      CapyModelGenerator.updateCapyAppearance(
-        this.heroCapy,
-        newStats.activeHat,
-        newStats.activeSkin,
-        newStats.activeMutations,
-        activeOrange.colorHex
-      );
+      if (this.heroCapyBuilt) {
+        const activeOrange = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex];
+        CapyModelGenerator.updateCapyAppearance(
+          this.heroCapy,
+          newStats.activeHat,
+          newStats.activeSkin,
+          newStats.activeMutations,
+          activeOrange.colorHex
+        );
+      }
       if (skinChanged) {
         this.syncDachshundSkinAndOrange();
       }
@@ -3400,6 +3498,7 @@ export class PlayStyleManager {
 
   public engageCapytorioLanding(): void {
     this.autoLandTargetMode = 'capytorio';
+    void this.ensureCapytorioLoaded();
     this.engageForestLandingDescent();
   }
 
@@ -3676,13 +3775,15 @@ export class PlayStyleManager {
       CapyModelGenerator.skinDefaultOrangeIndex[this.activeHeroSpec.skin] ?? 0;
     const heroOrange = HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex];
 
-    CapyModelGenerator.updateCapyAppearance(
-      this.heroCapy,
-      this.activeHeroSpec.hat,
-      this.activeHeroSpec.skin,
-      this.activeHeroSpec.mutations,
-      heroOrange.colorHex
-    );
+    if (this.heroCapyBuilt) {
+      CapyModelGenerator.updateCapyAppearance(
+        this.heroCapy,
+        this.activeHeroSpec.hat,
+        this.activeHeroSpec.skin,
+        this.activeHeroSpec.mutations,
+        heroOrange.colorHex
+      );
+    }
     this.stats.activeSkin = this.activeHeroSpec.skin;
     this.stats.activeHat = this.activeHeroSpec.hat;
     this.syncDachshundSkinAndOrange();
@@ -4775,18 +4876,71 @@ export class PlayStyleManager {
   }
 
   // ============================================================================
-  // 3. CAPYTORIO INFINITE FACTORY (FAR HEMISPHERE AT WORLD +1200, 0)
+  // 3. CAPYTORIO INFINITE FACTORY (FAR HEMISPHERE AT WORLD +1200, 0 — LAZY LOADED)
   // ============================================================================
-  private ensureCapytorioRenderer(): Capytorio3DRenderer {
+  public async ensureCapytorioLoaded(): Promise<CapytorioFactoryEngine | null> {
+    if (this.capytorioEngine) return this.capytorioEngine;
+    if (this.disposed) return null;
+    if (!this.capytorioLoadPromise) {
+      this.capytorioLoadPromise = loadCapytorioRuntime()
+        .then((runtime) => {
+          if (this.disposed) return null;
+          this.capytorioRuntime = runtime;
+          if (!this.capytorioEngine) {
+            this.capytorioEngine = new runtime.CapytorioFactoryEngine(
+              this.stats.capytorioFactory ?? null
+            );
+            this.capytorioEngine.beltEndSpillEnabled = Boolean(
+              this.settings.capytorioBeltEndSpill
+            );
+            runtime.ensureLiveCapytorioLuaSync();
+            this.unsubscribeCapytorioLua?.();
+            this.unsubscribeCapytorioLua = runtime.subscribeCapytorioLuaChanges(() => {
+              this.emitCapytorioSnapshot();
+            });
+          }
+          if (this.currentMode === 'capytorio' || this.capytorioGroup.visible) {
+            const initPose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
+            this.ensureCapytorioRenderer()?.sync(
+              this.capytorioEngine,
+              CAPYTORIO_WORLD_ORIGIN_X + this.heroLocalPos.x,
+              CAPYTORIO_WORLD_ORIGIN_Z + this.heroLocalPos.z,
+              0.016,
+              this.worldEnv?.elapsedSeconds ?? 0,
+              this.capytorioGroup.visible,
+              this.getCapytorioCameraMode() === 'oblique' ? initPose.altitudeRadius : 26
+            );
+            if (this.isWebGpu) {
+              getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.capytorioGroup);
+            }
+          }
+          this.emitCapytorioSnapshot();
+          this.emitTelemetry();
+          return this.capytorioEngine;
+        })
+        .catch((err) => {
+          this.capytorioLoadPromise = null;
+          console.error('[Capytorio] Failed to lazy-load factory runtime:', err);
+          return null;
+        });
+    }
+    return this.capytorioLoadPromise;
+  }
+
+  private ensureCapytorioRenderer(): Capytorio3DRenderer | null {
     if (!this.capytorioRenderer) {
-      this.capytorioRenderer = new Capytorio3DRenderer();
+      const rt = this.capytorioRuntime ?? getLoadedCapytorioRuntime();
+      if (!rt) return null;
+      this.capytorioRuntime = rt;
+      this.capytorioRenderer = new rt.Capytorio3DRenderer();
       this.capytorioGroup.add(this.capytorioRenderer.root);
     }
     return this.capytorioRenderer;
   }
 
   private buildCapytorioWorld() {
-    this.ensureCapytorioRenderer().sync(
+    if (!this.capytorioEngine) return;
+    this.ensureCapytorioRenderer()?.sync(
       this.capytorioEngine,
       CAPYTORIO_WORLD_ORIGIN_X,
       CAPYTORIO_WORLD_ORIGIN_Z,
@@ -4796,20 +4950,24 @@ export class PlayStyleManager {
     );
   }
 
-  public getCapytorioSnapshot(): CapytorioUiSnapshot {
-    return this.capytorioEngine.getUiSnapshot();
+  public getCapytorioSnapshot(): CapytorioUiSnapshot | null {
+    return this.capytorioEngine ? this.capytorioEngine.getUiSnapshot() : null;
   }
 
   private emitCapytorioSnapshot(): void {
+    if (!this.capytorioEngine) return;
     this.callbacks.onCapytorioChange?.(this.capytorioEngine.getUiSnapshot());
   }
 
   private markCapytorioDirty(): void {
+    if (!this.capytorioEngine) return;
     this.capytorioAutoSaveDirty = true;
     this.emitCapytorioSnapshot();
   }
 
   public hydrateCapytorioFromStats(nextStats: PlayerStats): void {
+    this.stats = nextStats;
+    if (!this.capytorioEngine) return;
     if (nextStats.capytorioFactory) {
       this.capytorioEngine.hydrate(nextStats.capytorioFactory);
     } else {
@@ -4819,6 +4977,7 @@ export class PlayStyleManager {
   }
 
   public resetCapytorioToBlankField(): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.resetToBlankStarterField();
     this.markCapytorioDirty();
     this.emitTelemetry();
@@ -4829,7 +4988,7 @@ export class PlayStyleManager {
   }
 
   public updateCapytorioHoverFromNdc(ndcX: number, ndcY: number): void {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return;
+    if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return;
     _capyPointerNdc.set(ndcX, ndcY);
     _raycaster.setFromCamera(_capyPointerNdc, this.camera);
     const hit = _raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit);
@@ -4847,19 +5006,22 @@ export class PlayStyleManager {
   }
 
   public inspectCapytorioTile(gx: number, gz: number): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.inspectTileAt(gx, gz);
     this.emitCapytorioSnapshot();
   }
 
   public clearCapytorioInspection(): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.clearInspection();
     this.emitCapytorioSnapshot();
   }
 
   public mineCapytorioTileAt(gx: number, gz: number): CapytorioItemId | null {
+    if (!this.capytorioEngine) return null;
     const mined = this.capytorioEngine.handMineAt(gx, gz, 2);
     if (mined) {
-      const meta = getCapytorioItemMeta(mined);
+      const meta = this.capytorioRuntime?.getCapytorioItemMeta(mined);
       AudioService.playCapytorioMine(mined === 'orange' ? 'tree' : 'ore');
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
@@ -4867,7 +5029,7 @@ export class PlayStyleManager {
         capytorioGridToWorldZ(gz),
         'citrus_burst',
         5,
-        meta.colorHex
+        meta?.colorHex ?? 0xf97316
       );
       this.capytorioEngine.inspectTileAt(gx, gz);
       this.markCapytorioDirty();
@@ -4880,7 +5042,7 @@ export class PlayStyleManager {
     ndcX: number,
     ndcY: number
   ): { gx: number; gz: number; fGx: number; fGz: number } | null {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return null;
+    if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return null;
     _capyPointerNdc.set(ndcX, ndcY);
     _raycaster.setFromCamera(_capyPointerNdc, this.camera);
     const hit = _raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit);
@@ -4903,18 +5065,21 @@ export class PlayStyleManager {
     mode: CapytorioClipboardToolState,
     shape?: CapytorioSelectionShape
   ): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.setClipboardToolMode(mode, shape);
     AudioService.playCapytorioUiClick('tool');
     this.emitCapytorioSnapshot();
   }
 
   public clearCapytorioClipboard(): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.clearClipboard();
     this.emitCapytorioSnapshot();
   }
 
   public rotateCapytorioBlueprint(ccw: boolean = false): boolean {
     if (
+      !this.capytorioEngine ||
       this.capytorioEngine.clipboardToolState !== 'paste' ||
       !this.capytorioEngine.clipboard ||
       this.capytorioEngine.clipboard.entries.length === 0
@@ -4929,6 +5094,7 @@ export class PlayStyleManager {
 
   public flipCapytorioBlueprintHorizontal(): boolean {
     if (
+      !this.capytorioEngine ||
       this.capytorioEngine.clipboardToolState !== 'paste' ||
       !this.capytorioEngine.clipboard ||
       this.capytorioEngine.clipboard.entries.length === 0
@@ -4945,6 +5111,7 @@ export class PlayStyleManager {
 
   public flipCapytorioBlueprintVertical(): boolean {
     if (
+      !this.capytorioEngine ||
       this.capytorioEngine.clipboardToolState !== 'paste' ||
       !this.capytorioEngine.clipboard ||
       this.capytorioEngine.clipboard.entries.length === 0
@@ -4960,6 +5127,7 @@ export class PlayStyleManager {
   }
 
   public activateLastCapytorioBlueprint(): boolean {
+    if (!this.capytorioEngine) return false;
     const ok = this.capytorioEngine.activateLastBlueprint();
     if (ok) {
       AudioService.playCapytorioUiClick('tool');
@@ -4969,6 +5137,7 @@ export class PlayStyleManager {
   }
 
   public selectCapytorioBlueprint(id: string): CapytorioSavedBlueprint | null {
+    if (!this.capytorioEngine) return null;
     const picked = this.capytorioEngine.selectBlueprintFromLibrary(id);
     if (picked) {
       AudioService.playCapytorioUiClick('tool');
@@ -4978,6 +5147,7 @@ export class PlayStyleManager {
   }
 
   public deleteCapytorioBlueprint(id: string): boolean {
+    if (!this.capytorioEngine) return false;
     const removed = this.capytorioEngine.deleteBlueprintFromLibrary(id);
     if (removed) {
       AudioService.playCapytorioDemolish();
@@ -4987,6 +5157,7 @@ export class PlayStyleManager {
   }
 
   public clearCapytorioBlueprintLibrary(): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.clearBlueprintLibrary();
     AudioService.playCapytorioDemolish();
     this.markCapytorioDirty();
@@ -4998,6 +5169,9 @@ export class PlayStyleManager {
     clearedCount: number;
     message: string;
   } {
+    if (!this.capytorioEngine) {
+      return { ok: false, placedCount: 0, clearedCount: 0, message: 'Capytorio is still loading' };
+    }
     const res = this.capytorioEngine.buildSampleStarterMall();
     if (res.ok) {
       AudioService.playCapytorioBlueprint('paste', res.placedCount);
@@ -5010,7 +5184,20 @@ export class PlayStyleManager {
   }
 
   public async importCapytorioFactorioBlueprintString(rawInput: string) {
-    const res = await this.capytorioEngine.importFactorioBlueprintString(rawInput);
+    const engine = await this.ensureCapytorioLoaded();
+    if (!engine) {
+      return {
+        ok: false,
+        kind: 'blueprint' as const,
+        blueprints: [],
+        importedEntityCount: 0,
+        skippedTotalCount: 0,
+        skippedEntities: [],
+        addedIds: [],
+        error: 'Factory engine is unavailable.',
+      };
+    }
+    const res = await engine.importFactorioBlueprintString(rawInput);
     if (res.ok) {
       AudioService.playCapytorioBlueprint('copy', res.importedEntityCount);
       this.markCapytorioDirty();
@@ -5022,7 +5209,11 @@ export class PlayStyleManager {
   }
 
   public async exportCapytorioBlueprintToFactorioString(id: string) {
-    const res = await this.capytorioEngine.exportBlueprintToFactorioString(id);
+    const engine = await this.ensureCapytorioLoaded();
+    if (!engine) {
+      return { ok: false, label: '', encoded: '', entityCount: 0, error: 'Factory engine is unavailable.' };
+    }
+    const res = await engine.exportBlueprintToFactorioString(id);
     if (res.ok) {
       AudioService.playCapytorioUiClick('tool');
     }
@@ -5030,7 +5221,11 @@ export class PlayStyleManager {
   }
 
   public async exportCapytorioFactoryToFactorioString(label?: string) {
-    const res = await this.capytorioEngine.exportFactoryToFactorioString(label);
+    const engine = await this.ensureCapytorioLoaded();
+    if (!engine) {
+      return { ok: false, label: '', encoded: '', entityCount: 0, error: 'Factory engine is unavailable.' };
+    }
+    const res = await engine.exportFactoryToFactorioString(label);
     if (res.ok) {
       AudioService.playCapytorioUiClick('tool');
     }
@@ -5038,7 +5233,18 @@ export class PlayStyleManager {
   }
 
   public async exportCapytorioBlueprintBookToFactorioString(bookLabel?: string) {
-    const res = await this.capytorioEngine.exportBlueprintLibraryAsFactorioBookString(bookLabel);
+    const engine = await this.ensureCapytorioLoaded();
+    if (!engine) {
+      return {
+        ok: false,
+        label: '',
+        encoded: '',
+        blueprintCount: 0,
+        entityCount: 0,
+        error: 'Factory engine is unavailable.',
+      };
+    }
+    const res = await engine.exportBlueprintLibraryAsFactorioBookString(bookLabel);
     if (res.ok) {
       AudioService.playCapytorioUiClick('tool');
     }
@@ -5046,6 +5252,7 @@ export class PlayStyleManager {
   }
 
   public undoCapytorioCut(): { restoredCount: number } {
+    if (!this.capytorioEngine) return { restoredCount: 0 };
     const res = this.capytorioEngine.undoCut();
     if (res.restoredCount > 0) {
       AudioService.playCapytorioBlueprint('paste', res.restoredCount);
@@ -5058,6 +5265,7 @@ export class PlayStyleManager {
   }
 
   public demolishCapytorioTileAt(gx: number, gz: number): CapytorioMachineType | null {
+    if (!this.capytorioEngine) return null;
     const removed = this.capytorioEngine.demolishAt(gx, gz);
     if (removed) {
       AudioService.playCapytorioDemolish();
@@ -5074,6 +5282,7 @@ export class PlayStyleManager {
     gxB: number,
     gzB: number
   ): number {
+    if (!this.capytorioEngine) return 0;
     const count = this.capytorioEngine.previewSelectionBox(gxA, gzA, gxB, gzB);
     this.emitCapytorioSnapshot();
     return count;
@@ -5082,6 +5291,7 @@ export class PlayStyleManager {
   public previewCapytorioSelectionLasso(
     points: ReadonlyArray<{ gx: number; gz: number }>
   ): number {
+    if (!this.capytorioEngine) return 0;
     const count = this.capytorioEngine.previewSelectionPolygon(points);
     this.emitCapytorioSnapshot();
     return count;
@@ -5093,6 +5303,7 @@ export class PlayStyleManager {
     gxB: number,
     gzB: number
   ): { count: number; mode: 'copy' | 'cut' } {
+    if (!this.capytorioEngine) return { count: 0, mode: 'copy' };
     const mode: 'copy' | 'cut' =
       this.capytorioEngine.clipboardToolState === 'select_cut' ? 'cut' : 'copy';
     const keys = this.capytorioEngine.selectMachinesInBox(gxA, gzA, gxB, gzB);
@@ -5112,6 +5323,7 @@ export class PlayStyleManager {
   public commitCapytorioSelectionLasso(
     points: ReadonlyArray<{ gx: number; gz: number }>
   ): { count: number; mode: 'copy' | 'cut' } {
+    if (!this.capytorioEngine) return { count: 0, mode: 'copy' };
     const mode: 'copy' | 'cut' =
       this.capytorioEngine.clipboardToolState === 'select_cut' ? 'cut' : 'copy';
     const keys = this.capytorioEngine.selectMachinesInPolygon(points);
@@ -5129,15 +5341,17 @@ export class PlayStyleManager {
   }
 
   public beginCapytorioHistoryBatch(label: string): void {
-    this.capytorioEngine.beginHistoryBatch(label);
+    this.capytorioEngine?.beginHistoryBatch(label);
   }
 
   public commitCapytorioHistoryBatch(labelOverride?: string): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.commitHistoryBatch(labelOverride);
     this.emitCapytorioSnapshot();
   }
 
   public undoCapytorioAction(): { ok: boolean; label: string; changedCount: number } {
+    if (!this.capytorioEngine) return { ok: false, label: '', changedCount: 0 };
     const res = this.capytorioEngine.undoLastAction();
     if (res.ok) {
       AudioService.playCapytorioDemolish();
@@ -5150,6 +5364,7 @@ export class PlayStyleManager {
   }
 
   public redoCapytorioAction(): { ok: boolean; label: string; changedCount: number } {
+    if (!this.capytorioEngine) return { ok: false, label: '', changedCount: 0 };
     const res = this.capytorioEngine.redoLastAction();
     if (res.ok) {
       AudioService.playCapytorioBlueprint('paste', res.changedCount);
@@ -5165,7 +5380,7 @@ export class PlayStyleManager {
     ndcX: number,
     ndcY: number
   ): { gx: number; gz: number } | null {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+    if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
       return null;
     }
     const prevAnchor = this.capytorioEngine.pasteAnchor;
@@ -5186,7 +5401,7 @@ export class PlayStyleManager {
     skippedCount: number;
     message: string;
   } {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+    if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
       return { ok: false, placedCount: 0, updatedRecipesCount: 0, skippedCount: 0, message: '' };
     }
     const res = this.capytorioEngine.pasteBlueprintAtAnchor();
@@ -5227,7 +5442,7 @@ export class PlayStyleManager {
     ndcX: number,
     ndcY: number
   ): { ok: boolean; placedCount: number; updatedRecipesCount: number; skippedCount: number; message: string } {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+    if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
       return { ok: false, placedCount: 0, updatedRecipesCount: 0, skippedCount: 0, message: '' };
     }
     this.updateCapytorioHoverFromNdc(ndcX, ndcY);
@@ -5242,7 +5457,12 @@ export class PlayStyleManager {
     ndcX: number,
     ndcY: number
   ): { ok: boolean; message?: string; inspected?: boolean; openInspectorModal?: boolean } {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+    if (
+      !this.capytorioEngine ||
+      !this.capytorioRuntime ||
+      this.currentMode !== 'capytorio' ||
+      this.cosmicStage !== 'playing'
+    ) {
       return { ok: false };
     }
     this.updateCapytorioHoverFromNdc(ndcX, ndcY);
@@ -5308,7 +5528,10 @@ export class PlayStyleManager {
       if (removed) {
         AudioService.playCapytorioDemolish();
         this.markCapytorioDirty();
-        return { ok: true, message: `Refunded ${CAPYTORIO_MACHINE_SPECS[removed].name}` };
+        return {
+          ok: true,
+          message: `Refunded ${this.capytorioRuntime.CAPYTORIO_MACHINE_SPECS[removed].name}`,
+        };
       }
       this.capytorioEngine.inspectTileAt(gx, gz);
       this.emitCapytorioSnapshot();
@@ -5347,7 +5570,7 @@ export class PlayStyleManager {
 
       const mined = this.capytorioEngine.handMineAt(gx, gz, 2);
       if (mined) {
-        const meta = getCapytorioItemMeta(mined);
+        const meta = this.capytorioRuntime.getCapytorioItemMeta(mined);
         const amt = mined === 'orange' ? 3 : 2;
         AudioService.playCapytorioMine(mined === 'orange' ? 'tree' : 'ore');
         this.vfxEngine?.emitBurst(
@@ -5379,7 +5602,7 @@ export class PlayStyleManager {
       };
     }
 
-    const resolvedTool = resolveCapytorioPlaceableSpec(tool);
+    const resolvedTool = this.capytorioRuntime.resolveCapytorioPlaceableSpec(tool);
     if (existing) {
       const existingToolId = existing.variantItemId ?? existing.type;
       if (existingToolId !== tool) {
@@ -5395,7 +5618,7 @@ export class PlayStyleManager {
       }
     }
 
-    const anchor = getCapytorioPlacementAnchor(
+    const anchor = this.capytorioRuntime.getCapytorioPlacementAnchor(
       gx,
       gz,
       tool,
@@ -5439,7 +5662,9 @@ export class PlayStyleManager {
   }
 
   public handleCapytorioSecondaryClick(ndcX: number, ndcY: number): boolean {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return false;
+    if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+      return false;
+    }
     this.updateCapytorioHoverFromNdc(ndcX, ndcY);
     const removed = this.capytorioEngine.demolishAt(
       this.capytorioEngine.hoveredGx,
@@ -5455,6 +5680,7 @@ export class PlayStyleManager {
   }
 
   public setCapytorioTool(tool: string, promoteToRecent: boolean = false): void {
+    if (!this.capytorioEngine) return;
     this.capytorioEngine.clipboardToolState = 'off';
     this.capytorioEngine.previewSelectedKeys.clear();
     this.capytorioEngine.equipPlaceableTool(tool, promoteToRecent);
@@ -5463,6 +5689,7 @@ export class PlayStyleManager {
   }
 
   public rotateCapytorioDirection(ccw: boolean = false): CapytorioDirection {
+    if (!this.capytorioEngine) return 0;
     if (
       this.capytorioEngine.clipboardToolState === 'paste' &&
       this.capytorioEngine.clipboard &&
@@ -5501,6 +5728,7 @@ export class PlayStyleManager {
   }
 
   public rotateCapytorioMachineAt(gx: number, gz: number): CapytorioDirection | null {
+    if (!this.capytorioEngine) return null;
     const nextDir = this.capytorioEngine.rotateMachineAt(gx, gz);
     if (nextDir !== null) {
       AudioService.playCapytorioRotate();
@@ -5512,7 +5740,8 @@ export class PlayStyleManager {
   public openCapytorioPediaAtNdc(
     ndcX: number,
     ndcY: number
-  ): { pediaId: string; info: CapytorioTileInspection } {
+  ): { pediaId: string; info: CapytorioTileInspection } | null {
+    if (!this.capytorioEngine || !this.capytorioRuntime) return null;
     const hit = this.raycastCapytorioGridFloat(ndcX, ndcY);
     const gx = hit ? hit.gx : this.capytorioEngine.hoveredGx;
     const gz = hit ? hit.gz : this.capytorioEngine.hoveredGz;
@@ -5522,7 +5751,7 @@ export class PlayStyleManager {
     AudioService.playCapytorioUiClick('tool');
     this.markCapytorioDirty();
     return {
-      pediaId: resolvePediaIdFromTileInspection(info),
+      pediaId: this.capytorioRuntime.resolvePediaIdFromTileInspection(info),
       info,
     };
   }
@@ -5566,12 +5795,15 @@ export class PlayStyleManager {
   public setCapytorioBeltEndSpill(enabled: boolean): void {
     const next = Boolean(enabled);
     this.settings.capytorioBeltEndSpill = next;
-    this.capytorioEngine.beltEndSpillEnabled = next;
+    if (this.capytorioEngine) {
+      this.capytorioEngine.beltEndSpillEnabled = next;
+    }
     AudioService.playCapytorioUiClick(next ? 'alt_on' : 'alt_off');
     this.emitCapytorioSnapshot();
   }
 
   public setCapytorioAssemblerRecipe(recipeId: CapytorioRecipeId): boolean {
+    if (!this.capytorioEngine) return false;
     let applied = false;
     if (this.capytorioEngine.inspectedKey) {
       const m = this.capytorioEngine.machines.get(this.capytorioEngine.inspectedKey);
@@ -5593,6 +5825,7 @@ export class PlayStyleManager {
   }
 
   public selectCapytorioTech(techId: CapytorioTechId): boolean {
+    if (!this.capytorioEngine) return false;
     const ok = this.capytorioEngine.selectActiveTech(techId);
     if (ok) {
       AudioService.playCapytorioScienceFeed();
@@ -5606,9 +5839,13 @@ export class PlayStyleManager {
     source: 'belt' | 'floor' | null;
     items: Array<{ item: CapytorioItemId; count: number }>;
   } {
+    if (!this.capytorioEngine) return { total: 0, source: null, items: [] };
     const res = this.capytorioEngine.pickupItemsAtTile(gx, gz);
     if (res.total > 0) {
-      const leadMeta = res.items[0] ? getCapytorioItemMeta(res.items[0].item) : null;
+      const leadMeta =
+        res.items[0] && this.capytorioRuntime
+          ? this.capytorioRuntime.getCapytorioItemMeta(res.items[0].item)
+          : null;
       AudioService.playCapytorioPickup();
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
@@ -5629,6 +5866,7 @@ export class PlayStyleManager {
     source: 'belt' | 'floor' | null;
     items: Array<{ item: CapytorioItemId; count: number }>;
   } {
+    if (!this.capytorioEngine) return { total: 0, source: null, items: [] };
     const curGx = this.capytorioEngine.hoveredGx;
     const curGz = this.capytorioEngine.hoveredGz;
     const atCursor = this.tryPickupBeltOrFloorTileWithFx(curGx, curGz);
@@ -5660,6 +5898,7 @@ export class PlayStyleManager {
     total: number;
     itemId: CapytorioItemId | null;
   } {
+    if (!this.capytorioEngine) return { kind: 'none', total: 0, itemId: null };
     // 1. Pick up items from hovered belt/splitter/tunnel or floor tile first
     const curGx = this.capytorioEngine.hoveredGx;
     const curGz = this.capytorioEngine.hoveredGz;
@@ -5727,6 +5966,7 @@ export class PlayStyleManager {
   }
 
   public handMineCapytorioAtCursorOrHero(): CapytorioItemId | null {
+    if (!this.capytorioEngine) return null;
     const cursorOre = this.capytorioEngine.handMineAt(
       this.capytorioEngine.hoveredGx,
       this.capytorioEngine.hoveredGz,
@@ -5756,6 +5996,7 @@ export class PlayStyleManager {
     recipeId: CapytorioRecipeId,
     batches: number = 1
   ): boolean {
+    if (!this.capytorioEngine) return false;
     const ok = this.capytorioEngine.pocketCraftRecipe(recipeId, batches);
     if (ok) {
       AudioService.playCapytorioCraftQueue('complete');
@@ -5766,6 +6007,7 @@ export class PlayStyleManager {
   }
 
   public craftCapytorioMachine(type: CapytorioMachineType): boolean {
+    if (!this.capytorioEngine) return false;
     const ok = this.capytorioEngine.craftMachineIntoPocket(type);
     if (ok) {
       AudioService.playCapytorioCraftQueue('complete');
@@ -5775,6 +6017,7 @@ export class PlayStyleManager {
   }
 
   public feedScienceCapytorio(): number {
+    if (!this.capytorioEngine) return 0;
     const fed = this.capytorioEngine.feedPocketScienceToLabs();
     if (fed > 0) {
       AudioService.playCapytorioScienceFeed();
@@ -5787,6 +6030,7 @@ export class PlayStyleManager {
   }
 
   public collectAllCapytorioOutputs(): number {
+    if (!this.capytorioEngine) return 0;
     const got = this.capytorioEngine.collectAllChestsAndOutputs();
     if (got > 0) {
       AudioService.playCapytorioPickup();
@@ -5807,8 +6051,18 @@ export class PlayStyleManager {
     gz: number;
     tool: string;
   } {
-    if (this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
-      return { placed: false, gx: 0, gz: 0, tool: this.capytorioEngine.selectedTool };
+    if (
+      !this.capytorioEngine ||
+      !this.capytorioRuntime ||
+      this.currentMode !== 'capytorio' ||
+      this.cosmicStage !== 'playing'
+    ) {
+      return {
+        placed: false,
+        gx: 0,
+        gz: 0,
+        tool: this.capytorioEngine?.selectedTool ?? 'mine',
+      };
     }
     this.updateCapytorioHoverFromNdc(ndcX, ndcY);
     const gx = this.capytorioEngine.hoveredGx;
@@ -5830,7 +6084,7 @@ export class PlayStyleManager {
       return { placed: false, gx, gz, tool };
     }
 
-    const anchor = getCapytorioPlacementAnchor(
+    const anchor = this.capytorioRuntime.getCapytorioPlacementAnchor(
       gx,
       gz,
       tool,
@@ -5845,7 +6099,7 @@ export class PlayStyleManager {
       alignPrevTile
     );
     if (res.ok) {
-      const resolvedTool = resolveCapytorioPlaceableSpec(tool);
+      const resolvedTool = this.capytorioRuntime.resolveCapytorioPlaceableSpec(tool);
       AudioService.playCapytorioPlace(resolvedTool?.baseType ?? tool, true);
       this.vfxEngine?.emitBurst(
         capytorioGridToWorldX(gx),
@@ -5871,13 +6125,16 @@ export class PlayStyleManager {
     picked: boolean;
     label: string;
   } {
+    if (!this.capytorioEngine || !this.capytorioRuntime) {
+      return { tool: 'mine', picked: false, label: 'Capytorio loading...' };
+    }
     const res = this.capytorioEngine.pipetteAt(
       this.capytorioEngine.hoveredGx,
       this.capytorioEngine.hoveredGz
     );
     AudioService.playCapytorioUiClick('pipette');
     this.emitCapytorioSnapshot();
-    const spec = resolveCapytorioPlaceableSpec(res.tool);
+    const spec = this.capytorioRuntime.resolveCapytorioPlaceableSpec(res.tool);
     const label = res.picked
       ? `Picked ${spec?.name ?? res.tool}`
       : 'Cursor cleared -> Mine / Inspect [E]';
@@ -5898,6 +6155,7 @@ export class PlayStyleManager {
   }
 
   public fuelCapytorioGenerator(gx: number, gz: number, maxAmount: number = 5): number {
+    if (!this.capytorioEngine) return 0;
     const loaded = this.capytorioEngine.insertPocketFuelToGenerator(gx, gz, maxAmount);
     if (loaded > 0) {
       AudioService.playCapytorioFuelLoad();
@@ -5917,6 +6175,7 @@ export class PlayStyleManager {
   }
 
   public insertInputsCapytorioMachine(gx: number, gz: number, batches: number = 4): number {
+    if (!this.capytorioEngine) return 0;
     const moved = this.capytorioEngine.insertPocketInputsForMachine(gx, gz, batches);
     if (moved > 0) {
       AudioService.playCapytorioPickup();
@@ -5928,6 +6187,7 @@ export class PlayStyleManager {
   }
 
   public takeOutputsCapytorioMachine(gx: number, gz: number): number {
+    if (!this.capytorioEngine) return 0;
     const taken = this.capytorioEngine.takeMachineOutputsToPocket(gx, gz);
     if (taken > 0) {
       AudioService.playCapytorioPickup();
@@ -5938,6 +6198,7 @@ export class PlayStyleManager {
   }
 
   public launchCapytorioRocket(): { ok: boolean; reason?: string; rocketLaunches: number } {
+    if (!this.capytorioEngine) return { ok: false, reason: 'Capytorio loading', rocketLaunches: 0 };
     const res = this.capytorioEngine.launchRocketManual(this.capytorioStepCallbacks);
     if (res.ok) {
       const zone = ZONE_LOCATIONS.capytorio;
@@ -5950,6 +6211,7 @@ export class PlayStyleManager {
   }
 
   public toggleCapytorioAltMode(): boolean {
+    if (!this.capytorioEngine) return false;
     const next = this.capytorioEngine.toggleAltMode();
     AudioService.playCapytorioUiClick(next ? 'alt_on' : 'alt_off');
     this.markCapytorioDirty();
@@ -5960,6 +6222,7 @@ export class PlayStyleManager {
     gx: number,
     gz: number
   ): { ok: boolean; label?: string; reason?: string } {
+    if (!this.capytorioEngine) return { ok: false };
     const res = this.capytorioEngine.copyEntitySettingsAt(gx, gz);
     if (res.ok) {
       AudioService.playCapytorioSettings('copy');
@@ -5972,6 +6235,7 @@ export class PlayStyleManager {
     gx: number,
     gz: number
   ): { ok: boolean; label?: string; reason?: string } {
+    if (!this.capytorioEngine) return { ok: false };
     const res = this.capytorioEngine.pasteEntitySettingsAt(gx, gz);
     if (res.ok) {
       AudioService.playCapytorioSettings('paste');
@@ -5986,6 +6250,7 @@ export class PlayStyleManager {
     ndcX: number,
     ndcY: number
   ): { ok: boolean; label?: string; reason?: string } {
+    if (!this.capytorioEngine) return { ok: false };
     const hit = this.raycastCapytorioGridFloat(ndcX, ndcY);
     const gx = hit ? hit.gx : this.capytorioEngine.hoveredGx;
     const gz = hit ? hit.gz : this.capytorioEngine.hoveredGz;
@@ -5998,6 +6263,7 @@ export class PlayStyleManager {
     ndcX: number,
     ndcY: number
   ): { ok: boolean; label?: string; reason?: string } {
+    if (!this.capytorioEngine) return { ok: false };
     const hit = this.raycastCapytorioGridFloat(ndcX, ndcY);
     const gx = hit ? hit.gx : this.capytorioEngine.hoveredGx;
     const gz = hit ? hit.gz : this.capytorioEngine.hoveredGz;
@@ -6015,6 +6281,7 @@ export class PlayStyleManager {
       filterItem?: CapytorioItemId | null;
     }
   ): boolean {
+    if (!this.capytorioEngine) return false;
     const ok = this.capytorioEngine.setSplitterConfigAt(gx, gz, config);
     if (ok) {
       AudioService.playCapytorioUiClick('tool');
@@ -6032,6 +6299,7 @@ export class PlayStyleManager {
       stackLimit?: number | null;
     }
   ): boolean {
+    if (!this.capytorioEngine) return false;
     const ok = this.capytorioEngine.setInserterConfigAt(gx, gz, config);
     if (ok) {
       AudioService.playCapytorioUiClick('tool');
@@ -6045,6 +6313,7 @@ export class PlayStyleManager {
     gz: number,
     slotLimit: number | null
   ): boolean {
+    if (!this.capytorioEngine) return false;
     const ok = this.capytorioEngine.setChestSlotLimitAt(gx, gz, slotLimit);
     if (ok) {
       AudioService.playCapytorioUiClick('tool');
@@ -6057,6 +6326,7 @@ export class PlayStyleManager {
     recipeId: CapytorioRecipeId,
     batches: number = 1
   ): { ok: boolean; queuedBatches: number; reason?: string } {
+    if (!this.capytorioEngine) return { ok: false, queuedBatches: 0, reason: 'Capytorio loading' };
     const res = this.capytorioEngine.enqueuePocketCraft(recipeId, batches);
     if (res.ok) {
       AudioService.playCapytorioCraftQueue('start');
@@ -6072,6 +6342,7 @@ export class PlayStyleManager {
     type: CapytorioMachineType,
     count: number = 1
   ): { ok: boolean; queuedCount: number; reason?: string } {
+    if (!this.capytorioEngine) return { ok: false, queuedCount: 0, reason: 'Capytorio loading' };
     const res = this.capytorioEngine.enqueueMachineCraft(type, count);
     if (res.ok) {
       AudioService.playCapytorioCraftQueue('start');
@@ -6083,6 +6354,7 @@ export class PlayStyleManager {
   }
 
   public cancelCapytorioCraftQueueItem(uid: number): boolean {
+    if (!this.capytorioEngine) return false;
     const res = this.capytorioEngine.cancelCraftQueueItem(uid);
     if (res.ok) {
       AudioService.playCapytorioCraftQueue('cancel');
@@ -6538,7 +6810,9 @@ export class PlayStyleManager {
     }
 
     // Strict 1-orange-on-head invariant: extra collected fruits sit along the Capybara's back segments!
-    CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, 1);
+    if (this.heroCapyBuilt) {
+      CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, 1);
+    }
     const variety =
       HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex] ?? HEAD_ORANGE_VARIETIES[0];
     for (let i = 0; i < this.dachshundSegments.length; i++) {
@@ -6596,10 +6870,12 @@ export class PlayStyleManager {
   }
 
   public applyGlobalCapyLodTier(tier: CapyLodTier) {
-    if (this.currentCapyLodTier === tier && this.heroCapy.userData.lodTier === tier) return;
+    if (this.currentCapyLodTier === tier && (!this.heroCapyBuilt || this.heroCapy.userData.lodTier === tier)) return;
     this.currentCapyLodTier = tier;
 
-    CapyModelGenerator.applyLodTier(this.heroCapy, tier);
+    if (this.heroCapyBuilt) {
+      CapyModelGenerator.applyLodTier(this.heroCapy, tier);
+    }
     if (this.dachshundCaboose) {
       CapyModelGenerator.applyCabooseLodTier(this.dachshundCaboose, tier);
     }
@@ -6684,12 +6960,6 @@ export class PlayStyleManager {
   private syncDachshundSkinAndOrange(overrideFurHex?: number) {
     const variety =
       HEAD_ORANGE_VARIETIES[this.activeHeadOrangeIndex] ?? HEAD_ORANGE_VARIETIES[0];
-    CapyModelGenerator.setHeadOrangeColor(
-      this.heroCapy,
-      variety.colorHex,
-      variety.emissiveHex
-    );
-
     const customFurHex =
       typeof overrideFurHex === 'number'
         ? overrideFurHex
@@ -6699,18 +6969,27 @@ export class PlayStyleManager {
           );
     const furColor = customFurHex;
 
-    CapyModelGenerator.updateCapyAppearance(
-      this.heroCapy,
-      this.stats.activeHat,
-      this.stats.activeSkin,
-      this.stats.activeMutations,
-      variety.colorHex,
-      customFurHex
-    );
-    CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, 1);
+    if (this.heroCapyBuilt) {
+      CapyModelGenerator.setHeadOrangeColor(
+        this.heroCapy,
+        variety.colorHex,
+        variety.emissiveHex
+      );
+      CapyModelGenerator.updateCapyAppearance(
+        this.heroCapy,
+        this.stats.activeHat,
+        this.stats.activeSkin,
+        this.stats.activeMutations,
+        variety.colorHex,
+        customFurHex
+      );
+      CapyModelGenerator.setHeadFruitStackCount(this.heroCapy, 1);
+    }
 
-    const heroBodyMat = (this.heroCapy.getObjectByName('capyBody') as THREE.Mesh | undefined)
-      ?.material as THREE.MeshStandardMaterial | undefined;
+    const heroBodyMat = this.heroCapyBuilt
+      ? ((this.heroCapy.getObjectByName('capyBody') as THREE.Mesh | undefined)
+          ?.material as THREE.MeshStandardMaterial | undefined)
+      : undefined;
 
     const backFruitCount = Math.max(0, this.fruitsCarried - 1);
     for (let i = 0; i < this.dachshundSegments.length; i++) {
@@ -9036,13 +9315,15 @@ export class PlayStyleManager {
         canDive,
       });
     } else if (this.currentMode === 'capytorio') {
-      const snap = this.capytorioEngine.getUiSnapshot();
+      const snap = this.capytorioEngine?.getUiSnapshot();
       this.callbacks.onTelemetryUpdate({
         mode: 'capytorio',
         primaryLabel: 'Items Produced',
-        primaryValue: `${snap.totalProduced} (${snap.machineCount}m)`,
+        primaryValue: snap ? `${snap.totalProduced} (${snap.machineCount}m)` : 'Loading…',
         secondaryLabel: 'Power Grid',
-        secondaryValue: `${snap.powerSupplyMw.toFixed(1)}/${snap.powerDemandMw.toFixed(1)} MW`,
+        secondaryValue: snap
+          ? `${snap.powerSupplyMw.toFixed(1)}/${snap.powerDemandMw.toFixed(1)} MW`
+          : '0.0/0.0 MW',
         zoneCoordsLabel: coords,
         arcadeCombo,
         dashCooldownFrac,
@@ -10383,6 +10664,7 @@ export class PlayStyleManager {
   }
 
   private syncCapytorioConfigMultipliers(): void {
+    if (!this.capytorioEngine) return;
     const cCfg = this.proceduralConfig.districts.capytorio;
     const upgradeBoost = 1 + (Math.max(1, this.stats.upgrades.paddleSize) - 1) * 0.15;
     this.capytorioEngine.configCraftSpeedMult = cCfg.craftSpeedMultiplier * upgradeBoost;
@@ -10392,10 +10674,11 @@ export class PlayStyleManager {
   }
 
   private tickCapytorioEcosystemOnly(dt: number) {
+    if (!this.capytorioEngine) return;
     this.syncCapytorioConfigMultipliers();
     this.capytorioEngine.step(dt, this.capytorioStepCallbacks);
     if (this.capytorioGroup.visible) {
-      this.ensureCapytorioRenderer().sync(
+      this.ensureCapytorioRenderer()?.sync(
         this.capytorioEngine,
         this.camera.position.x,
         this.camera.position.z,
@@ -11012,7 +11295,13 @@ export class PlayStyleManager {
     this.applyPlayerMovementAndCamera(dt, moveSpeed, 11.5, 15.5);
 
     this.syncCapytorioConfigMultipliers();
-    this.capytorioEngine.getBeltMomentumAtLocalPos(prevLx, prevLz, _beltVelScratch);
+    if (this.capytorioEngine) {
+      this.capytorioEngine.getBeltMomentumAtLocalPos(prevLx, prevLz, _beltVelScratch);
+    } else {
+      _beltVelScratch[0] = 0;
+      _beltVelScratch[1] = 0;
+      void this.ensureCapytorioLoaded();
+    }
 
     const hasWings = this.stats.activeMutations.includes('wings');
     const jumpBoost =
@@ -11059,6 +11348,8 @@ export class PlayStyleManager {
 
     this.updateWorldHeroAndCamera(dt, 11.5, 15.5);
 
+    if (!this.capytorioEngine) return;
+
     // Friendly auto-pickup from adjacent chests, furnaces & assemblers
     const pickedUp = this.capytorioEngine.collectFromNearbyChestsAndOutputs(
       this.heroLocalPos.x,
@@ -11075,7 +11366,7 @@ export class PlayStyleManager {
       this.getCapytorioCameraMode() === 'oblique'
         ? evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist).altitudeRadius
         : 26;
-    this.ensureCapytorioRenderer().sync(
+    this.ensureCapytorioRenderer()?.sync(
       this.capytorioEngine,
       zone.x + this.heroLocalPos.x,
       zone.z + this.heroLocalPos.z,

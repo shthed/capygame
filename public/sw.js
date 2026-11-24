@@ -55,7 +55,8 @@ self.addEventListener('install', (event) => {
             if (response.ok && !(await isWarmupOrAuthHtml(response))) {
               await cache.put(url, response.clone());
 
-              // If this is index.html, discover and precache hashed Vite script & style bundles
+              // If this is index.html, discover and precache top-level hashed Vite entry bundles only.
+              // Physics workers, Wasm, and lazy feature chunks are cached on demand by the fetch handler.
               if (url.endsWith('/index.html') || url === new URL('./index.html', self.location).href) {
                 const htmlText = await response.text();
                 const bundleMatches = [...htmlText.matchAll(/(?:src|href)=["']?((?:\.\/)?assets\/[^"'\s>]+)["']?/g)];
@@ -64,35 +65,9 @@ self.addEventListener('install', (event) => {
                   const relPath = match[1].startsWith('./') ? match[1] : './' + match[1];
                   const bundleUrl = new URL(relPath, self.location).href;
                   try {
-                    const bundleResp = await fetch(bundleUrl, { cache: 'no-cache' });
+                    const bundleResp = await fetch(bundleUrl, { cache: 'default' });
                     if (bundleResp.ok) {
                       await cache.put(bundleUrl, bundleResp.clone());
-
-                      // If this is a JS bundle, discover and precache any referenced worker/chunk/wasm assets
-                      if (bundleUrl.endsWith('.js')) {
-                        const jsText = await bundleResp.text();
-                        const subAssetMatches = [
-                          ...jsText.matchAll(
-                            /(?:\.\/|\/)?assets\/([A-Za-z0-9._-]+\.(?:js|mjs|wasm))/g
-                          ),
-                        ];
-                        const seenSubAssets = new Set();
-                        for (const wm of subAssetMatches) {
-                          const fileName = wm[1];
-                          if (seenSubAssets.has(fileName)) continue;
-                          seenSubAssets.add(fileName);
-                          const workerUrl = new URL('./assets/' + fileName, self.location).href;
-                          if (workerUrl === bundleUrl) continue;
-                          try {
-                            const workerResp = await fetch(workerUrl, { cache: 'no-cache' });
-                            if (workerResp.ok) {
-                              await cache.put(workerUrl, workerResp);
-                            }
-                          } catch (subAssetErr) {
-                            console.warn('[ServiceWorker] Failed to cache sub-asset:', workerUrl, subAssetErr);
-                          }
-                        }
-                      }
                     }
                   } catch (bundleErr) {
                     console.warn('[ServiceWorker] Failed to cache discovered bundle:', bundleUrl, bundleErr);

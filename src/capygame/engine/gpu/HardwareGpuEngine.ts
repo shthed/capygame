@@ -1,13 +1,15 @@
 import * as THREE from 'three';
-import * as THREE_WEBGPU from 'three/webgpu';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
-import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
+import type * as THREE_WEBGPU from 'three/webgpu';
+import type { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import type { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import type { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import type { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
+import type {
+  SceneDepthCapturePass,
+  WebGl2ComposerBuildParams,
+  WebGl2ComposerBundle,
+} from './WebGl2PostProcessing';
 import {
   DEFAULT_GPU_PIPELINE_CONFIG,
   GPU_VISUAL_FILTER_PROFILES,
@@ -39,7 +41,14 @@ import {
   type IndirectDrawBatchSpec,
   type VolumetricShaftProjection,
 } from './GpuCullingAndClusterMath';
-import type { WebGpuPostAndComputePipeline, WebGpuProbeResult } from './WebGpuPipeline';
+import type { WebGpuPostAndComputePipeline } from './WebGpuPipeline';
+import type { WebGpuProbeResult } from './WebGpuRuntime';
+
+type WebGl2PostModule = {
+  buildWebGl2PostProcessingComposer: (params: WebGl2ComposerBuildParams) => WebGl2ComposerBundle;
+};
+let cachedWebGl2PostModule: WebGl2PostModule | null = null;
+let pendingWebGl2PostModulePromise: Promise<WebGl2PostModule> | null = null;
 
 // Zero-allocation scratch vectors for shadow cascade snapping, frustum culling, and sun shafts
 const _sunOffsetDir = new THREE.Vector3(0.44, 0.82, 0.37).normalize();
@@ -244,74 +253,7 @@ const CapyGpuMasterFilterShader = {
   `,
 };
 
-/**
- * Renders the 3D scene + hardware DepthTexture into an isolated off-ping-pong FBO
- * (`sceneCaptureTarget`) and blits HDR color into EffectComposer's `readBuffer`.
- * This guarantees `depthTexture` is NEVER bound as a DRAW_FRAMEBUFFER attachment
- * when `CapyGpuMasterFilterShader` samples `tDepth` (eliminating WebGL2 feedback-loop flicker).
- */
-class SceneDepthCapturePass extends Pass {
-  private readonly scene: THREE.Scene;
-  private readonly camera: THREE.Camera;
-  private readonly sceneCaptureTarget: THREE.WebGLRenderTarget | null;
-  private readonly copyMaterial: THREE.ShaderMaterial;
-  private readonly fsQuad: FullScreenQuad;
 
-  constructor(
-    scene: THREE.Scene,
-    camera: THREE.Camera,
-    sceneCaptureTarget: THREE.WebGLRenderTarget | null
-  ) {
-    super();
-    this.scene = scene;
-    this.camera = camera;
-    this.sceneCaptureTarget = sceneCaptureTarget;
-    this.needsSwap = false;
-
-    this.copyMaterial = new THREE.ShaderMaterial({
-      uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
-      vertexShader: CopyShader.vertexShader,
-      fragmentShader: CopyShader.fragmentShader,
-      transparent: false,
-      depthTest: false,
-      depthWrite: false,
-    });
-    this.fsQuad = new FullScreenQuad(this.copyMaterial);
-  }
-
-  public override render(
-    renderer: THREE.WebGLRenderer,
-    _writeBuffer: THREE.WebGLRenderTarget,
-    readBuffer: THREE.WebGLRenderTarget
-  ): void {
-    const prevAutoClear = renderer.autoClear;
-    renderer.autoClear = false;
-
-    if (this.sceneCaptureTarget) {
-      renderer.setRenderTarget(this.sceneCaptureTarget);
-      renderer.clear(true, true, false);
-      renderer.render(this.scene, this.camera);
-
-      this.copyMaterial.uniforms['tDiffuse'].value = this.sceneCaptureTarget.texture;
-      renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
-      if (!this.renderToScreen) {
-        renderer.clear(true, false, false);
-      }
-      this.fsQuad.render(renderer);
-    } else {
-      renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
-      renderer.clear(true, true, false);
-      renderer.render(this.scene, this.camera);
-    }
-
-    renderer.autoClear = prevAutoClear;
-  }
-
-  public override dispose(): void {
-    this.copyMaterial.dispose();
-    this.fsQuad.dispose();
-  }
-}
 
 /**
  * Hardware-Accelerated 3D GPU Engine managing:
@@ -340,9 +282,12 @@ export class HardwareGpuEngine {
   public moonLight: THREE.DirectionalLight | null = null;
   public readonly rimLight: THREE.DirectionalLight;
   public studioAreaLight: THREE.RectAreaLight | null = null;
-  public readonly iblEnvironmentTexture: THREE.Texture | null;
+  public iblEnvironmentTexture: THREE.Texture | null;
   public readonly heroContactShadowMesh: THREE.Mesh;
   private readonly heroContactShadowMat: THREE.MeshBasicMaterial;
+  private pmremUpgraded: boolean = false;
+  private disposed: boolean = false;
+  private pausedSuspended: boolean = false;
 
   // Multi-Pass Post-Processing Composer & Render Targets (WebGL2 fallback path)
   private composer: EffectComposer | null = null;
@@ -362,6 +307,7 @@ export class HardwareGpuEngine {
   private activeShadowMapSize: number = 2048;
   private contextLost: boolean = false;
   private composerFaulted: boolean = false;
+  private composerLoading: boolean = false;
   private elapsedTime: number = 0;
   private forceSoftwarePostProcess: boolean = false;
   private lastSnappedShadowX: number = Number.NaN;
@@ -506,10 +452,10 @@ export class HardwareGpuEngine {
     this.heroContactShadowMesh.userData.ignoreCameraFade = true;
     this.scene.add(this.heroContactShadowMesh);
 
-    // 4. Procedural Sky + Studio Environment Map (PMREM cubemap on WebGL2 HW & WebGPU; lightweight 64x32 on SW/Low-RAM!)
+    // 4. Fast 64x32 Studio + Sky IBL on Frame 1 (full PMREM cubemap upgrade deferred to post-paint idle work)
     this.iblEnvironmentTexture = PbrTextureSynthesizer.createStudioAndSkyEnvironmentMap(
       this.renderer,
-      this.isSoftwareGl || this.isLowMemoryDevice
+      true
     );
     if (!this.isSoftwareGl && !this.scene.environment && this.iblEnvironmentTexture) {
       this.scene.environment = this.iblEnvironmentTexture;
@@ -523,7 +469,7 @@ export class HardwareGpuEngine {
     this.onContextRestoredHandler = () => {
       this.contextLost = false;
       this.composerFaulted = false;
-      if (!this.isWebGpu && (!this.isSoftwareGl || this.shouldActivateComposer())) {
+      if (!this.isWebGpu && !this.pausedSuspended && (!this.isSoftwareGl || this.shouldActivateComposer())) {
         this.rebuildComposer();
       }
       this.render();
@@ -541,10 +487,59 @@ export class HardwareGpuEngine {
     if (initialConfig) {
       this.config = { ...this.config, ...initialConfig };
     }
-    if (!this.isWebGpu && (!this.isSoftwareGl || this.shouldActivateComposer())) {
+    if (!this.isWebGpu && this.shouldActivateComposer()) {
       this.rebuildComposer();
     }
     this.applyConfig(this.config);
+  }
+
+  /**
+   * Deferred post-Frame-1 upgrade from the instant 64x32 IBL DataTexture to a full prefiltered
+   * mipmapped PMREM cubemap on hardware non-low-memory GPUs.
+   */
+  public upgradeEnvironmentToPmrem(): boolean {
+    if (this.disposed || this.pmremUpgraded || this.isSoftwareGl || this.isLowMemoryDevice) {
+      return false;
+    }
+    this.pmremUpgraded = true;
+    const prevEnv = this.iblEnvironmentTexture;
+    const upgraded = PbrTextureSynthesizer.createStudioAndSkyEnvironmentMap(this.renderer, false);
+    if (!upgraded) {
+      return false;
+    }
+    this.iblEnvironmentTexture = upgraded;
+    if (this.scene.environment === prevEnv || !this.scene.environment) {
+      this.scene.environment = upgraded;
+    }
+    if (prevEnv && prevEnv !== upgraded) {
+      prevEnv.dispose();
+    }
+    return true;
+  }
+
+  public isPmremUpgraded(): boolean {
+    return this.pmremUpgraded;
+  }
+
+  /**
+   * Releases WebGL2 post-processing FBOs and depth targets while the game is paused to reclaim GPU VRAM.
+   */
+  public suspendForPause(): void {
+    this.pausedSuspended = true;
+    if (!this.isWebGpu) {
+      this.disposeComposerTargets();
+    }
+  }
+
+  /**
+   * Restores WebGL2 post-processing composer targets cleanly when resuming from pause.
+   */
+  public resumeFromPause(): void {
+    if (!this.pausedSuspended) return;
+    this.pausedSuspended = false;
+    if (!this.isWebGpu && this.shouldActivateComposer()) {
+      this.rebuildComposer();
+    }
   }
 
   private shouldEnableStudioAreaLight(preset: GpuQualityPreset): boolean {
@@ -685,7 +680,27 @@ export class HardwareGpuEngine {
   }
 
   private rebuildComposer(): void {
-    if (this.isWebGpu) return;
+    if (this.isWebGpu || this.disposed || this.pausedSuspended) return;
+    if (!cachedWebGl2PostModule) {
+      if (this.composerLoading) return;
+      this.composerLoading = true;
+      const loadPromise =
+        pendingWebGl2PostModulePromise ??
+        (pendingWebGl2PostModulePromise = import('./WebGl2PostProcessing'));
+      loadPromise
+        .then((mod) => {
+          cachedWebGl2PostModule = mod;
+          this.composerLoading = false;
+          if (!this.disposed && !this.pausedSuspended && this.shouldActivateComposer() && !this.composer) {
+            this.rebuildComposer();
+          }
+        })
+        .catch(() => {
+          this.composerLoading = false;
+        });
+      return;
+    }
+
     try {
       const glRenderer = this.renderer as THREE.WebGLRenderer;
       this.disposeComposerTargets();
@@ -705,41 +720,31 @@ export class HardwareGpuEngine {
       this.renderTarget = targets.pingPongTarget;
       this.sceneCaptureTarget = targets.sceneCaptureTarget;
 
-      this.composer = new EffectComposer(glRenderer, this.renderTarget);
-      this.composer.setPixelRatio(glRenderer.getPixelRatio());
-      this.composer.setSize(this.viewportWidth, this.viewportHeight);
-
-      this.renderPass = new SceneDepthCapturePass(
-        this.scene,
-        this.camera,
-        this.sceneCaptureTarget
-      );
-      this.composer.addPass(this.renderPass);
-
       const bloomScale = computeBloomRenderScale(this.config.qualityPreset, this.isSoftwareGl);
-      this.bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(
-          Math.max(1, Math.floor(this.viewportWidth * bloomScale)),
-          Math.max(1, Math.floor(this.viewportHeight * bloomScale))
-        ),
-        this.config.bloomStrength,
-        0.32,
-        1.18
-      );
-      this.bloomPass.enabled = this.config.bloomEnabled;
-      this.composer.addPass(this.bloomPass);
+      const bundle = cachedWebGl2PostModule.buildWebGl2PostProcessingComposer({
+        renderer: glRenderer,
+        scene: this.scene,
+        camera: this.camera,
+        renderTarget: this.renderTarget,
+        sceneCaptureTarget: this.sceneCaptureTarget,
+        viewportWidth: this.viewportWidth,
+        viewportHeight: this.viewportHeight,
+        bloomScale,
+        bloomStrength: this.config.bloomStrength,
+        bloomEnabled: this.config.bloomEnabled,
+        antiAliasingEnabled: this.config.antiAliasing !== 'none',
+        masterFilterShader: CapyGpuMasterFilterShader,
+      });
 
-      this.masterFilterPass = new ShaderPass(CapyGpuMasterFilterShader);
+      this.composer = bundle.composer;
+      this.renderPass = bundle.renderPass;
+      this.bloomPass = bundle.bloomPass;
+      this.masterFilterPass = bundle.masterFilterPass;
+      this.outputPass = bundle.outputPass;
+      this.fxaaPass = bundle.fxaaPass;
+
       this.syncMasterFilterUniforms();
-      this.composer.addPass(this.masterFilterPass);
-
-      this.outputPass = new OutputPass();
-      this.composer.addPass(this.outputPass);
-
-      this.fxaaPass = new ShaderPass(FXAAShader);
-      this.fxaaPass.enabled = this.config.antiAliasing !== 'none';
       this.syncFxaaResolution();
-      this.composer.addPass(this.fxaaPass);
     } catch {
       this.disposeComposerTargets();
     }
@@ -1492,6 +1497,7 @@ export class HardwareGpuEngine {
   }
 
   public dispose(): void {
+    this.disposed = true;
     if (!this.isWebGpu) {
       this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLostHandler);
       this.renderer.domElement.removeEventListener(
@@ -1501,6 +1507,13 @@ export class HardwareGpuEngine {
     }
     this.webGpuPipeline?.dispose();
     this.disposeComposerTargets();
+    if (this.iblEnvironmentTexture) {
+      if (this.scene.environment === this.iblEnvironmentTexture) {
+        this.scene.environment = null;
+      }
+      this.iblEnvironmentTexture.dispose();
+      this.iblEnvironmentTexture = null;
+    }
     this.heroContactShadowMesh.geometry.dispose();
     this.heroContactShadowMat.dispose();
   }

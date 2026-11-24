@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import * as THREE_WEBGPU from 'three/webgpu';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type * as THREE_WEBGPU_TYPES from 'three/webgpu';
 import {
   AstrophysicsPaletteMode,
   PlayStyle,
@@ -53,7 +53,11 @@ import {
 } from '../engine/PlayStyleManager';
 import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
 import { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
-import { clearGpuBackendBenchmarkCache, probeWebGpuBackend } from '../engine/gpu/WebGpuPipeline';
+import {
+  clearGpuBackendBenchmarkCache,
+  type WebGpuProbeResult,
+} from '../engine/gpu/WebGpuRuntime';
+import { GamePauseController } from '../engine/GamePauseController';
 import { AudioService } from '../services/AudioService';
 import { NativeBridge } from '../../services/NativeBridge';
 import { PwaService } from '../../services/PwaService';
@@ -74,26 +78,25 @@ import {
 } from '../config/ProceduralGameConfig';
 import { FOREST_MICRO_SPECIMENS } from '../engine/forestMicroSpecimens';
 import { formatFlightSpeedReadout } from '../engine/UniverseScaleMath';
-import {
-  CAPYTORIO_HOTBAR_ORDER,
-  CAPYTORIO_MACHINE_SPECS,
-  CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
-  CAPYTORIO_RECIPES,
-  TECH_BY_ID,
-  getCapytorioItemMeta,
-  getCapytorioLuaCatalogInfo,
-  subscribeCapytorioLuaChanges,
-  type CapytorioLuaCatalogInfo,
-  type CapytorioRecipeGroup,
-  type CapytorioRecipeId,
+import type {
+  CapytorioLuaCatalogInfo,
+  CapytorioRecipeGroup,
+  CapytorioRecipeId,
 } from '../engine/CapytorioData';
-import {
-  resolveCapytorioPlaceableSpec,
-  type CapytorioTileInspection,
-  type CapytorioUiSnapshot,
+import type {
+  CapytorioTileInspection,
+  CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
-import { CapytorioHud, type CapytorioDrawerTab } from './CapytorioHud';
+import {
+  getLoadedCapytorioRuntime,
+  loadCapytorioRuntime,
+} from '../engine/capytorio/CapytorioModuleLoader';
+import type { CapytorioDrawerTab, CapytorioHudProps } from './CapytorioHud';
 import { createLiveTelemetryStore, TelemetryReadout } from './TelemetryReadout';
+
+const LazyCapytorioHud = React.lazy(() =>
+  import('./CapytorioHud').then((m) => ({ default: m.CapytorioHud }))
+);
 import {
   Sparkles,
   Volume2,
@@ -354,6 +357,8 @@ export const CapyGameView: React.FC = () => {
   );
   const [activeTab, setActiveTab] = useState<DockTab>('modes');
   const [capytorioSnap, setCapytorioSnap] = useState<CapytorioUiSnapshot | null>(null);
+  const capytorioSnapRef = useRef<CapytorioUiSnapshot | null>(null);
+  capytorioSnapRef.current = capytorioSnap;
   const [capytorioDrawerTab, setCapytorioDrawerTab] = useState<CapytorioDrawerTab>('none');
   const [capytorioPediaEntryId, setCapytorioPediaEntryId] = useState<string>('drill');
   const [capytorioPediaContextInfo, setCapytorioPediaContextInfo] =
@@ -362,11 +367,15 @@ export const CapyGameView: React.FC = () => {
   const [capytorioCraftGroup, setCapytorioCraftGroup] = useState<
     CapytorioRecipeGroup | 'machines' | 'lua'
   >('logistics');
-  const [selectedCraftRecipeId, setSelectedCraftRecipeId] = useState<CapytorioRecipeId>(
-    () => CAPYTORIO_RECIPES[0]?.id ?? 'iron_gear'
-  );
+  const [selectedCraftRecipeId, setSelectedCraftRecipeId] =
+    useState<CapytorioRecipeId>('iron_gear');
   const [capytorioPointerHoverActive, setCapytorioPointerHoverActive] = useState<boolean>(false);
   const [isTopBarVisible, setIsTopBarVisible] = useState<boolean>(false);
+  const pauseControllerRef = useRef<GamePauseController>(new GamePauseController());
+  const [isGamePaused, setIsGamePaused] = useState<boolean>(false);
+  const isGamePausedRef = useRef<boolean>(false);
+  const suspendAnimLoopRef = useRef<(() => void) | null>(null);
+  const resumeAnimLoopRef = useRef<(() => void) | null>(null);
   const [capytorioSelectionOverlay, setCapytorioSelectionOverlay] = useState<{
     active: boolean;
     mode: 'copy' | 'cut';
@@ -381,18 +390,18 @@ export const CapyGameView: React.FC = () => {
   const capytorioDrawerTabRef = useRef<CapytorioDrawerTab>('none');
   capytorioDrawerTabRef.current = capytorioDrawerTab;
 
-  const openCapytorioPedia = (
-    entryId: string,
-    contextInfo?: CapytorioTileInspection | null
-  ) => {
-    setCapytorioPediaEntryId(entryId);
-    if (contextInfo !== undefined) {
-      setCapytorioPediaContextInfo(contextInfo);
-    } else {
-      setCapytorioPediaContextInfo(null);
-    }
-    setCapytorioDrawerTab('pedia');
-  };
+  const openCapytorioPedia = useCallback(
+    (entryId: string, contextInfo?: CapytorioTileInspection | null) => {
+      setCapytorioPediaEntryId(entryId);
+      if (contextInfo !== undefined) {
+        setCapytorioPediaContextInfo(contextInfo);
+      } else {
+        setCapytorioPediaContextInfo(null);
+      }
+      setCapytorioDrawerTab('pedia');
+    },
+    []
+  );
 
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [isDockCollapsed, setIsDockCollapsed] = useState<boolean>(false);
@@ -549,9 +558,13 @@ export const CapyGameView: React.FC = () => {
   const menuOpenRef = useRef<boolean>(false);
   menuOpenRef.current = isMenuOpen;
   const wasOverlayPausedRef = useRef<boolean>(false);
-  const [luaCatalogInfo, setLuaCatalogInfo] = useState<CapytorioLuaCatalogInfo>(() =>
-    getCapytorioLuaCatalogInfo()
-  );
+  const [luaCatalogInfo, setLuaCatalogInfo] = useState<CapytorioLuaCatalogInfo>({
+    version: 0,
+    sourceMode: 'bundled',
+    recipeCount: 0,
+    techCount: 0,
+    itemCount: 0,
+  });
 
   // Cosmic Genesis & Multi-Scale Universe State (starts directly in active Multiverse continuum unless skip_cosmic=1)
   const [cosmicStage, setCosmicStage] = useState<CosmicStage>('playing');
@@ -827,12 +840,433 @@ export const CapyGameView: React.FC = () => {
   );
   const [toastText, setToastText] = useState<string | null>(null);
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setToastText(msg);
     window.setTimeout(() => {
       setToastText((prev) => (prev === msg ? null : prev));
     }, 2600);
-  };
+  }, []);
+
+  const setGamePaused = useCallback((paused: boolean) => {
+    const controller = pauseControllerRef.current;
+    const nowMs = performance.now();
+    const changed = paused ? controller.pause(nowMs) : controller.resume(nowMs).resumed;
+    if (!changed && isGamePausedRef.current === paused) return;
+
+    isGamePausedRef.current = paused;
+    setIsGamePaused(paused);
+
+    if (paused) {
+      if (isFreeMouselookRef.current) {
+        isFreeMouselookRef.current = false;
+        setIsFreeMouselook(false);
+        managerRef.current?.setMouselookLocked(false);
+        if (typeof document !== 'undefined' && document.pointerLockElement === mountRef.current) {
+          try {
+            document.exitPointerLock?.();
+          } catch {
+            // Ignore pointer lock exit errors
+          }
+        }
+      }
+      suspendAnimLoopRef.current?.();
+      managerRef.current?.setPaused(true);
+    } else {
+      managerRef.current?.setPaused(false);
+      resumeAnimLoopRef.current?.();
+    }
+  }, []);
+
+  const toggleGamePause = useCallback(() => {
+    setGamePaused(!isGamePausedRef.current);
+  }, [setGamePaused]);
+
+  type MemoizedCapytorioHudActions = Pick<
+    CapytorioHudProps,
+    | 'onToggleTopBar'
+    | 'onOpenSettings'
+    | 'onSelectTool'
+    | 'onMineTileAt'
+    | 'onInspectTileAt'
+    | 'onClearInspection'
+    | 'onDemolishMachineAt'
+    | 'onRotateDir'
+    | 'onFlipBlueprintH'
+    | 'onFlipBlueprintV'
+    | 'onActivateLastBlueprint'
+    | 'onSelectBlueprint'
+    | 'onDeleteBlueprint'
+    | 'onClearBlueprintLibrary'
+    | 'onBuildSampleStarterMall'
+    | 'onImportFactorioString'
+    | 'onExportBlueprintString'
+    | 'onExportFactoryString'
+    | 'onExportBlueprintBookString'
+    | 'onSetClipboardMode'
+    | 'onClearClipboard'
+    | 'onPlaceBlueprint'
+    | 'onUndoCut'
+    | 'onUndoAction'
+    | 'onRedoAction'
+    | 'onCollectAllOutputs'
+    | 'onFeedScience'
+    | 'onLaunchRocket'
+    | 'onCraftMachine'
+    | 'onCraftRecipe'
+    | 'onCancelCraftQueueItem'
+    | 'onSelectTech'
+    | 'onFuelGenerator'
+    | 'onInsertInputs'
+    | 'onTakeOutputs'
+    | 'onRotateMachineAt'
+    | 'onSelectAssemblerRecipe'
+    | 'onToggleAltMode'
+    | 'onCopyEntitySettings'
+    | 'onPasteEntitySettings'
+    | 'onSetSplitterConfig'
+    | 'onSetInserterConfig'
+    | 'onSetChestSlotLimit'
+  >;
+
+  const capytorioHudActions = useMemo<MemoizedCapytorioHudActions>(
+    () => ({
+      onToggleTopBar: () => {
+        AudioService.playCapytorioUiClick('tool');
+        setIsTopBarVisible((prev) => !prev);
+      },
+      onOpenSettings: () => {
+        AudioService.playCapytorioUiClick('tool');
+        setIsSettingsOpen(true);
+      },
+      onSelectTool: (toolId, promoteToRecent = false) => {
+        if (toolId !== 'mine' && toolId !== 'demolish') {
+          lastCapytorioMachineRef.current = toolId;
+        }
+        managerRef.current?.setCapytorioTool(toolId, promoteToRecent);
+      },
+      onMineTileAt: (gx, gz) => {
+        const mined = managerRef.current?.mineCapytorioTileAt(gx, gz);
+        if (mined) {
+          const amt = mined === 'orange' ? 3 : 2;
+          const rt = getLoadedCapytorioRuntime();
+          const itemName = rt ? rt.getCapytorioItemMeta(mined).name : mined;
+          showToast(
+            mined === 'orange' ? `Harvested +${amt} ${itemName}` : `Mined +${amt} ${itemName}`
+          );
+        }
+      },
+      onInspectTileAt: (gx, gz) => {
+        setCapytorioPointerHoverActive(false);
+        managerRef.current?.inspectCapytorioTile(gx, gz);
+      },
+      onClearInspection: () => {
+        managerRef.current?.clearCapytorioInspection();
+      },
+      onDemolishMachineAt: (gx, gz) => {
+        const removed = managerRef.current?.demolishCapytorioTileAt(gx, gz);
+        if (removed) {
+          const rt = getLoadedCapytorioRuntime();
+          const name = rt ? rt.CAPYTORIO_MACHINE_SPECS[removed].name : removed;
+          showToast(`Deleted & refunded ${name}`);
+        }
+      },
+      onRotateDir: () => {
+        const snapBefore = managerRef.current?.getCapytorioSnapshot();
+        const nextDir = managerRef.current?.rotateCapytorioDirection();
+        if (snapBefore?.clipboard.toolState === 'paste') {
+          showToast('Rotated blueprint 90°');
+        } else if (snapBefore?.inspectedMachine && nextDir !== undefined) {
+          const dirNames = ['North', 'East', 'South', 'West'];
+          const rt = getLoadedCapytorioRuntime();
+          const shortName = rt
+            ? rt.CAPYTORIO_MACHINE_SPECS[snapBefore.inspectedMachine.type].shortName
+            : snapBefore.inspectedMachine.type;
+          showToast(`Rotated ${shortName}: ${dirNames[nextDir]}`);
+        }
+      },
+      onFlipBlueprintH: () => {
+        if (managerRef.current?.flipCapytorioBlueprintHorizontal()) {
+          showToast('Flipped blueprint horizontally');
+        }
+      },
+      onFlipBlueprintV: () => {
+        if (managerRef.current?.flipCapytorioBlueprintVertical()) {
+          showToast('Flipped blueprint vertically');
+        }
+      },
+      onActivateLastBlueprint: () => {
+        if (managerRef.current?.activateLastCapytorioBlueprint()) {
+          const nextClip = managerRef.current.getCapytorioSnapshot()?.clipboard;
+          showToast(`Paste ready (${nextClip?.count ?? 0}) — [R] Rotate · [H/V] Flip`);
+        } else {
+          showToast('No saved blueprints yet');
+        }
+      },
+      onSelectBlueprint: (id) => {
+        const picked = managerRef.current?.selectCapytorioBlueprint(id);
+        if (picked) {
+          showToast(`Loaded "${picked.label}" (${picked.entries.length}) — click to place`);
+        }
+      },
+      onDeleteBlueprint: (id) => {
+        if (managerRef.current?.deleteCapytorioBlueprint(id)) {
+          showToast('Removed blueprint from library');
+        }
+      },
+      onClearBlueprintLibrary: () => {
+        managerRef.current?.clearCapytorioBlueprintLibrary();
+        showToast('Cleared blueprint library');
+      },
+      onBuildSampleStarterMall: () => {
+        const res = managerRef.current?.buildCapytorioSampleStarterMall();
+        if (res?.message) {
+          showToast(res.message);
+        }
+      },
+      onImportFactorioString: async (raw) => {
+        const mgr = managerRef.current;
+        if (!mgr) {
+          return {
+            ok: false,
+            kind: 'blueprint' as const,
+            blueprints: [],
+            importedEntityCount: 0,
+            skippedTotalCount: 0,
+            skippedEntities: [],
+            addedIds: [],
+            error: 'Factory engine is not ready yet.',
+          };
+        }
+        const res = await mgr.importCapytorioFactorioBlueprintString(raw);
+        if (res.ok) {
+          const skipSuffix =
+            res.skippedTotalCount > 0 ? ` (${res.skippedTotalCount} unsupported skipped)` : '';
+          showToast(
+            `Imported ${res.blueprints.length} blueprint${
+              res.blueprints.length === 1 ? '' : 's'
+            } (${res.importedEntityCount} entities)${skipSuffix}`
+          );
+        }
+        return res;
+      },
+      onExportBlueprintString: async (id) => {
+        const mgr = managerRef.current;
+        if (!mgr) {
+          return {
+            ok: false,
+            label: '',
+            encoded: '',
+            entityCount: 0,
+            error: 'Factory engine is not ready yet.',
+          };
+        }
+        return mgr.exportCapytorioBlueprintToFactorioString(id);
+      },
+      onExportFactoryString: async () => {
+        const mgr = managerRef.current;
+        if (!mgr) {
+          return {
+            ok: false,
+            label: '',
+            encoded: '',
+            entityCount: 0,
+            error: 'Factory engine is not ready yet.',
+          };
+        }
+        return mgr.exportCapytorioFactoryToFactorioString();
+      },
+      onExportBlueprintBookString: async () => {
+        const mgr = managerRef.current;
+        if (!mgr) {
+          return {
+            ok: false,
+            label: '',
+            encoded: '',
+            blueprintCount: 0,
+            entityCount: 0,
+            error: 'Factory engine is not ready yet.',
+          };
+        }
+        return mgr.exportCapytorioBlueprintBookToFactorioString();
+      },
+      onSetClipboardMode: (mode, shape) => {
+        managerRef.current?.setCapytorioClipboardMode(mode, shape);
+      },
+      onClearClipboard: () => {
+        managerRef.current?.clearCapytorioClipboard();
+        setCapytorioSelectionOverlay(null);
+      },
+      onPlaceBlueprint: () => {
+        const res = managerRef.current?.placeCapytorioBlueprintAtPositionedGhost();
+        if (res?.message) {
+          showToast(res.message);
+        }
+      },
+      onUndoCut: () => {
+        const res = managerRef.current?.undoCapytorioCut();
+        if (res && res.restoredCount > 0) {
+          showToast(
+            `Restored ${res.restoredCount} cut building${res.restoredCount === 1 ? '' : 's'}`
+          );
+        }
+      },
+      onUndoAction: () => {
+        const res = managerRef.current?.undoCapytorioAction();
+        if (res) {
+          showToast(res.ok ? `Undid: ${res.label}` : 'Nothing to undo');
+        }
+      },
+      onRedoAction: () => {
+        const res = managerRef.current?.redoCapytorioAction();
+        if (res) {
+          showToast(res.ok ? `Redid: ${res.label}` : 'Nothing to redo');
+        }
+      },
+      onCollectAllOutputs: () => {
+        const got = managerRef.current?.collectAllCapytorioOutputs() ?? 0;
+        showToast(
+          got > 0
+            ? `Collected ${got} items from machines, chests & floor`
+            : 'No finished outputs or spilled items ready yet'
+        );
+      },
+      onFeedScience: () => {
+        const fed = managerRef.current?.feedScienceCapytorio() ?? 0;
+        if (fed > 0) {
+          showToast(`Delivered ${fed} Science Pack${fed === 1 ? '' : 's'} to Lab`);
+        } else {
+          showToast('Craft Science Packs & place a Science Lab first');
+        }
+      },
+      onLaunchRocket: () => {
+        const res = managerRef.current?.launchCapytorioRocket();
+        if (res?.ok) {
+          showToast(`ORBITAL YUZU ROCKET #${res.rocketLaunches} LAUNCHED!`);
+        } else if (res?.reason) {
+          showToast(res.reason);
+        }
+      },
+      onCraftMachine: (mType, count = 1) => {
+        const rt = getLoadedCapytorioRuntime();
+        const spec = rt?.CAPYTORIO_MACHINE_SPECS[mType];
+        const res = managerRef.current?.enqueueCapytorioMachineCraft(mType, count);
+        if (res?.ok) {
+          const name = spec?.name ?? mType;
+          showToast(res.queuedCount > 1 ? `Queued ${res.queuedCount}× ${name}` : `Queued +1 ${name}`);
+        } else {
+          const costLabel =
+            spec && rt
+              ? Object.entries(spec.craftCost)
+                  .map(([id, amt]) => `${amt} ${rt.getCapytorioItemMeta(id).shortName}`)
+                  .join(' · ')
+              : 'ingredients';
+          showToast(res?.reason ?? `Need ${costLabel}`);
+        }
+      },
+      onCraftRecipe: (recipeId, count, autoEquipResult = false) => {
+        const rt = getLoadedCapytorioRuntime();
+        const rec = rt?.CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
+        const res = managerRef.current?.enqueueCapytorioPocketCraft(recipeId, count);
+        if (res?.ok && rec && rt) {
+          const outMeta = rt.getCapytorioItemMeta(rec.result);
+          if (autoEquipResult && rt.CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result]) {
+            lastCapytorioMachineRef.current = rec.result;
+            managerRef.current?.setCapytorioTool(rec.result, true);
+          }
+          showToast(
+            res.queuedBatches > 1
+              ? `Queued ${res.queuedBatches}× ${outMeta.name}`
+              : `Queued +${rec.resultCount} ${outMeta.name}`
+          );
+        } else if (!autoEquipResult) {
+          showToast(res?.reason ?? 'Missing required ingredients in Inventory');
+        }
+      },
+      onCancelCraftQueueItem: (uid) => {
+        const ok = managerRef.current?.cancelCapytorioCraftQueueItem(uid) ?? false;
+        if (ok) {
+          showToast('Cancelled craft · 100% ingredients refunded');
+        }
+      },
+      onSelectTech: (techId) => {
+        const rt = getLoadedCapytorioRuntime();
+        const tech = rt?.TECH_BY_ID.get(techId);
+        const ok = managerRef.current?.selectCapytorioTech(techId) ?? false;
+        if (ok && tech) {
+          showToast(`Researching: ${tech.name}`);
+        } else if (
+          tech &&
+          capytorioSnapRef.current?.unlockedTechs.includes(techId) &&
+          !tech.repeatable
+        ) {
+          showToast(`${tech.name} already researched`);
+        } else {
+          showToast('Unlock prerequisite research first');
+        }
+      },
+      onFuelGenerator: (gx, gz) => {
+        const loaded = managerRef.current?.fuelCapytorioGenerator(gx, gz, 5) ?? 0;
+        showToast(
+          loaded > 0
+            ? `Loaded +${loaded} fuel into Generator (6.0 MW active)`
+            : 'Need Coal, Sap, or Orange in pocket to fuel Generator'
+        );
+      },
+      onInsertInputs: (gx, gz) => {
+        const moved = managerRef.current?.insertInputsCapytorioMachine(gx, gz, 4) ?? 0;
+        showToast(
+          moved > 0
+            ? `Loaded +${moved} inputs into machine`
+            : 'No matching ingredients/science in pocket'
+        );
+      },
+      onTakeOutputs: (gx, gz) => {
+        const taken = managerRef.current?.takeOutputsCapytorioMachine(gx, gz) ?? 0;
+        showToast(
+          taken > 0 ? `Collected +${taken} items from machine` : 'Machine output buffer is empty'
+        );
+      },
+      onRotateMachineAt: (gx, gz) => {
+        managerRef.current?.rotateCapytorioMachineAt(gx, gz);
+      },
+      onSelectAssemblerRecipe: (recipeId) => {
+        managerRef.current?.setCapytorioAssemblerRecipe(recipeId);
+        const rt = getLoadedCapytorioRuntime();
+        const rec = rt?.CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
+        showToast(`Assembler Recipe: ${rec?.name ?? recipeId}`);
+      },
+      onToggleAltMode: () => {
+        const nextAlt = managerRef.current?.toggleCapytorioAltMode() ?? true;
+        showToast(nextAlt ? 'Alt-Mode ON — 3D Machine Icons' : 'Alt-Mode OFF');
+      },
+      onCopyEntitySettings: (gx, gz) => {
+        const res = managerRef.current?.copyCapytorioEntitySettingsAtTile(gx, gz);
+        showToast(
+          res?.ok
+            ? `Copied settings: ${res.label ?? 'Entity'}`
+            : res?.reason ?? 'No configurable settings to copy'
+        );
+      },
+      onPasteEntitySettings: (gx, gz) => {
+        const res = managerRef.current?.pasteCapytorioEntitySettingsAtTile(gx, gz);
+        showToast(
+          res?.ok
+            ? `Pasted settings: ${res.label ?? 'Entity'}`
+            : res?.reason ?? 'No matching copied settings to paste'
+        );
+      },
+      onSetSplitterConfig: (gx, gz, config) => {
+        managerRef.current?.setCapytorioSplitterConfig(gx, gz, config);
+      },
+      onSetInserterConfig: (gx, gz, config) => {
+        managerRef.current?.setCapytorioInserterConfig(gx, gz, config);
+      },
+      onSetChestSlotLimit: (gx, gz, slotLimit) => {
+        managerRef.current?.setCapytorioChestSlotLimit(gx, gz, slotLimit);
+      },
+    }),
+    [showToast]
+  );
 
   const setFreeMouselookActive = (enable: boolean) => {
     if (!enable) {
@@ -952,10 +1386,28 @@ export const CapyGameView: React.FC = () => {
   ]);
 
   useEffect(() => {
-    return subscribeCapytorioLuaChanges((info) => {
-      setLuaCatalogInfo(info);
+    if (activeMode !== 'capytorio') return;
+    let cancelled = false;
+    let unsubscribeLua: (() => void) | null = null;
+    void loadCapytorioRuntime().then((rt) => {
+      if (cancelled) return;
+      setLuaCatalogInfo(rt.getCapytorioLuaCatalogInfo());
+      unsubscribeLua = rt.subscribeCapytorioLuaChanges((info) => {
+        setLuaCatalogInfo(info);
+      });
+      if (managerRef.current) {
+        void managerRef.current.ensureCapytorioLoaded().then(() => {
+          if (cancelled || !managerRef.current) return;
+          const snap = managerRef.current.getCapytorioSnapshot();
+          if (snap) setCapytorioSnap(snap);
+        });
+      }
     });
-  }, []);
+    return () => {
+      cancelled = true;
+      unsubscribeLua?.();
+    };
+  }, [activeMode]);
 
   useEffect(() => {
     const containerEl = mountRef.current;
@@ -997,38 +1449,60 @@ export const CapyGameView: React.FC = () => {
         swGl = true;
       }
 
-      const webGpuProbe = await probeWebGpuBackend(
-        initialSettings.gpuBackendPreference ?? 'auto',
-        swGl
-      );
-      if (cancelled || !mountRef.current) return;
+      const backendPref = initialSettings.gpuBackendPreference ?? 'auto';
+      const canTryWebGpu =
+        typeof navigator !== 'undefined' &&
+        'gpu' in navigator &&
+        Boolean((navigator as Navigator & { gpu?: unknown }).gpu) &&
+        !swGl &&
+        backendPref !== 'webgl2';
+
+      let webGpuProbe: WebGpuProbeResult = {
+        supported: false,
+        shouldUseWebGpu: false,
+        adapterName: swGl ? 'Software WebGL2' : 'WebGL2 Hardware',
+        isFallbackAdapter: swGl,
+        features: [],
+      };
 
       let webGpuInit: {
-        renderer: THREE_WEBGPU.WebGPURenderer | null;
-        probe: typeof webGpuProbe;
+        renderer: THREE_WEBGPU_TYPES.WebGPURenderer | null;
+        probe: WebGpuProbeResult;
         isSoftwareGl: boolean;
       } = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
 
-      if (webGpuProbe.shouldUseWebGpu) {
+      if (canTryWebGpu) {
         try {
-          const initPreset = initialSettings.gpuQualityPreset ?? 'high';
-          const initAa = initialSettings.gpuAntiAliasing ?? 'msaa_fxaa';
-          const enableWebGpuMsaa =
-            initAa === 'msaa_fxaa' && initPreset !== 'performance' && initPreset !== 'balanced';
-          const wgpuRenderer = new THREE_WEBGPU.WebGPURenderer({
-            antialias: enableWebGpuMsaa,
-            powerPreference: 'high-performance',
-          });
-          await wgpuRenderer.init();
-          if (cancelled) {
-            wgpuRenderer.dispose();
-            return;
+          const webGpuPipelineMod = await import('../engine/gpu/WebGpuPipeline');
+          if (cancelled || !mountRef.current) return;
+          webGpuProbe = await webGpuPipelineMod.probeWebGpuBackend(backendPref, swGl);
+          if (cancelled || !mountRef.current) return;
+          webGpuInit = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
+
+          if (webGpuProbe.shouldUseWebGpu) {
+            const THREE_WEBGPU = await import('three/webgpu');
+            if (cancelled || !mountRef.current) return;
+            const initPreset = initialSettings.gpuQualityPreset ?? 'high';
+            const initAa = initialSettings.gpuAntiAliasing ?? 'msaa_fxaa';
+            const enableWebGpuMsaa =
+              initAa === 'msaa_fxaa' && initPreset !== 'performance' && initPreset !== 'balanced';
+            const wgpuRenderer = new THREE_WEBGPU.WebGPURenderer({
+              antialias: enableWebGpuMsaa,
+              powerPreference: 'high-performance',
+            });
+            await wgpuRenderer.init();
+            if (cancelled) {
+              wgpuRenderer.dispose();
+              return;
+            }
+            webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe, isSoftwareGl: swGl };
           }
-          webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe, isSoftwareGl: swGl };
         } catch {
           webGpuInit = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
         }
       }
+
+      if (cancelled || !mountRef.current) return;
 
       let manager: PlayStyleManager;
       try {
@@ -1227,7 +1701,23 @@ export const CapyGameView: React.FC = () => {
           ? ((manager.renderer as { getContext: () => WebGL2RenderingContext | null }).getContext())
           : null;
 
+      const cancelScheduledFrame = () => {
+        if (animFrameId !== 0) {
+          window.cancelAnimationFrame(animFrameId);
+          animFrameId = 0;
+        }
+        if (paceTimerId !== null) {
+          window.clearTimeout(paceTimerId);
+          paceTimerId = null;
+        }
+        if (activeFenceSync && glCtx && !glCtx.isContextLost()) {
+          glCtx.deleteSync(activeFenceSync);
+          activeFenceSync = null;
+        }
+      };
+
       const scheduleNextFrame = (didDrawGl: boolean) => {
+        if (cancelled || isGamePausedRef.current) return;
         if (!manager.isSoftwareGl) {
           animFrameId = window.requestAnimationFrame(animate);
           return;
@@ -1250,8 +1740,12 @@ export const CapyGameView: React.FC = () => {
             activeFenceSync = sync;
             const fenceStartMs = performance.now();
             const poll = () => {
-              if (cancelled || glCtx.isContextLost()) {
+              if (cancelled || isGamePausedRef.current || glCtx.isContextLost()) {
+                if (activeFenceSync === sync && !glCtx.isContextLost()) {
+                  glCtx.deleteSync(sync);
+                }
                 activeFenceSync = null;
+                paceTimerId = null;
                 return;
               }
               const state = glCtx.getSyncParameter(sync, glCtx.SYNC_STATUS);
@@ -1263,7 +1757,9 @@ export const CapyGameView: React.FC = () => {
                 if (activeFenceSync === sync) activeFenceSync = null;
                 paceTimerId = window.setTimeout(() => {
                   paceTimerId = null;
-                  animFrameId = window.requestAnimationFrame(animate);
+                  if (!cancelled && !isGamePausedRef.current) {
+                    animFrameId = window.requestAnimationFrame(animate);
+                  }
                 }, delayMs);
               }
             };
@@ -1273,12 +1769,15 @@ export const CapyGameView: React.FC = () => {
         }
         paceTimerId = window.setTimeout(() => {
           paceTimerId = null;
-          animFrameId = window.requestAnimationFrame(animate);
+          if (!cancelled && !isGamePausedRef.current) {
+            animFrameId = window.requestAnimationFrame(animate);
+          }
         }, delayMs);
       };
 
       const animate = (now: number) => {
-        if (cancelled) return;
+        animFrameId = 0;
+        if (cancelled || isGamePausedRef.current) return;
         if (manager.isSoftwareGl && (modalOpenRef.current || menuOpenRef.current)) {
           lastTime = now;
           modalWakeParity ^= 1;
@@ -1330,7 +1829,22 @@ export const CapyGameView: React.FC = () => {
 
         scheduleNextFrame(true);
       };
-      animFrameId = window.requestAnimationFrame(animate);
+
+      suspendAnimLoopRef.current = cancelScheduledFrame;
+      resumeAnimLoopRef.current = () => {
+        if (cancelled || isGamePausedRef.current) return;
+        lastTime = performance.now();
+        uiSyncAccum = 0;
+        if (animFrameId === 0 && paceTimerId === null) {
+          animFrameId = window.requestAnimationFrame(animate);
+        }
+      };
+
+      if (!isGamePausedRef.current) {
+        animFrameId = window.requestAnimationFrame(animate);
+      } else {
+        manager.setPaused(true);
+      }
 
       const handleResize = () => {
         if (!mountRef.current || !managerRef.current) return;
@@ -1372,6 +1886,26 @@ export const CapyGameView: React.FC = () => {
           return;
         }
         const key = e.key.toLowerCase();
+        if (
+          key === 'p' &&
+          !e.repeat &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey &&
+          !modalOpenRef.current &&
+          !firstRunSetupOpenRef.current
+        ) {
+          e.preventDefault();
+          toggleGamePause();
+          return;
+        }
+        if (isGamePausedRef.current) {
+          if (key === 'escape' && !e.repeat) {
+            e.preventDefault();
+            setGamePaused(false);
+          }
+          return;
+        }
         if (key === 'w' || key === 'arrowup') managerRef.current.moveInput.z = -1;
         if (key === 's' || key === 'arrowdown') managerRef.current.moveInput.z = 1;
         if (key === 'a' || key === 'arrowleft') managerRef.current.moveInput.x = -1;
@@ -1408,6 +1942,8 @@ export const CapyGameView: React.FC = () => {
           setFreeMouselookActive(!isFreeMouselookRef.current);
         }
         if (inCapytorioActive) {
+          const capyRt = getLoadedCapytorioRuntime();
+          const curCapytorioSnap = managerRef.current.getCapytorioSnapshot();
           if (
             (e.ctrlKey || e.metaKey) &&
             !e.repeat &&
@@ -1426,7 +1962,7 @@ export const CapyGameView: React.FC = () => {
           if (
             key === 'enter' &&
             !e.repeat &&
-            managerRef.current.getCapytorioSnapshot().clipboard.toolState === 'paste'
+            curCapytorioSnap?.clipboard.toolState === 'paste'
           ) {
             e.preventDefault();
             const res = managerRef.current.placeCapytorioBlueprintAtPositionedGhost();
@@ -1435,19 +1971,19 @@ export const CapyGameView: React.FC = () => {
           }
           if ((e.ctrlKey || e.metaKey) && !e.repeat && (key === 'c' || key === 'x' || key === 'v')) {
             e.preventDefault();
-            const curClip = managerRef.current.getCapytorioSnapshot().clipboard;
+            const curClip = curCapytorioSnap?.clipboard;
             if (key === 'c') {
-              managerRef.current.setCapytorioClipboardMode('select_copy', curClip.selectionShape);
+              managerRef.current.setCapytorioClipboardMode('select_copy', curClip?.selectionShape);
               showToast('Copy tool — drag Box/Lasso or click a building');
             } else if (key === 'x') {
-              managerRef.current.setCapytorioClipboardMode('select_cut', curClip.selectionShape);
+              managerRef.current.setCapytorioClipboardMode('select_cut', curClip?.selectionShape);
               showToast('Cut tool — drag Box/Lasso or click a building to move');
             } else if (key === 'v') {
               const activated = managerRef.current.activateLastCapytorioBlueprint();
               if (activated) {
-                const nextClip = managerRef.current.getCapytorioSnapshot().clipboard;
+                const nextClip = managerRef.current.getCapytorioSnapshot()?.clipboard;
                 showToast(
-                  `Paste ready (${nextClip.count}) — position ghost then click Place [Enter]`
+                  `Paste ready (${nextClip?.count ?? 0}) — position ghost then click Place [Enter]`
                 );
               } else {
                 showToast('Blueprint library empty — use Copy or Cut first');
@@ -1457,28 +1993,28 @@ export const CapyGameView: React.FC = () => {
           }
           if (key >= '0' && key <= '9') {
             const idx = key === '0' ? 9 : parseInt(key, 10) - 1;
-            const snapTools = managerRef.current.getCapytorioSnapshot().recentTools;
-            const machineTool = snapTools[idx] ?? CAPYTORIO_HOTBAR_ORDER[idx];
+            const snapTools = curCapytorioSnap?.recentTools ?? [];
+            const machineTool = snapTools[idx] ?? capyRt?.CAPYTORIO_HOTBAR_ORDER[idx];
             if (machineTool) {
               lastCapytorioMachineRef.current = machineTool;
               managerRef.current.setCapytorioTool(machineTool);
             }
           } else if (key === 'r' && !e.repeat) {
-            const snapBefore = managerRef.current.getCapytorioSnapshot();
-            const curClip = snapBefore.clipboard;
+            const snapBefore = curCapytorioSnap;
+            const curClip = snapBefore?.clipboard;
             const nextDir = managerRef.current.rotateCapytorioDirection(e.shiftKey);
-            if (curClip.toolState === 'paste') {
+            if (curClip?.toolState === 'paste') {
               showToast(e.shiftKey ? 'Rotated blueprint 90° CCW' : 'Rotated blueprint 90° CW');
-            } else if (snapBefore.inspectedMachine) {
+            } else if (snapBefore?.inspectedMachine) {
               const dirNames = ['North', 'East', 'South', 'West'];
-              const mSpec = CAPYTORIO_MACHINE_SPECS[snapBefore.inspectedMachine.type];
-              showToast(`Rotated ${mSpec.shortName}: ${dirNames[nextDir]}`);
+              const mSpec = capyRt?.CAPYTORIO_MACHINE_SPECS[snapBefore.inspectedMachine.type];
+              showToast(`Rotated ${mSpec?.shortName ?? snapBefore.inspectedMachine.type}: ${dirNames[nextDir]}`);
             } else {
               const dirNames = ['North', 'East', 'South', 'West'];
               showToast(`Orientation: ${dirNames[nextDir]}`);
             }
           } else if (key === 'x' && !e.repeat) {
-            const cur = managerRef.current.getCapytorioSnapshot().selectedTool;
+            const cur = curCapytorioSnap?.selectedTool;
             managerRef.current.setCapytorioTool(
               cur === 'demolish' ? lastCapytorioMachineRef.current : 'demolish'
             );
@@ -1489,8 +2025,8 @@ export const CapyGameView: React.FC = () => {
             }
             showToast(picked.label);
           } else if (key === 'h' && !e.repeat) {
-            const curClip = managerRef.current.getCapytorioSnapshot().clipboard;
-            if (curClip.toolState === 'paste') {
+            const curClip = curCapytorioSnap?.clipboard;
+            if (curClip?.toolState === 'paste') {
               if (managerRef.current.flipCapytorioBlueprintHorizontal()) {
                 showToast('Flipped blueprint horizontally');
               }
@@ -1501,8 +2037,7 @@ export const CapyGameView: React.FC = () => {
           } else if (key === 'b' && !e.repeat) {
             setCapytorioDrawerTab((prev) => (prev === 'blueprints' ? 'none' : 'blueprints'));
           } else if (key === 'f' && !e.repeat) {
-            const snap = managerRef.current.getCapytorioSnapshot();
-            const insp = snap.inspectedMachine;
+            const insp = curCapytorioSnap?.inspectedMachine;
             const loadable =
               insp &&
               (insp.type === 'furnace' ||
@@ -1511,16 +2046,17 @@ export const CapyGameView: React.FC = () => {
                 insp.type === 'generator');
             if (loadable) {
               const moved = managerRef.current.insertInputsCapytorioMachine(insp.gx, insp.gz, 4);
+              const shortName = capyRt?.CAPYTORIO_MACHINE_SPECS[insp.type].shortName ?? insp.type;
               showToast(
                 moved > 0
-                  ? `Loaded +${moved} inputs into ${CAPYTORIO_MACHINE_SPECS[insp.type].shortName}`
+                  ? `Loaded +${moved} inputs into ${shortName}`
                   : 'No matching pocket fuel/inputs available to load'
               );
             } else {
               const picked = managerRef.current.pickupCapytorioBeltOrFloorAtCursorOrHero();
               if (picked.total > 0) {
                 const leadName = picked.items[0]
-                  ? getCapytorioItemMeta(picked.items[0].item).name
+                  ? (capyRt?.getCapytorioItemMeta(picked.items[0].item).name ?? picked.items[0].item)
                   : 'items';
                 showToast(
                   `Picked up +${picked.total} ${leadName}${picked.items.length > 1 ? '…' : ''} from ${picked.source === 'floor' ? 'ground' : 'belt'}`
@@ -1532,15 +2068,18 @@ export const CapyGameView: React.FC = () => {
           } else if (key === 'e' && !e.repeat) {
             const act = managerRef.current.mineOrPickupCapytorioAtCursorOrHero();
             if (act.kind === 'belt_pickup' || act.kind === 'floor_pickup') {
-              const itemName = act.itemId ? getCapytorioItemMeta(act.itemId).name : 'items';
+              const itemName = act.itemId
+                ? (capyRt?.getCapytorioItemMeta(act.itemId).name ?? act.itemId)
+                : 'items';
               showToast(
                 `Picked up +${act.total} ${itemName} from ${act.kind === 'floor_pickup' ? 'ground' : 'belt'}`
               );
             } else if (act.itemId) {
+              const itemName = capyRt?.getCapytorioItemMeta(act.itemId).name ?? act.itemId;
               showToast(
                 act.itemId === 'orange'
-                  ? `Harvested +${act.total} ${getCapytorioItemMeta(act.itemId).name} from Citrus Tree`
-                  : `Mined +${act.total} ${getCapytorioItemMeta(act.itemId).name}`
+                  ? `Harvested +${act.total} ${itemName} from Citrus Tree`
+                  : `Mined +${act.total} ${itemName}`
               );
             } else {
               showToast('Point or stand near a belt item or ore seam [E]');
@@ -1548,8 +2087,8 @@ export const CapyGameView: React.FC = () => {
           } else if (key === 'i' && !e.repeat) {
             setCapytorioDrawerTab((prev) => (prev === 'inventory' ? 'none' : 'inventory'));
           } else if (key === 'v' && !e.repeat) {
-            const curClip = managerRef.current.getCapytorioSnapshot().clipboard;
-            if (curClip.toolState === 'paste') {
+            const curClip = curCapytorioSnap?.clipboard;
+            if (curClip?.toolState === 'paste') {
               if (managerRef.current.flipCapytorioBlueprintVertical()) {
                 showToast('Flipped blueprint vertically');
               }
@@ -1573,7 +2112,10 @@ export const CapyGameView: React.FC = () => {
         if (key === 'escape') {
           setFreeMouselookActive(false);
           managerRef.current.cancelBuildingPlacementGhost();
-          if (managerRef.current.getCapytorioSnapshot().clipboard.toolState !== 'off') {
+          if (
+            managerRef.current.getCapytorioSnapshot() &&
+            managerRef.current.getCapytorioSnapshot()!.clipboard.toolState !== 'off'
+          ) {
             managerRef.current.clearCapytorioClipboard();
             setCapytorioSelectionOverlay(null);
           }
@@ -1724,14 +2266,9 @@ export const CapyGameView: React.FC = () => {
       document.addEventListener('pointerlockchange', handlePointerLockChange);
 
       cleanupFn = () => {
-        window.cancelAnimationFrame(animFrameId);
-        if (paceTimerId !== null) {
-          window.clearTimeout(paceTimerId);
-        }
-        if (activeFenceSync && glCtx && !glCtx.isContextLost()) {
-          glCtx.deleteSync(activeFenceSync);
-          activeFenceSync = null;
-        }
+        suspendAnimLoopRef.current = null;
+        resumeAnimLoopRef.current = null;
+        cancelScheduledFrame();
         containerEl.removeEventListener('touchstart', handleTouchStart);
         containerEl.removeEventListener('touchmove', handleTouchMove);
         containerEl.removeEventListener('touchend', handleTouchEnd);
@@ -1803,6 +2340,7 @@ export const CapyGameView: React.FC = () => {
       const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
       const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
       const cSnap = managerRef.current.getCapytorioSnapshot();
+      if (!cSnap) return;
       const clipState = cSnap.clipboard.toolState;
 
       // Alt + Left-Click anywhere opens Capytoriopedia directly on the clicked tile/entity
@@ -2041,9 +2579,11 @@ export const CapyGameView: React.FC = () => {
                   cDrag.prevGz = startRes.gz;
                   cDrag.placedCount++;
                 } else {
-                  const hoverSnap = managerRef.current.getCapytorioSnapshot().hoveredTile;
-                  cDrag.prevGx = hoverSnap.gx;
-                  cDrag.prevGz = hoverSnap.gz;
+                  const hoverSnap = managerRef.current.getCapytorioSnapshot()?.hoveredTile;
+                  if (hoverSnap) {
+                    cDrag.prevGx = hoverSnap.gx;
+                    cDrag.prevGz = hoverSnap.gz;
+                  }
                 }
               }
               const stepRes = managerRef.current.handleCapytorioDragPaint(
@@ -2156,7 +2696,9 @@ export const CapyGameView: React.FC = () => {
       const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
       const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
       const res = managerRef.current.openCapytorioPediaAtNdc(ndcX, ndcY);
-      openCapytorioPedia(res.pediaId, res.info);
+      if (res) {
+        openCapytorioPedia(res.pediaId, res.info);
+      }
       setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
       return;
     }
@@ -3642,6 +4184,26 @@ export const CapyGameView: React.FC = () => {
             <span className="hidden sm:inline">
               {isAdvancedMode ? 'World' : 'Worlds'}
             </span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="toggle-pause-btn"
+            onClick={toggleGamePause}
+            title={isGamePaused ? 'Resume Simulation [P]' : 'Pause & Hibernate Simulation [P]'}
+            aria-label={isGamePaused ? 'Resume simulation' : 'Pause simulation'}
+            aria-pressed={isGamePaused}
+            className={`${isAdvancedMode ? 'w-6 h-6 sm:w-7 sm:h-7' : 'w-7 h-7'} flex items-center justify-center rounded border transition-colors cursor-pointer shrink-0 ${
+              isGamePaused
+                ? 'bg-amber-500/25 border-amber-400/60 text-amber-200 hover:bg-amber-500/35'
+                : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border-white/10'
+            }`}
+          >
+            {isGamePaused ? (
+              <Play className="w-3.5 h-3.5 text-amber-300" />
+            ) : (
+              <Pause className="w-3.5 h-3.5" />
+            )}
           </button>
 
           <button
@@ -6620,347 +7182,29 @@ export const CapyGameView: React.FC = () => {
         !isPrivacyOpen &&
         !isJsonEditorOpen &&
         capytorioSnap && (
-          <CapytorioHud
-            snap={capytorioSnap}
-            isTopBarVisible={isTopBarVisible}
-            onToggleTopBar={() => {
-              AudioService.playCapytorioUiClick('tool');
-              setIsTopBarVisible((prev) => !prev);
-            }}
-            onOpenSettings={() => {
-              AudioService.playCapytorioUiClick('tool');
-              setIsSettingsOpen(true);
-            }}
-            pointerHoverActive={capytorioPointerHoverActive}
-            drawerTab={capytorioDrawerTab}
-            setDrawerTab={setCapytorioDrawerTab}
-            craftGroup={capytorioCraftGroup}
-            setCraftGroup={setCapytorioCraftGroup}
-            selectedCraftRecipeId={selectedCraftRecipeId}
-            setSelectedCraftRecipeId={setSelectedCraftRecipeId}
-            luaCatalogInfo={luaCatalogInfo}
-            setLuaCatalogInfo={setLuaCatalogInfo}
-            pediaEntryId={capytorioPediaEntryId}
-            pediaContextInfo={capytorioPediaContextInfo}
-            searchFocusNonce={capytorioSearchFocusNonce}
-            onOpenPedia={openCapytorioPedia}
-            onSelectTool={(toolId, promoteToRecent = false) => {
-              if (toolId !== 'mine' && toolId !== 'demolish') {
-                lastCapytorioMachineRef.current = toolId;
-              }
-              managerRef.current?.setCapytorioTool(toolId, promoteToRecent);
-            }}
-            onMineTileAt={(gx, gz) => {
-              const mined = managerRef.current?.mineCapytorioTileAt(gx, gz);
-              if (mined) {
-                const amt = mined === 'orange' ? 3 : 2;
-                showToast(
-                  mined === 'orange'
-                    ? `Harvested +${amt} ${getCapytorioItemMeta(mined).name}`
-                    : `Mined +${amt} ${getCapytorioItemMeta(mined).name}`
-                );
-              }
-            }}
-            onInspectTileAt={(gx, gz) => {
-              setCapytorioPointerHoverActive(false);
-              managerRef.current?.inspectCapytorioTile(gx, gz);
-            }}
-            onClearInspection={() => {
-              managerRef.current?.clearCapytorioInspection();
-            }}
-            onDemolishMachineAt={(gx, gz) => {
-              const removed = managerRef.current?.demolishCapytorioTileAt(gx, gz);
-              if (removed) {
-                showToast(`Deleted & refunded ${CAPYTORIO_MACHINE_SPECS[removed].name}`);
-              }
-            }}
-            onRotateDir={() => {
-              const snapBefore = managerRef.current?.getCapytorioSnapshot();
-              const nextDir = managerRef.current?.rotateCapytorioDirection();
-              if (snapBefore?.clipboard.toolState === 'paste') {
-                showToast('Rotated blueprint 90°');
-              } else if (snapBefore?.inspectedMachine && nextDir !== undefined) {
-                const dirNames = ['North', 'East', 'South', 'West'];
-                const mSpec = CAPYTORIO_MACHINE_SPECS[snapBefore.inspectedMachine.type];
-                showToast(`Rotated ${mSpec.shortName}: ${dirNames[nextDir]}`);
-              }
-            }}
-            onFlipBlueprintH={() => {
-              if (managerRef.current?.flipCapytorioBlueprintHorizontal()) {
-                showToast('Flipped blueprint horizontally');
-              }
-            }}
-            onFlipBlueprintV={() => {
-              if (managerRef.current?.flipCapytorioBlueprintVertical()) {
-                showToast('Flipped blueprint vertically');
-              }
-            }}
-            onActivateLastBlueprint={() => {
-              if (managerRef.current?.activateLastCapytorioBlueprint()) {
-                const nextClip = managerRef.current.getCapytorioSnapshot().clipboard;
-                showToast(`Paste ready (${nextClip.count}) — [R] Rotate · [H/V] Flip`);
-              } else {
-                showToast('No saved blueprints yet');
-              }
-            }}
-            onSelectBlueprint={(id) => {
-              const picked = managerRef.current?.selectCapytorioBlueprint(id);
-              if (picked) {
-                showToast(`Loaded "${picked.label}" (${picked.entries.length}) — click to place`);
-              }
-            }}
-            onDeleteBlueprint={(id) => {
-              if (managerRef.current?.deleteCapytorioBlueprint(id)) {
-                showToast('Removed blueprint from library');
-              }
-            }}
-            onClearBlueprintLibrary={() => {
-              managerRef.current?.clearCapytorioBlueprintLibrary();
-              showToast('Cleared blueprint library');
-            }}
-            onBuildSampleStarterMall={() => {
-              const res = managerRef.current?.buildCapytorioSampleStarterMall();
-              if (res?.message) {
-                showToast(res.message);
-              }
-            }}
-            onImportFactorioString={async (raw) => {
-              const mgr = managerRef.current;
-              if (!mgr) {
-                return {
-                  ok: false,
-                  kind: 'blueprint' as const,
-                  blueprints: [],
-                  importedEntityCount: 0,
-                  skippedTotalCount: 0,
-                  skippedEntities: [],
-                  addedIds: [],
-                  error: 'Factory engine is not ready yet.',
-                };
-              }
-              const res = await mgr.importCapytorioFactorioBlueprintString(raw);
-              if (res.ok) {
-                const skipSuffix =
-                  res.skippedTotalCount > 0
-                    ? ` (${res.skippedTotalCount} unsupported skipped)`
-                    : '';
-                showToast(
-                  `Imported ${res.blueprints.length} blueprint${
-                    res.blueprints.length === 1 ? '' : 's'
-                  } (${res.importedEntityCount} entities)${skipSuffix}`
-                );
-              }
-              return res;
-            }}
-            onExportBlueprintString={async (id) => {
-              const mgr = managerRef.current;
-              if (!mgr) {
-                return {
-                  ok: false,
-                  label: '',
-                  encoded: '',
-                  entityCount: 0,
-                  error: 'Factory engine is not ready yet.',
-                };
-              }
-              return mgr.exportCapytorioBlueprintToFactorioString(id);
-            }}
-            onExportFactoryString={async () => {
-              const mgr = managerRef.current;
-              if (!mgr) {
-                return {
-                  ok: false,
-                  label: '',
-                  encoded: '',
-                  entityCount: 0,
-                  error: 'Factory engine is not ready yet.',
-                };
-              }
-              return mgr.exportCapytorioFactoryToFactorioString();
-            }}
-            onExportBlueprintBookString={async () => {
-              const mgr = managerRef.current;
-              if (!mgr) {
-                return {
-                  ok: false,
-                  label: '',
-                  encoded: '',
-                  blueprintCount: 0,
-                  entityCount: 0,
-                  error: 'Factory engine is not ready yet.',
-                };
-              }
-              return mgr.exportCapytorioBlueprintBookToFactorioString();
-            }}
-            onSetClipboardMode={(mode, shape) => {
-              managerRef.current?.setCapytorioClipboardMode(mode, shape);
-            }}
-            onClearClipboard={() => {
-              managerRef.current?.clearCapytorioClipboard();
-              setCapytorioSelectionOverlay(null);
-            }}
-            onPlaceBlueprint={() => {
-              const res = managerRef.current?.placeCapytorioBlueprintAtPositionedGhost();
-              if (res?.message) {
-                showToast(res.message);
-              }
-            }}
-            onUndoCut={() => {
-              const res = managerRef.current?.undoCapytorioCut();
-              if (res && res.restoredCount > 0) {
-                showToast(
-                  `Restored ${res.restoredCount} cut building${res.restoredCount === 1 ? '' : 's'}`
-                );
-              }
-            }}
-            onUndoAction={() => {
-              const res = managerRef.current?.undoCapytorioAction();
-              if (res) {
-                showToast(res.ok ? `Undid: ${res.label}` : 'Nothing to undo');
-              }
-            }}
-            onRedoAction={() => {
-              const res = managerRef.current?.redoCapytorioAction();
-              if (res) {
-                showToast(res.ok ? `Redid: ${res.label}` : 'Nothing to redo');
-              }
-            }}
-            onCollectAllOutputs={() => {
-              const got = managerRef.current?.collectAllCapytorioOutputs() ?? 0;
-              showToast(
-                got > 0
-                  ? `Collected ${got} items from machines, chests & floor`
-                  : 'No finished outputs or spilled items ready yet'
-              );
-            }}
-            onFeedScience={() => {
-              const fed = managerRef.current?.feedScienceCapytorio() ?? 0;
-              if (fed > 0) {
-                showToast(`Delivered ${fed} Science Pack${fed === 1 ? '' : 's'} to Lab`);
-              } else {
-                showToast('Craft Science Packs & place a Science Lab first');
-              }
-            }}
-            onLaunchRocket={() => {
-              const res = managerRef.current?.launchCapytorioRocket();
-              if (res?.ok) {
-                showToast(`ORBITAL YUZU ROCKET #${res.rocketLaunches} LAUNCHED!`);
-              } else if (res?.reason) {
-                showToast(res.reason);
-              }
-            }}
-            onCraftMachine={(mType, count = 1) => {
-              const spec = CAPYTORIO_MACHINE_SPECS[mType];
-              const res = managerRef.current?.enqueueCapytorioMachineCraft(mType, count);
-              if (res?.ok) {
-                showToast(
-                  res.queuedCount > 1
-                    ? `Queued ${res.queuedCount}× ${spec.name}`
-                    : `Queued +1 ${spec.name}`
-                );
-              } else {
-                const costLabel = Object.entries(spec.craftCost)
-                  .map(([id, amt]) => `${amt} ${getCapytorioItemMeta(id).shortName}`)
-                  .join(' · ');
-                showToast(res?.reason ?? `Need ${costLabel}`);
-              }
-            }}
-            onCraftRecipe={(recipeId, count, autoEquipResult = false) => {
-              const rec = CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
-              const res = managerRef.current?.enqueueCapytorioPocketCraft(recipeId, count);
-              if (res?.ok && rec) {
-                const outMeta = getCapytorioItemMeta(rec.result);
-                if (autoEquipResult && CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[rec.result]) {
-                  lastCapytorioMachineRef.current = rec.result;
-                  managerRef.current?.setCapytorioTool(rec.result, true);
-                }
-                showToast(
-                  res.queuedBatches > 1
-                    ? `Queued ${res.queuedBatches}× ${outMeta.name}`
-                    : `Queued +${rec.resultCount} ${outMeta.name}`
-                );
-              } else if (!autoEquipResult) {
-                showToast(res?.reason ?? 'Missing required ingredients in Inventory');
-              }
-            }}
-            onCancelCraftQueueItem={(uid) => {
-              const ok = managerRef.current?.cancelCapytorioCraftQueueItem(uid) ?? false;
-              if (ok) {
-                showToast('Cancelled craft · 100% ingredients refunded');
-              }
-            }}
-            onSelectTech={(techId) => {
-              const tech = TECH_BY_ID.get(techId);
-              const ok = managerRef.current?.selectCapytorioTech(techId) ?? false;
-              if (ok && tech) {
-                showToast(`Researching: ${tech.name}`);
-              } else if (tech && capytorioSnap.unlockedTechs.includes(techId) && !tech.repeatable) {
-                showToast(`${tech.name} already researched`);
-              } else {
-                showToast('Unlock prerequisite research first');
-              }
-            }}
-            onFuelGenerator={(gx, gz) => {
-              const loaded = managerRef.current?.fuelCapytorioGenerator(gx, gz, 5) ?? 0;
-              showToast(
-                loaded > 0
-                  ? `Loaded +${loaded} fuel into Generator (6.0 MW active)`
-                  : 'Need Coal, Sap, or Orange in pocket to fuel Generator'
-              );
-            }}
-            onInsertInputs={(gx, gz) => {
-              const moved = managerRef.current?.insertInputsCapytorioMachine(gx, gz, 4) ?? 0;
-              showToast(
-                moved > 0
-                  ? `Loaded +${moved} inputs into machine`
-                  : 'No matching ingredients/science in pocket'
-              );
-            }}
-            onTakeOutputs={(gx, gz) => {
-              const taken = managerRef.current?.takeOutputsCapytorioMachine(gx, gz) ?? 0;
-              showToast(
-                taken > 0 ? `Collected +${taken} items from machine` : 'Machine output buffer is empty'
-              );
-            }}
-            onRotateMachineAt={(gx, gz) => {
-              managerRef.current?.rotateCapytorioMachineAt(gx, gz);
-            }}
-            onSelectAssemblerRecipe={(recipeId) => {
-              managerRef.current?.setCapytorioAssemblerRecipe(recipeId);
-              const rec = CAPYTORIO_RECIPES.find((r) => r.id === recipeId);
-              showToast(`Assembler Recipe: ${rec?.name ?? recipeId}`);
-            }}
-            onToggleAltMode={() => {
-              const nextAlt = managerRef.current?.toggleCapytorioAltMode() ?? true;
-              showToast(nextAlt ? 'Alt-Mode ON — 3D Machine Icons' : 'Alt-Mode OFF');
-            }}
-            onCopyEntitySettings={(gx, gz) => {
-              const res = managerRef.current?.copyCapytorioEntitySettingsAtTile(gx, gz);
-              showToast(
-                res?.ok
-                  ? `Copied settings: ${res.label ?? 'Entity'}`
-                  : res?.reason ?? 'No configurable settings to copy'
-              );
-            }}
-            onPasteEntitySettings={(gx, gz) => {
-              const res = managerRef.current?.pasteCapytorioEntitySettingsAtTile(gx, gz);
-              showToast(
-                res?.ok
-                  ? `Pasted settings: ${res.label ?? 'Entity'}`
-                  : res?.reason ?? 'No matching copied settings to paste'
-              );
-            }}
-            onSetSplitterConfig={(gx, gz, config) => {
-              managerRef.current?.setCapytorioSplitterConfig(gx, gz, config);
-            }}
-            onSetInserterConfig={(gx, gz, config) => {
-              managerRef.current?.setCapytorioInserterConfig(gx, gz, config);
-            }}
-            onSetChestSlotLimit={(gx, gz, slotLimit) => {
-              managerRef.current?.setCapytorioChestSlotLimit(gx, gz, slotLimit);
-            }}
-            showToast={showToast}
-          />
+          <Suspense fallback={null}>
+            <LazyCapytorioHud
+              snap={capytorioSnap}
+              isTopBarVisible={isTopBarVisible}
+              isPaused={isGamePaused}
+              onTogglePause={toggleGamePause}
+              pointerHoverActive={capytorioPointerHoverActive}
+              drawerTab={capytorioDrawerTab}
+              setDrawerTab={setCapytorioDrawerTab}
+              craftGroup={capytorioCraftGroup}
+              setCraftGroup={setCapytorioCraftGroup}
+              selectedCraftRecipeId={selectedCraftRecipeId}
+              setSelectedCraftRecipeId={setSelectedCraftRecipeId}
+              luaCatalogInfo={luaCatalogInfo}
+              setLuaCatalogInfo={setLuaCatalogInfo}
+              pediaEntryId={capytorioPediaEntryId}
+              pediaContextInfo={capytorioPediaContextInfo}
+              searchFocusNonce={capytorioSearchFocusNonce}
+              onOpenPedia={openCapytorioPedia}
+              showToast={showToast}
+              {...capytorioHudActions}
+            />
+          </Suspense>
         )}
 
       {/* Optional On-Screen Steering Pad (Hidden unless explicitly set to 'always' in Settings) */}
@@ -9922,6 +10166,41 @@ export const CapyGameView: React.FC = () => {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Simulation Paused & Hibernated Overlay */}
+      {isGamePaused && (
+        <div
+          data-testid="game-paused-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Simulation Paused"
+          className="fixed inset-0 z-50 bg-zinc-950/75 backdrop-blur-sm flex items-center justify-center p-4 pointer-events-auto"
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-zinc-950 border border-white/15 shadow-2xl p-6 text-center space-y-4">
+            <div className="mx-auto w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-400/30 flex items-center justify-center">
+              <Pause className="w-6 h-6 text-amber-300" />
+            </div>
+            <div className="space-y-1">
+              <h2 className="text-lg font-semibold text-zinc-100 tracking-tight">
+                Simulation Paused
+              </h2>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Render loop, Wasm physics worker, GPU post-processing buffers, and audio are suspended to save CPU and RAM.
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="resume-game-btn"
+              onClick={() => setGamePaused(false)}
+              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-sm font-semibold transition-colors cursor-pointer"
+            >
+              <Play className="w-4 h-4 fill-current" />
+              <span>Resume Simulation</span>
+              <span className="text-[11px] font-mono opacity-75">[P]</span>
+            </button>
           </div>
         </div>
       )}

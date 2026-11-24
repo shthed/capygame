@@ -29,6 +29,7 @@ import {
   pass,
   positionLocal,
   positionView,
+  positionViewDirection,
   positionWorld,
   pow,
   screenCoordinate,
@@ -65,8 +66,15 @@ import {
 } from './GpuCullingAndClusterMath';
 import { createStarPsfMaterial } from '../UniverseShaders';
 import { disposeObject3DTree } from './ThreeDisposal';
+import {
+  GPU_BENCH_CACHE_KEY,
+  clearGpuBackendBenchmarkCache,
+  registerWebGpuRuntime,
+  type WebGpuProbeResult,
+} from './WebGpuRuntime';
 
-const GPU_BENCH_CACHE_KEY = 'capy_gpu_backend_bench_v1';
+export { clearGpuBackendBenchmarkCache, type WebGpuProbeResult };
+
 const GPU_BENCH_VERSION = 1;
 const GPU_BENCH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -80,16 +88,6 @@ export interface WebGpuBenchmarkCacheEntry {
   webGl2MaxMs: number;
   summary: string;
   testedAtMs: number;
-}
-
-export interface WebGpuProbeResult {
-  supported: boolean;
-  shouldUseWebGpu: boolean;
-  adapterName: string;
-  isFallbackAdapter: boolean;
-  features: string[];
-  benchmarkedWinner?: 'webgpu' | 'webgl2';
-  benchmarkSummary?: string;
 }
 
 function queryGlRendererIdentity(): string {
@@ -130,15 +128,7 @@ export function getCachedGpuBackendBenchmark(signature?: string): WebGpuBenchmar
   }
 }
 
-export function clearGpuBackendBenchmarkCache(): void {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.removeItem(GPU_BENCH_CACHE_KEY);
-    }
-  } catch {
-    // Ignore storage issues
-  }
-}
+
 
 function buildGpuBenchmarkScene(forWebGpu: boolean): {
   scene: THREE.Scene;
@@ -1319,5 +1309,53 @@ export class WebGpuPostAndComputePipeline {
     this.postProcessing = null;
   }
 }
+
+registerWebGpuRuntime({
+  createTslIblSkyDomeMaterial,
+  createTslSkyNodeMaterial,
+  createTslWaterPhysicalNodeMaterial,
+  upgradeMaterialWithTslSightlineFade,
+  convertLegacyShaderMaterialsToTsl,
+  createTslVfxMotesMaterial: () =>
+    new THREE_WEBGPU.PointsNodeMaterial({ transparent: true, opacity: 0, depthWrite: false }),
+  createTslGodRayMaterial: (initialOpacity: number) => {
+    const tslRayCol = uniform(new THREE.Color(0xfff3c4));
+    const tslRayOp = uniform(initialOpacity);
+    const tslMat = new THREE_WEBGPU.MeshBasicNodeMaterial();
+    tslMat.transparent = true;
+    tslMat.blending = THREE.AdditiveBlending;
+    tslMat.depthWrite = false;
+    tslMat.side = THREE.DoubleSide;
+    tslMat.colorNode = tslRayCol;
+    tslMat.opacityNode = (() => {
+      const fresnel = pow(abs(dot(normalize(normalView), normalize(positionViewDirection))), 1.85);
+      const vUv = uv().y;
+      const verticalFade = smoothstep(0.0, 0.28, vUv).mul(
+        float(1.0).sub(smoothstep(0.55, 1.0, vUv))
+      );
+      return fresnel.mul(verticalFade).mul(tslRayOp);
+    })();
+    return {
+      material: tslMat,
+      colorUniform: tslRayCol as unknown as { value: THREE.Color },
+      opacityUniform: tslRayOp as unknown as { value: number },
+    };
+  },
+  createPmremGenerator: (renderer: unknown) =>
+    new THREE_WEBGPU.PMREMGenerator(
+      renderer as THREE_WEBGPU.WebGPURenderer
+    ) as unknown as {
+      fromScene: (scene: THREE.Scene, sigma?: number) => { texture: THREE.Texture };
+      dispose: () => void;
+    },
+  createWebGpuPostAndComputePipeline: (renderer, scene, camera, adapterName, initialConfig) =>
+    new WebGpuPostAndComputePipeline(
+      renderer as THREE_WEBGPU.WebGPURenderer,
+      scene,
+      camera,
+      adapterName,
+      initialConfig
+    ),
+});
 
 export { texture };

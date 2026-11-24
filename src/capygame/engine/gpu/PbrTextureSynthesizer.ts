@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import * as THREE_WEBGPU from 'three/webgpu';
+import type * as THREE_WEBGPU from 'three/webgpu';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GpuTextureFilterMode } from './GpuEngineTypes';
 import { isMobileEnvironment } from './FramePerformanceGovernor';
-import { createTslIblSkyDomeMaterial } from './WebGpuPipeline';
+import { getWebGpuRuntime } from './WebGpuRuntime';
 
 export type PbrSurfaceMaterialKind =
   | 'grass'
@@ -152,12 +152,16 @@ export class PbrTextureSynthesizer {
   }
 
   public static getSurfaceMapResolution(): number {
-    // Synthesize 256x256 maps in lean/mobile mode (capped from 512x512 desktop detail)
-    return this.isLeanTextureMode() ? 256 : 512;
+    // Keep startup CPU synthesis and VRAM fast: 64x64 in lean/mobile mode, 128x128 on desktop
+    return this.isLeanTextureMode() ? 64 : 128;
   }
 
   public static clearSurfaceCache(): void {
     this.surfaceMapCache.clear();
+    this.waterPrimaryNormal = null;
+    this.waterSecondaryNormal = null;
+    this.furNormalTex = null;
+    this.citrusNormalTex = null;
   }
 
   public static registerManagedTexture(tex: THREE.Texture): THREE.Texture {
@@ -465,7 +469,7 @@ export class PbrTextureSynthesizer {
     primary: THREE.DataTexture;
     secondary: THREE.DataTexture;
   } {
-    const waterSize = this.isLeanTextureMode() ? 128 : 256;
+    const waterSize = this.isLeanTextureMode() ? 64 : 128;
     if (!this.waterPrimaryNormal || !this.waterSecondaryNormal) {
       const p = this.bakePbrDataMapsFromHeightfield(
         waterSize,
@@ -518,7 +522,7 @@ export class PbrTextureSynthesizer {
   public static getCapyFurNormalMap(): THREE.DataTexture {
     if (!this.furNormalTex) {
       const m = this.bakePbrDataMapsFromHeightfield(
-        this.isLeanTextureMode() ? 128 : 256,
+        this.isLeanTextureMode() ? 64 : 128,
         0.58,
         0.78,
         0.10,
@@ -542,7 +546,7 @@ export class PbrTextureSynthesizer {
   public static getCitrusPeelNormalMap(): THREE.DataTexture {
     if (!this.citrusNormalTex) {
       const m = this.bakePbrDataMapsFromHeightfield(
-        this.isLeanTextureMode() ? 128 : 256,
+        this.isLeanTextureMode() ? 64 : 128,
         2.35,
         0.24,
         0.14,
@@ -670,20 +674,19 @@ export class PbrTextureSynthesizer {
     const disposableMats: THREE.Material[] = [];
 
     try {
+      const webGpuRt = isWebGpu ? getWebGpuRuntime() : null;
+      if (isWebGpu && !webGpuRt) {
+        return null;
+      }
       pmremGenerator = isWebGpu
-        ? (new THREE_WEBGPU.PMREMGenerator(
-            renderer as THREE_WEBGPU.WebGPURenderer
-          ) as unknown as {
-            fromScene: (scene: THREE.Scene, sigma?: number) => { texture: THREE.Texture };
-            dispose: () => void;
-          })
+        ? webGpuRt!.createPmremGenerator(renderer)
         : new THREE.PMREMGenerator(renderer as THREE.WebGLRenderer);
       envScene = new RoomEnvironment();
 
       // Add a warm solar specular softbox dome + cool sky hemisphere + botanical ground bounce
       const skyDomeGeo = new THREE.SphereGeometry(14, 24, 16);
       const skyDomeMat: THREE.Material = isWebGpu
-        ? createTslIblSkyDomeMaterial()
+        ? webGpuRt!.createTslIblSkyDomeMaterial()
         : new THREE.ShaderMaterial({
             side: THREE.BackSide,
             depthWrite: false,

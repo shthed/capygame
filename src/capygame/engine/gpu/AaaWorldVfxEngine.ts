@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import * as THREE_WEBGPU from 'three/webgpu';
-import { abs, dot, float, normalize, normalView, positionViewDirection, pow, smoothstep, uniform, uv } from 'three/tsl';
+import { getWebGpuRuntime } from './WebGpuRuntime';
 
 export type VfxBurstKind = 'turf_dust' | 'cobble_spark' | 'water_splash' | 'citrus_burst' | 'xpbd_launch';
 
@@ -151,7 +150,7 @@ export class AaaWorldVfxEngine {
   private readonly _sunDirNorm = new THREE.Vector3(0.4, 0.8, 0.3);
 
   private readonly motesMat: THREE.ShaderMaterial | null;
-  private readonly godRayMat: THREE.ShaderMaterial | THREE_WEBGPU.MeshBasicNodeMaterial;
+  private readonly godRayMat: THREE.Material;
   private readonly godRayTslColor: { value: THREE.Color } | null = null;
   private readonly godRayTslOpacity: { value: number } | null = null;
   private readonly isWebGpu: boolean;
@@ -245,12 +244,10 @@ export class AaaWorldVfxEngine {
     motesGeo.setAttribute('aScale', new THREE.BufferAttribute(moteScales, 1));
     motesGeo.setAttribute('aOrbit', new THREE.BufferAttribute(moteOrbits, 3));
 
-    if (this.isWebGpu) {
+    const webGpuRt = this.isWebGpu ? getWebGpuRuntime() : null;
+    if (this.isWebGpu && webGpuRt) {
       this.motesMat = null;
-      this.motesPoints = new THREE.Points(
-        motesGeo,
-        new THREE_WEBGPU.PointsNodeMaterial({ transparent: true, opacity: 0, depthWrite: false })
-      );
+      this.motesPoints = new THREE.Points(motesGeo, webGpuRt.createTslVfxMotesMaterial());
       this.motesPoints.visible = false;
     } else {
       this.motesMat = new THREE.ShaderMaterial({
@@ -276,24 +273,11 @@ export class AaaWorldVfxEngine {
     // 3. Crepuscular Solar God-Ray Shafts (Fresnel-softened open-ended cones aligned to Sun)
     this.godRayGroup = new THREE.Group();
     this.godRayGroup.name = 'CrepuscularGodRays';
-    if (this.isWebGpu) {
-      const tslRayCol = uniform(new THREE.Color(0xfff3c4));
-      const tslRayOp = uniform(isSoftwareGl ? 0.0 : 0.055);
-      const tslMat = new THREE_WEBGPU.MeshBasicNodeMaterial();
-      tslMat.transparent = true;
-      tslMat.blending = THREE.AdditiveBlending;
-      tslMat.depthWrite = false;
-      tslMat.side = THREE.DoubleSide;
-      tslMat.colorNode = tslRayCol;
-      tslMat.opacityNode = (() => {
-        const fresnel = pow(abs(dot(normalize(normalView), normalize(positionViewDirection))), 1.85);
-        const vUv = uv().y;
-        const verticalFade = smoothstep(0.0, 0.28, vUv).mul(float(1.0).sub(smoothstep(0.55, 1.0, vUv)));
-        return fresnel.mul(verticalFade).mul(tslRayOp);
-      })();
-      this.godRayMat = tslMat;
-      this.godRayTslColor = tslRayCol as unknown as { value: THREE.Color };
-      this.godRayTslOpacity = tslRayOp as unknown as { value: number };
+    if (this.isWebGpu && webGpuRt) {
+      const handle = webGpuRt.createTslGodRayMaterial(isSoftwareGl ? 0.0 : 0.055);
+      this.godRayMat = handle.material;
+      this.godRayTslColor = handle.colorUniform;
+      this.godRayTslOpacity = handle.opacityUniform;
     } else {
       this.godRayMat = new THREE.ShaderMaterial({
         uniforms: {

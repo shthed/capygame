@@ -61,6 +61,50 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const norm = id.replace(/\\/g, '/');
+          if (
+            norm.includes('/node_modules/react/') ||
+            norm.includes('/node_modules/react-dom/') ||
+            norm.includes('/node_modules/scheduler/') ||
+            norm.includes('/node_modules/lucide-react/') ||
+            norm.includes('vite/preload-helper')
+          ) {
+            return 'vendor-react';
+          }
+          if (
+            norm.includes('/node_modules/three/build/three.webgpu') ||
+            norm.includes('/node_modules/three/build/three.tsl') ||
+            norm.includes('/node_modules/three/examples/jsm/tsl/') ||
+            norm.includes('/node_modules/three/addons/tsl/')
+          ) {
+            return 'vendor-three-webgpu';
+          }
+          if (norm.includes('/node_modules/three/')) {
+            return 'vendor-three';
+          }
+          if (
+            !norm.includes('/CapytorioStateGuard.ts') &&
+            !norm.includes('/CapytorioModuleLoader.ts') &&
+            !norm.includes('/CapytorioEntityInfoPanel.tsx') &&
+            !norm.includes('/CapytorioPediaView.tsx') &&
+            (norm.includes('/src/capygame/engine/Capytorio') ||
+              norm.includes('/src/capygame/engine/capytorioLuaDefaults.ts') ||
+              norm.includes('/src/capygame/engine/FactorioBlueprintCodec.ts') ||
+              norm.includes('/src/capygame/engine/capytorio/') ||
+              norm.includes('/src/capygame/components/Capytorio') ||
+              norm.includes('/src/capygame/components/capytorio/'))
+          ) {
+            return 'feature-capytorio';
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   optimizeDeps: {
     holdUntilCrawlEnd: false,
     esbuildOptions: {
@@ -75,6 +119,21 @@ export default defineConfig({
       'react/jsx-dev-runtime',
       'lucide-react',
       'three',
+      'three/webgpu',
+      'three/tsl',
+      'three/addons/tsl/display/BloomNode.js',
+      'three/addons/tsl/display/FXAANode.js',
+      'three/addons/tsl/display/GTAONode.js',
+      'three/addons/tsl/display/TRAANode.js',
+      'three/examples/jsm/environments/RoomEnvironment.js',
+      'three/examples/jsm/lights/RectAreaLightUniformsLib.js',
+      'three/examples/jsm/postprocessing/EffectComposer.js',
+      'three/examples/jsm/postprocessing/OutputPass.js',
+      'three/examples/jsm/postprocessing/Pass.js',
+      'three/examples/jsm/postprocessing/ShaderPass.js',
+      'three/examples/jsm/postprocessing/UnrealBloomPass.js',
+      'three/examples/jsm/shaders/CopyShader.js',
+      'three/examples/jsm/shaders/FXAAShader.js',
     ],
   },
   server: {

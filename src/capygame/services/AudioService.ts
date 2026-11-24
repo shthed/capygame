@@ -70,6 +70,8 @@ class CapyAudioService {
   private factoryHumFilter: BiquadFilterNode | null = null;
   private factoryHumGain: GainNode | null = null;
   private lifecycleHooked: boolean = false;
+  private isGamePaused: boolean = false;
+  private wasMusicPlayingBeforePause: boolean = false;
 
   constructor() {
     // Lazy initialize on first user gesture
@@ -88,7 +90,7 @@ class CapyAudioService {
         if (this.ctx && this.ctx.state === 'running') {
           this.ctx.suspend().catch(() => {});
         }
-      } else if (!this.isMuted && this.ctx && this.ctx.state === 'suspended') {
+      } else if (!this.isMuted && !this.isGamePaused && this.ctx && this.ctx.state === 'suspended') {
         this.ctx.resume().catch(() => {});
       }
     });
@@ -1549,7 +1551,48 @@ class CapyAudioService {
     this.factoryHumGain?.gain.setTargetAtTime(mix.targetGain, t, 0.25);
   }
 
+  public suspendForPause(): void {
+    if (this.isGamePaused) return;
+    this.isGamePaused = true;
+    this.wasMusicPlayingBeforePause = this.isMusicPlaying;
+    this.stopAmbientMusic();
+    try {
+      this.factoryHumOscA?.stop();
+      this.factoryHumOscB?.stop();
+    } catch {
+      // Ignore already-stopped oscillators
+    }
+    this.factoryHumOscA = null;
+    this.factoryHumOscB = null;
+    this.factoryHumFilter = null;
+    this.factoryHumGain = null;
+    try {
+      if (typeof window !== 'undefined') {
+        window.speechSynthesis?.cancel();
+      }
+    } catch {
+      // Ignore speechSynthesis availability issues
+    }
+    if (this.ctx && this.ctx.state === 'running') {
+      this.ctx.suspend().catch(() => {});
+    }
+  }
+
+  public resumeFromPause(): void {
+    if (!this.isGamePaused) return;
+    this.isGamePaused = false;
+    if (!this.isMuted && this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+    if (this.wasMusicPlayingBeforePause && !this.isMuted) {
+      this.wasMusicPlayingBeforePause = false;
+      this.startAmbientMusic();
+    }
+  }
+
   public dispose(): void {
+    this.isGamePaused = false;
+    this.wasMusicPlayingBeforePause = false;
     this.stopAmbientMusic();
     try {
       this.factoryHumOscA?.stop();

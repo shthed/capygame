@@ -68,12 +68,27 @@ class PwaServiceClass {
       }
 
       if (swSupported) {
+        const scheduleSwRegistration = () => {
+          const win = window as Window & {
+            requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+          };
+          if (typeof win.requestIdleCallback === 'function') {
+            win.requestIdleCallback(
+              () => {
+                this.registerServiceWorker();
+              },
+              { timeout: 1500 }
+            );
+          } else {
+            window.setTimeout(() => {
+              this.registerServiceWorker();
+            }, 1500);
+          }
+        };
         if (document.readyState === 'complete') {
-          this.registerServiceWorker();
+          scheduleSwRegistration();
         } else {
-          window.addEventListener('load', () => {
-            this.registerServiceWorker();
-          });
+          window.addEventListener('load', scheduleSwRegistration, { once: true });
         }
       }
     } catch (err) {
