@@ -1,4 +1,5 @@
 import type { ForestMicroSpecimenId } from './engine/forestMicroSpecimens';
+import type { UfoFlightPhase } from './engine/UfoFlightSequence';
 import { formatRealisticScaleMeters } from './engine/UniverseScaleMath';
 import {
   BOUNTY_CATALOG,
@@ -8,7 +9,7 @@ import {
   type BountyEventType,
   type BountyProgressItem,
 } from './engine/GameplayFunMath';
-export type { ForestMicroSpecimenId };
+export type { ForestMicroSpecimenId, UfoFlightPhase };
 export {
   BOUNTY_CATALOG,
   createDefaultBounties,
@@ -253,6 +254,8 @@ export interface LiveModeTelemetry {
   arcadeCombo?: ArcadeComboTelemetry;
   dashCooldownFrac?: number;
   canDive?: boolean;
+  ufoFlightPhase?: UfoFlightPhase;
+  nearParkedUfo?: boolean;
 }
 
 export type AstrophysicsPaletteMode = 'natural' | 'hubble';
@@ -1826,6 +1829,8 @@ export interface UniverseScaleTelemetry {
   descentRingsHit?: number;
   descentRingsTotal?: number;
   dockedOnChronoPad?: boolean;
+  ufoFlightPhase?: UfoFlightPhase;
+  nearParkedUfo?: boolean;
 }
 
 export function findNearestScaleBandIndex(logMeters: number): number {

@@ -2081,6 +2081,8 @@ export const CapyGameView: React.FC = () => {
                   ? `Harvested +${act.total} ${itemName} from Citrus Tree`
                   : `Mined +${act.total} ${itemName}`
               );
+            } else if (managerRef.current.isHeroNearParkedUfo()) {
+              managerRef.current.boardParkedUfoAndLaunch();
             } else {
               showToast('Point or stand near a belt item or ore seam [E]');
             }
@@ -2102,6 +2104,18 @@ export const CapyGameView: React.FC = () => {
               );
             }
           }
+        } else if (
+          key === 'e' &&
+          !e.repeat &&
+          managerRef.current.cosmicStage === 'playing' &&
+          !managerRef.current.seamlessZoomActive &&
+          !modalOpenRef.current &&
+          !menuOpenRef.current &&
+          !firstRunSetupOpenRef.current &&
+          managerRef.current.isHeroNearParkedUfo()
+        ) {
+          e.preventDefault();
+          managerRef.current.boardParkedUfoAndLaunch();
         }
         if (key === '=' || key === '+' || key === ']') {
           managerRef.current.adjustZoom(0.18);
@@ -7049,6 +7063,26 @@ export const CapyGameView: React.FC = () => {
           />
         )}
 
+      {/* Contextual Board Parked UFO Prompt when standing near the grounded saucer */}
+      {cosmicStage === 'playing' &&
+        !universeScale.active &&
+        !isFirstRunSetupOpen &&
+        !webglError &&
+        !isMenuOpen &&
+        !isSettingsOpen &&
+        !isAboutOpen &&
+        !isPrivacyOpen &&
+        !isJsonEditorOpen && (
+          <TelemetryReadout
+            variant="ufo_prompt"
+            store={telemetryStore}
+            activeMode={activeMode}
+            onBoardUfo={() => {
+              managerRef.current?.boardParkedUfoAndLaunch();
+            }}
+          />
+        )}
+
       {/* Compact Bottom-Right Zoom In / Zoom Out Controls (Continuous Ground -> Orbit -> Cosmos) */}
       {!isFirstRunSetupOpen &&
         !webglError &&
@@ -9841,7 +9875,12 @@ export const CapyGameView: React.FC = () => {
           FUTURE CAPYBARA CHRONO-VESSEL FLIGHT STRIP (Clean Landing CTA Only in Basic Mode)
           Crisp solid zinc surface (zero backdrop-blur) during cosmic voyage.
          ===================================================================== */}
-      {universeScale.active && !isFirstRunSetupOpen && !webglError && !isJsonEditorOpen && !isSettingsOpen && (
+      {universeScale.active &&
+        !isFirstRunSetupOpen &&
+        !webglError &&
+        !isJsonEditorOpen &&
+        !isSettingsOpen &&
+        (isAdvancedMode || universeScale.ufoFlightPhase !== 'orbital_descent') && (
         <div
           data-testid="chrono-vessel-flight-strip"
           className={`fixed bottom-2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-1.5 sm:px-2 py-1.5 text-zinc-100 overflow-x-auto ${

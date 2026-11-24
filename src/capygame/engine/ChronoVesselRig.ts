@@ -38,12 +38,21 @@ export class ChronoVesselRig {
   private readonly hatHaloMesh: THREE.Mesh;
   private readonly hatPartyGroup: THREE.Group;
 
+  public readonly hitMesh: THREE.Mesh;
+  private readonly landingStrutsGroup = new THREE.Group();
+  private readonly landingStrutPivots: THREE.Group[] = [];
+  private readonly contactShadowMesh: THREE.Mesh;
+  private readonly contactShadowMat: THREE.MeshBasicMaterial;
+
   private mode: ChronoVesselViewMode = 'chase_pod';
   private hullOpacity = 1.0;
   private simTime = 0;
   private bankRoll = 0;
   private bankPitch = 0;
   private baseVesselScale = 1.0;
+  private landingGearDeploy01 = 0;
+  private groundedIdle = false;
+  private thrusterPowerOverride: number | null = null;
 
   private readonly geometriesToDispose: THREE.BufferGeometry[] = [];
   private readonly materialsToDispose: THREE.Material[] = [];
@@ -367,6 +376,65 @@ export class ChronoVesselRig {
     beaconOrb.position.set(0, 0.175, 0.35);
     this.craftGroup.add(beaconOrb);
 
+    // 9. Retractable Tripod Landing Struts (tuck into hull in space; deploy to y = -0.26 on touchdown)
+    this.landingStrutsGroup.name = 'ChronoVesselLandingStruts';
+    const strutLegGeo = new THREE.CylinderGeometry(0.017, 0.013, 0.19, 8);
+    const strutFootGeo = new THREE.CylinderGeometry(0.052, 0.062, 0.024, 12);
+    const strutMat = new THREE.MeshStandardMaterial({
+      color: 0x64748b,
+      metalness: 0.78,
+      roughness: 0.32,
+    });
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 + Math.PI / 6;
+      const pivot = new THREE.Group();
+      pivot.position.set(Math.cos(a) * 0.25, -0.09, Math.sin(a) * 0.25);
+      pivot.rotation.y = -a;
+
+      const leg = new THREE.Mesh(strutLegGeo, strutMat);
+      leg.position.set(0.055, -0.075, 0);
+      leg.rotation.z = 0.42;
+      leg.castShadow = true;
+
+      const foot = new THREE.Mesh(strutFootGeo, this.brassMat);
+      foot.position.set(0.095, -0.158, 0);
+      foot.castShadow = true;
+      foot.receiveShadow = true;
+
+      pivot.add(leg, foot);
+      this.landingStrutPivots.push(pivot);
+      this.landingStrutsGroup.add(pivot);
+    }
+    this.landingStrutsGroup.visible = false;
+    this.craftGroup.add(this.landingStrutsGroup);
+
+    // 10. Grounded Contact Shadow Disc (polygonOffset prevents Z-fighting on landing pads)
+    const shadowDiscGeo = new THREE.CircleGeometry(0.56, 28);
+    this.contactShadowMat = new THREE.MeshBasicMaterial({
+      color: 0x050b14,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    this.contactShadowMesh = new THREE.Mesh(shadowDiscGeo, this.contactShadowMat);
+    this.contactShadowMesh.rotation.x = -Math.PI * 0.5;
+    this.contactShadowMesh.position.set(0, -0.252, 0);
+    this.contactShadowMesh.visible = false;
+    this.craftGroup.add(this.contactShadowMesh);
+
+    // 11. Lightweight Click/Tap Hit Proxy for boarding parked UFO in 3D
+    const hitGeo = new THREE.CylinderGeometry(0.54, 0.54, 0.48, 12);
+    const hitMat = new THREE.MeshBasicMaterial({
+      visible: false,
+    });
+    this.hitMesh = new THREE.Mesh(hitGeo, hitMat);
+    this.hitMesh.position.set(0, 0.04, 0);
+    this.hitMesh.userData.parkedUfo = true;
+    this.craftGroup.add(this.hitMesh);
+
     this.geometriesToDispose.push(
       saucerGeo,
       hoodGeo,
@@ -394,7 +462,11 @@ export class ChronoVesselRig {
       reticleGeo,
       plumeGeo,
       spireGeo,
-      beaconOrbGeo
+      beaconOrbGeo,
+      strutLegGeo,
+      strutFootGeo,
+      shadowDiscGeo,
+      hitGeo
     );
     this.materialsToDispose.push(
       titaniumMat,
@@ -413,7 +485,10 @@ export class ChronoVesselRig {
       haloMat,
       partyConeMat,
       partyPomMat,
-      this.dorsalBeaconMat
+      this.dorsalBeaconMat,
+      strutMat,
+      this.contactShadowMat,
+      hitMat
     );
   }
 
@@ -462,6 +537,39 @@ export class ChronoVesselRig {
     return this.mode;
   }
 
+  public setPilotVisible(visible: boolean): void {
+    this.pilotGroup.visible = visible;
+  }
+
+  public isPilotVisible(): boolean {
+    return this.pilotGroup.visible;
+  }
+
+  public setLandingGear(deploy01: number): void {
+    const clamped = deploy01 <= 0 ? 0 : deploy01 >= 1 ? 1 : deploy01;
+    this.landingGearDeploy01 = clamped;
+    const showGear = clamped > 0.02;
+    this.landingStrutsGroup.visible = showGear;
+    if (showGear) {
+      // Smooth vertical deploy from tucked underside (-0.01) to fully planted (y = -0.26 foot bottom)
+      this.landingStrutsGroup.position.y = (1 - clamped) * 0.135;
+      for (let i = 0; i < this.landingStrutPivots.length; i++) {
+        this.landingStrutPivots[i].scale.set(0.65 + 0.35 * clamped, 0.35 + 0.65 * clamped, 0.65 + 0.35 * clamped);
+      }
+    }
+    const showShadow = clamped > 0.25 && this.groundedIdle;
+    this.contactShadowMesh.visible = showShadow;
+    this.contactShadowMat.opacity = showShadow ? Math.min(0.42, (clamped - 0.25) * 0.56) : 0.0;
+  }
+
+  public setGroundedState(groundedIdle: boolean, thrusterPowerOverride: number | null = null): void {
+    this.groundedIdle = groundedIdle;
+    this.thrusterPowerOverride = thrusterPowerOverride;
+    const showShadow = this.landingGearDeploy01 > 0.25 && groundedIdle;
+    this.contactShadowMesh.visible = showShadow;
+    this.contactShadowMat.opacity = showShadow ? Math.min(0.42, (this.landingGearDeploy01 - 0.25) * 0.56) : 0.0;
+  }
+
   public update(
     dt: number,
     scaleVelocity: number,
@@ -470,32 +578,51 @@ export class ChronoVesselRig {
   ): void {
     this.simTime += dt;
 
-    // Gentle equatorial saucer gyro precession + float hover bobbing like a hover pram
-    this.brassAstrolabe.rotation.z += dt * (0.65 + Math.abs(scaleVelocity) * 0.45);
-    this.brassAstrolabe.rotation.y = Math.sin(this.simTime * 1.2) * 0.08;
-    this.consoleReticle.rotation.z -= dt * 1.1;
+    // Gentle equatorial saucer gyro precession; settles calmly when parked on the ground
+    const gyroSpinRate = this.groundedIdle ? 0.14 : 0.65 + Math.abs(scaleVelocity) * 0.45;
+    this.brassAstrolabe.rotation.z += dt * gyroSpinRate;
+    this.brassAstrolabe.rotation.y = this.groundedIdle ? 0 : Math.sin(this.simTime * 1.2) * 0.08;
+    this.consoleReticle.rotation.z -= dt * (this.groundedIdle ? 0.3 : 1.1);
 
-    const targetRoll = THREE.MathUtils.clamp(-steerInput * 0.36, -0.45, 0.45);
-    const targetPitch = THREE.MathUtils.clamp(
-      pitchInput * 0.25 - scaleVelocity * 0.032,
-      -0.38,
-      0.38
-    );
+    const targetRoll = this.groundedIdle
+      ? 0
+      : THREE.MathUtils.clamp(-steerInput * 0.36, -0.45, 0.45);
+    const targetPitch = this.groundedIdle
+      ? 0
+      : THREE.MathUtils.clamp(pitchInput * 0.25 - scaleVelocity * 0.032, -0.38, 0.38);
     this.bankRoll = THREE.MathUtils.damp(this.bankRoll, targetRoll, 7.0, dt);
     this.bankPitch = THREE.MathUtils.damp(this.bankPitch, targetPitch, 7.0, dt);
     this.craftGroup.rotation.z = this.bankRoll;
     this.craftGroup.rotation.x = this.bankPitch;
-    this.craftGroup.position.y = Math.sin(this.simTime * 2.3) * 0.032;
+    // Planted firmly on landing struts when grounded; gentle hover pram bob when flying
+    this.craftGroup.position.y = this.groundedIdle ? 0 : Math.sin(this.simTime * 2.3) * 0.032;
 
-    // Subtle reactive Cherenkov thruster vents & ventral anti-gravity pulse
-    const thrustNorm = THREE.MathUtils.clamp(Math.abs(scaleVelocity) / 4.2, 0.12, 1.85);
+    // Reactive Cherenkov thruster vents & ventral anti-gravity pulse
+    const thrustNorm =
+      this.thrusterPowerOverride !== null
+        ? THREE.MathUtils.clamp(this.thrusterPowerOverride, 0.0, 2.0)
+        : this.groundedIdle
+          ? 0.04
+          : THREE.MathUtils.clamp(Math.abs(scaleVelocity) / 4.2, 0.12, 1.85);
     const flicker = 1.0 + Math.sin(this.simTime * 34.0) * 0.08;
-    const plumeZ = (0.35 + thrustNorm * 0.85) * flicker;
-    this.plumeLeft.scale.set(0.85 + thrustNorm * 0.2, 0.85 + thrustNorm * 0.2, plumeZ);
-    this.plumeRight.scale.set(0.85 + thrustNorm * 0.2, 0.85 + thrustNorm * 0.2, plumeZ);
-    const hoverPulse = 0.96 + Math.sin(this.simTime * 6.0) * 0.05;
+    const showPlumes = thrustNorm > 0.08;
+    this.plumeLeft.visible = showPlumes;
+    this.plumeRight.visible = showPlumes;
+    if (showPlumes) {
+      const plumeZ = (0.28 + thrustNorm * 0.88) * flicker;
+      this.plumeLeft.scale.set(0.75 + thrustNorm * 0.22, 0.75 + thrustNorm * 0.22, plumeZ);
+      this.plumeRight.scale.set(0.75 + thrustNorm * 0.22, 0.75 + thrustNorm * 0.22, plumeZ);
+    }
+    const hoverPulse = this.groundedIdle
+      ? 0.98 + Math.sin(this.simTime * 2.2) * 0.02
+      : 0.96 + Math.sin(this.simTime * 6.0) * 0.05;
     this.ventralHoverRing.scale.setScalar(hoverPulse);
-    this.cherenkovMat.emissiveIntensity = 1.1 + thrustNorm * 1.35;
+    this.cherenkovMat.emissiveIntensity = this.groundedIdle
+      ? 0.42 + Math.sin(this.simTime * 2.4) * 0.12 + thrustNorm * 1.1
+      : 1.1 + thrustNorm * 1.35;
+    this.dorsalBeaconMat.emissiveIntensity = this.groundedIdle
+      ? 0.85 + Math.sin(this.simTime * 3.1) * 0.55
+      : 1.45;
 
     // Smoothly fade craft hull in Telescope view so central astronomical optics stay clear
     const targetOpacity = this.mode === 'telescope_first_person' ? 0.0 : 1.0;

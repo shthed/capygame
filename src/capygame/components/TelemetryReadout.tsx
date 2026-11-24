@@ -1,5 +1,5 @@
 import React, { useSyncExternalStore } from 'react';
-import { ChevronDown, Zap } from 'lucide-react';
+import { ChevronDown, Rocket, Zap } from 'lucide-react';
 import type { LiveModeTelemetry, PlayStyle } from '../types';
 
 export const DEFAULT_LIVE_TELEMETRY: LiveModeTelemetry = {
@@ -64,6 +64,12 @@ export type TelemetryReadoutProps =
       showTouchDpad: boolean;
       onTriggerGroundPound: () => void;
       onTriggerDash: () => void;
+    }
+  | {
+      variant: 'ufo_prompt';
+      store: LiveTelemetryStore;
+      activeMode: PlayStyle;
+      onBoardUfo: () => void;
     };
 
 export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((props) => {
@@ -119,6 +125,32 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
             }`}
           />
         </div>
+      </div>
+    );
+  }
+
+  if (props.variant === 'ufo_prompt') {
+    if (!telemetry.nearParkedUfo || telemetry.ufoFlightPhase !== 'parked_on_ground') {
+      return null;
+    }
+    const bottomClass = props.activeMode === 'capytorio' ? 'bottom-[104px]' : 'bottom-4';
+    return (
+      <div
+        data-testid="parked-ufo-prompt"
+        className={`fixed left-1/2 -translate-x-1/2 ${bottomClass} z-20 pointer-events-auto`}
+      >
+        <button
+          type="button"
+          data-testid="board-ufo-btn"
+          onClick={props.onBoardUfo}
+          className="min-h-11 px-4 py-2 rounded-xl bg-zinc-950/95 hover:bg-zinc-900 border border-cyan-400/70 text-cyan-100 shadow-2xl flex items-center gap-2 text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap"
+        >
+          <Rocket className="w-4 h-4 text-cyan-300 shrink-0" />
+          <span>Board UFO · Launch to Orbit</span>
+          <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-400/45 text-[10px] font-mono text-cyan-200">
+            E
+          </span>
+        </button>
       </div>
     );
   }

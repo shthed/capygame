@@ -1551,6 +1551,110 @@ class CapyAudioService {
     this.factoryHumGain?.gain.setTargetAtTime(mix.targetGain, t, 0.25);
   }
 
+  // Smooth pneumatic landing strut lock + descending anti-gravity power-down hum
+  public playUfoTouchdown(): void {
+    if (this.isMuted) return;
+    this.initContext();
+    const dry = this.getDryNode();
+    if (!this.ctx || !dry) return;
+
+    const t = this.ctx.currentTime;
+    const sub = this.ctx.createOscillator();
+    const hum = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(118, t);
+    sub.frequency.exponentialRampToValueAtTime(46, t + 0.28);
+
+    hum.type = 'triangle';
+    hum.frequency.setValueAtTime(340, t);
+    hum.frequency.exponentialRampToValueAtTime(110, t + 0.48);
+
+    gain.gain.setValueAtTime(0.16, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.52);
+
+    sub.connect(gain);
+    hum.connect(gain);
+    gain.connect(dry);
+    if (this.reverbInput) gain.connect(this.reverbInput);
+
+    sub.start(t);
+    hum.start(t);
+    sub.stop(t + 0.54);
+    hum.stop(t + 0.54);
+
+    if (this.noiseBuffer) {
+      const hiss = this.ctx.createBufferSource();
+      hiss.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1600, t);
+      bp.frequency.exponentialRampToValueAtTime(480, t + 0.26);
+      bp.Q.value = 1.6;
+      const nGain = this.ctx.createGain();
+      nGain.gain.setValueAtTime(0.08, t);
+      nGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      hiss.connect(bp);
+      bp.connect(nGain);
+      nGain.connect(dry);
+      hiss.start(t, 0, 0.3);
+    }
+  }
+
+  // Anti-gravity turbine spool-up + rising harmonic chord for UFO liftoff to orbit
+  public playUfoLiftoff(): void {
+    if (this.isMuted) return;
+    this.initContext();
+    const dry = this.getDryNode();
+    if (!this.ctx || !dry) return;
+
+    const t = this.ctx.currentTime;
+    const turbine = this.ctx.createOscillator();
+    const harmonic = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    turbine.type = 'sine';
+    turbine.frequency.setValueAtTime(110, t);
+    turbine.frequency.exponentialRampToValueAtTime(520, t + 0.95);
+    turbine.frequency.exponentialRampToValueAtTime(880, t + 1.45);
+
+    harmonic.type = 'triangle';
+    harmonic.frequency.setValueAtTime(220, t);
+    harmonic.frequency.exponentialRampToValueAtTime(784, t + 1.1);
+
+    gain.gain.setValueAtTime(0.015, t);
+    gain.gain.linearRampToValueAtTime(0.15, t + 0.35);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 1.5);
+
+    turbine.connect(gain);
+    harmonic.connect(gain);
+    gain.connect(dry);
+    if (this.reverbInput) gain.connect(this.reverbInput);
+
+    turbine.start(t);
+    harmonic.start(t);
+    turbine.stop(t + 1.54);
+    harmonic.stop(t + 1.54);
+
+    if (this.noiseBuffer) {
+      const wash = this.ctx.createBufferSource();
+      wash.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(280, t);
+      bp.frequency.exponentialRampToValueAtTime(1400, t + 0.35);
+      bp.Q.value = 1.2;
+      const nGain = this.ctx.createGain();
+      nGain.gain.setValueAtTime(0.09, t);
+      nGain.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+      wash.connect(bp);
+      bp.connect(nGain);
+      nGain.connect(dry);
+      wash.start(t, 0, 0.35);
+    }
+  }
+
   public suspendForPause(): void {
     if (this.isGamePaused) return;
     this.isGamePaused = true;

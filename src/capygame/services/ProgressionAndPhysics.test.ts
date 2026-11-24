@@ -568,7 +568,7 @@ test('Spiral Galaxy Spiral Arm Zoom Focus: navigates off-center into Milky Way E
   assert.ok(inner.armOffsetZ !== 0);
 });
 
-test('Chrono-Vessel 1:1 Physical Scale: transitions smoothly from HUD scale to true 1:1 Sanctuary scale', () => {
+test('Chrono-Vessel 1:1 Physical Scale: keeps constant Capybara-proportioned physical scale from orbit to surface', () => {
   const outer = computeVesselOneToOneTransform(
     18.0,
     'chase_pod',
@@ -579,6 +579,7 @@ test('Chrono-Vessel 1:1 Physical Scale: transitions smoothly from HUD scale to t
   );
   assert.equal(outer.worldSpaceBlend, 0);
   assert.ok(Math.abs(outer.uniformScale - CHRONO_VESSEL_HUD_SCALE) < 1e-6);
+  assert.equal(CHRONO_VESSEL_HUD_SCALE, CHRONO_VESSEL_ONE_TO_ONE_SCALE);
 
   const landedScale = computeVesselOneToOneTransform(
     0.8,
@@ -590,6 +591,7 @@ test('Chrono-Vessel 1:1 Physical Scale: transitions smoothly from HUD scale to t
   );
   assert.equal(landedScale.worldSpaceBlend, 1);
   assert.ok(Math.abs(landedScale.uniformScale - CHRONO_VESSEL_ONE_TO_ONE_SCALE) < 1e-6);
+  assert.equal(outer.uniformScale, landedScale.uniformScale);
   assert.ok(Math.abs(landedScale.worldX - 3.85) < 1e-6);
 
   // First-person telescope mode stays foreground HUD-anchored even at low scale

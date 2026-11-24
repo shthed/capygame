@@ -2999,19 +2999,19 @@ export class SeamlessUniverseSimulator {
       emissiveIntensity: 0.28,
       roughness: 0.95,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.58,
       depthWrite: false,
     });
     const cloudBanks = new THREE.InstancedMesh(cloudGeo, cloudMat, bankCount * puffsPerBank);
     let instIdx = 0;
     for (let b = 0; b < bankCount; b++) {
       const ang = (b / bankCount) * Math.PI * 2 + seededRand(b * 11 + 3) * 0.22;
-      const dist = 16.0 + seededRand(b * 17 + 5) * 28.0;
+      const dist = 22.0 + seededRand(b * 17 + 5) * 28.0;
       const bx = Math.cos(ang) * dist;
       const bz = Math.sin(ang) * dist;
       // Keep a clear sunlit corridor directly in front of the descending camera (+Z near center)
-      const inCameraCorridor = bz > 14.0 && Math.abs(bx) < 13.0;
-      const adjX = inCameraCorridor ? (bx >= 0 ? bx + 13.0 : bx - 13.0) : bx;
+      const inCameraCorridor = bz > 12.0 && Math.abs(bx) < 16.0;
+      const adjX = inCameraCorridor ? (bx >= 0 ? bx + 16.0 : bx - 16.0) : bx;
       const baseY = 1.8 + seededRand(b * 13 + 7) * 5.2;
       for (let p = 0; p < puffsPerBank; p++) {
         const ox = (p - 1.5) * 3.2 + (seededRand(instIdx * 5 + 1) - 0.5) * 1.8;
@@ -4961,37 +4961,41 @@ export class SeamlessUniverseSimulator {
         const detailScale = smoothstep01(6.8, 3.0, logScaleMeters);
         const cloudClear = smoothstep01(4.75, 3.55, logScaleMeters);
 
-        // 1. Full globe sphere (visible from Planetary System 8.85 down to 4.70, fading out 5.20 -> 4.70)
-        const globeOpacity = alpha * smoothstep01(4.70, 5.20, logScaleMeters);
+        // 1. Full globe sphere (visible from Planetary System 8.85 down to atmosphere/valley handoff)
+        const globeFadeLow = this.isSoftwareGl ? 3.65 : 4.70;
+        const globeFadeHigh = this.isSoftwareGl ? 4.30 : 5.20;
+        const globeOpacity = alpha * smoothstep01(globeFadeLow, globeFadeHigh, logScaleMeters);
         if (this.planetGlobeMesh && this.planetGlobeMat) {
           this.planetGlobeMesh.visible = globeOpacity > 0.01;
           if (this.planetGlobeMat.uniforms?.uOpacity) {
             this.planetGlobeMat.uniforms.uOpacity.value = globeOpacity;
           }
           if (this.planetGlobeMat.uniforms?.uDetailScale) {
-            this.planetGlobeMat.uniforms.uDetailScale.value = detailScale;
+            this.planetGlobeMat.uniforms.uDetailScale.value = this.isSoftwareGl ? 0.0 : detailScale;
           }
           this.planetGlobeMat.depthWrite = globeOpacity > 0.82 && logScaleMeters > 1.85;
         }
 
-        // 2. Full globe cloud sphere (hands off cleanly to curved troposphere patch at 5.05 -> 4.60)
+        // 2. Full globe cloud sphere (hands off cleanly before camera passes cloud-top altitude)
+        const cloudFadeLow = this.isSoftwareGl ? 4.10 : 4.75;
+        const cloudFadeHigh = this.isSoftwareGl ? 4.75 : 5.25;
         const cloudSphereOpacity =
-          Math.min(1.0, 0.86 * densityMod * alpha * smoothstep01(4.60, 5.05, logScaleMeters));
+          Math.min(1.0, 0.86 * densityMod * alpha * smoothstep01(cloudFadeLow, cloudFadeHigh, logScaleMeters));
         if (this.planetCloudMesh && this.planetCloudSphereMat) {
           this.planetCloudMesh.visible = cloudSphereOpacity > 0.01;
           if (this.planetCloudSphereMat.uniforms?.uOpacity) {
             this.planetCloudSphereMat.uniforms.uOpacity.value = cloudSphereOpacity;
           }
           if (this.planetCloudSphereMat.uniforms?.uDetailScale) {
-            this.planetCloudSphereMat.uniforms.uDetailScale.value = detailScale;
+            this.planetCloudSphereMat.uniforms.uDetailScale.value = this.isSoftwareGl ? 0.0 : detailScale;
           }
           if (this.planetCloudSphereMat.uniforms?.uCloudClear) {
             this.planetCloudSphereMat.uniforms.uCloudClear.value = cloudClear;
           }
         }
 
-        // 3. Rayleigh atmospheric scattering limb shell (fades cleanly once inside troposphere)
-        const rayleighOpacity = alpha * smoothstep01(4.05, 5.10, logScaleMeters);
+        // 3. Rayleigh atmospheric scattering limb shell (fades cleanly BEFORE camera crosses limb radius so UFO never washes out)
+        const rayleighOpacity = alpha * smoothstep01(4.65, 5.45, logScaleMeters);
         if (this.planetRayleighMesh && this.planetRayleighMat) {
           this.planetRayleighMesh.visible = rayleighOpacity > 0.01;
           if (this.planetRayleighMat.uniforms?.uOpacity) {
@@ -5020,20 +5024,22 @@ export class SeamlessUniverseSimulator {
           }
         }
 
-        // 6. Nested Float32-safe curved surface LOD patches (strict mutual-exclusion bands + 0.40 dex crossfades)
-        // Ensures at most 1-2 surface passes run per frame instead of 3+ overlapping full-screen fragment shaders.
-        const lod1Op =
-          alpha *
-          smoothstep01(5.25, 4.75, logScaleMeters) *
-          smoothstep01(3.85, 4.25, logScaleMeters);
-        const lod2Op =
-          alpha *
-          smoothstep01(4.25, 3.85, logScaleMeters) *
-          smoothstep01(3.05, 3.40, logScaleMeters);
-        const lod3Op =
-          alpha *
-          smoothstep01(3.50, 3.05, logScaleMeters) *
-          smoothstep01(2.15, 2.75, logScaleMeters);
+        // 6. Nested Float32-safe curved surface LOD patches (skip multi-pass full-screen FBM in software WebGL)
+        const lod1Op = this.isSoftwareGl
+          ? 0
+          : alpha *
+            smoothstep01(5.25, 4.75, logScaleMeters) *
+            smoothstep01(3.85, 4.25, logScaleMeters);
+        const lod2Op = this.isSoftwareGl
+          ? 0
+          : alpha *
+            smoothstep01(4.25, 3.85, logScaleMeters) *
+            smoothstep01(3.05, 3.40, logScaleMeters);
+        const lod3Op = this.isSoftwareGl
+          ? 0
+          : alpha *
+            smoothstep01(3.50, 3.05, logScaleMeters) *
+            smoothstep01(2.15, 2.75, logScaleMeters);
 
         const lodPairs: Array<[THREE.Mesh | null, THREE.ShaderMaterial | undefined, number]> = [
           [this.planetLod1Mesh, this.planetLodMats[0], lod1Op],
@@ -5049,23 +5055,23 @@ export class SeamlessUniverseSimulator {
           mat.depthWrite = op > 0.82 && logScaleMeters > 2.85;
         }
 
-        // 7. Curved Troposphere / Stratosphere Cloud Deck Patches (fades out cleanly before Land Masses core)
-        const cloudPatchFade =
-          Math.min(
-            1.0,
-            0.84 *
-              densityMod *
-              alpha *
-              smoothstep01(5.05, 4.55, logScaleMeters) *
-              smoothstep01(3.45, 4.05, logScaleMeters)
-          );
+        // 7. Curved Troposphere / Stratosphere Cloud Deck Patches (skip in software WebGL; clear cleanly before UFO approach)
+        const cloudPatchFade = this.isSoftwareGl
+          ? 0
+          : Math.min(
+              1.0,
+              0.78 *
+                densityMod *
+                alpha *
+                smoothstep01(5.05, 4.55, logScaleMeters) *
+                smoothstep01(3.65, 4.20, logScaleMeters)
+            );
         for (let c = 0; c < this.planetCloudPatchMeshes.length; c++) {
           const cMesh = this.planetCloudPatchMeshes[c];
           const cMat = this.planetCloudPatchMats[c];
-          const allowCloudDeck = !this.isSoftwareGl || c === 0;
-          cMesh.visible = allowCloudDeck && cloudPatchFade > 0.01;
+          cMesh.visible = cloudPatchFade > 0.01;
           if (cMat?.uniforms?.uOpacity) {
-            cMat.uniforms.uOpacity.value = cloudPatchFade * (c === 0 ? 1.0 : 0.72);
+            cMat.uniforms.uOpacity.value = cloudPatchFade * (c === 0 ? 1.0 : 0.68);
           }
           if (cMat?.uniforms?.uDetailScale) {
             cMat.uniforms.uDetailScale.value = detailScale;

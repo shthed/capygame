@@ -681,13 +681,14 @@ const _vesselTransformResult: VesselOneToOneTransform = {
 };
 
 /**
- * Calibrated 1:1 physical meter scale of ChronoVesselRig in surface world space:
- * Base saucer diameter is 0.94m and seated Capybara pilot is ~0.42m tall; at `1.75` uniformScale,
- * the hover-pram saucer spans 1.65m (fitting cleanly inside the 2.65m SanctuaryChronoPad) and the
- * seated pilot matches Hero Capybara's 1:1 meter body proportions.
+ * Calibrated true 1:1 physical meter scale of ChronoVesselRig matching Hero Capybara:
+ * Base saucer diameter is 0.94m (cockpit opening 0.44m, seated pilot head radius 0.102m);
+ * at constant `3.85` uniformScale, the seated pilot matches Hero Capybara's 0.41m head radius 1:1,
+ * the cockpit opening is 1.69m wide so the Capybara comfortably fits inside, and the 3.62m saucer
+ * fits cleanly inside the 5.3m SanctuaryChronoPad without ever changing size across scales.
  */
-export const CHRONO_VESSEL_ONE_TO_ONE_SCALE = 1.75;
-export const CHRONO_VESSEL_HUD_SCALE = 0.54;
+export const CHRONO_VESSEL_ONE_TO_ONE_SCALE = 3.85;
+export const CHRONO_VESSEL_HUD_SCALE = CHRONO_VESSEL_ONE_TO_ONE_SCALE;
 
 export function computeVesselOneToOneTransform(
   logScaleMeters: number,
@@ -705,19 +706,20 @@ export function computeVesselOneToOneTransform(
   heroY: number,
   heroZ: number
 ): VesselOneToOneTransform {
-  const hudDist = vesselMode === 'telescope_first_person' ? 1.85 : 3.75;
-  const hudDrop = vesselMode === 'telescope_first_person' ? -0.92 : -1.24;
+  // Position the true 1:1 scale craft at matching perspective distance in space so it NEVER changes physical size
+  const hudDist = vesselMode === 'telescope_first_person' ? 10.8 : 22.0;
+  const hudDrop = vesselMode === 'telescope_first_person' ? -5.1 : -7.2;
   const hudX = camX + camForwardX * hudDist + camUpX * hudDrop;
   const hudY = camY + camForwardY * hudDist + camUpY * hudDrop;
   const hudZ = camZ + camForwardZ * hudDist + camUpZ * hudDrop;
 
-  // Outside atmosphere/forest descent (logVal >= 2.95) or 1st-person telescope: remain foreground HUD silhouette
+  // Outside atmosphere/forest descent (logVal >= 2.95) or 1st-person telescope: remain foreground chase distance
   const worldBlend =
     vesselMode === 'telescope_first_person'
       ? 0
       : smoothstepRange(2.95, 1.05, logScaleMeters);
 
-  // Target true 1:1 world hover beside Hero Capybara so both Capybara & 1:1 saucer are side-by-side
+  // Target true 1:1 world hover above landing pad / beside Hero Capybara
   const targetWorldX = heroX + 1.85;
   const targetWorldY = heroY + 0.96;
   const targetWorldZ = heroZ - 0.55;
@@ -726,9 +728,7 @@ export function computeVesselOneToOneTransform(
   _vesselTransformResult.worldX = hudX + (targetWorldX - hudX) * worldBlend;
   _vesselTransformResult.worldY = hudY + (targetWorldY - hudY) * worldBlend;
   _vesselTransformResult.worldZ = hudZ + (targetWorldZ - hudZ) * worldBlend;
-  _vesselTransformResult.uniformScale =
-    CHRONO_VESSEL_HUD_SCALE +
-    (CHRONO_VESSEL_ONE_TO_ONE_SCALE - CHRONO_VESSEL_HUD_SCALE) * worldBlend;
+  _vesselTransformResult.uniformScale = CHRONO_VESSEL_ONE_TO_ONE_SCALE;
 
   return _vesselTransformResult;
 }
