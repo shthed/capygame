@@ -6802,6 +6802,80 @@ export const CapyGameView: React.FC = () => {
               managerRef.current?.clearCapytorioBlueprintLibrary();
               showToast('Cleared blueprint library');
             }}
+            onBuildSampleStarterMall={() => {
+              const res = managerRef.current?.buildCapytorioSampleStarterMall();
+              if (res?.message) {
+                showToast(res.message);
+              }
+            }}
+            onImportFactorioString={async (raw) => {
+              const mgr = managerRef.current;
+              if (!mgr) {
+                return {
+                  ok: false,
+                  kind: 'blueprint' as const,
+                  blueprints: [],
+                  importedEntityCount: 0,
+                  skippedTotalCount: 0,
+                  skippedEntities: [],
+                  addedIds: [],
+                  error: 'Factory engine is not ready yet.',
+                };
+              }
+              const res = await mgr.importCapytorioFactorioBlueprintString(raw);
+              if (res.ok) {
+                const skipSuffix =
+                  res.skippedTotalCount > 0
+                    ? ` (${res.skippedTotalCount} unsupported skipped)`
+                    : '';
+                showToast(
+                  `Imported ${res.blueprints.length} blueprint${
+                    res.blueprints.length === 1 ? '' : 's'
+                  } (${res.importedEntityCount} entities)${skipSuffix}`
+                );
+              }
+              return res;
+            }}
+            onExportBlueprintString={async (id) => {
+              const mgr = managerRef.current;
+              if (!mgr) {
+                return {
+                  ok: false,
+                  label: '',
+                  encoded: '',
+                  entityCount: 0,
+                  error: 'Factory engine is not ready yet.',
+                };
+              }
+              return mgr.exportCapytorioBlueprintToFactorioString(id);
+            }}
+            onExportFactoryString={async () => {
+              const mgr = managerRef.current;
+              if (!mgr) {
+                return {
+                  ok: false,
+                  label: '',
+                  encoded: '',
+                  entityCount: 0,
+                  error: 'Factory engine is not ready yet.',
+                };
+              }
+              return mgr.exportCapytorioFactoryToFactorioString();
+            }}
+            onExportBlueprintBookString={async () => {
+              const mgr = managerRef.current;
+              if (!mgr) {
+                return {
+                  ok: false,
+                  label: '',
+                  encoded: '',
+                  blueprintCount: 0,
+                  entityCount: 0,
+                  error: 'Factory engine is not ready yet.',
+                };
+              }
+              return mgr.exportCapytorioBlueprintBookToFactorioString();
+            }}
             onSetClipboardMode={(mode, shape) => {
               managerRef.current?.setCapytorioClipboardMode(mode, shape);
             }}

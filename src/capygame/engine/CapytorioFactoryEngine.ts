@@ -23,6 +23,14 @@ import {
   type CapytorioRecipeId,
   type CapytorioTechId,
 } from './CapytorioData';
+import {
+  createSampleStarterMallBlueprint,
+  decodeFactorioBlueprintString,
+  encodeFactorioBlueprintBookString,
+  encodeFactorioBlueprintString,
+  getSampleStarterMallAbsoluteEntries,
+  type FactorioBlueprintImportResult,
+} from './FactorioBlueprintCodec';
 
 export const MAX_RECENT_CAPYTORIO_TOOLS = 10;
 export const MAX_CAPYTORIO_BLUEPRINT_LIBRARY = 100;
@@ -361,7 +369,7 @@ export interface CapytorioBlueprintEntry {
 export interface CapytorioSavedBlueprint {
   id: string;
   label: string;
-  sourceMode: 'copy' | 'cut';
+  sourceMode: 'copy' | 'cut' | 'import' | 'preset';
   createdAt: number;
   width: number;
   height: number;
@@ -492,6 +500,7 @@ export interface CapytorioUiSnapshot {
     nextRedoLabel: string | null;
   };
   blueprintLibrary: CapytorioSavedBlueprint[];
+  presetBlueprints: CapytorioSavedBlueprint[];
   altModeEnabled: boolean;
   entitySettingsClipboard: {
     sourceType: 'assembler' | 'splitter' | 'inserter' | 'chest';
@@ -1104,6 +1113,7 @@ export class CapytorioFactoryEngine {
   public clipboard: CapytorioBlueprintClipboard | null = null;
   public pasteAnchor: { gx: number; gz: number } | null = null;
   public blueprintLibrary: CapytorioSavedBlueprint[] = [];
+  public readonly presetBlueprints: CapytorioSavedBlueprint[] = [createSampleStarterMallBlueprint()];
   public activeBlueprintId: string | null = null;
   private nextBlueprintUid = 1;
   public readonly previewSelectedKeys = new Set<string>();
@@ -2802,12 +2812,23 @@ export class CapytorioFactoryEngine {
     return false;
   }
 
+  public getBlueprintById(id: string): CapytorioSavedBlueprint | null {
+    return (
+      this.blueprintLibrary.find((bp) => bp.id === id) ??
+      this.presetBlueprints.find((bp) => bp.id === id) ??
+      null
+    );
+  }
+
   public selectBlueprintFromLibrary(id: string): CapytorioSavedBlueprint | null {
-    const found = this.blueprintLibrary.find((bp) => bp.id === id);
+    const found = this.getBlueprintById(id);
     if (!found || found.entries.length === 0) return null;
     this.clipboard = {
       mode: 'copy',
-      entries: found.entries.map((e) => ({ ...e })),
+      entries: found.entries.map((e) => ({
+        ...e,
+        inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
+      })),
       canUndoCut: false,
       blueprintId: found.id,
       label: found.label,
@@ -2839,6 +2860,271 @@ export class CapytorioFactoryEngine {
     if (this.clipboard) {
       this.clipboard.blueprintId = null;
     }
+  }
+
+  /**
+   * Imports a Factorio Blueprint String (`0e...`), Blueprint Book, or raw Factorio 2.0 JSON
+   * into the Blueprint Library using exact-match entity filtering. Arms the first imported
+   * blueprint for immediate 3D ghost placement.
+   */
+  public async importFactorioBlueprintString(
+    rawInput: string
+  ): Promise<FactorioBlueprintImportResult & { addedIds: string[] }> {
+    const decoded = await decodeFactorioBlueprintString(rawInput);
+    if (!decoded.ok || decoded.blueprints.length === 0) {
+      return { ...decoded, addedIds: [] };
+    }
+
+    const now = Date.now();
+    const added: CapytorioSavedBlueprint[] = [];
+    for (let i = 0; i < decoded.blueprints.length; i++) {
+      const bp = decoded.blueprints[i];
+      const saved: CapytorioSavedBlueprint = {
+        id: `bp_imp_${now.toString(36)}_${this.nextBlueprintUid++}`,
+        label: bp.label,
+        sourceMode: 'import',
+        createdAt: now + i,
+        width: bp.width,
+        height: bp.height,
+        entries: bp.entries.map((e) => ({
+          ...e,
+          inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
+        })),
+      };
+      added.push(saved);
+    }
+
+    // Prepend imported blueprints in book order so index 0 appears first in library
+    this.blueprintLibrary.unshift(...added);
+    if (this.blueprintLibrary.length > MAX_CAPYTORIO_BLUEPRINT_LIBRARY) {
+      this.blueprintLibrary.length = MAX_CAPYTORIO_BLUEPRINT_LIBRARY;
+    }
+
+    const firstId = added[0]?.id;
+    if (firstId) {
+      this.selectBlueprintFromLibrary(firstId);
+    }
+
+    return {
+      ...decoded,
+      addedIds: added.map((b) => b.id),
+    };
+  }
+
+  /** Exports any saved blueprint or built-in preset as a genuine Factorio `0e...` string. */
+  public async exportBlueprintToFactorioString(id: string): Promise<{
+    ok: boolean;
+    label: string;
+    encoded: string;
+    entityCount: number;
+    error?: string;
+  }> {
+    const bp = this.getBlueprintById(id);
+    if (!bp || bp.entries.length === 0) {
+      return {
+        ok: false,
+        label: '',
+        encoded: '',
+        entityCount: 0,
+        error: 'Blueprint not found or empty.',
+      };
+    }
+    const encoded = await encodeFactorioBlueprintString({
+      label: bp.label,
+      entries: bp.entries,
+    });
+    return {
+      ok: true,
+      label: bp.label,
+      encoded,
+      entityCount: bp.entries.length,
+    };
+  }
+
+  /** Serializes every machine currently built on the map into a Factorio `0e...` blueprint string. */
+  public async exportFactoryToFactorioString(label: string = 'Capytorio Factory'): Promise<{
+    ok: boolean;
+    label: string;
+    encoded: string;
+    entityCount: number;
+    error?: string;
+  }> {
+    const allMachines = Array.from(this.machines.values());
+    if (allMachines.length === 0) {
+      return {
+        ok: false,
+        label,
+        encoded: '',
+        entityCount: 0,
+        error: 'No buildings placed on the factory floor yet.',
+      };
+    }
+
+    let minGx = allMachines[0].gx;
+    let minGz = allMachines[0].gz;
+    for (let i = 1; i < allMachines.length; i++) {
+      if (allMachines[i].gx < minGx) minGx = allMachines[i].gx;
+      if (allMachines[i].gz < minGz) minGz = allMachines[i].gz;
+    }
+
+    const entries: CapytorioBlueprintEntry[] = allMachines.map((m) => ({
+      dx: m.gx - minGx,
+      dz: m.gz - minGz,
+      toolId: m.variantItemId ?? m.type,
+      baseType: m.type,
+      dir: m.dir,
+      recipeId: m.recipeId,
+      splitterInputPriority: m.splitterInputPriority,
+      splitterOutputPriority: m.splitterOutputPriority,
+      splitterFilterItem: m.splitterFilterItem,
+      inserterFilterMode: m.inserterFilterMode,
+      inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
+      inserterStackLimit: m.inserterStackLimit,
+      chestSlotLimit: m.chestSlotLimit,
+    }));
+
+    const encoded = await encodeFactorioBlueprintString({ label, entries });
+    return {
+      ok: true,
+      label,
+      encoded,
+      entityCount: entries.length,
+    };
+  }
+
+  /** Packages the player's Blueprint Library (or built-in presets if library is empty) into a Factorio Blueprint Book string. */
+  public async exportBlueprintLibraryAsFactorioBookString(
+    bookLabel: string = 'Capytorio Blueprint Book'
+  ): Promise<{
+    ok: boolean;
+    label: string;
+    encoded: string;
+    blueprintCount: number;
+    entityCount: number;
+    error?: string;
+  }> {
+    const source =
+      this.blueprintLibrary.length > 0 ? this.blueprintLibrary : this.presetBlueprints;
+    if (source.length === 0) {
+      return {
+        ok: false,
+        label: bookLabel,
+        encoded: '',
+        blueprintCount: 0,
+        entityCount: 0,
+        error: 'No blueprints available to export.',
+      };
+    }
+    const encoded = await encodeFactorioBlueprintBookString(source, bookLabel);
+    const entityCount = source.reduce((acc, bp) => acc + bp.entries.length, 0);
+    return {
+      ok: true,
+      label: bookLabel,
+      encoded,
+      blueprintCount: source.length,
+      entityCount,
+    };
+  }
+
+  /**
+   * Builds the self-powered Starter Mall sample factory directly onto the starter plain
+   * (producing Transport Belts, Inserters, and Electronic Circuits), wrapped in a single
+   * atomic Undo history entry (`Build Starter Mall`) so `Ctrl+Z` cleanly reverts it.
+   */
+  public buildSampleStarterMall(): {
+    ok: boolean;
+    placedCount: number;
+    clearedCount: number;
+    message: string;
+  } {
+    const plan = getSampleStarterMallAbsoluteEntries();
+    let clearedCount = 0;
+    let placedCount = 0;
+
+    this.beginHistoryBatch('Build Starter Mall');
+    try {
+      // 1. Demolish any existing machines overlapping the Starter Mall footprint (100% refunded)
+      const conflictingAnchors = new Set<string>();
+      for (let i = 0; i < plan.length; i++) {
+        const item = plan[i];
+        const fp = getCapytorioFootprint(item.baseType, item.toolId, item.dir);
+        for (let dx = 0; dx < fp.width; dx++) {
+          for (let dz = 0; dz < fp.height; dz++) {
+            const existing = this.getMachineAt(item.gx + dx, item.gz + dz);
+            if (existing) {
+              conflictingAnchors.add(tileKey(existing.gx, existing.gz));
+            }
+          }
+        }
+      }
+      conflictingAnchors.forEach((anchorKey) => {
+        const existing = this.machines.get(anchorKey);
+        if (existing) {
+          if (this.demolishAt(existing.gx, existing.gz) !== null) {
+            clearedCount++;
+          }
+        }
+      });
+
+      // 2. Provision exact kit counts needed so the sample mall builds completely on demand
+      const neededBase = new Map<CapytorioMachineType, number>();
+      const neededItems = new Map<CapytorioItemId, number>();
+      for (let i = 0; i < plan.length; i++) {
+        const resolved = resolveCapytorioPlaceableSpec(plan[i].toolId);
+        if (!resolved) continue;
+        if (resolved.isBaseMachine) {
+          neededBase.set(resolved.baseType, (neededBase.get(resolved.baseType) ?? 0) + 1);
+        } else {
+          neededItems.set(resolved.id, (neededItems.get(resolved.id) ?? 0) + 1);
+        }
+      }
+      neededBase.forEach((reqCount, baseType) => {
+        const have = this.pocketMachines[baseType] ?? 0;
+        if (have < reqCount) {
+          this.pocketMachines[baseType] = reqCount;
+        }
+      });
+      neededItems.forEach((reqCount, itemId) => {
+        const have = this.getPocketItemCount(itemId);
+        if (have < reqCount) {
+          this.addPocketItem(itemId, reqCount - have);
+        }
+      });
+
+      // 3. Place every building with exact recipe, chest slot cap, and initial generator fuel
+      for (let i = 0; i < plan.length; i++) {
+        const item = plan[i];
+        const res = this.placeMachine(item.toolId, item.gx, item.gz, item.dir, item.recipeId);
+        if (res.ok && res.machine) {
+          placedCount++;
+          if (item.chestSlotLimit && res.machine.type === 'chest') {
+            res.machine.chestSlotLimit = Math.max(
+              1,
+              Math.min(CAPYTORIO_CHEST_SLOTS, item.chestSlotLimit)
+            );
+          }
+          if (res.machine.type === 'generator') {
+            // Pre-seed coal & startup fuel so power is immediately 100% online
+            res.machine.inputBuffer.coal = (res.machine.inputBuffer.coal ?? 0) + 20;
+            res.machine.fuelTimer = Math.max(res.machine.fuelTimer, 24);
+          }
+        }
+      }
+    } finally {
+      this.commitHistoryBatch();
+    }
+
+    this.machineListDirty = true;
+    this.recomputePowerMetrics();
+    this.topologyRevision++;
+    this.clearClipboard();
+
+    return {
+      ok: placedCount > 0,
+      placedCount,
+      clearedCount,
+      message: `Built Starter Mall (${placedCount} buildings · Belts, Inserters & Circuits) — [Ctrl+Z] to undo`,
+    };
   }
 
   private buildBlueprintLabel(entries: ReadonlyArray<CapytorioBlueprintEntry>): string {
@@ -5658,6 +5944,18 @@ export class CapytorioFactoryEngine {
           inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
         })),
       })),
+      presetBlueprints: this.presetBlueprints.map((bp) => ({
+        id: bp.id,
+        label: bp.label,
+        sourceMode: bp.sourceMode,
+        createdAt: bp.createdAt,
+        width: bp.width,
+        height: bp.height,
+        entries: bp.entries.map((e) => ({
+          ...e,
+          inserterFilters: e.inserterFilters ? [...e.inserterFilters] : undefined,
+        })),
+      })),
       altModeEnabled: this.altModeEnabled,
       entitySettingsClipboard: this.entitySettingsClipboard
         ? {
@@ -6030,7 +6328,12 @@ export class CapytorioFactoryEngine {
             typeof bp.label === 'string' && bp.label.trim().length > 0
               ? bp.label.trim().slice(0, 80)
               : this.buildBlueprintLabel(cleanEntries),
-          sourceMode: bp.sourceMode === 'cut' ? 'cut' : 'copy',
+          sourceMode:
+            bp.sourceMode === 'cut'
+              ? 'cut'
+              : bp.sourceMode === 'import'
+                ? 'import'
+                : 'copy',
           createdAt:
             typeof bp.createdAt === 'number' && Number.isFinite(bp.createdAt) ? bp.createdAt : Date.now(),
           width: bounds.width,

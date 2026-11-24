@@ -35,6 +35,13 @@ import {
   worldToCapytorioGridZ,
 } from './CapytorioFactoryEngine';
 import {
+  createSampleStarterMallBlueprint,
+  decodeFactorioBlueprintString,
+  encodeFactorioBlueprintBookString,
+  encodeFactorioBlueprintString,
+  getSampleStarterMallAbsoluteEntries,
+} from './FactorioBlueprintCodec';
+import {
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   CAPYTORIO_TECHS,
@@ -2260,5 +2267,320 @@ test('Capytorio terrain generator creates lakes, rivers, and oceans while keepin
     renderer.dispose();
   }
 });
+
+test('Factorio blueprint codec round-trips single 0e... blueprints, settings, multi-tile footprints, and 1.1/2.0 directions', async () => {
+  const entries = [
+    {
+      dx: 0,
+      dz: 0,
+      baseType: 'assembler' as const,
+      toolId: 'assembling_machine_2',
+      dir: 1 as const,
+      recipeId: 'iron_gear' as const,
+    },
+    {
+      dx: 3,
+      dz: 1,
+      baseType: 'inserter' as const,
+      toolId: 'fast_inserter',
+      dir: 2 as const,
+      inserterFilterMode: 'blacklist' as const,
+      inserterFilters: ['iron_plate' as const, 'electronic_circuit' as const],
+      inserterStackLimit: 3,
+    },
+    {
+      dx: 4,
+      dz: 0,
+      baseType: 'splitter' as const,
+      toolId: 'splitter',
+      dir: 0 as const,
+      splitterInputPriority: 'left' as const,
+      splitterOutputPriority: 'right' as const,
+      splitterFilterItem: 'copper_plate' as const,
+    },
+    {
+      dx: 4,
+      dz: 2,
+      baseType: 'chest' as const,
+      toolId: 'iron_chest',
+      dir: 0 as const,
+      chestSlotLimit: 4,
+    },
+    {
+      dx: 6,
+      dz: 0,
+      baseType: 'drill' as const,
+      toolId: 'electric_mining_drill',
+      dir: 3 as const,
+    },
+  ];
+
+  const encoded = await encodeFactorioBlueprintString({
+    label: 'Gear Test Module',
+    entries,
+  });
+  assert.ok(encoded.startsWith('0e'), `Expected Factorio 0e... prefix, got ${encoded.slice(0, 6)}`);
+
+  const decoded = await decodeFactorioBlueprintString(encoded);
+  assert.equal(decoded.ok, true);
+  assert.equal(decoded.kind, 'blueprint');
+  assert.equal(decoded.blueprints.length, 1);
+  assert.equal(decoded.skippedTotalCount, 0);
+
+  const bp = decoded.blueprints[0];
+  assert.equal(bp.label, 'Gear Test Module');
+  assert.equal(bp.entries.length, entries.length);
+
+  const asm = bp.entries.find((e) => e.toolId === 'assembling_machine_2');
+  assert.ok(asm);
+  assert.equal(asm.dx, 0);
+  assert.equal(asm.dz, 0);
+  assert.equal(asm.dir, 1);
+  assert.equal(asm.recipeId, 'iron_gear');
+
+  const ins = bp.entries.find((e) => e.toolId === 'fast_inserter');
+  assert.ok(ins);
+  assert.equal(ins.dx, 3);
+  assert.equal(ins.dz, 1);
+  assert.equal(ins.dir, 2);
+  assert.equal(ins.inserterFilterMode, 'blacklist');
+  assert.deepEqual(ins.inserterFilters, ['iron_plate', 'electronic_circuit']);
+  assert.equal(ins.inserterStackLimit, 3);
+
+  const spl = bp.entries.find((e) => e.toolId === 'splitter');
+  assert.ok(spl);
+  assert.equal(spl.splitterInputPriority, 'left');
+  assert.equal(spl.splitterOutputPriority, 'right');
+  assert.equal(spl.splitterFilterItem, 'copper_plate');
+
+  const chest = bp.entries.find((e) => e.toolId === 'iron_chest');
+  assert.ok(chest);
+  assert.equal(chest.chestSlotLimit, 4);
+
+  const drill = bp.entries.find((e) => e.toolId === 'electric_mining_drill');
+  assert.ok(drill);
+  assert.equal(drill.dx, 6);
+  assert.equal(drill.dz, 0);
+  assert.equal(drill.dir, 3);
+
+  // Factorio 2.0 raw JSON with 16-way directions (0/4/8/12) and object filters
+  const factorio20Json = JSON.stringify({
+    blueprint: {
+      item: 'blueprint',
+      label: 'Factorio 2.0 Belt Line',
+      version: 562949958139904,
+      entities: [
+        { entity_number: 1, name: 'transport-belt', position: { x: 0.5, y: 0.5 }, direction: 4 },
+        { entity_number: 2, name: 'transport-belt', position: { x: 1.5, y: 0.5 }, direction: 8 },
+        {
+          entity_number: 3,
+          name: 'fast-inserter',
+          position: { x: 2.5, y: 0.5 },
+          direction: 12,
+          filters: [{ index: 1, name: 'iron-gear-wheel' }],
+        },
+      ],
+    },
+  });
+  const dec20 = await decodeFactorioBlueprintString(factorio20Json);
+  assert.equal(dec20.ok, true);
+  assert.equal(dec20.blueprints[0].entries[0].dir, 1);
+  assert.equal(dec20.blueprints[0].entries[1].dir, 2);
+  assert.equal(dec20.blueprints[0].entries[2].dir, 3);
+  assert.deepEqual(dec20.blueprints[0].entries[2].inserterFilters, ['iron_gear']);
+});
+
+test('Factorio blueprint import uses exact matches only, warns on skipped entities, and rejects empty/corrupt strings', async () => {
+  const mixedPayload = JSON.stringify({
+    blueprint: {
+      item: 'blueprint',
+      label: 'Mixed Vanilla + Modded',
+      version: 281479278886912,
+      entities: [
+        { entity_number: 1, name: 'transport-belt', position: { x: 0.5, y: 0.5 }, direction: 2 },
+        { entity_number: 2, name: 'roboport', position: { x: 4, y: 4 } },
+        { entity_number: 3, name: 'straight-rail', position: { x: 6, y: 6 } },
+        { entity_number: 4, name: 'straight-rail', position: { x: 8, y: 6 } },
+        { entity_number: 5, name: 'kr-crusher', position: { x: 10, y: 6 } },
+        {
+          entity_number: 6,
+          name: 'assembling-machine-1',
+          position: { x: 2.5, y: 1.5 },
+          recipe: 'electronic-circuit',
+        },
+      ],
+    },
+  });
+
+  const engine = new CapytorioFactoryEngine();
+  const res = await engine.importFactorioBlueprintString(mixedPayload);
+  assert.equal(res.ok, true);
+  assert.equal(res.importedEntityCount, 2);
+  assert.equal(res.skippedTotalCount, 4);
+  assert.equal(res.addedIds.length, 1);
+  assert.equal(engine.blueprintLibrary.length, 1);
+  assert.equal(engine.blueprintLibrary[0].sourceMode, 'import');
+  assert.equal(engine.clipboardToolState, 'paste');
+
+  const skipMap = new Map(res.skippedEntities.map((s) => [s.name, s.count]));
+  assert.equal(skipMap.get('straight-rail'), 2);
+  assert.equal(skipMap.get('roboport'), 1);
+  assert.equal(skipMap.get('kr-crusher'), 1);
+
+  // 100% unsupported entities returns ok: false with skipped report
+  const unsupportedOnly = JSON.stringify({
+    blueprint: {
+      item: 'blueprint',
+      label: 'Rails Only',
+      entities: [
+        { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 0 } },
+        { entity_number: 2, name: 'train-stop', position: { x: 2, y: 0 } },
+      ],
+    },
+  });
+  const failRes = await engine.importFactorioBlueprintString(unsupportedOnly);
+  assert.equal(failRes.ok, false);
+  assert.equal(failRes.skippedTotalCount, 2);
+  assert.match(failRes.error ?? '', /No supported/i);
+
+  // Malformed string returns ok: false
+  const badRes = await engine.importFactorioBlueprintString('0eNOT_VALID_BASE64!!!');
+  assert.equal(badRes.ok, false);
+  assert.ok((badRes.error ?? '').length > 0);
+});
+
+test('Factorio Blueprint Book (including nested books) imports every blueprint and exports cleanly', async () => {
+  const nestedBookPayload = JSON.stringify({
+    blueprint_book: {
+      item: 'blueprint-book',
+      label: 'Capytorio Master Book',
+      active_index: 0,
+      version: 281479278886912,
+      blueprints: [
+        {
+          index: 0,
+          blueprint: {
+            item: 'blueprint',
+            label: 'Smelter Pair',
+            entities: [
+              { entity_number: 1, name: 'stone-furnace', position: { x: 1, y: 1 }, direction: 4 },
+              { entity_number: 2, name: 'transport-belt', position: { x: 1.5, y: 2.5 }, direction: 2 },
+            ],
+          },
+        },
+        {
+          index: 1,
+          blueprint_book: {
+            item: 'blueprint-book',
+            label: 'Nested Logistics',
+            blueprints: [
+              {
+                index: 0,
+                blueprint: {
+                  item: 'blueprint',
+                  label: 'Belt Bus',
+                  entities: [
+                    { entity_number: 1, name: 'transport-belt', position: { x: 0.5, y: 0.5 }, direction: 2 },
+                    { entity_number: 2, name: 'splitter', position: { x: 1.5, y: 1 }, direction: 2 },
+                    { entity_number: 3, name: 'roboport', position: { x: 5, y: 5 } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  const engine = new CapytorioFactoryEngine();
+  const imported = await engine.importFactorioBlueprintString(nestedBookPayload);
+  assert.equal(imported.ok, true);
+  assert.equal(imported.kind, 'blueprint_book');
+  assert.equal(imported.bookLabel, 'Capytorio Master Book');
+  assert.equal(imported.blueprints.length, 2);
+  assert.equal(imported.importedEntityCount, 4);
+  assert.equal(imported.skippedTotalCount, 1);
+  assert.equal(engine.blueprintLibrary.length, 2);
+  assert.equal(engine.blueprintLibrary[0].label, 'Smelter Pair');
+  assert.equal(engine.blueprintLibrary[1].label, 'Nested Logistics / Belt Bus');
+
+  // Round-trip export of the Blueprint Library as a 0e... Factorio blueprint_book
+  const exportedBook = await engine.exportBlueprintLibraryAsFactorioBookString('Exported Capy Book');
+  assert.equal(exportedBook.ok, true);
+  assert.ok(exportedBook.encoded.startsWith('0e'));
+  assert.equal(exportedBook.blueprintCount, 2);
+  assert.equal(exportedBook.entityCount, 4);
+
+  const redecoded = await decodeFactorioBlueprintString(exportedBook.encoded);
+  assert.equal(redecoded.ok, true);
+  assert.equal(redecoded.kind, 'blueprint_book');
+  assert.equal(redecoded.bookLabel, 'Exported Capy Book');
+  assert.equal(redecoded.blueprints.length, 2);
+  assert.equal(redecoded.importedEntityCount, 4);
+
+  // Also test standalone encodeFactorioBlueprintBookString directly
+  const preset = createSampleStarterMallBlueprint();
+  const directBook = await encodeFactorioBlueprintBookString([preset], 'Preset Book');
+  assert.ok(directBook.startsWith('0e'));
+  const directDec = await decodeFactorioBlueprintString(directBook);
+  assert.equal(directDec.ok, true);
+  assert.equal(directDec.kind, 'blueprint_book');
+  assert.equal(directDec.blueprints.length, 1);
+});
+
+test('Starter Mall sample factory builds cleanly on demand, produces Belts, Inserters & Circuits, exports to 0e..., and rolls back via Undo', async () => {
+  const engine = new CapytorioFactoryEngine();
+  assert.equal(engine.machines.size, 0, 'Fresh starter world stays blank until user builds sample mall');
+  assert.equal(engine.presetBlueprints.length, 1);
+  assert.equal(engine.presetBlueprints[0].id, 'preset_starter_mall');
+
+  const expectedCount = getSampleStarterMallAbsoluteEntries().length;
+  const built = engine.buildSampleStarterMall();
+  assert.equal(built.ok, true);
+  assert.equal(built.placedCount, expectedCount, `All ${expectedCount} Starter Mall buildings must place cleanly`);
+  assert.equal(engine.machines.size, expectedCount);
+  assert.ok(
+    engine.powerEfficiency >= 1.0,
+    `Starter Mall coal power plant must supply >= 100% power (got ${engine.powerEfficiency})`
+  );
+
+  // Step factory simulation forward 120 seconds (480 × 0.25s) and confirm automated outputs
+  for (let i = 0; i < 480; i++) {
+    engine.step(0.25);
+  }
+
+  const beltChest = engine.getMachineAt(-3, 6);
+  const inserterChest = engine.getMachineAt(7, 8);
+  const circuitChest = engine.getMachineAt(11, 7);
+  assert.ok(beltChest && beltChest.type === 'chest', 'Transport Belt output chest exists');
+  assert.ok(inserterChest && inserterChest.type === 'chest', 'Inserter output chest exists');
+  assert.ok(circuitChest && circuitChest.type === 'chest', 'Electronic Circuit output chest exists');
+
+  const beltsMade = beltChest.outputBuffer.transport_belt ?? 0;
+  const insertersMade = inserterChest.outputBuffer.inserter ?? 0;
+  const circuitsMade = circuitChest.outputBuffer.electronic_circuit ?? 0;
+
+  assert.ok(beltsMade > 0, `Expected automated transport_belt production, got ${beltsMade}`);
+  assert.ok(insertersMade > 0, `Expected automated inserter production, got ${insertersMade}`);
+  assert.ok(circuitsMade > 0, `Expected automated electronic_circuit production, got ${circuitsMade}`);
+
+  // Export live Starter Mall factory to Factorio 0e... string and verify round-trip
+  const factoryExport = await engine.exportFactoryToFactorioString('Live Starter Mall');
+  assert.equal(factoryExport.ok, true);
+  assert.ok(factoryExport.encoded.startsWith('0e'));
+  assert.equal(factoryExport.entityCount, expectedCount);
+
+  const redecoded = await decodeFactorioBlueprintString(factoryExport.encoded);
+  assert.equal(redecoded.ok, true);
+  assert.equal(redecoded.importedEntityCount, expectedCount);
+  assert.equal(redecoded.skippedTotalCount, 0);
+
+  // Single atomic Undo cleanly reverts the entire Starter Mall
+  const undoRes = engine.undoLastAction();
+  assert.equal(undoRes.ok, true);
+  assert.equal(engine.machines.size, 0, 'Atomic Undo reverts every Starter Mall building cleanly');
+});
+
 
 

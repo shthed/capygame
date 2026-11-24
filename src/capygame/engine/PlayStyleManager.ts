@@ -4977,6 +4977,59 @@ export class PlayStyleManager {
     this.markCapytorioDirty();
   }
 
+  public buildCapytorioSampleStarterMall(): {
+    ok: boolean;
+    placedCount: number;
+    clearedCount: number;
+    message: string;
+  } {
+    const res = this.capytorioEngine.buildSampleStarterMall();
+    if (res.ok) {
+      AudioService.playCapytorioBlueprint('paste', res.placedCount);
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    } else {
+      this.emitCapytorioSnapshot();
+    }
+    return res;
+  }
+
+  public async importCapytorioFactorioBlueprintString(rawInput: string) {
+    const res = await this.capytorioEngine.importFactorioBlueprintString(rawInput);
+    if (res.ok) {
+      AudioService.playCapytorioBlueprint('copy', res.importedEntityCount);
+      this.markCapytorioDirty();
+    } else {
+      AudioService.playCapytorioUiClick('alt_off');
+      this.emitCapytorioSnapshot();
+    }
+    return res;
+  }
+
+  public async exportCapytorioBlueprintToFactorioString(id: string) {
+    const res = await this.capytorioEngine.exportBlueprintToFactorioString(id);
+    if (res.ok) {
+      AudioService.playCapytorioUiClick('tool');
+    }
+    return res;
+  }
+
+  public async exportCapytorioFactoryToFactorioString(label?: string) {
+    const res = await this.capytorioEngine.exportFactoryToFactorioString(label);
+    if (res.ok) {
+      AudioService.playCapytorioUiClick('tool');
+    }
+    return res;
+  }
+
+  public async exportCapytorioBlueprintBookToFactorioString(bookLabel?: string) {
+    const res = await this.capytorioEngine.exportBlueprintLibraryAsFactorioBookString(bookLabel);
+    if (res.ok) {
+      AudioService.playCapytorioUiClick('tool');
+    }
+    return res;
+  }
+
   public undoCapytorioCut(): { restoredCount: number } {
     const res = this.capytorioEngine.undoCut();
     if (res.restoredCount > 0) {
