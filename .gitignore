@@ -5,6 +5,7 @@ test-results/
 playwright-report/
 .playwright-cli/
 .artifacts/
+.aistudio/
 .wrangler/
 
 # Secrets & Environment Files
