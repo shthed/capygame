@@ -702,21 +702,13 @@ function createCurvedBeltDeckGeometry(
       const c = vi + 2;
       const d = vi + 3;
       const ii = i * 6;
-      if (side === 'left') {
-        indices[ii] = a;
-        indices[ii + 1] = b;
-        indices[ii + 2] = c;
-        indices[ii + 3] = c;
-        indices[ii + 4] = b;
-        indices[ii + 5] = d;
-      } else {
-        indices[ii] = a;
-        indices[ii + 1] = c;
-        indices[ii + 2] = b;
-        indices[ii + 3] = c;
-        indices[ii + 4] = d;
-        indices[ii + 5] = b;
-      }
+      // Both 'left' and 'right' parameterizations keep (b - a) x (c - a) pointing +Y (upward).
+      indices[ii] = a;
+      indices[ii + 1] = b;
+      indices[ii + 2] = c;
+      indices[ii + 3] = c;
+      indices[ii + 4] = b;
+      indices[ii + 5] = d;
     }
   }
 
@@ -741,30 +733,91 @@ function createCurvedArcBandGeometry(
   const pivotZ = -halfTile;
   const rMin = Math.max(0.05, radiusCenter - bandWidth * 0.5);
   const rMax = radiusCenter + bandWidth * 0.5;
-  const parts: THREE.BufferGeometry[] = [];
+  // Ordering rA -> rB mirrors left/right identically to createCurvedBeltDeckGeometry so
+  // every face shares identical CCW outward winding for both 'left' and 'right' curves.
+  const rA = side === 'left' ? rMin : rMax;
+  const rB = side === 'left' ? rMax : rMin;
+
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const pushQuad = (
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    dx: number, dy: number, dz: number,
+    nx: number, ny: number, nz: number,
+    u0: number, v0: number, u1: number, v1: number
+  ) => {
+    const base = positions.length / 3;
+    positions.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
+    normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz, nx, ny, nz);
+    uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
+    indices.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
+  };
+
+  const ptX = (r: number, cosT: number) => (side === 'left' ? pivotX + r * cosT : pivotX - r * cosT);
+  const ptZ = (r: number, sinT: number) => pivotZ + r * sinT;
 
   for (let i = 0; i < segs; i++) {
     const t0 = i / segs;
     const t1 = (i + 1) / segs;
-    const tMid = (t0 + t1) * 0.5;
     const theta0 = (1 - t0) * (Math.PI * 0.5);
     const theta1 = (1 - t1) * (Math.PI * 0.5);
-    const thetaMid = (1 - tMid) * (Math.PI * 0.5);
-    const chord = Math.hypot(
-      Math.cos(theta1) - Math.cos(theta0),
-      Math.sin(theta1) - Math.sin(theta0)
-    ) * radiusCenter + 0.015;
+    const c0 = Math.cos(theta0);
+    const s0 = Math.sin(theta0);
+    const c1 = Math.cos(theta1);
+    const s1 = Math.sin(theta1);
 
-    const rMid = (rMin + rMax) * 0.5;
-    const box = new THREE.BoxGeometry(rMax - rMin, yTop - yBottom, chord);
-    const rotY = side === 'left' ? -thetaMid : thetaMid;
-    box.rotateY(rotY);
-    const wx = side === 'left' ? pivotX + rMid * Math.cos(thetaMid) : pivotX - rMid * Math.cos(thetaMid);
-    const wz = pivotZ + rMid * Math.sin(thetaMid);
-    box.translate(wx, (yBottom + yTop) * 0.5, wz);
-    parts.push(box);
+    const ax0 = ptX(rA, c0);
+    const az0 = ptZ(rA, s0);
+    const bx0 = ptX(rB, c0);
+    const bz0 = ptZ(rB, s0);
+    const ax1 = ptX(rA, c1);
+    const az1 = ptZ(rA, s1);
+    const bx1 = ptX(rB, c1);
+    const bz1 = ptZ(rB, s1);
+
+    // Top face (+Y)
+    pushQuad(ax0, yTop, az0, bx0, yTop, bz0, ax1, yTop, az1, bx1, yTop, bz1, 0, 1, 0, 0, t0, 1, t1);
+    // Bottom face (-Y)
+    pushQuad(ax0, yBottom, az0, ax1, yBottom, az1, bx0, yBottom, bz0, bx1, yBottom, bz1, 0, -1, 0, 0, t0, 1, t1);
+
+    // Radial wall normals at midpoint angle
+    const thetaMid = (theta0 + theta1) * 0.5;
+    const cm = Math.cos(thetaMid);
+    const sm = Math.sin(thetaMid);
+    // Outward radial unit vector from pivot
+    const radOutX = side === 'left' ? cm : -cm;
+    const radOutZ = sm;
+    // Wall along rB: outward for 'left' (rMax), inward toward pivot for 'right' (rMin)
+    const nBx = side === 'left' ? radOutX : -radOutX;
+    const nBz = side === 'left' ? radOutZ : -radOutZ;
+    pushQuad(bx0, yTop, bz0, bx0, yBottom, bz0, bx1, yTop, bz1, bx1, yBottom, bz1, nBx, 0, nBz, 0, t0, 1, t1);
+    // Wall along rA: inward toward pivot for 'left' (rMin), outward for 'right' (rMax)
+    const nAx = -nBx;
+    const nAz = -nBz;
+    pushQuad(ax0, yTop, az0, ax1, yTop, az1, ax0, yBottom, az0, ax1, yBottom, az1, nAx, 0, nAz, 0, t0, 1, t1);
+
+    // Start cap at t = 0 (theta = PI/2, facing backward away from arc entry)
+    if (i === 0) {
+      const capNx = side === 'left' ? -1 : 1;
+      pushQuad(ax0, yTop, az0, ax0, yBottom, az0, bx0, yTop, bz0, bx0, yBottom, bz0, capNx, 0, 0, 0, 0, 1, 1);
+    }
+    // Exit cap at t = 1 (theta = 0, facing -Z exit)
+    if (i === segs - 1) {
+      pushQuad(ax1, yTop, az1, bx1, yTop, bz1, ax1, yBottom, az1, bx1, yBottom, bz1, 0, 0, -1, 0, 0, 1, 1);
+    }
   }
-  return mergeSimpleIndexedGeometries(parts);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return geo;
 }
 
 function createItemShapeGeometry(shape: CapytorioItemShape): THREE.BufferGeometry {

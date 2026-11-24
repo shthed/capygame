@@ -2962,7 +2962,84 @@ test('Capytorio3DRenderer constructs distinct procedural 3D meshes & ghosts for 
   }
 });
 
+test('Curved left and right transport belt decks, chassis, and rails have outward/upward CCW triangle winding', () => {
+  const renderer = new Capytorio3DRenderer();
+  try {
+    const internal = renderer as unknown as {
+      curvedDeckLeftGeo: THREE.BufferGeometry;
+      curvedDeckRightGeo: THREE.BufferGeometry;
+      curvedChassisLeftGeo: THREE.BufferGeometry;
+      curvedChassisRightGeo: THREE.BufferGeometry;
+      curvedRailLeftGeo: THREE.BufferGeometry;
+      curvedRailRightGeo: THREE.BufferGeometry;
+    };
 
+    const vA = new THREE.Vector3();
+    const vB = new THREE.Vector3();
+    const vC = new THREE.Vector3();
+    const ab = new THREE.Vector3();
+    const ac = new THREE.Vector3();
+    const faceNormal = new THREE.Vector3();
+    const storedNormal = new THREE.Vector3();
 
+    // 1. Both left and right curved decks must have EVERY triangle wound CCW upward (+Y)
+    for (const [label, geo] of [
+      ['curvedDeckLeftGeo', internal.curvedDeckLeftGeo],
+      ['curvedDeckRightGeo', internal.curvedDeckRightGeo],
+    ] as const) {
+      const pos = geo.getAttribute('position');
+      const idx = geo.getIndex()!;
+      assert.ok(idx.count >= 28 * 3, `${label} has expected curved deck triangles`);
+      for (let i = 0; i < idx.count; i += 3) {
+        vA.fromBufferAttribute(pos, idx.getX(i));
+        vB.fromBufferAttribute(pos, idx.getX(i + 1));
+        vC.fromBufferAttribute(pos, idx.getX(i + 2));
+        ab.subVectors(vB, vA);
+        ac.subVectors(vC, vA);
+        faceNormal.crossVectors(ab, ac);
+        assert.ok(
+          faceNormal.y > 0,
+          `${label} triangle ${i / 3} must face +Y upward (got normal.y=${faceNormal.y})`
+        );
+      }
+    }
 
-
+    // 2. Curved chassis & rail bands must match their outward vertex normals on every triangle
+    for (const [label, geo] of [
+      ['curvedChassisLeftGeo', internal.curvedChassisLeftGeo],
+      ['curvedChassisRightGeo', internal.curvedChassisRightGeo],
+      ['curvedRailLeftGeo', internal.curvedRailLeftGeo],
+      ['curvedRailRightGeo', internal.curvedRailRightGeo],
+    ] as const) {
+      const pos = geo.getAttribute('position');
+      const nrm = geo.getAttribute('normal');
+      const idx = geo.getIndex()!;
+      let signedVolume6 = 0;
+      for (let i = 0; i < idx.count; i += 3) {
+        const i0 = idx.getX(i);
+        const i1 = idx.getX(i + 1);
+        const i2 = idx.getX(i + 2);
+        vA.fromBufferAttribute(pos, i0);
+        vB.fromBufferAttribute(pos, i1);
+        vC.fromBufferAttribute(pos, i2);
+        ab.subVectors(vB, vA);
+        ac.subVectors(vC, vA);
+        faceNormal.crossVectors(ab, ac);
+        assert.ok(faceNormal.lengthSq() > 1e-10, `${label} triangle ${i / 3} is non-degenerate`);
+        faceNormal.normalize();
+        storedNormal.fromBufferAttribute(nrm, i0);
+        assert.ok(
+          faceNormal.dot(storedNormal) > 0.5,
+          `${label} triangle ${i / 3} geometric normal must align with outward vertex normal (dot=${faceNormal.dot(storedNormal).toFixed(3)})`
+        );
+        signedVolume6 += vA.dot(ab.copy(vB).cross(vC));
+      }
+      assert.ok(
+        signedVolume6 > 0,
+        `${label} must have strictly positive signed volume (got ${(signedVolume6 / 6).toFixed(4)})`
+      );
+    }
+  } finally {
+    renderer.dispose();
+  }
+});
