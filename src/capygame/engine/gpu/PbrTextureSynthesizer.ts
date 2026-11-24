@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import * as THREE_WEBGPU from 'three/webgpu';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GpuTextureFilterMode } from './GpuEngineTypes';
+import { isMobileEnvironment } from './FramePerformanceGovernor';
 import { createTslIblSkyDomeMaterial } from './WebGpuPipeline';
 
 export type PbrSurfaceMaterialKind =
@@ -18,6 +19,8 @@ export interface SynthesizedPbrMaterialMaps {
   albedo: THREE.Texture;
   normal: THREE.DataTexture;
   bump: THREE.Texture;
+  /** Shared packed ORM DataTexture (R = AO for Three.js aoMap, G = Roughness for roughnessMap, B = AO). */
+  orm: THREE.DataTexture;
   roughness: THREE.DataTexture;
   ao: THREE.DataTexture;
 }
@@ -145,7 +148,16 @@ export class PbrTextureSynthesizer {
   }
 
   public static isLeanTextureMode(): boolean {
-    return this.leanTextureMode;
+    return this.leanTextureMode || isMobileEnvironment();
+  }
+
+  public static getSurfaceMapResolution(): number {
+    // Synthesize 256x256 maps in lean/mobile mode (capped from 512x512 desktop detail)
+    return this.isLeanTextureMode() ? 256 : 512;
+  }
+
+  public static clearSurfaceCache(): void {
+    this.surfaceMapCache.clear();
   }
 
   public static registerManagedTexture(tex: THREE.Texture): THREE.Texture {
@@ -206,7 +218,8 @@ export class PbrTextureSynthesizer {
   }
 
   /**
-   * Builds a Tangent-Space Normal Map + Roughness + Cavity AO DataTexture trio from a periodic heightfield.
+   * Builds a Tangent-Space Normal Map + single shared packed ORM DataTexture (R=AO, G=Roughness, B=AO)
+   * from a periodic heightfield.
    */
   private static bakePbrDataMapsFromHeightfield(
     size: number,
@@ -214,12 +227,12 @@ export class PbrTextureSynthesizer {
     baseRoughness: number,
     roughnessSpread: number,
     sampleHeight: (u: number, v: number) => number,
-    sampleAlbedo?: (u: number, v: number, h: number, ao: number, outRgb: [number, number, number]) => void
+    sampleAlbedo?: (u: number, v: number, h: number, ao: number, outRgb: [number, number, number]) => void,
+    normalOnly: boolean = false
   ): {
     albedoData: THREE.DataTexture | null;
     normal: THREE.DataTexture;
-    roughness: THREE.DataTexture;
-    ao: THREE.DataTexture;
+    orm: THREE.DataTexture | null;
   } {
     const heights = new Float32Array(size * size);
     for (let y = 0; y < size; y++) {
@@ -231,8 +244,7 @@ export class PbrTextureSynthesizer {
     }
 
     const normalBytes = new Uint8Array(size * size * 4);
-    const roughBytes = new Uint8Array(size * size * 4);
-    const aoBytes = new Uint8Array(size * size * 4);
+    const ormBytes = normalOnly ? null : new Uint8Array(size * size * 4);
     const albedoBytes = sampleAlbedo ? new Uint8Array(size * size * 4) : null;
     const rgbScratch: [number, number, number] = [128, 128, 128];
 
@@ -273,28 +285,30 @@ export class PbrTextureSynthesizer {
         normalBytes[p4 + 2] = Math.max(0, Math.min(255, Math.round((nz * 0.5 + 0.5) * 255)));
         normalBytes[p4 + 3] = 255;
 
-        // Local Laplacian curvature cavity AO: concave crevices darken, convex ridges stay bright
-        const neighborMean = (tl + tc + tr + ml + mr + bl + bc + br) * 0.125;
-        const cavity = Math.max(0, neighborMean - mc);
-        const aoFloat = Math.max(0.28, Math.min(1.0, 1.0 - cavity * 5.2 - (1.0 - mc) * 0.18));
-        const aoByte = Math.round(aoFloat * 255);
-        aoBytes[p4] = aoByte;
-        aoBytes[p4 + 1] = aoByte;
-        aoBytes[p4 + 2] = aoByte;
-        aoBytes[p4 + 3] = 255;
+        let aoFloat = 1.0;
+        if (ormBytes || sampleAlbedo) {
+          // Local Laplacian curvature cavity AO: concave crevices darken, convex ridges stay bright
+          const neighborMean = (tl + tc + tr + ml + mr + bl + bc + br) * 0.125;
+          const cavity = Math.max(0, neighborMean - mc);
+          aoFloat = Math.max(0.28, Math.min(1.0, 1.0 - cavity * 5.2 - (1.0 - mc) * 0.18));
+        }
 
-        // Micro-roughness modulated by height & slope (cavities rougher, polished peaks smoother)
-        const slope = Math.min(1.0, Math.hypot(dX, dY) * 1.5);
-        const rFloat = THREE.MathUtils.clamp(
-          baseRoughness + (0.5 - mc) * roughnessSpread + slope * 0.08,
-          0.06,
-          0.98
-        );
-        const rByte = Math.round(rFloat * 255);
-        roughBytes[p4] = rByte;
-        roughBytes[p4 + 1] = rByte;
-        roughBytes[p4 + 2] = rByte;
-        roughBytes[p4 + 3] = 255;
+        if (ormBytes) {
+          const aoByte = Math.round(aoFloat * 255);
+          // Micro-roughness modulated by height & slope (cavities rougher, polished peaks smoother)
+          const slope = Math.min(1.0, Math.hypot(dX, dY) * 1.5);
+          const rFloat = THREE.MathUtils.clamp(
+            baseRoughness + (0.5 - mc) * roughnessSpread + slope * 0.08,
+            0.06,
+            0.98
+          );
+          const rByte = Math.round(rFloat * 255);
+          // Single shared ORM DataTexture: R = AO (Three.js aoMap .r), G = Roughness (roughnessMap .g), B = AO
+          ormBytes[p4] = aoByte;
+          ormBytes[p4 + 1] = rByte;
+          ormBytes[p4 + 2] = aoByte;
+          ormBytes[p4 + 3] = 255;
+        }
 
         if (sampleAlbedo && albedoBytes) {
           sampleAlbedo(x / size, y / size, mc, aoFloat, rgbScratch);
@@ -327,8 +341,7 @@ export class PbrTextureSynthesizer {
     return {
       albedoData,
       normal: configureLinearDataTex(normalBytes),
-      roughness: configureLinearDataTex(roughBytes),
-      ao: configureLinearDataTex(aoBytes),
+      orm: ormBytes ? configureLinearDataTex(ormBytes) : null,
     };
   }
 
@@ -343,7 +356,7 @@ export class PbrTextureSynthesizer {
     if (existingAlbedo) this.registerManagedTexture(existingAlbedo);
     if (existingBump) this.registerManagedTexture(existingBump);
 
-    const mapSize = this.leanTextureMode ? 64 : 128;
+    const mapSize = this.getSurfaceMapResolution();
     let maps: ReturnType<typeof this.bakePbrDataMapsFromHeightfield>;
 
     if (kind === 'cobble') {
@@ -431,13 +444,15 @@ export class PbrTextureSynthesizer {
       });
     }
 
-    const fallbackAlbedo = maps.albedoData ?? existingAlbedo ?? maps.ao;
+    const ormTex = maps.orm!;
+    const fallbackAlbedo = maps.albedoData ?? existingAlbedo ?? ormTex;
     const result: SynthesizedPbrMaterialMaps = {
       albedo: existingAlbedo ?? fallbackAlbedo,
       normal: maps.normal,
-      bump: existingBump ?? maps.ao,
-      roughness: maps.roughness,
-      ao: maps.ao,
+      bump: existingBump ?? ormTex,
+      orm: ormTex,
+      roughness: ormTex,
+      ao: ormTex,
     };
     this.surfaceMapCache.set(kind, result);
     return result;
@@ -450,26 +465,42 @@ export class PbrTextureSynthesizer {
     primary: THREE.DataTexture;
     secondary: THREE.DataTexture;
   } {
-    const waterSize = this.leanTextureMode ? 64 : 128;
+    const waterSize = this.isLeanTextureMode() ? 128 : 256;
     if (!this.waterPrimaryNormal || !this.waterSecondaryNormal) {
-      const p = this.bakePbrDataMapsFromHeightfield(waterSize, 2.45, 0.08, 0.04, (u, v) => {
-        const a = u * Math.PI * 2;
-        const b = v * Math.PI * 2;
-        const swell1 = Math.sin(a * 3 + b * 2) * 0.34;
-        const swell2 = Math.cos(a * 2 - b * 4) * 0.28;
-        const ripple = periodicFbm(u, v, 12, 3, 1201) * 0.38;
-        return 0.5 + (swell1 + swell2) * 0.5 + (ripple - 0.19);
-      });
+      const p = this.bakePbrDataMapsFromHeightfield(
+        waterSize,
+        2.45,
+        0.08,
+        0.04,
+        (u, v) => {
+          const a = u * Math.PI * 2;
+          const b = v * Math.PI * 2;
+          const swell1 = Math.sin(a * 3 + b * 2) * 0.34;
+          const swell2 = Math.cos(a * 2 - b * 4) * 0.28;
+          const ripple = periodicFbm(u, v, 12, 3, 1201) * 0.38;
+          return 0.5 + (swell1 + swell2) * 0.5 + (ripple - 0.19);
+        },
+        undefined,
+        true
+      );
       p.normal.repeat.set(18, 18);
 
-      const s = this.bakePbrDataMapsFromHeightfield(waterSize, 1.85, 0.08, 0.04, (u, v) => {
-        const a = u * Math.PI * 2;
-        const b = v * Math.PI * 2;
-        const cap1 = Math.sin(a * 5 - b * 3) * 0.32;
-        const cap2 = Math.cos(a * 4 + b * 6) * 0.26;
-        const micro = periodicFbm(u, v, 20, 2, 1453) * 0.42;
-        return 0.5 + (cap1 + cap2) * 0.5 + (micro - 0.21);
-      });
+      const s = this.bakePbrDataMapsFromHeightfield(
+        waterSize,
+        1.85,
+        0.08,
+        0.04,
+        (u, v) => {
+          const a = u * Math.PI * 2;
+          const b = v * Math.PI * 2;
+          const cap1 = Math.sin(a * 5 - b * 3) * 0.32;
+          const cap2 = Math.cos(a * 4 + b * 6) * 0.26;
+          const micro = periodicFbm(u, v, 20, 2, 1453) * 0.42;
+          return 0.5 + (cap1 + cap2) * 0.5 + (micro - 0.21);
+        },
+        undefined,
+        true
+      );
       s.normal.repeat.set(31, 31);
 
       this.waterPrimaryNormal = p.normal;
@@ -486,11 +517,19 @@ export class PbrTextureSynthesizer {
    */
   public static getCapyFurNormalMap(): THREE.DataTexture {
     if (!this.furNormalTex) {
-      const m = this.bakePbrDataMapsFromHeightfield(this.leanTextureMode ? 64 : 128, 0.58, 0.78, 0.10, (u, v) => {
-        const fineCoat = periodicFbm(u * 2.0, v * 8.0, 28, 2, 1607);
-        const velvetUnder = periodicFbm(u * 4.0, v * 4.0, 16, 2, 1621);
-        return fineCoat * 0.65 + velvetUnder * 0.35;
-      });
+      const m = this.bakePbrDataMapsFromHeightfield(
+        this.isLeanTextureMode() ? 128 : 256,
+        0.58,
+        0.78,
+        0.10,
+        (u, v) => {
+          const fineCoat = periodicFbm(u * 2.0, v * 8.0, 28, 2, 1607);
+          const velvetUnder = periodicFbm(u * 4.0, v * 4.0, 16, 2, 1621);
+          return fineCoat * 0.65 + velvetUnder * 0.35;
+        },
+        undefined,
+        true
+      );
       m.normal.repeat.set(2, 2);
       this.furNormalTex = m.normal;
     }
@@ -502,12 +541,20 @@ export class PbrTextureSynthesizer {
    */
   public static getCitrusPeelNormalMap(): THREE.DataTexture {
     if (!this.citrusNormalTex) {
-      const m = this.bakePbrDataMapsFromHeightfield(this.leanTextureMode ? 64 : 128, 2.35, 0.24, 0.14, (u, v) => {
-        const oilPores = periodicWorley(u, v, 22, 1801);
-        const dimple = THREE.MathUtils.smoothstep(oilPores.f1, 0.0, 0.42);
-        const micro = periodicFbm(u, v, 24, 2, 1823) * 0.18;
-        return dimple * 0.82 + micro;
-      });
+      const m = this.bakePbrDataMapsFromHeightfield(
+        this.isLeanTextureMode() ? 128 : 256,
+        2.35,
+        0.24,
+        0.14,
+        (u, v) => {
+          const oilPores = periodicWorley(u, v, 22, 1801);
+          const dimple = THREE.MathUtils.smoothstep(oilPores.f1, 0.0, 0.42);
+          const micro = periodicFbm(u, v, 24, 2, 1823) * 0.18;
+          return dimple * 0.82 + micro;
+        },
+        undefined,
+        true
+      );
       m.normal.repeat.set(3, 3);
       this.citrusNormalTex = m.normal;
     }

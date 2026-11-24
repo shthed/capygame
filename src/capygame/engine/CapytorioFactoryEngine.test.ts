@@ -2582,5 +2582,73 @@ test('Starter Mall sample factory builds cleanly on demand, produces Belts, Inse
   assert.equal(engine.machines.size, 0, 'Atomic Undo reverts every Starter Mall building cleanly');
 });
 
+test('Factorio blueprint decoder enforces 4 MB decompressed byte cap and rejects corrupt deflate streams without unhandled rejections', async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    // 1. Craft a tiny compressed zlib payload that inflates to ~4.5 MB (exceeds 4 MB cap)
+    const bigPayload = new Uint8Array(4_500_000);
+    bigPayload.fill(0x20); // highly compressible ASCII spaces
+    const cs = new CompressionStream('deflate');
+    const writer = cs.writable.getWriter();
+    const writeDone = writer.write(bigPayload).then(() => writer.close());
+    const reader = cs.readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        total += value.byteLength;
+      }
+    }
+    await writeDone;
+    const compressed = new Uint8Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      compressed.set(c, offset);
+      offset += c.byteLength;
+    }
+    const bombString = '0' + Buffer.from(compressed).toString('base64');
+
+    const bombRes = await decodeFactorioBlueprintString(bombString);
+    assert.equal(bombRes.ok, false, 'Oversized compressed payload must be rejected');
+    assert.match(bombRes.error ?? '', /4 MB|exceeds maximum/i);
+
+    // 2. Corrupt zlib header/body (valid base64, invalid deflate stream) must reject cleanly with zero unhandled rejections
+    const corruptBytes = new Uint8Array([0x78, 0x9c, 0xff, 0xff, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01]);
+    const corruptString = '0' + Buffer.from(corruptBytes).toString('base64');
+    const corruptRes = await decodeFactorioBlueprintString(corruptString);
+    assert.equal(corruptRes.ok, false, 'Corrupt deflate stream must fail cleanly');
+    assert.ok((corruptRes.error ?? '').length > 0);
+
+    // Flush microtask/macrotask turn to ensure no stray unhandled rejection fires
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(unhandled.length, 0, `Expected zero unhandled rejections, got ${unhandled.length}`);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('Capytorio3DRenderer lowers terrain deck resolution to 64x64 segments while preserving 320 m world width', () => {
+  const renderer = new Capytorio3DRenderer();
+  try {
+    const groundDeckGeo = (renderer as unknown as { groundDeckGeo: THREE.PlaneGeometry }).groundDeckGeo;
+    assert.ok(groundDeckGeo, 'groundDeckGeo exists');
+    assert.equal(groundDeckGeo.parameters.widthSegments, 64);
+    assert.equal(groundDeckGeo.parameters.heightSegments, 64);
+    assert.equal(groundDeckGeo.parameters.width, 320);
+    assert.equal(groundDeckGeo.parameters.height, 320);
+    assert.equal(groundDeckGeo.attributes.position.count, 65 * 65);
+  } finally {
+    renderer.dispose();
+  }
+});
+
+
 
 

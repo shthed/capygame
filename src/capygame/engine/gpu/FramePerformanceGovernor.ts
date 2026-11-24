@@ -213,15 +213,17 @@ export function computeBloomRenderScale(
 }
 
 /**
- * Computes optimal WebGL devicePixelRatio cap scaled by user `resolutionScale` (`0.5`..`1.5`)
- * to sustain smooth FPS on 2x-3x HiDPI displays or allow crisp supersampling.
+ * Computes optimal WebGL2/WebGPU devicePixelRatio cap scaled by user `resolutionScale` (`0.5`..`1.5`)
+ * to sustain smooth FPS on 2x-3x HiDPI & mobile displays (WebGL2 capped to 1.5x by default).
  */
 export function computeEffectivePixelRatio(
   devicePixelRatio: number,
   preset: AnyGpuPreset,
   postProcessingEnabled: boolean,
   isSoftwareGl: boolean,
-  resolutionScale: number = 1.0
+  resolutionScale: number = 1.0,
+  isWebGpu: boolean = false,
+  isMobile: boolean = false
 ): number {
   const safeDpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
   const safeScale = Number.isFinite(resolutionScale)
@@ -230,13 +232,15 @@ export function computeEffectivePixelRatio(
   if (isSoftwareGl) {
     return Math.max(0.5, Math.min(1.0, safeScale));
   }
-  let baseCap = 2.0;
+  let baseCap = 1.5;
   if (preset === 'low' || preset === 'performance') {
     baseCap = 1.0;
   } else if (preset === 'balanced') {
     baseCap = postProcessingEnabled ? 1.35 : 1.5;
   } else if (preset === 'high') {
-    baseCap = postProcessingEnabled ? 1.65 : 2.0;
+    baseCap = isWebGpu && !isMobile ? (postProcessingEnabled ? 1.65 : 2.0) : 1.5;
+  } else if (preset === 'ultra') {
+    baseCap = isMobile || !isWebGpu ? 1.5 : 2.0;
   }
   const scaled = Math.min(safeDpr, baseCap) * safeScale;
   return Math.max(0.5, Math.min(2.25, Math.round(scaled * 100) / 100));
@@ -1326,12 +1330,32 @@ export function selectBestGpuBackend(
 // RAM & VRAM MEMORY FOOTPRINT TELEMETRY + LOW-MEMORY DEVICE DETECTION
 // ============================================================================
 
+export function isMobileEnvironment(): boolean {
+  if (typeof navigator !== 'undefined') {
+    const ua = navigator.userAgent || '';
+    if (/Android|iPhone|iPad|iPod|Mobile|Opera Mini|IEMobile/i.test(ua)) {
+      return true;
+    }
+    const maxTouch = typeof navigator.maxTouchPoints === 'number' ? navigator.maxTouchPoints : 0;
+    if (
+      maxTouch > 1 &&
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function isLowMemoryEnvironment(
   isSoftwareGl: boolean = false,
   qualityPreset?: string
 ): boolean {
   if (qualityPreset === 'performance') return true;
   if (isSoftwareGl) return true;
+  if (isMobileEnvironment()) return true;
   if (typeof navigator !== 'undefined') {
     const devMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
     if (typeof devMem === 'number' && devMem > 0 && devMem <= 4) return true;

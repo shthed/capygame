@@ -144,7 +144,7 @@ export interface CapytorioBlueprintLibraryDrawerProps {
   showToast: (msg: string) => void;
 }
 
-export const CapytorioBlueprintLibraryDrawer: React.FC<CapytorioBlueprintLibraryDrawerProps> = ({
+export const CapytorioBlueprintLibraryDrawer: React.FC<CapytorioBlueprintLibraryDrawerProps> = React.memo(({
   snap,
   blueprintSearchInputRef,
   onClose,
@@ -724,4 +724,4 @@ export const CapytorioBlueprintLibraryDrawer: React.FC<CapytorioBlueprintLibrary
       </div>
     </div>
   );
-};
+});

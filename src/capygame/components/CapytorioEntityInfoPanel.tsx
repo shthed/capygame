@@ -121,7 +121,7 @@ export interface CapytorioEntityInfoPanelProps {
   onSetChestSlotLimit?: (gx: number, gz: number, slotLimit: number | null) => void;
 }
 
-export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> = ({
+export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> = React.memo(({
   info,
   isPinned,
   isTopBarVisible,
@@ -1149,4 +1149,4 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
       </div>
     </aside>
   );
-};
+});

@@ -35,8 +35,10 @@ import {
   type CapytorioTerrainSample,
 } from './CapytorioFactoryEngine';
 
-const TERRAIN_DECK_SEGS = 128;
-const TERRAIN_DECK_BASE_SIZE = TERRAIN_DECK_SEGS * CAPYTORIO_TILE_SIZE; // 320m at lodStep = 1
+const TERRAIN_DECK_SEGS = 64;
+const TERRAIN_DECK_BASE_TILES = 128;
+const TERRAIN_DECK_TILES_PER_SEG = TERRAIN_DECK_BASE_TILES / TERRAIN_DECK_SEGS; // 2 tiles/seg -> 4x faster rebuilds
+const TERRAIN_DECK_BASE_SIZE = TERRAIN_DECK_BASE_TILES * CAPYTORIO_TILE_SIZE; // 320m at lodStep = 1 (preserved!)
 const WATER_SURFACE_Y = -0.20;
 const _terrainSampleScratch: CapytorioTerrainSample = {
   type: 'grass',
@@ -926,7 +928,7 @@ function createLushMeadowGrassTexture(): THREE.CanvasTexture | null {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(TERRAIN_DECK_SEGS, TERRAIN_DECK_SEGS);
+  tex.repeat.set(TERRAIN_DECK_BASE_TILES, TERRAIN_DECK_BASE_TILES);
   tex.offset.set(0.5, 0.5);
   tex.anisotropy = 8;
   return tex;
@@ -956,7 +958,7 @@ function createDeckBumpTexture(): THREE.CanvasTexture | null {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(TERRAIN_DECK_SEGS, TERRAIN_DECK_SEGS);
+  tex.repeat.set(TERRAIN_DECK_BASE_TILES, TERRAIN_DECK_BASE_TILES);
   tex.offset.set(0.5, 0.5);
   return tex;
 }
@@ -4715,12 +4717,13 @@ export class Capytorio3DRenderer {
 
     const cols = TERRAIN_DECK_SEGS + 1;
     const halfSegs = TERRAIN_DECK_SEGS * 0.5;
+    const tileStep = lodStep * TERRAIN_DECK_TILES_PER_SEG;
 
     for (let iz = 0; iz <= TERRAIN_DECK_SEGS; iz++) {
-      const gz = snapGz + (iz - halfSegs) * lodStep;
+      const gz = snapGz + (iz - halfSegs) * tileStep;
       const rowOffset = iz * cols;
       for (let ix = 0; ix <= TERRAIN_DECK_SEGS; ix++) {
-        const gx = snapGx + (ix - halfSegs) * lodStep;
+        const gx = snapGx + (ix - halfSegs) * tileStep;
         const sample = sampleCapytorioTerrainDetail(gx, gz, _terrainSampleScratch);
         const vi = rowOffset + ix;
         const pIdx = vi * 3;
@@ -4840,7 +4843,7 @@ export class Capytorio3DRenderer {
     wColAttr.needsUpdate = true;
     this.groundDeckGeo.computeVertexNormals();
 
-    const tileRepeat = TERRAIN_DECK_SEGS * lodStep;
+    const tileRepeat = TERRAIN_DECK_BASE_TILES * lodStep;
     if (this.deckTex) {
       this.deckTex.repeat.set(tileRepeat, tileRepeat);
     }

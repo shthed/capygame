@@ -273,7 +273,7 @@ export interface CapytorioSlotTileProps {
   mini?: boolean;
 }
 
-export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
+export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = React.memo(({
   label,
   title,
   suppressNativeTitle = false,
@@ -375,4 +375,4 @@ export const CapytorioSlotTile: React.FC<CapytorioSlotTileProps> = ({
       )}
     </button>
   );
-};
+});

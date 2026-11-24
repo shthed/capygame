@@ -181,7 +181,7 @@ export interface CapytorioHudProps {
   showToast: (msg: string) => void;
 }
 
-export const CapytorioHud: React.FC<CapytorioHudProps> = ({
+export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
   snap,
   isTopBarVisible,
   onToggleTopBar,
@@ -1794,4 +1794,4 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = ({
       <CapytorioTooltip hoverTooltip={hoverTooltip} />
     </>
   );
-};
+});

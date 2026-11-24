@@ -50,8 +50,11 @@ import {
   type VolumetricShaftProjection,
 } from './gpu/GpuCullingAndClusterMath';
 import { HardwareGpuEngine } from './gpu/HardwareGpuEngine';
+import { computeEffectivePixelRatio } from './gpu/FramePerformanceGovernor';
+import { PbrTextureSynthesizer } from './gpu/PbrTextureSynthesizer';
 import { disposeObject3DTree } from './gpu/ThreeDisposal';
 import { installSightlineEdgeFadeShader } from './RealisticWorldEnvironment';
+import { createLiveTelemetryStore } from '../components/TelemetryReadout';
 
 test('Flight throttle gears & 3-button media controls (Fast Forward, Play/Pause, Rewind) run slow and steady', () => {
   let cruiseVel = 0; // Hover
@@ -593,5 +596,159 @@ test('disposeObject3DTree disposes cloned __occMaterial and __origMaterial, and 
   assert.ok(mockShader.fragmentShader.includes('// PREV_HOOK'));
   assert.ok(mockShader.fragmentShader.includes('capyComputeThirdPersonOccDensity'));
 });
+
+test('HardwareGpuEngine enforces mutually exclusive sun/moon shadows, skips RectAreaLight on low/medium presets, and caps WebGL2 DPR to 1.5', () => {
+  // 1. DPR cap: WebGL2 & mobile cap at 1.5 on 3x HiDPI displays
+  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, false, 1.0, false, false), 1.5);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false, 1.0, false, false), 1.5);
+  assert.equal(computeEffectivePixelRatio(3.0, 'balanced', true, false, 1.0, false, false), 1.35);
+  assert.equal(computeEffectivePixelRatio(3.0, 'performance', true, false, 1.0, false, false), 1.0);
+  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, false, 1.0, true, true), 1.5);
+  // Desktop WebGPU retains higher cap
+  assert.ok(computeEffectivePixelRatio(2.0, 'ultra', true, false, 1.0, true, false) >= 2.0);
+
+  // 2. Mutually exclusive sunLight.castShadow & moonLight.castShadow + RectAreaLight preset gating
+  let pixelRatio = 1;
+  const mockRenderer = {
+    domElement: {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    },
+    capabilities: { isWebGL2: true, maxTextureSize: 4096, getMaxAnisotropy: () => 8 },
+    getContext: () => ({
+      RENDERER: 0x1f01,
+      getExtension: () => null,
+      getParameter: () => 'Mock Hardware GL',
+    }),
+    getPixelRatio: () => pixelRatio,
+    setPixelRatio: (pr: number) => {
+      pixelRatio = pr;
+    },
+    setSize: () => {},
+    setRenderTarget: () => {},
+    render: () => {},
+    shadowMap: { enabled: false, autoUpdate: false, type: THREE.PCFSoftShadowMap, needsUpdate: false },
+    toneMapping: THREE.ACESFilmicToneMapping,
+    toneMappingExposure: 1.0,
+    info: { render: { calls: 0, triangles: 0 }, memory: { textures: 0, geometries: 0 } },
+  } as unknown as THREE.WebGLRenderer;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 1000);
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+  const moonLight = new THREE.DirectionalLight(0xaaccff, 0.5);
+  scene.add(sunLight, moonLight);
+
+  const engine = new HardwareGpuEngine(mockRenderer, scene, camera, sunLight, true, 1280, 720, {
+    qualityPreset: 'balanced',
+    shadowQuality: 'pcf_soft',
+    postProcessingEnabled: false,
+  });
+  engine.setMoonLight(moonLight);
+
+  const enginePriv = engine as unknown as {
+    isSoftwareGl: boolean;
+    studioAreaLight: THREE.RectAreaLight | null;
+    shouldEnableStudioAreaLight: (preset: 'performance' | 'balanced' | 'high' | 'ultra') => boolean;
+  };
+  assert.equal(enginePriv.studioAreaLight, null, 'RectAreaLight skipped on balanced/software preset');
+  assert.equal(enginePriv.shouldEnableStudioAreaLight('performance'), false);
+  assert.equal(enginePriv.shouldEnableStudioAreaLight('balanced'), false);
+
+  // Switch off software-GL guard after PMREM init so hardware shadow exclusivity executes deterministically
+  enginePriv.isSoftwareGl = false;
+  mockRenderer.shadowMap.enabled = true;
+  const sunDir = new THREE.Vector3(0.4, 0.85, 0.3).normalize();
+  const moonDir = new THREE.Vector3(-0.35, 0.78, -0.45).normalize();
+
+  // Daytime (nightFactor = 0.0) -> sun casts shadow, moon does NOT
+  engine.updateLightingAndShadowCascade(0.016, 0, 1, 0, 0, true, 0.0, sunDir, moonDir, 'sun');
+  assert.equal(sunLight.castShadow, true, 'Sun casts shadow during day');
+  assert.equal(moonLight.castShadow, false, 'Moon never casts shadow during day');
+  assert.equal(engine.getTelemetry().shadowCasterMode, 'sun');
+
+  // Nighttime (nightFactor = 0.9) -> moon casts shadow, sun does NOT
+  engine.updateLightingAndShadowCascade(0.016, 0, 1, 0, 0, true, 0.9, sunDir, moonDir, 'moon');
+  assert.equal(sunLight.castShadow, false, 'Sun never casts shadow during deep night');
+  assert.equal(moonLight.castShadow, true, 'Moon casts shadow during night');
+  assert.equal(engine.getTelemetry().shadowCasterMode, 'moon');
+
+  // Even if caller passes 'sun' during deep night (nightFactor >= 0.55), only one casts shadow
+  engine.updateLightingAndShadowCascade(0.016, 0, 1, 0, 0, true, 0.8, sunDir, moonDir, 'sun');
+  assert.notEqual(sunLight.castShadow, moonLight.castShadow, 'Sun and moon never cast shadows in the same frame');
+
+  // Surface hidden (space/orbit) -> neither casts shadow
+  engine.updateLightingAndShadowCascade(0.016, 0, 1, 0, 0, false, 0.0, sunDir, moonDir, 'sun');
+  assert.equal(sunLight.castShadow, false);
+  assert.equal(moonLight.castShadow, false);
+
+  engine.dispose();
+});
+
+test('PbrTextureSynthesizer packs roughness (G) and AO (R/B) into one shared ORM DataTexture and uses 256x256 in lean mode', () => {
+  PbrTextureSynthesizer.clearSurfaceCache();
+  try {
+    // Lean / mobile mode -> 256x256 packed ORM
+    PbrTextureSynthesizer.setLeanTextureMode(true);
+    assert.equal(PbrTextureSynthesizer.getSurfaceMapResolution(), 256);
+
+    const leanMaps = PbrTextureSynthesizer.getSurfaceMaps('grass');
+    assert.equal(leanMaps.normal.image.width, 256);
+    assert.equal(leanMaps.normal.image.height, 256);
+    assert.equal(leanMaps.orm.image.width, 256);
+    assert.equal(leanMaps.orm.image.height, 256);
+    assert.equal(leanMaps.roughness, leanMaps.orm, 'roughness shares single ORM DataTexture');
+    assert.equal(leanMaps.ao, leanMaps.orm, 'ao shares single ORM DataTexture');
+
+    const data = leanMaps.orm.image.data as Uint8Array;
+    assert.equal(data.length, 256 * 256 * 4);
+    // Verify R === B (AO channel parity), G > 0 (roughness packed), A === 255
+    for (let i = 0; i < 64; i++) {
+      const idx = i * 4;
+      assert.equal(data[idx], data[idx + 2], 'ORM R and B channels carry matching AO values');
+      assert.ok(data[idx + 1] > 0, 'ORM G channel carries roughness');
+      assert.equal(data[idx + 3], 255);
+    }
+
+    // Desktop mode -> 512x512 packed ORM
+    PbrTextureSynthesizer.setLeanTextureMode(false);
+    assert.equal(PbrTextureSynthesizer.getSurfaceMapResolution(), 512);
+    const deskMaps = PbrTextureSynthesizer.getSurfaceMaps('cobble');
+    assert.equal(deskMaps.orm.image.width, 512);
+    assert.equal(deskMaps.roughness, deskMaps.ao);
+  } finally {
+    PbrTextureSynthesizer.setLeanTextureMode(false);
+    PbrTextureSynthesizer.clearSurfaceCache();
+  }
+});
+
+test('LiveTelemetryStore publishes telemetry snapshots to subscribers cleanly without coupling to parent state', () => {
+  const store = createLiveTelemetryStore();
+  let calls = 0;
+  const unsub = store.subscribe(() => {
+    calls++;
+  });
+
+  store.publish({
+    mode: 'capytorio',
+    primaryLabel: 'Factory',
+    primaryValue: '12 machines',
+    secondaryLabel: 'Power',
+    secondaryValue: '100% Grid',
+    zoneCoordsLabel: '(0, 0)',
+  });
+  assert.equal(calls, 1);
+  assert.equal(store.getSnapshot().mode, 'capytorio');
+  assert.equal(store.getSnapshot().primaryValue, '12 machines');
+
+  unsub();
+  store.publish({
+    ...store.getSnapshot(),
+    primaryValue: '13 machines',
+  });
+  assert.equal(calls, 1, 'Unsubscribed listener is no longer notified');
+  assert.equal(store.getSnapshot().primaryValue, '13 machines');
+});
+
 
 

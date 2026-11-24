@@ -75,7 +75,7 @@ export interface CapytorioInventoryCraftDrawerProps {
   showToast: (msg: string) => void;
 }
 
-export const CapytorioInventoryCraftDrawer: React.FC<CapytorioInventoryCraftDrawerProps> = ({
+export const CapytorioInventoryCraftDrawer: React.FC<CapytorioInventoryCraftDrawerProps> = React.memo(({
   snap,
   drawerTab,
   setDrawerTab,
@@ -934,4 +934,4 @@ export const CapytorioInventoryCraftDrawer: React.FC<CapytorioInventoryCraftDraw
       </div>
     </div>
   );
-};
+});

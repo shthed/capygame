@@ -45,7 +45,7 @@ export interface CapytorioQuickbarProps {
   hideSlotTooltip: () => void;
 }
 
-export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = ({
+export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
   snap,
   drawerTab,
   setDrawerTab,
@@ -349,4 +349,4 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = ({
       </div>
     </section>
   );
-};
+});

@@ -108,7 +108,7 @@ const EntryIconView: React.FC<{
   return <FlaskConical style={{ width: size, height: size, color: icon.color }} className={className} />;
 };
 
-export const CapytorioPediaView: React.FC<CapytorioPediaViewProps> = ({
+export const CapytorioPediaView: React.FC<CapytorioPediaViewProps> = React.memo(({
   entryId,
   contextInfo,
   snap,
@@ -835,4 +835,4 @@ export const CapytorioPediaView: React.FC<CapytorioPediaViewProps> = ({
       </div>
     </div>
   );
-};
+});

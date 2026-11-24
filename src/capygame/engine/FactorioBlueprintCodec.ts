@@ -211,27 +211,55 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
+export const MAX_DECOMPRESSED_BLUEPRINT_BYTES = 4 * 1024 * 1024; // 4 MB safety cap
+
 async function runWebStream(
   input: Uint8Array,
-  stream: CompressionStream | DecompressionStream
+  stream: CompressionStream | DecompressionStream,
+  maxOutputBytes?: number
 ): Promise<Uint8Array> {
   const writer = stream.writable.getWriter();
+  let writeError: unknown = null;
+  // Guard writePromise immediately before reading so corrupt deflate streams never trigger unhandled rejections
   const writePromise = writer
     .write(input as unknown as BufferSource)
-    .then(() => writer.close());
+    .then(() => writer.close())
+    .catch((err) => {
+      writeError = err;
+    });
 
   const reader = stream.readable.getReader();
   const chunks: Uint8Array[] = [];
   let totalLen = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (value) {
-      chunks.push(value);
-      totalLen += value.byteLength;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        totalLen += value.byteLength;
+        if (maxOutputBytes !== undefined && totalLen > maxOutputBytes) {
+          await reader.cancel().catch(() => {});
+          await writer.abort().catch(() => {});
+          await writePromise;
+          throw new Error(
+            `Decompressed blueprint exceeds maximum allowed size (${Math.round(maxOutputBytes / (1024 * 1024))} MB).`
+          );
+        }
+        chunks.push(value);
+      }
     }
+  } catch (readErr) {
+    await reader.cancel().catch(() => {});
+    await writer.abort().catch(() => {});
+    await writePromise;
+    throw readErr;
+  } finally {
+    reader.releaseLock();
   }
   await writePromise;
+  if (writeError) {
+    throw writeError;
+  }
 
   const merged = new Uint8Array(totalLen);
   let offset = 0;
@@ -251,7 +279,11 @@ async function deflateZlib(bytes: Uint8Array): Promise<Uint8Array> {
 
 async function inflateZlib(bytes: Uint8Array): Promise<Uint8Array> {
   if (typeof DecompressionStream !== 'undefined') {
-    return runWebStream(bytes, new DecompressionStream('deflate'));
+    return runWebStream(
+      bytes,
+      new DecompressionStream('deflate'),
+      MAX_DECOMPRESSED_BLUEPRINT_BYTES
+    );
   }
   throw new Error('Zlib decompression (DecompressionStream) is unavailable in this environment');
 }

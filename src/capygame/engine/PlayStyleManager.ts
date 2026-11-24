@@ -38,6 +38,7 @@ import {
   findPrevEffectiveMitigationLevel,
   installFastMatrixCull,
   isLowMemoryEnvironment,
+  isMobileEnvironment,
   shouldEnableOccluderDepthWrite,
   shouldRenderDistrict,
 } from './gpu/FramePerformanceGovernor';
@@ -982,7 +983,9 @@ export class PlayStyleManager {
         this.settings.gpuQualityPreset ?? 'high',
         this.settings.gpuPostProcessing !== false,
         this.isSoftwareGl,
-        this.settings.gpuResolutionScale ?? 1.0
+        this.settings.gpuResolutionScale ?? 1.0,
+        this.isWebGpu,
+        isMobileEnvironment()
       )
     );
     this.renderer.setSize(width, height);

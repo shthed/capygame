@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE_WEBGPU from 'three/webgpu';
 import {
   AstrophysicsPaletteMode,
@@ -93,6 +93,7 @@ import {
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
 import { CapytorioHud, type CapytorioDrawerTab } from './CapytorioHud';
+import { createLiveTelemetryStore, TelemetryReadout } from './TelemetryReadout';
 import {
   Sparkles,
   Volume2,
@@ -783,14 +784,13 @@ export const CapyGameView: React.FC = () => {
     lassoScreenPoints: [],
   });
 
-  const [telemetry, setTelemetry] = useState<LiveModeTelemetry>({
-    mode: 'sanctuary',
-    primaryLabel: 'Dachshund Body',
-    primaryValue: '2.3m (1)',
-    secondaryLabel: 'Head Orange',
-    secondaryValue: 'Tangerine',
-    zoneCoordsLabel: 'Center (0, 0)',
-  });
+  const [telemetryStore] = useState(() => createLiveTelemetryStore());
+  const handleTriggerGroundPound = useCallback(() => {
+    managerRef.current?.triggerGroundPound();
+  }, []);
+  const handleTriggerDash = useCallback(() => {
+    managerRef.current?.triggerDash();
+  }, []);
 
   const [snakeTelemetry, setSnakeTelemetry] = useState<CapySnakeTelemetry>({
     bodySegments: 1,
@@ -1066,7 +1066,7 @@ export const CapyGameView: React.FC = () => {
           });
         },
         onTelemetryUpdate: (live: LiveModeTelemetry) => {
-          setTelemetry(live);
+          telemetryStore.publish(live);
           setActiveMode((prev) => (prev === live.mode ? prev : live.mode));
         },
         onSnakeTelemetryUpdate: (snake: CapySnakeTelemetry) => {
@@ -3536,16 +3536,11 @@ export const CapyGameView: React.FC = () => {
                     </span>
                   </span>
                 ) : cosmicStage === 'playing' && !universeScale.active ? (
-                  <span className="flex items-center gap-1.5 min-w-0 font-mono text-[10px] tabular-nums">
-                    <span className="font-sans font-semibold text-zinc-100 truncate">
-                      {currentZone.title}
-                    </span>
-                    <span className="text-zinc-600">·</span>
-                    <span className="text-amber-300 truncate">{telemetry.primaryValue}</span>
-                    <span className="hidden md:inline text-sky-300 truncate">
-                      · {telemetry.secondaryValue}
-                    </span>
-                  </span>
+                  <TelemetryReadout
+                    variant="bar"
+                    store={telemetryStore}
+                    currentZoneTitle={currentZone.title}
+                  />
                 ) : (
                   <span className="flex items-center gap-1.5 min-w-0 font-mono text-[10px] tabular-nums">
                     <span className="text-sky-400 shrink-0">
@@ -6371,44 +6366,7 @@ export const CapyGameView: React.FC = () => {
       {cosmicStage === 'playing' &&
         !universeScale.active &&
         activeMode !== 'capytorio' &&
-        !webglError &&
-        telemetry.arcadeCombo?.active && (() => {
-          const combo = telemetry.arcadeCombo;
-          const pct = Math.max(
-            0,
-            Math.min(100, (combo.timeRemainingSec / Math.max(0.1, combo.maxWindowSec)) * 100)
-          );
-          return (
-            <div
-              data-testid="arcade-combo-hud"
-              className={`fixed top-12 right-2.5 z-20 pointer-events-none px-3 py-2 rounded-xl bg-zinc-950/95 border shadow-xl tabular-nums min-w-[168px] ${
-                combo.feverActive ? 'border-amber-400/75' : 'border-sky-400/45'
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-mono font-bold text-amber-300">
-                  {combo.multiplier}x COMBO ({combo.count})
-                </span>
-                {combo.feverActive && (
-                  <span className="text-[9px] font-mono font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-200 border border-amber-400/45">
-                    FEVER
-                  </span>
-                )}
-              </div>
-              <div className="text-[10px] font-medium text-zinc-200 truncate mt-0.5">
-                {combo.lastActionLabel || 'Chain Active'}
-              </div>
-              <div className="mt-1.5 h-1 w-full rounded-full bg-zinc-800 overflow-hidden">
-                <div
-                  style={{ width: `${pct}%` }}
-                  className={`h-full transition-[width] duration-75 ${
-                    combo.feverActive ? 'bg-amber-400' : 'bg-sky-400'
-                  }`}
-                />
-              </div>
-            </div>
-          );
-        })()}
+        !webglError && <TelemetryReadout variant="combo" store={telemetryStore} />}
 
       {/* Collapsible 3-Slot Archipelago Bounties Drawer (Bottom-Left During Surface Play) */}
       {cosmicStage === 'playing' &&
@@ -6518,51 +6476,16 @@ export const CapyGameView: React.FC = () => {
         !isSettingsOpen &&
         !isAboutOpen &&
         !isPrivacyOpen &&
-        !isJsonEditorOpen && (() => {
-          const dashCd = telemetry.dashCooldownFrac ?? 0;
-          const dashReady = dashCd <= 0.02;
-          const canDive = Boolean(telemetry.canDive);
-          return (
-            <div
-              data-testid="surface-action-controls"
-              className={`fixed bottom-3 z-20 items-center gap-1.5 pointer-events-auto ${
-                activeMode === 'capytorio' ? 'hidden' : 'flex'
-              } ${showTouchDpad ? 'right-36' : 'right-3'}`}
-            >
-              <button
-                type="button"
-                data-testid="surface-dive-btn"
-                onClick={() => managerRef.current?.triggerGroundPound()}
-                title="Airborne Belly-Flop Slam (Ctrl / C)"
-                aria-label="Belly-Flop Dive"
-                className={`min-h-12 min-w-12 px-2.5 rounded-xl border shadow-lg flex flex-col items-center justify-center text-[10px] font-mono cursor-pointer transition-colors ${
-                  canDive
-                    ? 'bg-amber-500/25 hover:bg-amber-500/35 border-amber-400/70 text-amber-100'
-                    : 'bg-zinc-950/90 border-white/12 text-zinc-400 hover:bg-zinc-900'
-                }`}
-              >
-                <ChevronDown className="w-4 h-4 shrink-0" />
-                <span>Dive</span>
-              </button>
-
-              <button
-                type="button"
-                data-testid="surface-dash-btn"
-                onClick={() => managerRef.current?.triggerDash()}
-                title="Kinetic Dash Surge (Shift / Q)"
-                aria-label="Kinetic Dash"
-                className={`min-h-12 min-w-12 px-2.5 rounded-xl border shadow-lg flex flex-col items-center justify-center text-[10px] font-mono tabular-nums cursor-pointer transition-colors ${
-                  dashReady
-                    ? 'bg-sky-500/25 hover:bg-sky-500/35 border-sky-400/70 text-sky-100'
-                    : 'bg-zinc-950/90 border-white/12 text-zinc-400'
-                }`}
-              >
-                <Zap className="w-3.5 h-3.5 shrink-0" />
-                <span>{dashReady ? 'Dash' : `${Math.round((1 - dashCd) * 100)}%`}</span>
-              </button>
-            </div>
-          );
-        })()}
+        !isJsonEditorOpen && (
+          <TelemetryReadout
+            variant="abilities"
+            store={telemetryStore}
+            activeMode={activeMode}
+            showTouchDpad={showTouchDpad}
+            onTriggerGroundPound={handleTriggerGroundPound}
+            onTriggerDash={handleTriggerDash}
+          />
+        )}
 
       {/* Compact Bottom-Right Zoom In / Zoom Out Controls (Continuous Ground -> Orbit -> Cosmos) */}
       {!isFirstRunSetupOpen &&

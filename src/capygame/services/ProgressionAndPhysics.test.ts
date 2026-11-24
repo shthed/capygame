@@ -201,8 +201,10 @@ test('60 FPS & Zero-Glitch Governor: occluder depthWrite, bloom scale, HiDPI cap
   // Half-res / 0.65x bloom scale & sensible HiDPI caps
   assert.equal(computeBloomRenderScale('high', false), 0.5);
   assert.equal(computeBloomRenderScale('ultra', false), 0.65);
-  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false), 1.65);
-  assert.equal(computeEffectivePixelRatio(3.0, 'high', false, false), 2.0);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false), 1.5);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', false, false), 1.5);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false, 1.0, true, false), 1.65);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', false, false, 1.0, true, false), 2.0);
   assert.equal(computeEffectivePixelRatio(2.5, 'ultra', true, true), 1.0);
 
   // Background district tick striding
@@ -836,8 +838,8 @@ test('Spaceship Flight Throttle: mousewheel smoothly controls velocity instead o
 });
 
 test('FPS Limiter & Adaptive GPU Optimizer: respects 30 FPS max cap, cuts heavy GPU features toward target, and scales DPR', () => {
-  // 1. Resolution Scale DPR checks
-  assert.equal(computeEffectivePixelRatio(2.0, 'high', true, false, 0.75), 1.24);
+  // 1. Resolution Scale DPR checks (WebGL2 HiDPI capped to 1.5 -> 1.5 * 0.75 = 1.13)
+  assert.equal(computeEffectivePixelRatio(2.0, 'high', true, false, 0.75), 1.13);
   assert.equal(computeEffectivePixelRatio(1.0, 'high', true, false, 1.25), 1.25);
   assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, true, 0.6), 0.6);
 

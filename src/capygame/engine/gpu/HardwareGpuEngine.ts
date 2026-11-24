@@ -23,6 +23,7 @@ import {
   computeTexelSnappedShadowOrigin,
   extractWebGpuRenderDrawCalls,
   isLowMemoryEnvironment,
+  isMobileEnvironment,
   measureSceneMemoryFootprint,
   type SceneMemoryFootprint,
 } from './FramePerformanceGovernor';
@@ -338,7 +339,7 @@ export class HardwareGpuEngine {
   public readonly sunLight: THREE.DirectionalLight;
   public moonLight: THREE.DirectionalLight | null = null;
   public readonly rimLight: THREE.DirectionalLight;
-  public readonly studioAreaLight: THREE.RectAreaLight | null;
+  public studioAreaLight: THREE.RectAreaLight | null = null;
   public readonly iblEnvironmentTexture: THREE.Texture | null;
   public readonly heroContactShadowMesh: THREE.Mesh;
   private readonly heroContactShadowMat: THREE.MeshBasicMaterial;
@@ -378,6 +379,7 @@ export class HardwareGpuEngine {
   private lastTimeOfDayHours: number = 9.5;
 
   private isLowMemoryDevice: boolean = false;
+  private isMobileDevice: boolean = false;
   private cachedMemFootprint: SceneMemoryFootprint | null = null;
   private lastMemMeasureMs: number = -10000;
   private idleWarmupDone: boolean = false;
@@ -472,20 +474,16 @@ export class HardwareGpuEngine {
     this.rimLight.castShadow = false;
     this.scene.add(this.rimLight);
 
-    // 2. Subtle front bounce fill (`RectAreaLight`, WebGL2 only when hardware accelerated)
-    if (!this.isSoftwareGl && !this.isWebGpu) {
-      try {
-        RectAreaLightUniformsLib.init();
-        this.studioAreaLight = new THREE.RectAreaLight(0xfff7ed, 0.22, 12, 6);
-        this.studioAreaLight.position.set(0, 9.5, 12.5);
-        this.studioAreaLight.lookAt(0, 0.8, 2.0);
-        this.scene.add(this.studioAreaLight);
-      } catch {
-        this.studioAreaLight = null;
-      }
-    } else {
-      this.studioAreaLight = null;
-    }
+    this.isMobileDevice = isMobileEnvironment();
+    this.isLowMemoryDevice = isLowMemoryEnvironment(
+      this.isSoftwareGl,
+      initialConfig?.qualityPreset
+    );
+    PbrTextureSynthesizer.setLeanTextureMode(this.isLowMemoryDevice || this.isMobileDevice);
+
+    // 2. Subtle front bounce fill (`RectAreaLight`: desktop high/ultra WebGL2 only; skipped on mobile & low/medium presets)
+    const initialPreset = initialConfig?.qualityPreset ?? this.config.qualityPreset;
+    this.syncStudioAreaLightForPreset(initialPreset);
 
     // 3. Soft Gaussian Hero Contact Shadow Grounding Decal
     const contactTex = PbrTextureSynthesizer.getContactShadowTexture();
@@ -507,12 +505,6 @@ export class HardwareGpuEngine {
     this.heroContactShadowMesh.renderOrder = 1;
     this.heroContactShadowMesh.userData.ignoreCameraFade = true;
     this.scene.add(this.heroContactShadowMesh);
-
-    this.isLowMemoryDevice = isLowMemoryEnvironment(
-      this.isSoftwareGl,
-      initialConfig?.qualityPreset
-    );
-    PbrTextureSynthesizer.setLeanTextureMode(this.isLowMemoryDevice);
 
     // 4. Procedural Sky + Studio Environment Map (PMREM cubemap on WebGL2 HW & WebGPU; lightweight 64x32 on SW/Low-RAM!)
     this.iblEnvironmentTexture = PbrTextureSynthesizer.createStudioAndSkyEnvironmentMap(
@@ -555,10 +547,55 @@ export class HardwareGpuEngine {
     this.applyConfig(this.config);
   }
 
+  private shouldEnableStudioAreaLight(preset: GpuQualityPreset): boolean {
+    if (this.isSoftwareGl || this.isWebGpu || this.isMobileDevice) return false;
+    // Skip expensive LTC RectAreaLight shader path on low ('performance') and medium ('balanced') presets
+    return preset === 'high' || preset === 'ultra';
+  }
+
+  private syncStudioAreaLightForPreset(preset: GpuQualityPreset): void {
+    const allow = this.shouldEnableStudioAreaLight(preset);
+    if (allow) {
+      if (!this.studioAreaLight) {
+        try {
+          RectAreaLightUniformsLib.init();
+          this.studioAreaLight = new THREE.RectAreaLight(0xfff7ed, 0.22, 12, 6);
+          this.studioAreaLight.position.set(0, 9.5, 12.5);
+          this.studioAreaLight.lookAt(0, 0.8, 2.0);
+        } catch {
+          this.studioAreaLight = null;
+        }
+      }
+      if (this.studioAreaLight) {
+        this.studioAreaLight.visible = true;
+        if (!this.studioAreaLight.parent) {
+          this.scene.add(this.studioAreaLight);
+        }
+      }
+    } else if (this.studioAreaLight) {
+      this.studioAreaLight.visible = false;
+      this.studioAreaLight.intensity = 0;
+      if (this.studioAreaLight.parent) {
+        this.studioAreaLight.parent.remove(this.studioAreaLight);
+      }
+      this.studioAreaLight.dispose();
+      this.studioAreaLight = null;
+    }
+  }
+
   public setMoonLight(moonLight: THREE.DirectionalLight | null): void {
     this.moonLight = moonLight;
-    if (this.moonLight && !this.moonLight.target.parent) {
-      this.scene.add(this.moonLight.target);
+    if (this.moonLight) {
+      if (!this.moonLight.target.parent) {
+        this.scene.add(this.moonLight.target);
+      }
+      const shadowsAllowed =
+        !this.isSoftwareGl &&
+        this.config.shadowQuality !== 'off' &&
+        this.lastSurfaceVisible;
+      const useMoon = shadowsAllowed && this.lastShadowCasterMode === 'moon';
+      this.moonLight.castShadow = useMoon;
+      this.sunLight.castShadow = shadowsAllowed && !useMoon;
     }
   }
 
@@ -865,22 +902,16 @@ export class HardwareGpuEngine {
     this.renderer.toneMappingExposure = THREE.MathUtils.clamp(this.config.exposure, 0.4, 2.2);
 
     const isPerfMode = this.config.qualityPreset === 'performance';
+    this.syncStudioAreaLightForPreset(this.config.qualityPreset);
     // Strip heavy per-pixel PMREM IBL cubemap + auxiliary fill lights in PERF mode
     if (isPerfMode) {
       this.scene.environment = null;
       this.rimLight.visible = false;
-      if (this.studioAreaLight) {
-        this.studioAreaLight.visible = false;
-        this.studioAreaLight.intensity = 0;
-      }
     } else {
       if (!this.isSoftwareGl && this.iblEnvironmentTexture) {
         this.scene.environment = this.iblEnvironmentTexture;
       }
       this.rimLight.visible = true;
-      if (this.studioAreaLight) {
-        this.studioAreaLight.visible = true;
-      }
     }
 
     // 2. Shadow Map Mode & Resolution (Hardware WebGL2/WebGPU only; software WebGL uses soft contact shadow)
@@ -957,13 +988,15 @@ export class HardwareGpuEngine {
       this.maxHardwareAnisotropy
     );
 
-    // 4. Cap & Scale Device Pixel Ratio smartly to balance crisp silhouettes & GPU fillrate
+    // 4. Cap & Scale Device Pixel Ratio smartly (WebGL2 capped to 1.5 on HiDPI/mobile devices)
     const desiredPr = computeEffectivePixelRatio(
       typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
       this.config.qualityPreset,
       this.shouldActivateComposer(),
       this.isSoftwareGl,
-      this.config.resolutionScale ?? 1.0
+      this.config.resolutionScale ?? 1.0,
+      this.isWebGpu,
+      this.isMobileDevice
     );
     const prChanged = Math.abs(this.renderer.getPixelRatio() - desiredPr) > 0.01;
     if (prChanged) {
@@ -1061,7 +1094,6 @@ export class HardwareGpuEngine {
     this.lastHeroZ = heroWorldZ;
     this.lastNightFactor = nightFactor;
     this.lastSurfaceVisible = isSurfaceVisible;
-    this.lastShadowCasterMode = activeShadowCaster;
     this.lastDayPhaseLabel = dayPhaseLabel;
     this.lastTimeOfDayHours = timeOfDayHours;
 
@@ -1086,15 +1118,26 @@ export class HardwareGpuEngine {
         ? iblEnvIntensity
         : 0.78;
 
-    // 2. Texel-Snapped Dual Sun + Moon Directional Shadow Cascade (tight 38m half-extent)
-    if (isSurfaceVisible) {
-      const shadowsAllowed = this.config.shadowQuality !== 'off';
-      const casterLight =
-        activeShadowCaster === 'moon' && this.moonLight ? this.moonLight : this.sunLight;
+    // 2. Texel-Snapped Mutually-Exclusive Sun / Moon Directional Shadow Cascade (never both active in one frame!)
+    const shadowsAllowed = !this.isSoftwareGl && this.config.shadowQuality !== 'off';
+    const useMoonPhase = (activeShadowCaster === 'moon' || nightFactor >= 0.55) && Boolean(this.moonLight);
+    const effectiveMode: 'sun' | 'moon' = useMoonPhase ? 'moon' : 'sun';
+    if (effectiveMode !== this.lastShadowCasterMode) {
+      this.lastSnappedShadowX = Number.NaN;
+      this.lastSnappedShadowZ = Number.NaN;
+    }
+    this.lastShadowCasterMode = effectiveMode;
 
-      this.sunLight.castShadow = shadowsAllowed && casterLight === this.sunLight;
+    if (!isSurfaceVisible || !shadowsAllowed) {
+      this.sunLight.castShadow = false;
       if (this.moonLight) {
-        this.moonLight.castShadow = shadowsAllowed && casterLight === this.moonLight;
+        this.moonLight.castShadow = false;
+      }
+    } else {
+      const casterLight = useMoonPhase && this.moonLight ? this.moonLight : this.sunLight;
+      this.sunLight.castShadow = casterLight === this.sunLight;
+      if (this.moonLight) {
+        this.moonLight.castShadow = casterLight === this.moonLight;
       }
 
       const frustumHalfExtent = 32;
@@ -1108,7 +1151,7 @@ export class HardwareGpuEngine {
       }
 
       const chosenDir =
-        activeShadowCaster === 'moon' && moonDirection && moonDirection.lengthSq() > 0.001
+        useMoonPhase && moonDirection && moonDirection.lengthSq() > 0.001
           ? moonDirection
           : sunDirection;
       if (chosenDir && chosenDir.lengthSq() > 0.001) {
@@ -1198,7 +1241,7 @@ export class HardwareGpuEngine {
     this.clusteredLightCount = isSurfaceVisible ? Math.round(6 + nightFactor * 14) : 2;
 
     const shaftDir =
-      activeShadowCaster === 'moon' && moonDirection && moonDirection.lengthSq() > 0.001
+      useMoonPhase && moonDirection && moonDirection.lengthSq() > 0.001
         ? moonDirection
         : sunDirection || _sunOffsetDir;
     computeVolumetricSunShaftProjection(
@@ -1363,7 +1406,8 @@ export class HardwareGpuEngine {
         viewportHeight: this.viewportHeight,
         pixelRatio: this.renderer.getPixelRatio(),
         shadowMapSize: this.activeShadowMapSize,
-        shadowCasters: this.moonLight?.castShadow ? 2 : 1,
+        shadowCasters:
+          (this.sunLight.castShadow ? 1 : 0) + (this.moonLight?.castShadow ? 1 : 0),
         postProcessingActive: this.isPostProcessingRunning(),
         ssaoEnabled: this.webGpuPipeline
           ? this.config.ssaoEnabled

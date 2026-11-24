@@ -25,7 +25,7 @@ export interface CapytorioTechDrawerProps {
   onClose: () => void;
 }
 
-export const CapytorioTechDrawer: React.FC<CapytorioTechDrawerProps> = ({
+export const CapytorioTechDrawer: React.FC<CapytorioTechDrawerProps> = React.memo(({
   snap,
   effPct,
   totalSciInPocket,
@@ -195,4 +195,4 @@ export const CapytorioTechDrawer: React.FC<CapytorioTechDrawerProps> = ({
       </div>
     </div>
   );
-};
+});
