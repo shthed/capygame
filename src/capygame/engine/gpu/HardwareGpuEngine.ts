@@ -11,6 +11,7 @@ import type {
   WebGl2ComposerBundle,
 } from './WebGl2PostProcessing';
 import {
+  CAPY_CRISP_OVERLAY_LAYER,
   DEFAULT_GPU_PIPELINE_CONFIG,
   GPU_VISUAL_FILTER_PROFILES,
   type GpuEngineTelemetry,
@@ -1327,6 +1328,35 @@ export class HardwareGpuEngine {
     return Boolean(this.composer);
   }
 
+  private crispOverlayActive: boolean = false;
+
+  public setCrispOverlayActive(active: boolean): void {
+    this.crispOverlayActive = active;
+  }
+
+  private renderCrispOverlayPass(): void {
+    if (!this.crispOverlayActive) return;
+    const prevAutoClear = this.renderer.autoClear;
+    const prevAutoClearColor = this.renderer.autoClearColor;
+    const prevAutoClearDepth = this.renderer.autoClearDepth;
+    const prevToneMapping = this.renderer.toneMapping;
+    this.renderer.autoClear = false;
+    this.renderer.autoClearColor = false;
+    this.renderer.autoClearDepth = false;
+    this.renderer.toneMapping = THREE.NoToneMapping;
+    this.camera.layers.set(CAPY_CRISP_OVERLAY_LAYER);
+    try {
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.scene, this.camera);
+    } finally {
+      this.camera.layers.set(0);
+      this.renderer.toneMapping = prevToneMapping;
+      this.renderer.autoClear = prevAutoClear;
+      this.renderer.autoClearColor = prevAutoClearColor;
+      this.renderer.autoClearDepth = prevAutoClearDepth;
+    }
+  }
+
   public render(): void {
     if (this.contextLost) return;
     if (this.webGpuPipeline) {
@@ -1336,7 +1366,8 @@ export class HardwareGpuEngine {
         this.lastHeroY,
         this.lastHeroZ,
         this.lastNightFactor,
-        this.lastSurfaceVisible
+        this.lastSurfaceVisible,
+        this.crispOverlayActive
       );
       return;
     }
@@ -1353,6 +1384,7 @@ export class HardwareGpuEngine {
     } else {
       this.renderer.render(this.scene, this.camera);
     }
+    this.renderCrispOverlayPass();
   }
 
   public handleResize(width: number, height: number): void {

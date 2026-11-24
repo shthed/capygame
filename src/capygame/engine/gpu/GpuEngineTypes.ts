@@ -1,3 +1,5 @@
+export const CAPY_CRISP_OVERLAY_LAYER = 2;
+
 export type GpuQualityPreset = 'performance' | 'balanced' | 'high' | 'ultra';
 
 export type GpuToneMappingMode = 'agx' | 'aces' | 'neutral' | 'reinhard';

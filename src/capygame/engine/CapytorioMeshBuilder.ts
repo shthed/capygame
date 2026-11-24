@@ -40,6 +40,7 @@ import {
   variantSkipsDefaultPlinth,
   type CapytorioVariantMaterials,
 } from './capytorio/CapytorioVariantModels';
+import { CAPY_CRISP_OVERLAY_LAYER } from './gpu/GpuEngineTypes';
 
 const TERRAIN_DECK_SEGS = 64;
 const TERRAIN_DECK_BASE_TILES = 128;
@@ -1259,6 +1260,11 @@ export class Capytorio3DRenderer {
   private readonly altModeMatCache = new Map<string, THREE.SpriteMaterial>();
   private readonly altModeTexCache = new Map<string, THREE.CanvasTexture>();
   private readonly altModePlaceholderMat: THREE.SpriteMaterial;
+  private activeAltSpriteCount: number = 0;
+
+  public hasVisibleAltOverlay(): boolean {
+    return this.root.visible && this.altModeRoot.visible && this.activeAltSpriteCount > 0;
+  }
 
   // Shared geometries, textures & materials for composite machines
   private sharedMaterials: THREE.Material[] = [];
@@ -2162,6 +2168,7 @@ export class Capytorio3DRenderer {
       const sprite = new THREE.Sprite(this.altModePlaceholderMat);
       sprite.visible = false;
       sprite.renderOrder = 12;
+      sprite.layers.set(CAPY_CRISP_OVERLAY_LAYER);
       sprite.userData.ignoreCameraFade = true;
       this.altModeRoot.add(sprite);
       this.altModeSpritePool.push(sprite);
@@ -2209,17 +2216,22 @@ export class Capytorio3DRenderer {
 
     let tex: THREE.CanvasTexture | null = null;
     if (typeof document !== 'undefined') {
+      // 512x512 power-of-two canvas for razor-sharp retina & mobile legibility
+      const S = 512;
       const canvas = document.createElement('canvas');
-      canvas.width = 160;
-      canvas.height = 160;
+      canvas.width = S;
+      canvas.height = S;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.clearRect(0, 0, 160, 160);
-        // Dark crisp chamfered Factorio industrial plate
-        const pad = 10;
-        const w = 140;
-        const h = 140;
-        const r = 18;
+        ctx.clearRect(0, 0, S, S);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        // Crisp high-contrast dark industrial plate
+        const pad = 16;
+        const w = S - pad * 2;
+        const h = S - pad * 2;
+        const r = 56;
         ctx.beginPath();
         ctx.moveTo(pad + r, pad);
         ctx.lineTo(pad + w - r, pad);
@@ -2232,51 +2244,75 @@ export class Capytorio3DRenderer {
         ctx.quadraticCurveTo(pad, pad, pad + r, pad);
         ctx.closePath();
 
-        ctx.fillStyle = isWarn ? 'rgba(69, 10, 10, 0.90)' : 'rgba(15, 23, 42, 0.88)';
+        ctx.fillStyle = isWarn ? 'rgba(69, 10, 10, 0.94)' : 'rgba(9, 14, 26, 0.93)';
         ctx.fill();
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 18;
         ctx.strokeStyle = accentCss;
         ctx.stroke();
 
-        // Accent color badge disc / top stripe
+        // Crisp dark inner hairline framing the accent border
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(2, 6, 23, 0.72)';
+        ctx.stroke();
+
+        // Compact high-contrast top emblem
         ctx.fillStyle = accentCss;
         if (isWarn) {
           ctx.beginPath();
-          ctx.moveTo(80, 26);
-          ctx.lineTo(106, 70);
-          ctx.lineTo(54, 70);
+          ctx.moveTo(256, 56);
+          ctx.lineTo(342, 200);
+          ctx.lineTo(170, 200);
           ctx.closePath();
           ctx.fill();
-          ctx.fillStyle = '#0f172a';
-          ctx.font = 'bold 30px ui-monospace, SFMono-Regular, Menlo, monospace';
+          ctx.lineWidth = 6;
+          ctx.lineJoin = 'round';
+          ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+          ctx.stroke();
+          ctx.fillStyle = '#090e1a';
+          ctx.font = '900 104px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText('!', 80, 56);
+          ctx.fillText('!', 256, 152);
         } else {
           ctx.beginPath();
-          ctx.arc(80, 54, 22, 0, Math.PI * 2);
+          ctx.arc(256, 128, 62, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+          ctx.lineWidth = 8;
           ctx.stroke();
         }
 
-        // Primary short label
-        ctx.fillStyle = '#f8fafc';
-        ctx.font = 'bold 28px ui-monospace, SFMono-Regular, Menlo, monospace';
+        // Bold high-contrast primary label with dark outline for sharp readability at any zoom
+        const primaryText = label.slice(0, 7);
+        const primaryY = sub ? 292 : 334;
+        ctx.font = '900 112px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label.slice(0, 7), 80, sub ? 98 : 106);
+        ctx.lineJoin = 'round';
+        ctx.miterLimit = 2;
+        ctx.lineWidth = 14;
+        ctx.strokeStyle = '#020617';
+        ctx.strokeText(primaryText, 256, primaryY, 424);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(primaryText, 256, primaryY, 424);
 
-        // Optional subline (priority/reach/cap/filter mode)
+        // Optional subline (priority/reach/cap/filter mode/count)
         if (sub) {
+          const subText = sub.slice(0, 9);
+          ctx.font = '800 86px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.lineWidth = 12;
+          ctx.strokeStyle = '#020617';
+          ctx.strokeText(subText, 256, 408, 424);
           ctx.fillStyle = accentCss;
-          ctx.font = 'bold 21px ui-monospace, SFMono-Regular, Menlo, monospace';
-          ctx.fillText(sub.slice(0, 9), 80, 128);
+          ctx.fillText(subText, 256, 408, 424);
         }
 
         tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapNearestFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.anisotropy = 8;
         tex.needsUpdate = true;
         this.altModeTexCache.set(key, tex);
       }
@@ -2288,6 +2324,8 @@ export class Capytorio3DRenderer {
       transparent: true,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
+      fog: false,
     });
     this.altModeMatCache.set(key, mat);
     return mat;
@@ -4716,7 +4754,7 @@ export class Capytorio3DRenderer {
           }
           const span = Math.max(fp.width, fp.height);
           const badgeY = span >= 3 ? 3.55 : span === 2 ? 2.85 : m.type === 'splitter' ? 1.85 : 1.75;
-          const badgeSize = (span >= 3 ? 2.15 : span === 2 ? 1.72 : 1.28) * subPixelShrink;
+          const badgeSize = (span >= 3 ? 2.22 : span === 2 ? 1.78 : 1.42) * subPixelShrink;
           sprite.position.set(wx, badgeY, wz);
           sprite.scale.set(badgeSize, badgeSize, 1);
           sprite.visible = true;
@@ -4768,6 +4806,7 @@ export class Capytorio3DRenderer {
     }
 
     // Hide unused pooled Alt-Mode sprites
+    this.activeAltSpriteCount = altSpriteCount;
     for (let i = altSpriteCount; i < this.altModeSpritePool.length; i++) {
       this.altModeSpritePool[i].visible = false;
     }

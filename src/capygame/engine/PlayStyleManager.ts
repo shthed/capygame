@@ -8824,6 +8824,9 @@ export class PlayStyleManager {
     this.scene.matrixWorldAutoUpdate = false;
     this.camera.matrixWorldAutoUpdate = false;
     this.profiler.beginGpuRender();
+    this.gpuEngine.setCrispOverlayActive(
+      Boolean(this.capytorioGroup.visible && this.capytorioRenderer?.hasVisibleAltOverlay())
+    );
     try {
       this.gpuEngine.render();
       if (this.pendingThumbnailBandId !== null) {
@@ -12643,6 +12646,9 @@ export class PlayStyleManager {
           this.worldEnv.getDayPhaseLabel(),
           this.worldEnv.timeOfDayHours,
           this.worldEnv.currentIblEnvIntensity
+        );
+        this.gpuEngine.setCrispOverlayActive(
+          Boolean(this.capytorioGroup.visible && this.capytorioRenderer?.hasVisibleAltOverlay())
         );
         this.gpuEngine.render();
       }

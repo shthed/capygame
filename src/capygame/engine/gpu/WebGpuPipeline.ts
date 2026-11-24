@@ -50,6 +50,7 @@ import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import {
+  CAPY_CRISP_OVERLAY_LAYER,
   GPU_VISUAL_FILTER_PROFILES,
   type GpuPipelineConfig,
   type GpuRenderBackendMode,
@@ -1246,7 +1247,8 @@ export class WebGpuPostAndComputePipeline {
     focusY: number,
     focusZ: number,
     nightFactor: number,
-    surfaceParticlesVisible: boolean
+    surfaceParticlesVisible: boolean,
+    crispOverlayActive: boolean = false
   ): void {
     if (this.disposed) return;
 
@@ -1288,6 +1290,27 @@ export class WebGpuPostAndComputePipeline {
       }
     } else {
       this.renderer.render(this.scene, this.camera);
+    }
+
+    if (crispOverlayActive) {
+      const prevAutoClear = this.renderer.autoClear;
+      const prevAutoClearColor = this.renderer.autoClearColor;
+      const prevAutoClearDepth = this.renderer.autoClearDepth;
+      const prevToneMapping = this.renderer.toneMapping;
+      this.renderer.autoClear = false;
+      this.renderer.autoClearColor = false;
+      this.renderer.autoClearDepth = false;
+      this.renderer.toneMapping = THREE.NoToneMapping;
+      this.camera.layers.set(CAPY_CRISP_OVERLAY_LAYER);
+      try {
+        this.renderer.render(this.scene, this.camera);
+      } finally {
+        this.camera.layers.set(0);
+        this.renderer.toneMapping = prevToneMapping;
+        this.renderer.autoClear = prevAutoClear;
+        this.renderer.autoClearColor = prevAutoClearColor;
+        this.renderer.autoClearDepth = prevAutoClearDepth;
+      }
     }
   }
 

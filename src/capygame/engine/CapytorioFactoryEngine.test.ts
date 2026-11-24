@@ -2046,16 +2046,24 @@ test('Capytorio3DRenderer centers multi-tile models cleanly and syncs Alt-Mode o
     const altRoot = renderer.root.getObjectByName('CapytorioAltModeRoot');
     assert.ok(altRoot, 'Alt-Mode sprite root exists in 3D scene');
     assert.equal(altRoot.visible, true);
+    assert.equal(renderer.hasVisibleAltOverlay(), true, 'Reports visible crisp Alt-Mode overlay');
+    assert.ok(altRoot.children.length > 0, 'Alt-Mode sprites pooled');
+    const firstSprite = altRoot.children[0] as THREE.Sprite;
+    assert.equal(firstSprite.layers.mask, 1 << 2, 'Alt-Mode sprite isolated on Layer 2 (post-PP crisp overlay)');
+    assert.equal(firstSprite.material.toneMapped, false, 'Alt-Mode sprite bypasses tone mapping');
+    assert.equal(firstSprite.material.fog, false, 'Alt-Mode sprite bypasses atmospheric fog');
 
     // Toggle Alt-Mode OFF -> hides overlay cleanly
     assert.equal(engine.toggleAltMode(), false);
     renderer.sync(engine, CAPYTORIO_WORLD_ORIGIN_X, CAPYTORIO_WORLD_ORIGIN_Z, 0.016, 1.1, true, 28);
     assert.equal(altRoot.visible, false, 'Alt-Mode overlay hides when toggled OFF');
+    assert.equal(renderer.hasVisibleAltOverlay(), false, 'Reports hidden Alt-Mode overlay when toggled OFF');
 
     // Toggle back ON
     assert.equal(engine.toggleAltMode(), true);
     renderer.sync(engine, CAPYTORIO_WORLD_ORIGIN_X, CAPYTORIO_WORLD_ORIGIN_Z, 0.016, 1.2, true, 28);
     assert.equal(altRoot.visible, true);
+    assert.equal(renderer.hasVisibleAltOverlay(), true);
   } finally {
     renderer.dispose();
   }
