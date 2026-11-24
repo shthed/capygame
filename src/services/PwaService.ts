@@ -53,6 +53,7 @@ class PwaServiceClass {
       if (isCloudRunPreview) {
         try {
           sessionStorage.removeItem('warmup_start_time');
+          sessionStorage.removeItem('warmup_last_reload_time');
           sessionStorage.removeItem('warmup_failed_sent');
         } catch {
           // Ignore storage restrictions

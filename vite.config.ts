@@ -66,6 +66,7 @@ export default defineConfig({
     esbuildOptions: {
       sourcemap: false,
     },
+    exclude: ['@dimforge/rapier3d-compat'],
     include: [
       'react',
       'react-dom',
@@ -74,21 +75,6 @@ export default defineConfig({
       'react/jsx-dev-runtime',
       'lucide-react',
       'three',
-      'three/webgpu',
-      'three/tsl',
-      'three/examples/jsm/environments/RoomEnvironment.js',
-      'three/examples/jsm/lights/RectAreaLightUniformsLib.js',
-      'three/examples/jsm/postprocessing/EffectComposer.js',
-      'three/examples/jsm/postprocessing/OutputPass.js',
-      'three/examples/jsm/postprocessing/Pass.js',
-      'three/examples/jsm/postprocessing/ShaderPass.js',
-      'three/examples/jsm/postprocessing/UnrealBloomPass.js',
-      'three/examples/jsm/shaders/CopyShader.js',
-      'three/examples/jsm/shaders/FXAAShader.js',
-      'three/addons/tsl/display/BloomNode.js',
-      'three/addons/tsl/display/FXAANode.js',
-      'three/addons/tsl/display/GTAONode.js',
-      'three/addons/tsl/display/TRAANode.js',
       'clsx',
       'tailwind-merge',
     ],
@@ -99,6 +85,9 @@ export default defineConfig({
     strictPort: true,
     allowedHosts: true,
     hmr: false,
+    watch: {
+      ignored: ['**/.playwright-cli/**', '**/.aistudio/**', '**/dist/**', '**/docs/**'],
+    },
   },
 });
 

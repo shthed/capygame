@@ -22,6 +22,11 @@
     <div id="root"></div>
     <script>
       (function () {
+        try {
+          sessionStorage.removeItem('warmup_start_time');
+          sessionStorage.removeItem('warmup_last_reload_time');
+          sessionStorage.removeItem('warmup_failed_sent');
+        } catch (err) {}
         function renderBootError(title, detail) {
           if (window.__capyBooted) return;
           var root = document.getElementById('root');
