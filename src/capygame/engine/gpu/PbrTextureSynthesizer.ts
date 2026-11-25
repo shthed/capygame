@@ -170,6 +170,19 @@ export class PbrTextureSynthesizer {
     return tex;
   }
 
+  public static unregisterManagedTexture(tex: THREE.Texture | null | undefined): void {
+    if (!tex) return;
+    this.managedTextures.delete(tex);
+  }
+
+  public static pruneNonSharedManagedTextures(): void {
+    for (const tex of Array.from(this.managedTextures)) {
+      if (!tex.userData?.sharedAsset) {
+        this.managedTextures.delete(tex);
+      }
+    }
+  }
+
   public static getRegisteredTextureCount(): number {
     return this.managedTextures.size;
   }
@@ -329,6 +342,7 @@ export class PbrTextureSynthesizer {
       tex.colorSpace = THREE.NoColorSpace;
       tex.wrapS = THREE.RepeatWrapping;
       tex.wrapT = THREE.RepeatWrapping;
+      tex.userData.sharedAsset = true;
       this.registerManagedTexture(tex);
       return tex;
     };
@@ -339,6 +353,7 @@ export class PbrTextureSynthesizer {
       albedoData.colorSpace = THREE.SRGBColorSpace;
       albedoData.wrapS = THREE.RepeatWrapping;
       albedoData.wrapT = THREE.RepeatWrapping;
+      albedoData.userData.sharedAsset = true;
       this.registerManagedTexture(albedoData);
     }
 
@@ -357,8 +372,14 @@ export class PbrTextureSynthesizer {
     const cached = this.surfaceMapCache.get(kind);
     if (cached) return cached;
 
-    if (existingAlbedo) this.registerManagedTexture(existingAlbedo);
-    if (existingBump) this.registerManagedTexture(existingBump);
+    if (existingAlbedo) {
+      existingAlbedo.userData.sharedAsset = true;
+      this.registerManagedTexture(existingAlbedo);
+    }
+    if (existingBump) {
+      existingBump.userData.sharedAsset = true;
+      this.registerManagedTexture(existingBump);
+    }
 
     const mapSize = this.getSurfaceMapResolution();
     let maps: ReturnType<typeof this.bakePbrDataMapsFromHeightfield>;
@@ -588,6 +609,7 @@ export class PbrTextureSynthesizer {
     const tex = new THREE.DataTexture(bytes, size, size, THREE.RGBAFormat);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.userData.__isContactShadow = true;
+    tex.userData.sharedAsset = true;
     tex.generateMipmaps = false;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;

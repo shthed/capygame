@@ -1,12 +1,16 @@
 import {
+  CAPYTORIO_BEACON_SPEC,
+  CAPYTORIO_FUEL_BURN_SECONDS,
   CAPYTORIO_HOTBAR_ORDER,
   CAPYTORIO_ITEM_CATALOG,
   CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_MODULE_EFFECTS,
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   CAPYTORIO_TECHS,
   TECH_BY_ID,
   getCapytorioItemMeta,
+  getCapytorioMachineBasePowerDemandMw,
   resolveCapytorioItemShape,
   type CapytorioItemShape,
   type CapytorioMachineType,
@@ -101,14 +105,14 @@ const VARIANT_DESCRIPTIONS: Record<string, string> = {
   chemical_plant: 'Dual-chamber 3×3 chemical synthesis plant for plastic bars, sulfur, batteries, explosives, and solid fuel.',
   rail: 'Standard-gauge steel track segment on timber sleepers for building industrial Capytorio rail corridors.',
   train_stop: 'Automated railway station beacon and signal mast that marks loading and unloading zones along rail lines.',
-  locomotive: 'Heavy 2×1 diesel-electric Capytorio rail engine with dual roof radiator fans and high-capacity freight bay.',
-  cargo_wagon: 'Armored 2×1 railway freight car built to haul bulk plates, circuits, and ore shipments across rail corridors.',
+  locomotive: 'Heavy 1×2 diesel-electric Capytorio rail engine aligned with track sleepers, featuring dual roof radiator fans and a high-capacity freight bay.',
+  cargo_wagon: 'Armored 1×2 railway freight car built to haul bulk plates, circuits, and ore shipments along rail corridors.',
   roboport: '3×3 autonomous robotics hangar that launches hovering Logistic and Construction Robots to support factory automation.',
   steam_turbine: 'High-output 3×3 multi-stage steam turbine generator paired with nuclear reactors and high-temperature steam loops.',
   solar_panel: 'Clean 3×3 photovoltaic collector array delivering steady zero-fuel power to your factory grid.',
   accumulator: 'High-voltage 2×2 capacitor bank that buffers surplus electrical power and stabilizes peak demand.',
   nuclear_reactor: 'Containment-shielded 3×3 Cherenkov reactor core producing massive industrial grid power.',
-  beacon: '3×3 module transmission tower that broadcasts socketed Speed, Efficiency, or Productivity bonuses to nearby machines within 6 tiles.',
+  beacon: `3×3 module transmission tower that broadcasts +${Math.round(CAPYTORIO_BEACON_SPEC.baseSpeedBonus * 100)}% base speed plus ${Math.round(CAPYTORIO_BEACON_SPEC.transmissionEfficiency * 100)}% of socketed Speed and Efficiency module bonuses to nearby machines within ${CAPYTORIO_BEACON_SPEC.rangeTiles} tiles.`,
   radar: '3×3 rotating long-range reconnaissance dish that continuously scans surrounding factory sectors.',
   rocket_silo: '3×3 orbital launch bay with gantry arms and blast doors for assembling and launching the Capytorio Rocket.',
   offshore_pump: 'Shoreline intake pump placed on coastal water tiles to supply cooling water to steam boilers and refineries.',
@@ -117,12 +121,12 @@ const VARIANT_DESCRIPTIONS: Record<string, string> = {
   gate: 'Armored retractable blast gate that integrates seamlessly into Stone Wall defensive lines.',
   gun_turret: 'Automated sentry plinth with twin rotating autocannons for perimeter defense.',
   laser_turret: 'High-energy ruby crystal emitter turret on an armored gimbal pedestal.',
-  speed_module: 'Socketable machine upgrade that boosts crafting and mining speed by +20% (with +50% power draw).',
-  speed_module_2: 'Tier-2 socketable upgrade boosting machine speed by +35% (with +60% power draw).',
-  efficiency_module: 'Socketable machine upgrade that reduces electrical power draw by -30% (down to a 20% floor).',
-  efficiency_module_2: 'Tier-2 socketable upgrade reducing electrical power draw by -45%.',
-  productivity_module: 'Socketable machine upgrade adding +10% bonus output cycles (with -10% speed and +40% power draw).',
-  productivity_module_2: 'Tier-2 socketable upgrade adding +18% bonus output cycles.',
+  speed_module: `Socketable machine upgrade that boosts crafting and mining speed by +${Math.round(CAPYTORIO_MODULE_EFFECTS.speed_module.speedDelta * 100)}% (with +${Math.round(CAPYTORIO_MODULE_EFFECTS.speed_module.powerDelta * 100)}% power draw).`,
+  speed_module_2: `Tier-2 socketable upgrade boosting machine speed by +${Math.round(CAPYTORIO_MODULE_EFFECTS.speed_module_2.speedDelta * 100)}% (with +${Math.round(CAPYTORIO_MODULE_EFFECTS.speed_module_2.powerDelta * 100)}% power draw).`,
+  efficiency_module: `Socketable machine upgrade that reduces electrical power draw by ${Math.round(CAPYTORIO_MODULE_EFFECTS.efficiency_module.powerDelta * 100)}% (down to a 20% floor).`,
+  efficiency_module_2: `Tier-2 socketable upgrade reducing electrical power draw by ${Math.round(CAPYTORIO_MODULE_EFFECTS.efficiency_module_2.powerDelta * 100)}% (down to a 20% floor).`,
+  productivity_module: `Socketable machine upgrade adding +${Math.round(CAPYTORIO_MODULE_EFFECTS.productivity_module.prodDelta * 100)}% bonus output cycles (with ${Math.round(CAPYTORIO_MODULE_EFFECTS.productivity_module.speedDelta * 100)}% speed and +${Math.round(CAPYTORIO_MODULE_EFFECTS.productivity_module.powerDelta * 100)}% power draw).`,
+  productivity_module_2: `Tier-2 socketable upgrade adding +${Math.round(CAPYTORIO_MODULE_EFFECTS.productivity_module_2.prodDelta * 100)}% bonus output cycles (with ${Math.round(CAPYTORIO_MODULE_EFFECTS.productivity_module_2.speedDelta * 100)}% speed and +${Math.round(CAPYTORIO_MODULE_EFFECTS.productivity_module_2.powerDelta * 100)}% power draw).`,
   repair_pack: 'Field maintenance toolkit that restores damaged structures to 100% integrity and grants a 30s +20% tune-up speed boost.',
 };
 
@@ -221,9 +225,9 @@ function mapItemCategoryToPedia(itemId: string, itemCat: string): CapytorioPedia
 }
 
 function buildFuelSummary(id: string): string | null {
-  if (id === 'coal') return 'Generator Fuel (6.0 MW surge · ~12s burn)';
-  if (id === 'yuzu_sap') return 'Bio-Fuel (6.0 MW surge · ~10s burn)';
-  if (id === 'orange') return 'Citrus Bio-Fuel (6.0 MW surge · ~8s burn)';
+  if (id === 'coal') return `Generator Fuel (6.0 MW surge · ${CAPYTORIO_FUEL_BURN_SECONDS.coal.toFixed(1)}s burn)`;
+  if (id === 'yuzu_sap') return `Bio-Fuel (6.0 MW surge · ${CAPYTORIO_FUEL_BURN_SECONDS.yuzu_sap.toFixed(1)}s burn)`;
+  if (id === 'orange') return `Citrus Bio-Fuel (6.0 MW surge · ${CAPYTORIO_FUEL_BURN_SECONDS.orange.toFixed(1)}s burn)`;
   return null;
 }
 
@@ -517,6 +521,10 @@ export function buildCapytorioPediaCatalog(): CapytorioPediaEntry[] {
         producedByRecipes.length > 0
           ? `Crafted via ${producedByRecipes[0].station === 'furnace' ? 'Foundry' : 'Assembler / Pocket'}`
           : 'Equip from Inventory to place';
+      const variantPowerDemand = getCapytorioMachineBasePowerDemandMw({
+        type: placeable.baseType,
+        variantItemId: meta.id,
+      });
       stats.push(
         { label: 'Base Machine', value: baseSpec.name },
         { label: 'Speed Tier', value: `${placeable.tierMult.toFixed(2)}×` },
@@ -525,15 +533,17 @@ export function buildCapytorioPediaCatalog(): CapytorioPediaEntry[] {
           value:
             baseSpec.powerSupplyMw > 0
               ? `+${(baseSpec.powerSupplyMw * placeable.tierMult).toFixed(1)} MW`
-              : baseSpec.powerDemandMw > 0
-                ? `-${baseSpec.powerDemandMw.toFixed(2)} MW`
+              : variantPowerDemand > 0
+                ? `-${variantPowerDemand.toFixed(2)} MW`
                 : '0 MW',
         }
       );
       if (meta.id === 'roboport') {
         tips.push('Store Logistic or Construction Robots in your pocket or roboport to see mini-drones hover and patrol overhead.');
       } else if (meta.id === 'beacon') {
-        tips.push('Socket Speed, Efficiency, or Productivity Modules into a Beacon to boost machines within 6 tiles.');
+        tips.push(
+          `Socket Speed or Efficiency Modules into a Beacon to broadcast +${Math.round(CAPYTORIO_BEACON_SPEC.baseSpeedBonus * 100)}% base speed and ${Math.round(CAPYTORIO_BEACON_SPEC.transmissionEfficiency * 100)}% module power within ${CAPYTORIO_BEACON_SPEC.rangeTiles} tiles.`
+        );
       } else {
         tips.push(...(MACHINE_TIPS[placeable.baseType] ?? []));
       }

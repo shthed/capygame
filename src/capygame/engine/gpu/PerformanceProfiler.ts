@@ -38,6 +38,11 @@ export const PROFILER_PHASE_LABELS: Record<ProfilerPhaseId, string> = {
 };
 
 const PHASE_COUNT = PROFILER_PHASES.length;
+const PHASE_INDEX_MAP: Record<ProfilerPhaseId, number> = Object.create(null);
+for (let i = 0; i < PROFILER_PHASES.length; i++) {
+  PHASE_INDEX_MAP[PROFILER_PHASES[i]] = i;
+}
+const GPU_RENDER_SUBMIT_IDX = PHASE_INDEX_MAP.gpu_render_submit;
 const HISTORY_LEN = 60;
 const MAX_EVENTS = 24;
 
@@ -106,16 +111,16 @@ export class PerformanceProfiler {
 
   public startPhase(phase: ProfilerPhaseId): void {
     if (!this.enabled) return;
-    const idx = PROFILER_PHASES.indexOf(phase);
-    if (idx !== -1) {
+    const idx = PHASE_INDEX_MAP[phase];
+    if (idx !== undefined) {
       this.phaseStartTimes[idx] = performance.now();
     }
   }
 
   public endPhase(phase: ProfilerPhaseId): void {
     if (!this.enabled) return;
-    const idx = PROFILER_PHASES.indexOf(phase);
-    if (idx !== -1) {
+    const idx = PHASE_INDEX_MAP[phase];
+    if (idx !== undefined) {
       const start = this.phaseStartTimes[idx];
       if (start > 0) {
         const elapsed = performance.now() - start;
@@ -203,11 +208,31 @@ export class PerformanceProfiler {
 
     // Fall back to render submit time if GPU query is unsupported
     if (!this.timerAvailable || this.gpuExecutionMs === 0) {
-      this.recordGpuSample(this.curFrameMs[PROFILER_PHASES.indexOf('gpu_render_submit')]);
+      this.recordGpuSample(this.curFrameMs[GPU_RENDER_SUBMIT_IDX]);
     }
 
     this.writeIdx = (this.writeIdx + 1) % HISTORY_LEN;
     if (this.sampleCount < HISTORY_LEN) this.sampleCount++;
+  }
+
+  public dispose(): void {
+    if (this.glContext) {
+      try {
+        if (this.queryActive) {
+          this.glContext.deleteQuery(this.queryActive);
+        }
+        if (this.queryPending) {
+          this.glContext.deleteQuery(this.queryPending);
+        }
+      } catch {
+        // Ignore GL context-lost cleanup errors
+      }
+    }
+    this.queryActive = null;
+    this.queryPending = null;
+    this.glContext = null;
+    this.timerExt = null;
+    this.timerAvailable = false;
   }
 
   public recordAction(name: string, durationMs: number, details?: string): void {

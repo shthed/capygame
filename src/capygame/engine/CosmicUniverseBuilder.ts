@@ -426,6 +426,7 @@ export class CosmicUniverseBuilder {
   }
 
   public getTrackedStarWorldPosition(out: THREE.Vector3): THREE.Vector3 {
+    if (!this.initialized) return out.set(0, 0, 0);
     const i3 = this.trackedStarIndex * 3;
     return out.set(
       this.particlePositions[i3],
@@ -442,7 +443,8 @@ export class CosmicUniverseBuilder {
   public pickRandomTrackedStar(preferredGalaxyIdx?: number): number {
     this.ensureInitialized();
     const primaryCount = COSMIC_GALAXIES.length;
-    const starsPerPrimary = Math.floor(this.animatedParticleLimit / primaryCount);
+    const trackedPoolCap = Math.max(1, Math.min(8000, this.activeParticleCount, this.animatedParticleLimit));
+    const starsPerPrimary = Math.max(1, Math.floor(trackedPoolCap / primaryCount));
     const targetGal =
       typeof preferredGalaxyIdx === 'number'
         ? THREE.MathUtils.clamp(preferredGalaxyIdx, 0, primaryCount - 1)
@@ -453,9 +455,9 @@ export class CosmicUniverseBuilder {
     const maxOffset = Math.floor(starsPerPrimary * 0.78);
     const offset = minOffset + Math.floor(Math.random() * Math.max(1, maxOffset - minOffset));
 
-    this.trackedStarIndex = Math.min(
-      this.activeParticleCount - 1,
-      targetGal * starsPerPrimary + offset
+    this.trackedStarIndex = Math.max(
+      0,
+      Math.min(trackedPoolCap - 1, targetGal * starsPerPrimary + offset)
     );
     this.trackedStarLastGen = this.particleGeneration[this.trackedStarIndex] || 1;
     this.resetTrackedStarTrail();
@@ -697,6 +699,7 @@ export class CosmicUniverseBuilder {
 
   public setStellarColorMode(mode: StellarColorMappingMode) {
     this.stellarColorMode = mode;
+    if (!this.initialized) return;
     const simAgeGyr =
       this.genesisEpoch === 'virial_equilibrium'
         ? 13.8
@@ -858,6 +861,7 @@ export class CosmicUniverseBuilder {
     cosmicAgeGyr: number,
     syncLiveBuffer: boolean = false
   ) {
+    if (!this.initialized) return;
     let massSum = 0;
     let ageSum = 0;
     let tempSum = 0;
@@ -920,6 +924,7 @@ export class CosmicUniverseBuilder {
     originZ: number = 0,
     strengthScale: number = 1.0
   ) {
+    if (!this.initialized) return;
     const count = this.activeParticleCount;
     for (let i = 0; i < count; i++) {
       const i3 = i * 3;
@@ -940,6 +945,7 @@ export class CosmicUniverseBuilder {
     raycaster: THREE.Raycaster,
     camera: THREE.Camera
   ): boolean {
+    if (!this.initialized) return false;
     camera.getWorldDirection(this._tempVec3);
     this._intersectPlane.setFromNormalAndCoplanarPoint(
       this._tempVec3,
@@ -949,7 +955,7 @@ export class CosmicUniverseBuilder {
       // Find the nearest persistent star to the clicked 3D ray and lock tracking onto it
       let bestIdx = this.trackedStarIndex;
       let bestDistSq = Infinity;
-      const limit = Math.min(this.activeParticleCount, this.animatedParticleLimit);
+      const limit = Math.min(8000, this.activeParticleCount, this.animatedParticleLimit);
       for (let i = 0; i < limit; i += 7) {
         const i3 = i * 3;
         const dSq =
@@ -961,7 +967,7 @@ export class CosmicUniverseBuilder {
           bestIdx = i;
         }
       }
-      if (bestDistSq < 1800) {
+      if (bestDistSq < 1800 && bestIdx < 8000) {
         this.trackedStarIndex = bestIdx;
         this.resetTrackedStarTrail();
       }
@@ -1348,6 +1354,7 @@ export class CosmicUniverseBuilder {
    * as Generation 1 (Population III) primordial H/He gas parcels ($Z = 0.0000$).
    */
   public resetBigBangSimulation() {
+    this.ensureInitialized();
     this.bigBangElapsed = 0;
     this.flashIntensity = 1.0;
     this.genesisEpoch = 'inflation';
@@ -2780,10 +2787,19 @@ export class CosmicUniverseBuilder {
   }
 
   public dispose() {
+    this.initialized = false;
     this.clickableObjects.length = 0;
     this.blackHoleShaderUniforms.length = 0;
     this.blackHoleLensingDisps.length = 0;
     this.blackHoleAccretionDisks.length = 0;
+    this.galaxyNodes.length = 0;
+    this.starNodes.length = 0;
+    this.planetNodes.length = 0;
+    this.landingBeaconMeshes.length = 0;
+    this.supernovaPool.length = 0;
+    this.orbitCloudMesh = null;
+    this.asteroidBeltGroup = null;
+    this.asteroidBeltHitMesh = null;
     disposeObject3DTree(this.rootGroup);
   }
 }

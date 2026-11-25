@@ -70,8 +70,8 @@ For subsystem references, see:
 - **Android Hardware Back Button, Display Cutouts & Edge-to-Edge Insets**:
   - Wire Android Back (`popstate` / history sentinel or Capacitor `backButton` listener) so pressing Back dismisses open overlays (`World Menu`, `Settings`, `Zoom Explorer`, `Sticker Book`, `Settings -> Overview`) before prompting or exiting.
   - Verify `env(safe-area-inset-*)` padding across camera punch-holes, status bars, and Android gesture navigation bars in both portrait and landscape orientations.
-- **Lifecycle Pause, Audio Focus & WebGL Context Recovery**:
-  - Hook `visibilitychange` / `pagehide` to pause Web Audio oscillators/speech synthesis cleanly when backgrounded or receiving a phone call, clamp frame `dt` on resume, and flush pending progression saves (`ProgressionService.flushPendingSave`).
+- **Android Lifecycle Pause, Audio Focus & WebGL Context Recovery QA**:
+  - Verify existing `visibilitychange` / `pagehide` audio suspension, held-input clearing, and `ProgressionService.flushPendingSave()` behavior on physical Android devices when receiving calls or switching apps.
   - Test `webglcontextlost` and `webglcontextrestored` recovery so returning from heavy background apps restores the 3D viewport without a black screen.
 
 ---

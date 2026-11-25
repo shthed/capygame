@@ -115,10 +115,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
 
-  // Only handle GET requests with http/https schemes
+  // Only handle same-origin GET requests with http/https schemes
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (!url.protocol.startsWith('http')) return;
+  if (url.origin !== self.location.origin) return;
 
   // Never intercept Vite HMR ping or AI Studio proxy/auth endpoints
   if (
@@ -186,7 +187,7 @@ self.addEventListener('fetch', (event) => {
         const cache = await caches.open(CACHE_NAME);
         try {
           const response = await fetch(request);
-          if (response && response.status === 200) {
+          if (response && response.status === 200 && !(await isWarmupOrAuthHtml(response))) {
             try {
               await cache.put(request, response.clone());
             } catch {
@@ -214,23 +215,24 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 3. Static assets & production bundles (JS, CSS, images, workers): Cache-first with network fallback
+  // 3. Static assets & production bundles (JS, CSS, images, workers): Exact cache-first online, search-relaxed offline fallback
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      const cached =
-        (await cache.match(request)) ||
-        (await cache.match(request.url)) ||
-        (await cache.match(request, { ignoreSearch: true })) ||
-        (await cache.match(request.url, { ignoreSearch: true }));
+      const cached = (await cache.match(request)) || (await cache.match(request.url));
       if (cached) {
         return cached;
       }
 
       try {
         const response = await fetch(request);
-        // Cache only valid same-origin 200 responses (avoid caching opaque cross-origin responses)
-        if (response && url.origin === self.location.origin && response.status === 200) {
+        // Cache only valid same-origin 200 non-warmup responses
+        if (
+          response &&
+          url.origin === self.location.origin &&
+          response.status === 200 &&
+          !(await isWarmupOrAuthHtml(response))
+        ) {
           try {
             await cache.put(request, response.clone());
           } catch (cacheErr) {
@@ -239,7 +241,9 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       } catch (err) {
-        const fallback = await cache.match(request.url, { ignoreSearch: true });
+        const fallback =
+          (await cache.match(request, { ignoreSearch: true })) ||
+          (await cache.match(request.url, { ignoreSearch: true }));
         if (fallback) return fallback;
         throw err;
       }

@@ -840,9 +840,20 @@ export const CapyGameView: React.FC = () => {
   );
   const [toastText, setToastText] = useState<string | null>(null);
 
+  const isMountedRef = useRef<boolean>(true);
+  const clearHeldInputsRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const showToast = useCallback((msg: string) => {
     setToastText(msg);
     window.setTimeout(() => {
+      if (!isMountedRef.current) return;
       setToastText((prev) => (prev === msg ? null : prev));
     }, 2600);
   }, []);
@@ -857,6 +868,7 @@ export const CapyGameView: React.FC = () => {
     setIsGamePaused(paused);
 
     if (paused) {
+      clearHeldInputsRef.current?.();
       if (isFreeMouselookRef.current) {
         isFreeMouselookRef.current = false;
         setIsFreeMouselook(false);
@@ -926,6 +938,9 @@ export const CapyGameView: React.FC = () => {
     | 'onSetSplitterConfig'
     | 'onSetInserterConfig'
     | 'onSetChestSlotLimit'
+    | 'onInstallModule'
+    | 'onRemoveModule'
+    | 'onRepairMachine'
   >;
 
   const capytorioHudActions = useMemo<MemoizedCapytorioHudActions>(
@@ -1263,6 +1278,30 @@ export const CapyGameView: React.FC = () => {
       },
       onSetChestSlotLimit: (gx, gz, slotLimit) => {
         managerRef.current?.setCapytorioChestSlotLimit(gx, gz, slotLimit);
+      },
+      onInstallModule: (gx, gz, moduleItemId) => {
+        const res = managerRef.current?.installCapytorioModule(gx, gz, moduleItemId);
+        const rt = getLoadedCapytorioRuntime();
+        const modName = rt?.getCapytorioItemMeta(moduleItemId).name ?? moduleItemId;
+        showToast(
+          res?.ok ? `Installed ${modName}` : res?.reason ?? `Could not install ${modName}`
+        );
+      },
+      onRemoveModule: (gx, gz, slotIndex) => {
+        const removed = managerRef.current?.removeCapytorioModule(gx, gz, slotIndex);
+        if (removed) {
+          const rt = getLoadedCapytorioRuntime();
+          const modName = rt?.getCapytorioItemMeta(removed).name ?? removed;
+          showToast(`Removed ${modName} to pocket`);
+        }
+      },
+      onRepairMachine: (gx, gz) => {
+        const res = managerRef.current?.repairCapytorioMachine(gx, gz);
+        showToast(
+          res?.ok
+            ? `Repaired & tuned (+${Math.round(res.overclockSec)}s overclock)`
+            : res?.reason ?? 'Need a Repair Pack in pocket'
+        );
       },
     }),
     [showToast]
@@ -1854,6 +1893,26 @@ export const CapyGameView: React.FC = () => {
         );
       };
 
+      const heldMoveKeys = new Set<string>();
+      const syncMoveInput = () => {
+        if (!managerRef.current) return;
+        const up = heldMoveKeys.has('w') || heldMoveKeys.has('arrowup');
+        const down = heldMoveKeys.has('s') || heldMoveKeys.has('arrowdown');
+        const left = heldMoveKeys.has('a') || heldMoveKeys.has('arrowleft');
+        const right = heldMoveKeys.has('d') || heldMoveKeys.has('arrowright');
+        managerRef.current.moveInput.z = (down ? 1 : 0) - (up ? 1 : 0);
+        managerRef.current.moveInput.x = (right ? 1 : 0) - (left ? 1 : 0);
+      };
+      const clearHeldInputs = () => {
+        heldMoveKeys.clear();
+        if (managerRef.current) {
+          managerRef.current.moveInput.x = 0;
+          managerRef.current.moveInput.z = 0;
+          managerRef.current.isJumping = false;
+        }
+      };
+      clearHeldInputsRef.current = clearHeldInputs;
+
       const handleKeyDown = (e: KeyboardEvent) => {
         if (!managerRef.current) return;
         const target = e.target;
@@ -1906,10 +1965,19 @@ export const CapyGameView: React.FC = () => {
           }
           return;
         }
-        if (key === 'w' || key === 'arrowup') managerRef.current.moveInput.z = -1;
-        if (key === 's' || key === 'arrowdown') managerRef.current.moveInput.z = 1;
-        if (key === 'a' || key === 'arrowleft') managerRef.current.moveInput.x = -1;
-        if (key === 'd' || key === 'arrowright') managerRef.current.moveInput.x = 1;
+        if (
+          key === 'w' ||
+          key === 'arrowup' ||
+          key === 's' ||
+          key === 'arrowdown' ||
+          key === 'a' ||
+          key === 'arrowleft' ||
+          key === 'd' ||
+          key === 'arrowright'
+        ) {
+          heldMoveKeys.add(key);
+          syncMoveInput();
+        }
         if (key === ' ') managerRef.current.isJumping = true;
         const inCapytorioActive =
           managerRef.current.currentMode === 'capytorio' &&
@@ -2169,11 +2237,11 @@ export const CapyGameView: React.FC = () => {
           return;
         }
         const key = e.key.toLowerCase();
-        if (key === 'w' || key === 'arrowup' || key === 's' || key === 'arrowdown') {
-          managerRef.current.moveInput.z = 0;
+        if (heldMoveKeys.delete(key)) {
+          syncMoveInput();
         }
-        if (key === 'a' || key === 'arrowleft' || key === 'd' || key === 'arrowright') {
-          managerRef.current.moveInput.x = 0;
+        if (key === ' ') {
+          managerRef.current.isJumping = false;
         }
       };
 
@@ -2229,8 +2297,19 @@ export const CapyGameView: React.FC = () => {
 
       const handleWindowBlur = () => {
         altTapCandidateRef.current = false;
+        clearHeldInputs();
         if (isFreeMouselookRef.current) {
           setFreeMouselookActive(false);
+        }
+      };
+
+      const handleDocumentVisibilityChange = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          altTapCandidateRef.current = false;
+          clearHeldInputs();
+          if (isFreeMouselookRef.current) {
+            setFreeMouselookActive(false);
+          }
         }
       };
 
@@ -2278,8 +2357,11 @@ export const CapyGameView: React.FC = () => {
       window.addEventListener('mousemove', handleWindowMouseMove);
       window.addEventListener('blur', handleWindowBlur);
       document.addEventListener('pointerlockchange', handlePointerLockChange);
+      document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
 
       cleanupFn = () => {
+        clearHeldInputs();
+        clearHeldInputsRef.current = null;
         suspendAnimLoopRef.current = null;
         resumeAnimLoopRef.current = null;
         cancelScheduledFrame();
@@ -2294,6 +2376,7 @@ export const CapyGameView: React.FC = () => {
         window.removeEventListener('mousemove', handleWindowMouseMove);
         window.removeEventListener('blur', handleWindowBlur);
         document.removeEventListener('pointerlockchange', handlePointerLockChange);
+        document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
         manager.dispose();
         managerRef.current = null;
       };
@@ -3169,11 +3252,17 @@ export const CapyGameView: React.FC = () => {
   const handleCopyJsonDraft = async () => {
     try {
       await navigator.clipboard.writeText(jsonDraftText);
+      if (!isMountedRef.current) return;
       setJsonCopyLabel('Copied!');
-      window.setTimeout(() => setJsonCopyLabel('Copy JSON'), 1800);
+      window.setTimeout(() => {
+        if (isMountedRef.current) setJsonCopyLabel('Copy JSON');
+      }, 1800);
     } catch {
+      if (!isMountedRef.current) return;
       setJsonCopyLabel('Unavailable');
-      window.setTimeout(() => setJsonCopyLabel('Copy JSON'), 1800);
+      window.setTimeout(() => {
+        if (isMountedRef.current) setJsonCopyLabel('Copy JSON');
+      }, 1800);
     }
   };
 
@@ -3303,7 +3392,9 @@ export const CapyGameView: React.FC = () => {
         ? 'Fine-grained performance analysis copied'
         : 'Full diagnostic report copied';
       showToast(msg);
-      setTimeout(() => setIsReportCopied(false), 2500);
+      window.setTimeout(() => {
+        if (isMountedRef.current) setIsReportCopied(false);
+      }, 2500);
     } catch {
       showToast('Could not copy automatically. Select text below.');
     }

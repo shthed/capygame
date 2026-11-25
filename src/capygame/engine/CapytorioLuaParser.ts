@@ -226,20 +226,33 @@ function tokenizeLua(src: string): LuaToken[] {
       i++;
       let out = '';
       while (i < len && src[i] !== quote) {
-        if (src[i] === '\\' && i + 1 < len) {
-          const esc = src[i + 1];
-          if (esc === 'n') out += '\n';
-          else if (esc === 't') out += '\t';
-          else if (esc === 'r') out += '\r';
-          else out += esc;
-          i += 2;
+        if (src[i] === '\\') {
+          if (i + 1 < len) {
+            const esc = src[i + 1];
+            if (esc === 'n') out += '\n';
+            else if (esc === 't') out += '\t';
+            else if (esc === 'r') out += '\r';
+            else out += esc;
+            i += 2;
+          } else {
+            out += '\\';
+            i++;
+          }
         } else {
           out += src[i];
           i++;
         }
       }
-      if (src[i] === quote) i++;
+      if (i < len && src[i] === quote) i++;
       tokens.push({ type: 'string', value: out });
+      continue;
+    }
+
+    // Lua string concatenation operator `..` (must precede `.5` leading-dot number check so `1..2` tokenizes as `1`, `.`, `.`, `2`)
+    if (ch === '.' && src[i + 1] === '.') {
+      tokens.push({ type: 'punct', value: '.' });
+      tokens.push({ type: 'punct', value: '.' });
+      i += 2;
       continue;
     }
 
@@ -249,8 +262,8 @@ function tokenizeLua(src: string): LuaToken[] {
       ((src[i + 1] >= '0' && src[i + 1] <= '9') ||
         (src[i + 1] === '.' && src[i + 2] >= '0' && src[i + 2] <= '9')) &&
       (tokens.length === 0 ||
-        tokens[tokens.length - 1].type === 'punct' &&
-          ['=', ',', ';', '{', '(', '['].includes(tokens[tokens.length - 1].value));
+        (tokens[tokens.length - 1].type === 'punct' &&
+          ['=', ',', ';', '{', '(', '['].includes(tokens[tokens.length - 1].value)));
     if (
       isNegNum ||
       (ch >= '0' && ch <= '9') ||
@@ -262,11 +275,25 @@ function tokenizeLua(src: string): LuaToken[] {
         i += 2;
         while (i < len && /[0-9a-fA-F]/.test(src[i])) i++;
       } else {
-        while (i < len && /[0-9.]/.test(src[i])) i++;
+        let seenDot = false;
+        while (i < len) {
+          const c = src[i];
+          if (c >= '0' && c <= '9') {
+            i++;
+          } else if (c === '.' && !seenDot && src[i + 1] !== '.') {
+            seenDot = true;
+            i++;
+          } else {
+            break;
+          }
+        }
         if ((src[i] === 'e' || src[i] === 'E') && i + 1 < len) {
-          i++;
-          if (src[i] === '+' || src[i] === '-') i++;
-          while (i < len && /[0-9]/.test(src[i])) i++;
+          const expSign = src[i + 1] === '+' || src[i + 1] === '-' ? 1 : 0;
+          const firstDigitIdx = i + 1 + expSign;
+          if (firstDigitIdx < len && src[firstDigitIdx] >= '0' && src[firstDigitIdx] <= '9') {
+            i = firstDigitIdx;
+            while (i < len && src[i] >= '0' && src[i] <= '9') i++;
+          }
         }
       }
       tokens.push({ type: 'number', value: src.slice(start, i) });
@@ -375,17 +402,21 @@ class LuaDataExtendParser {
   }
 
   private parseExpression(): LuaVal {
+    let val = this.parsePrimaryExpression();
+    // Binary Lua string concatenation `..` works on strings, numbers, identifiers, and member accesses
+    while (this.peek().value === '.' && this.peek(1).value === '.') {
+      this.pos += 2;
+      const rhs = this.parsePrimaryExpression();
+      val = `${val ?? ''}${rhs ?? ''}`;
+    }
+    return val;
+  }
+
+  private parsePrimaryExpression(): LuaVal {
     const t = this.peek();
     if (t.type === 'string') {
       this.consume();
-      // Support string concatenation `..`
-      let val = t.value;
-      while (this.peek().value === '.' && this.peek(1).value === '.') {
-        this.pos += 2;
-        const rhs = this.parseExpression();
-        val += String(rhs ?? '');
-      }
-      return val;
+      return t.value;
     }
     if (t.type === 'number') {
       this.consume();
@@ -397,18 +428,53 @@ class LuaDataExtendParser {
       if (t.value === 'true') return true;
       if (t.value === 'false') return false;
       if (t.value === 'nil') return null;
-      if (this.env.has(t.value)) return this.env.get(t.value)!;
-      // Consume simple function call fallback e.g. table.deepcopy(x) or mods["foo"]
-      if (this.peek().value === '.' || this.peek().value === ':') {
-        while (this.peek().value === '.' || this.peek().value === ':') {
+      if (t.value === 'not') {
+        const inner = this.parsePrimaryExpression();
+        return inner === false || inner === null;
+      }
+      let curVal: LuaVal | undefined = this.env.has(t.value) ? this.env.get(t.value) : undefined;
+      let hadPostfix = false;
+      while (true) {
+        const next = this.peek();
+        if (next.value === '.' && this.peek(1).value !== '.') {
+          hadPostfix = true;
+          this.consume();
+          const prop = this.peek().type === 'ident' ? this.consume().value : '';
+          curVal = isTable(curVal) && prop ? curVal.map[prop] : undefined;
+        } else if (next.value === ':') {
+          hadPostfix = true;
           this.consume();
           if (this.peek().type === 'ident') this.consume();
+          if (this.peek().value === '(') {
+            this.consumeBalanced('(', ')');
+          }
+          curVal = undefined;
+        } else if (next.value === '[') {
+          hadPostfix = true;
+          this.consume();
+          const keyExpr = this.parseExpression();
+          if (this.peek().value === ']') this.consume();
+          if (isTable(curVal)) {
+            if (typeof keyExpr === 'number' && Number.isInteger(keyExpr) && keyExpr >= 1) {
+              curVal = curVal.array[keyExpr - 1] ?? curVal.map[String(keyExpr)];
+            } else if (keyExpr !== null && typeof keyExpr !== 'object') {
+              curVal = curVal.map[String(keyExpr)];
+            } else {
+              curVal = undefined;
+            }
+          } else {
+            curVal = undefined;
+          }
+        } else if (next.value === '(') {
+          hadPostfix = true;
+          this.consumeBalanced('(', ')');
+          curVal = undefined;
+        } else {
+          break;
         }
       }
-      if (this.peek().value === '(') {
-        this.consumeBalanced('(', ')');
-      }
-      return t.value;
+      if (curVal !== undefined) return curVal;
+      return hadPostfix ? null : t.value;
     }
     if (t.value === '{') {
       return this.parseTable();
@@ -421,7 +487,7 @@ class LuaDataExtendParser {
     }
     if (t.value === '-') {
       this.consume();
-      const inner = this.parseExpression();
+      const inner = this.parsePrimaryExpression();
       return typeof inner === 'number' ? -inner : 0;
     }
     this.consume();

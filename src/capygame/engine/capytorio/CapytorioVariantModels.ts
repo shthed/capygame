@@ -2024,10 +2024,10 @@ export function buildDedicatedVariantModel(
   }
 
   if (variantItemId === 'locomotive') {
-    // Native 2x1 proportions (scale = [1, 1, 1], spanning ~4.7m along X!)
+    // Native 1x2 proportions aligned along Z-axis (matching rail at dir=0, nose facing North -Z)
     const underframe = addCastReceive(
       new THREE.Mesh(
-        getCachedGeo('var_loco_chassis_2x1', () => {
+        getCachedGeo('var_loco_chassis_1x2', () => {
           const parts: THREE.BufferGeometry[] = [];
           const deck = chamferedBox(CAPYTORIO_TILE_SIZE * 2 - 0.34, 0.28, 1.86, 0.08);
           deck.translate(0, 0.44, 0);
@@ -2041,14 +2041,16 @@ export function buildDedicatedVariantModel(
               parts.push(wheel);
             }
           }
-          // Front wedge cowcatcher plow (-X nose)
+          // Front wedge cowcatcher plow (-X -> -Z after rotateY(-PI/2))
           const plow = new THREE.ConeGeometry(0.92, 0.62, 4);
           plow.rotateZ(Math.PI * 0.5);
           plow.rotateX(Math.PI * 0.25);
           plow.scale(1, 0.55, 1);
           plow.translate(-2.42, 0.32, 0);
           parts.push(plow);
-          return mergeGeos(parts);
+          const merged = mergeGeos(parts);
+          merged.rotateY(-Math.PI * 0.5);
+          return merged;
         }),
         mats.steelDark
       )
@@ -2057,7 +2059,7 @@ export function buildDedicatedVariantModel(
 
     const body = addCastReceive(
       new THREE.Mesh(
-        getCachedGeo('var_loco_body_2x1', () => {
+        getCachedGeo('var_loco_body_1x2', () => {
           const parts: THREE.BufferGeometry[] = [];
           // Streamlined Capy-orange / crimson diesel body
           const engineHood = chamferedBox(3.16, 1.18, 1.64, 0.14);
@@ -2069,7 +2071,9 @@ export function buildDedicatedVariantModel(
           const nose = chamferedBox(0.68, 0.86, 1.54, 0.16);
           nose.translate(-2.12, 0.96, 0);
           parts.push(engineHood, cab, nose);
-          return mergeGeos(parts);
+          const merged = mergeGeos(parts);
+          merged.rotateY(-Math.PI * 0.5);
+          return merged;
         }),
         accentMat
       )
@@ -2079,9 +2083,10 @@ export function buildDedicatedVariantModel(
 
     const windshield = addCastReceive(
       new THREE.Mesh(
-        getCachedGeo('var_loco_glass', () => {
+        getCachedGeo('var_loco_glass_1x2', () => {
           const glass = new THREE.BoxGeometry(0.18, 0.44, 1.44);
           glass.translate(-2.06, 1.54, 0);
+          glass.rotateY(-Math.PI * 0.5);
           return glass;
         }),
         mats.labGlass
@@ -2093,7 +2098,7 @@ export function buildDedicatedVariantModel(
 
     const trim = addCastReceive(
       new THREE.Mesh(
-        getCachedGeo('var_loco_trim', () => {
+        getCachedGeo('var_loco_trim_1x2', () => {
           const stripeL = new THREE.BoxGeometry(4.1, 0.16, 0.08);
           stripeL.translate(-0.08, 0.88, -0.84);
           const stripeR = new THREE.BoxGeometry(4.1, 0.16, 0.08);
@@ -2101,14 +2106,16 @@ export function buildDedicatedVariantModel(
           const lamp = new THREE.CylinderGeometry(0.16, 0.18, 0.14, 10);
           lamp.rotateZ(Math.PI * 0.5);
           lamp.translate(-2.46, 1.06, 0);
-          return mergeGeos([stripeL, stripeR, lamp]);
+          const merged = mergeGeos([stripeL, stripeR, lamp]);
+          merged.rotateY(-Math.PI * 0.5);
+          return merged;
         }),
         mats.hazardYellow
       )
     );
     g.add(trim);
 
-    // Twin roof radiator fans (reuses gearA/gearB rotation hooks cleanly!)
+    // Twin roof radiator fans aligned along Z hood (reuses gearA/gearB rotation hooks cleanly!)
     const fanGeo = getCachedGeo('var_loco_fan', () => {
       const b1 = new THREE.BoxGeometry(0.74, 0.06, 0.14);
       const b2 = new THREE.BoxGeometry(0.14, 0.06, 0.74);
@@ -2116,10 +2123,10 @@ export function buildDedicatedVariantModel(
       return mergeGeos([b1, b2, hub]);
     });
     const fanA = new THREE.Mesh(fanGeo, mats.steelLight);
-    fanA.position.set(0.32, 1.76, 0);
+    fanA.position.set(0, 1.76, 0.32);
     g.add(fanA);
     const fanB = new THREE.Mesh(fanGeo, mats.steelLight);
-    fanB.position.set(1.36, 1.76, 0);
+    fanB.position.set(0, 1.76, 1.36);
     g.add(fanB);
     g.userData.gearA = fanA;
     g.userData.gearB = fanB;
@@ -2127,10 +2134,10 @@ export function buildDedicatedVariantModel(
   }
 
   if (variantItemId === 'cargo_wagon') {
-    // Native 2x1 proportions (scale = [1, 1, 1], spanning ~4.7m along X!)
+    // Native 1x2 proportions aligned along Z-axis (matching rail at dir=0)
     const underframe = addCastReceive(
       new THREE.Mesh(
-        getCachedGeo('var_wagon_chassis_2x1', () => {
+        getCachedGeo('var_wagon_chassis_1x2', () => {
           const parts: THREE.BufferGeometry[] = [];
           const deck = chamferedBox(CAPYTORIO_TILE_SIZE * 2 - 0.32, 0.24, 1.84, 0.08);
           deck.translate(0, 0.42, 0);
@@ -2149,7 +2156,9 @@ export function buildDedicatedVariantModel(
             coupler.translate(cx, 0.42, 0);
             parts.push(coupler);
           }
-          return mergeGeos(parts);
+          const merged = mergeGeos(parts);
+          merged.rotateY(-Math.PI * 0.5);
+          return merged;
         }),
         mats.steelDark
       )
@@ -2158,7 +2167,7 @@ export function buildDedicatedVariantModel(
 
     const cargoBox = addCastReceive(
       new THREE.Mesh(
-        getCachedGeo('var_wagon_box_2x1', () => {
+        getCachedGeo('var_wagon_box_1x2', () => {
           const parts: THREE.BufferGeometry[] = [];
           const hull = chamferedBox(4.24, 0.98, 1.66, 0.1);
           hull.translate(0, 1.02, 0);
@@ -2169,7 +2178,9 @@ export function buildDedicatedVariantModel(
             rib.translate(rx, 1.02, 0);
             parts.push(rib);
           }
-          return mergeGeos(parts);
+          const merged = mergeGeos(parts);
+          merged.rotateY(-Math.PI * 0.5);
+          return merged;
         }),
         accentMat
       )
@@ -2179,14 +2190,16 @@ export function buildDedicatedVariantModel(
 
     const hatches = addCastReceive(
       new THREE.Mesh(
-        getCachedGeo('var_wagon_hatches', () => {
+        getCachedGeo('var_wagon_hatches_1x2', () => {
           const parts: THREE.BufferGeometry[] = [];
           for (const hx of [-1.18, 0, 1.18]) {
             const hatch = chamferedBox(0.92, 0.14, 1.38, 0.04);
             hatch.translate(hx, 1.56, 0);
             parts.push(hatch);
           }
-          return mergeGeos(parts);
+          const merged = mergeGeos(parts);
+          merged.rotateY(-Math.PI * 0.5);
+          return merged;
         }),
         mats.steelLight
       )
@@ -2279,7 +2292,7 @@ export function buildDedicatedVariantModel(
     g.userData.spinPart = mastSpin;
     g.userData.isRadarDish = true;
 
-    // 4 pooled hovering mini-drones (alternating amber logistic_robot & silver construction_robot)
+    // 6 pooled hovering mini-drones (matches getRoboportFleetCount max of 6)
     // Animated in sync() with zero per-frame allocations!
     const droneBodyGeo = getCachedGeo('var_roboport_drone_body', () => {
       const hull = new THREE.OctahedronGeometry(0.14, 0);
@@ -2291,7 +2304,7 @@ export function buildDedicatedVariantModel(
       return mergeGeos([hull, rotor, rotor2]);
     });
     const roboDrones: THREE.Mesh[] = [];
-    for (let d = 0; d < 4; d++) {
+    for (let d = 0; d < 6; d++) {
       const drone = new THREE.Mesh(droneBodyGeo, d % 2 === 0 ? mats.brass : mats.steelLight);
       drone.position.set(0, 1.9 + d * 0.2, 0);
       drone.castShadow = false;

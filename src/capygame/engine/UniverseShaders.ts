@@ -111,6 +111,7 @@ float ridgedFbm4(vec3 p) {
 }
 
 vec3 acesToneMap(vec3 x) {
+  x = max(x, vec3(0.0));
   const float a = 2.51;
   const float b = 0.03;
   const float c = 2.43;
@@ -1541,8 +1542,9 @@ export function createSpacetimeManifoldMaterial(opts?: {
         float r = length(p);
         if (r > 1.0) discard;
 
-        // Metric expansion grid lines
-        vec2 grid = abs(fract(p * 14.0 - 0.5) - 0.5) / fwidth(p * 14.0);
+        // Metric expansion grid lines (guarded against zero fwidth on grazing angles/software GL)
+        vec2 gridFw = max(fwidth(p * 14.0), vec2(0.0001));
+        vec2 grid = abs(fract(p * 14.0 - 0.5) - 0.5) / gridFw;
         float line = 1.0 - min(min(grid.x, grid.y), 1.0);
 
         // Relic Baryon Acoustic Oscillation (BAO) spherical acoustic sound wave ripples

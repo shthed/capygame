@@ -27,6 +27,7 @@ const FLUID_GRID_CELL_COUNT = 576;
 const DEFAULT_SOFT_BODY_NODES = 12;
 
 let wasmReady = false;
+let initPromise: Promise<void> | null = null;
 let world: RAPIER.World | null = null;
 let transportMode: PhysicsTransportMode = 'transferable_worker';
 let sabInt32: Int32Array | null = null;
@@ -160,8 +161,12 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
 
   if (msg.type === 'init') {
     if (!wasmReady) {
-      await RAPIER.init();
-      wasmReady = true;
+      if (!initPromise) {
+        initPromise = Promise.resolve(RAPIER.init()).then(() => {
+          wasmReady = true;
+        });
+      }
+      await initPromise;
     }
 
     if (world) {
@@ -216,6 +221,29 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
   }
 
   if (msg.type === 'step' && world) {
+    if (!Number.isFinite(msg.dt) || msg.dt <= 0) {
+      if (transportMode !== 'shared_array_buffer') {
+        const outBuf =
+          msg.transferBuf && msg.transferBuf.length >= PHYSICS_SAB_FLOAT_COUNT
+            ? msg.transferBuf
+            : new Float32Array(PHYSICS_SAB_FLOAT_COUNT);
+        const reply: PhysicsWorkerOutboundMessage = {
+          type: 'stepped',
+          wasmReady: true,
+          transportMode: 'transferable_worker',
+          rigidBodyCount: world.bodies.len(),
+          staticColliderCount: world.colliders.len(),
+          softBodyNodes: DEFAULT_SOFT_BODY_NODES,
+          fluidGridCells: FLUID_GRID_CELL_COUNT,
+          stepDurationMs: 0,
+          seeSawTilt0: 0,
+          seeSawTilt1: 0,
+          transferBuf: outBuf,
+        };
+        self.postMessage(reply, [outBuf.buffer]);
+      }
+      return;
+    }
     const t0 = performance.now();
     const clampedDt = Math.min(0.05, Math.max(0.001, msg.dt));
     const substeps = clampedDt > 0.018 ? 2 : 1;
@@ -243,8 +271,8 @@ self.onmessage = async (ev: MessageEvent<PhysicsWorkerInboundMessage>) => {
         seeSawBody.applyTorqueImpulse({ x: 0, y: 0, z: -relX * 260.0 * clampedDt }, true);
       }
       const rot = seeSawBody.rotation();
-      const sinHalfZ = rot.z;
-      const cosHalfZ = rot.w;
+      const sinHalfZ = rot.w < 0 ? -rot.z : rot.z;
+      const cosHalfZ = rot.w < 0 ? -rot.w : rot.w;
       seeSawTilt = Math.max(-0.34, Math.min(0.34, 2 * Math.atan2(sinHalfZ, cosHalfZ)));
       // Torsional restoring spring so plank settles horizontally when unloaded
       seeSawBody.applyTorqueImpulse({ x: 0, y: 0, z: -seeSawTilt * 1850.0 * clampedDt }, true);

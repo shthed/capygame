@@ -42,8 +42,11 @@ import {
   getSampleStarterMallAbsoluteEntries,
 } from './FactorioBlueprintCodec';
 import {
+  CAPYTORIO_BEACON_SPEC,
+  CAPYTORIO_FUEL_BURN_SECONDS,
   CAPYTORIO_ITEM_CATALOG,
   CAPYTORIO_ITEM_SHAPES,
+  CAPYTORIO_MODULE_EFFECTS,
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   CAPYTORIO_TECHS,
@@ -2002,30 +2005,39 @@ test('Real-time recursive hand-crafting queue auto-queues intermediates, complet
   for (let i = 0; i < 200; i++) engine.step(0.05);
   assert.equal(engine.craftingQueue.length, 0);
   assert.equal(engine.getPocketItemCount('automation_science'), 1, 'Completed science pack added to pocket');
+  assert.equal(
+    engine.getPocketItemCount('iron_gear'),
+    1,
+    'Surplus iron_gear (2 yielded - 1 consumed) delivered to pocket with zero loss'
+  );
 
-  // Queue 2 independent orders (4 queue items: 2x [gear -> science]) and cancel each order
+  // Queue 2 independent orders: order #1 reuses the 1 surplus iron_gear (1 queue item),
+  // order #2 recursively queues [iron_gear -> automation_science] (2 queue items) = 3 total!
   const ironBefore = engine.getPocketItemCount('iron_plate');
   const copperBefore = engine.getPocketItemCount('copper_plate');
   const q2 = engine.enqueuePocketCraft('automation_science', 2);
   assert.equal(q2.ok, true);
-  assert.equal(engine.craftingQueue.length, 4);
-  assert.equal(engine.getPocketItemCount('iron_plate'), ironBefore - 4);
+  assert.equal(engine.craftingQueue.length, 3);
+  assert.equal(engine.getPocketItemCount('iron_gear'), 0, 'Surplus iron_gear reserved by order #1');
+  assert.equal(engine.getPocketItemCount('iron_plate'), ironBefore - 2);
   assert.equal(engine.getPocketItemCount('copper_plate'), copperBefore - 2);
 
-  // Cancel first order (gear#1 + science#1) -> leaves second order intact
+  // Cancel first order (science#1 using 1 gear + 1 copper) -> leaves second order intact
   const cancel1 = engine.cancelCraftQueueItem(engine.craftingQueue[0].uid);
   assert.equal(cancel1.ok, true);
-  assert.equal(cancel1.cancelledCount, 2);
+  assert.equal(cancel1.cancelledCount, 1);
   assert.equal(engine.craftingQueue.length, 2);
-  assert.equal(engine.getPocketItemCount('iron_plate'), ironBefore - 2);
+  assert.equal(engine.getPocketItemCount('iron_gear'), 1, 'Order #1 iron_gear refunded');
+  assert.equal(engine.getPocketItemCount('copper_plate'), copperBefore - 1);
 
-  // Cancel second order -> queue drains & 100% of raw ingredients are refunded!
+  // Cancel second order (gear#2 + science#2) -> queue drains & 100% of raw ingredients are refunded!
   const cancel2 = engine.cancelCraftQueueItem(engine.craftingQueue[0].uid);
   assert.equal(cancel2.ok, true);
   assert.equal(cancel2.cancelledCount, 2);
   assert.equal(engine.craftingQueue.length, 0);
   assert.equal(engine.getPocketItemCount('iron_plate'), ironBefore, '100% iron plates refunded on cancel');
   assert.equal(engine.getPocketItemCount('copper_plate'), copperBefore, '100% copper plates refunded on cancel');
+  assert.equal(engine.getPocketItemCount('iron_gear'), 1, 'Original surplus iron_gear preserved');
 });
 
 test('Capytorio3DRenderer centers multi-tile models cleanly and syncs Alt-Mode overlay sprites without leaks', () => {
@@ -2698,8 +2710,8 @@ test('All 10 new infrastructure buildings place with exact footprints, round-tri
     { id: 'chemical_plant', expectedW: 3, expectedH: 3, factorioName: 'chemical-plant' },
     { id: 'rail', expectedW: 1, expectedH: 1, factorioName: 'straight-rail' },
     { id: 'train_stop', expectedW: 1, expectedH: 1, factorioName: 'train-stop' },
-    { id: 'locomotive', expectedW: 2, expectedH: 1, factorioName: 'locomotive' },
-    { id: 'cargo_wagon', expectedW: 2, expectedH: 1, factorioName: 'cargo-wagon' },
+    { id: 'locomotive', expectedW: 1, expectedH: 2, factorioName: 'locomotive' },
+    { id: 'cargo_wagon', expectedW: 1, expectedH: 2, factorioName: 'cargo-wagon' },
     { id: 'roboport', expectedW: 3, expectedH: 3, factorioName: 'roboport' },
   ];
 
@@ -2715,14 +2727,14 @@ test('All 10 new infrastructure buildings place with exact footprints, round-tri
     assert.equal(fpN.width, spec.expectedW, `${spec.id} North width`);
     assert.equal(fpN.height, spec.expectedH, `${spec.id} North height`);
 
-    if (spec.expectedW === 2 && spec.expectedH === 1) {
+    if (spec.expectedW === 1 && spec.expectedH === 2) {
       const fpE = getCapytorioFootprint(
         CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[spec.id].baseType,
         spec.id,
         1
       );
-      assert.equal(fpE.width, 1, `${spec.id} East width`);
-      assert.equal(fpE.height, 2, `${spec.id} East height`);
+      assert.equal(fpE.width, 2, `${spec.id} East width`);
+      assert.equal(fpE.height, 1, `${spec.id} East height`);
     }
 
     let placed = false;
@@ -2931,8 +2943,20 @@ test('Capytorio3DRenderer constructs distinct procedural 3D meshes & ghosts for 
     const roboGroup = activeMap.get(tileKey(roboSpot.gx, roboSpot.gz));
     assert.ok(roboGroup, 'Roboport synced to activeMachineGroups');
     const drones = roboGroup.userData.roboDrones as THREE.Object3D[];
-    assert.equal(drones.length, 4);
-    assert.equal(drones.filter((d) => d.visible).length, 4, 'All 4 roboport drones visible & hovering');
+    assert.equal(drones.length, 6);
+    assert.equal(drones.filter((d) => d.visible).length, 4, '4 roboport drones visible with 4 pocket bots');
+    // Also verify adding 2 more bots activates all 6 pooled drones
+    engine.addPocketItem('construction_robot', 2);
+    renderer.sync(
+      engine,
+      capytorioGridToWorldX(18),
+      capytorioGridToWorldZ(0),
+      1 / 60,
+      2.6,
+      true,
+      40
+    );
+    assert.equal(drones.filter((d) => d.visible).length, 6, 'All 6 roboport drones visible with 6 bots');
 
     // 3. Verify all 16 CAPYTORIO_ITEM_SHAPES geometries exist, are grounded at Y = 0, and fit belt slot pitch
     assert.equal(CAPYTORIO_ITEM_SHAPES.length, 16);
@@ -3051,3 +3075,353 @@ test('Curved left and right transport belt decks, chassis, and rails have outwar
     renderer.dispose();
   }
 });
+
+test('Phase 2: Hand-crafting queue conserves items exactly on surplus, nested intermediate cancel, and mid-batch cancel', () => {
+  const engine = new CapytorioFactoryEngine();
+  // Drain existing pocket items cleanly using hydrate to an exact controlled state
+  engine.hydrate({
+    ...engine.serialize(),
+    pocketItems: { iron_plate: 10, copper_plate: 10 },
+    pocketMachines: {},
+    machines: [],
+  });
+
+  // 1. Automation science needs 1 copper_plate + 1 iron_gear (iron_gear yields 2 per 2 iron_plate -> 1 surplus iron_gear).
+  const qRes = engine.enqueuePocketCraft('automation_science', 1);
+  assert.equal(qRes.ok, true);
+  assert.equal(engine.getPocketItemCount('iron_plate'), 8, '2 iron_plate reserved for iron_gear batch');
+  assert.equal(engine.getPocketItemCount('copper_plate'), 9, '1 copper_plate reserved for automation_science');
+
+  // Complete all queued crafts
+  for (let i = 0; i < 120; i++) engine.step(0.1);
+  assert.equal(engine.getUiSnapshot().craftingQueue.length, 0);
+  assert.equal(engine.getPocketItemCount('automation_science'), 1, '1 automation_science crafted');
+  assert.equal(engine.getPocketItemCount('iron_gear'), 1, '1 surplus iron_gear delivered to pocket');
+  assert.equal(engine.getPocketItemCount('iron_plate'), 8);
+  assert.equal(engine.getPocketItemCount('copper_plate'), 9);
+
+  // 2. Queue 1 Lab machine (needs 4 iron_plate + 2 electronic_circuit -> 2 batches of copper_cable + 2 batches of electronic_circuit),
+  // complete 1 of 2 copper_cable batches, then cancel the root -> exact item mass conservation!
+  engine.hydrate({
+    ...engine.serialize(),
+    pocketItems: { iron_plate: 10, copper_plate: 10 },
+    pocketMachines: {},
+    machines: [],
+  });
+  assert.equal(engine.enqueueMachineCraft('lab', 1).ok, true);
+  // Step 4 x 0.1s = 0.4s (respecting 0.1s dt clamp) to finish 1 of 2 copper_cable batches (0.3s each)
+  for (let i = 0; i < 4; i++) engine.step(0.1);
+  const rootItem = engine.getUiSnapshot().craftingQueue.find((q) => !q.isIntermediate);
+  assert.ok(rootItem, 'Root lab still queued');
+  const cancelRes = engine.cancelCraftQueueItem(rootItem!.uid);
+  assert.equal(cancelRes.ok, true);
+  assert.equal(engine.getUiSnapshot().craftingQueue.length, 0);
+  // All iron plates must be 100% refunded; copper must be strictly conserved (10 plates = 20 cable-equivalents)
+  assert.equal(engine.getPocketItemCount('iron_plate'), 10, 'Iron plates 100% refunded');
+  assert.equal(
+    engine.getPocketItemCount('copper_plate') * 2 + engine.getPocketItemCount('copper_cable'),
+    20,
+    'Copper mass strictly conserved (10 plates = 20 cable-equivalents)'
+  );
+  assert.equal(engine.getPocketItemCount('copper_cable'), 2, 'Completed intermediate batch refunded as 2 cables');
+  assert.equal(engine.getPocketMachineCount('lab'), 0, 'No lab created on cancel');
+});
+
+test('Phase 2: feedPocketScienceToLabs completes technology immediately and fires onTechCompleted callback', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.selectActiveTech('automation_1');
+  const tech = TECH_BY_ID.get('automation_1')!;
+  const autoCost = tech.cost.automation_science ?? 10;
+  engine.addPocketItem('automation_science', autoCost);
+  // Place a functional lab on a dry tile
+  engine.hydrate({
+    ...engine.serialize(),
+    pocketMachines: { ...engine.serialize().pocketMachines, lab: 2 },
+  });
+  let placed = false;
+  for (let gx = 4; gx <= 20 && !placed; gx++) {
+    for (let gz = -6; gz <= 10 && !placed; gz++) {
+      if (engine.canFootprintFit(gx, gz, 2, 2)) {
+        placed = engine.placeMachine('lab', gx, gz, 0).ok;
+      }
+    }
+  }
+  assert.equal(placed, true);
+
+  const completed: string[] = [];
+  const fed = engine.feedPocketScienceToLabs({
+    onTechCompleted: (techId) => completed.push(techId),
+  });
+  assert.equal(fed, autoCost);
+  assert.ok(
+    engine.serialize().unlockedTechs.includes('automation_1'),
+    'Tech completed immediately without extra step()'
+  );
+  assert.deepEqual(completed, ['automation_1']);
+});
+
+test('Phase 2: Passive variant capabilities reject mismatched operations and report accurate power/status', () => {
+  const engine = new CapytorioFactoryEngine();
+  const findSpot = (w: number, h: number): [number, number] => {
+    for (let gx = 6; gx <= 28; gx++) {
+      for (let gz = -12; gz <= 16; gz++) {
+        if (engine.canFootprintFit(gx, gz, w, h)) return [gx, gz];
+      }
+    }
+    throw new Error('No dry spot found');
+  };
+
+  engine.addPocketItem('stone_wall', 2);
+  engine.addPocketItem('gun_turret', 2);
+  engine.addPocketItem('solar_panel', 2);
+  engine.addPocketItem('beacon', 2);
+  engine.addPocketItem('coal', 10);
+
+  const [wx, wz] = findSpot(1, 1);
+  assert.equal(engine.placeMachine('stone_wall', wx, wz, 0).ok, true);
+  assert.equal(engine.setChestSlotLimitAt(wx, wz, 2), false, 'Stone wall rejects chest slot limit');
+  assert.equal(engine.copyEntitySettingsAt(wx, wz).ok, false, 'Stone wall rejects copy settings');
+  const wallInfo = engine.inspectTileSnapshot(wx, wz);
+  assert.equal(wallInfo.machine?.isStorageChest, false);
+
+  const [tx, tz] = findSpot(1, 1);
+  assert.equal(engine.placeMachine('gun_turret', tx, tz, 0).ok, true);
+  assert.equal(engine.setInserterConfigAt(tx, tz, { stackLimit: 2 }), false, 'Turret rejects inserter config');
+  const turretInfo = engine.inspectTileSnapshot(tx, tz);
+  assert.equal(turretInfo.machine?.isFunctionalInserter, false);
+
+  const [sx, sz] = findSpot(2, 2);
+  assert.equal(engine.placeMachine('solar_panel', sx, sz, 0).ok, true);
+  assert.equal(engine.insertPocketFuelToGenerator(sx, sz), 0, 'Solar panel rejects fuel insertion');
+  const solarInfo = engine.inspectTileSnapshot(sx, sz);
+  assert.equal(solarInfo.machine?.isFuelGenerator, false);
+  assert.equal(solarInfo.machine?.status, 'Working');
+  assert.ok((solarInfo.machine?.powerSupplyMw ?? 0) > 0);
+
+  const [bx, bz] = findSpot(2, 2);
+  assert.equal(engine.placeMachine('beacon', bx, bz, 0).ok, true);
+  const beaconInfo = engine.inspectTileSnapshot(bx, bz);
+  assert.equal(beaconInfo.machine?.isResearchLab, false);
+  assert.ok((beaconInfo.machine?.powerDemandMw ?? 0) > 0);
+});
+
+test('Phase 2: Underground tunnel preserves lane and does not spill from hood when paired exit is full; opposing belts reject head-on merge', () => {
+  const engine = new CapytorioFactoryEngine();
+  engine.hydrate({
+    ...engine.serialize(),
+    pocketMachines: { ...engine.serialize().pocketMachines, tunnel: 4, belt: 4 },
+  });
+  let rowGx = 8;
+  let rowGz = 0;
+  outer: for (let gz = -10; gz <= 10; gz++) {
+    for (let gx = 4; gx <= 20; gx++) {
+      if (
+        engine.canFootprintFit(gx, gz, 1, 1) &&
+        engine.canFootprintFit(gx + 1, gz, 1, 1) &&
+        engine.canFootprintFit(gx + 2, gz, 1, 1) &&
+        engine.canFootprintFit(gx + 3, gz, 1, 1)
+      ) {
+        rowGx = gx;
+        rowGz = gz;
+        break outer;
+      }
+    }
+  }
+
+  // Place East-facing (dir=1) entrance tunnel at (rowGx, rowGz), exit at (rowGx + 2, rowGz),
+  // and receiving output belt at (rowGx + 3, rowGz) + a middle belt at (rowGx + 1, rowGz) to prove no front-hood spill
+  assert.equal(engine.placeMachine('tunnel', rowGx, rowGz, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', rowGx + 1, rowGz, 1).ok, true);
+  assert.equal(engine.placeMachine('tunnel', rowGx + 2, rowGz, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', rowGx + 3, rowGz, 1).ok, true);
+  const entry = engine.getMachineAt(rowGx, rowGz)!;
+  const middleBelt = engine.getMachineAt(rowGx + 1, rowGz)!;
+  const afterExitBelt = engine.getMachineAt(rowGx + 3, rowGz)!;
+  // Place a single item on right lane (lane = 1) at entrance
+  entry.beltItems.push({ item: 'iron_ore', progress: 0.96, lane: 1 });
+  engine.step(0.15);
+  assert.equal(afterExitBelt.beltItems.length, 1, 'Item warped through underground tunnel to belt after exit');
+  assert.equal(afterExitBelt.beltItems[0].lane, 1, 'Right lane preserved across underground tunnel');
+  assert.equal(middleBelt.beltItems.length, 0, 'Middle belt untouched during underground warp');
+
+  // Fill afterExitBelt completely on lane 1 so warp is blocked; item must wait instead of ejecting onto middleBelt!
+  for (let i = 0; i < 6; i++) {
+    afterExitBelt.beltItems.push({ item: 'copper_ore', progress: 0.05 + i * 0.16, lane: 1 });
+  }
+  entry.beltItems.push({ item: 'iron_plate', progress: 0.98, lane: 1 });
+  engine.step(0.2);
+  assert.equal(
+    middleBelt.beltItems.length,
+    0,
+    'Paired entrance tunnel does not spill onto middle tile when exit target is full'
+  );
+  assert.equal(entry.beltItems.length, 1, 'Blocked item waits safely in entrance tunnel');
+
+  // Opposing head-on belts reject transfer
+  const bGx = rowGx;
+  const bGz = rowGz + 2;
+  if (engine.canFootprintFit(bGx, bGz, 1, 1) && engine.canFootprintFit(bGx + 1, bGz, 1, 1)) {
+    assert.equal(engine.placeMachine('belt', bGx, bGz, 1).ok, true); // East
+    assert.equal(engine.placeMachine('belt', bGx + 1, bGz, 3).ok, true); // West (head-on)
+    const eastBelt = engine.getMachineAt(bGx, bGz)!;
+    const westBelt = engine.getMachineAt(bGx + 1, bGz)!;
+    eastBelt.beltItems.push({ item: 'coal', progress: 0.99, lane: 0 });
+    engine.step(0.2);
+    assert.equal(westBelt.beltItems.length, 0, 'Head-on opposing belt rejects incoming item');
+  }
+});
+
+test('Phase 2: Drag placement allows offshore_pump on water, getUiSnapshot is read-only, and undo preserves modules & checks footprint', () => {
+  const engine = new CapytorioFactoryEngine();
+
+  // 1. Offshore pump drag placement on water tile
+  let waterSpot: [number, number] | null = null;
+  for (let gx = -26; gx <= 26 && !waterSpot; gx++) {
+    for (let gz = -26; gz <= 26 && !waterSpot; gz++) {
+      if (isCapytorioWaterTerrain(sampleCapytorioTerrain(gx, gz)) && !engine.getMachineAt(gx, gz)) {
+        waterSpot = [gx, gz];
+      }
+    }
+  }
+  assert.ok(waterSpot, 'Found a water tile on the Capytorio meadow');
+  engine.addPocketItem('offshore_pump', 2);
+  const dragRes = engine.placeMachineDuringDrag('offshore_pump', waterSpot![0], waterSpot![1], null, null);
+  assert.equal(dragRes.ok, true, 'placeMachineDuringDrag succeeds for offshore_pump on water');
+
+  // 2. getUiSnapshot is strictly read-only on milestones and score
+  const beforeSer = engine.serialize();
+  const scoreBefore = beforeSer.score ?? 0;
+  const completedBefore = beforeSer.completedMilestones?.length ?? 0;
+  // Give enough iron_plate to trigger an uncompleted milestone if getUiSnapshot were mutating
+  engine.addPocketItem('iron_plate', 500);
+  engine.getUiSnapshot();
+  const afterSer = engine.serialize();
+  assert.equal(afterSer.score ?? 0, scoreBefore, 'getUiSnapshot does not mutate score');
+  assert.equal(
+    afterSer.completedMilestones?.length ?? 0,
+    completedBefore,
+    'getUiSnapshot does not mutate completedMilestones'
+  );
+
+  // 3. Undo/redo preserves socketed modules and machine integrity
+  let spot: [number, number] | null = null;
+  for (let gx = 6; gx <= 24 && !spot; gx++) {
+    for (let gz = -10; gz <= 10 && !spot; gz++) {
+      if (engine.canFootprintFit(gx, gz, 2, 2)) spot = [gx, gz];
+    }
+  }
+  assert.ok(spot);
+  engine.hydrate({
+    ...engine.serialize(),
+    pocketMachines: { ...engine.serialize().pocketMachines, assembler: 2 },
+  });
+  engine.addPocketItem('speed_module', 2);
+  assert.equal(engine.placeMachine('assembler', spot![0], spot![1], 0).ok, true);
+  assert.equal(engine.installModuleOnMachine(spot![0], spot![1], 'speed_module').ok, true);
+  const asm = engine.getMachineAt(spot![0], spot![1])!;
+  asm.integrity = 0.72;
+  assert.equal(engine.demolishAt(spot![0], spot![1]), 'assembler');
+  assert.equal(engine.undoLastAction().ok, true);
+  const restored = engine.getMachineAt(spot![0], spot![1])!;
+  assert.deepEqual(restored.modules, ['speed_module'], 'Undo restores socketed modules');
+  assert.ok(Math.abs((restored.integrity ?? 1) - 0.72) < 1e-6, 'Undo restores machine integrity');
+});
+
+test('Phase 2: Save hydration sanitizes corrupted data, Factorio codec pairs tunnels, Lua parser handles concat/index/not, and Pedia matches CapytorioData', async () => {
+  // 1. Save hydration sanitization
+  const engine = new CapytorioFactoryEngine();
+  const sanitized = sanitizeCapytorioState({
+    version: 1,
+    score: Number.NaN,
+    techDelivered: -99,
+    activeTechId: 'nonexistent_tech',
+    machines: [
+      {
+        id: 1,
+        type: 'chest',
+        variantItemId: 'solar_panel', // mismatched baseType ('generator' != 'chest')
+        gx: 10,
+        gz: 0,
+        dir: 0,
+        tierMult: -5,
+        modules: ['speed_module', 'invalid_mod', 'speed_module', 'speed_module', 'speed_module'],
+        beltItems: [{ item: 'iron_ore', progress: 99, lane: 0 }],
+        inputBuffer: { iron_ore: -10, copper_ore: 3 },
+        outputBuffer: { iron_plate: Number.NaN, copper_plate: 2 },
+      },
+      {
+        id: 2,
+        type: 'belt',
+        gx: 10,
+        gz: 0, // overlapping footprint with machine 1!
+        dir: 1,
+      },
+    ],
+  });
+  assert.ok(sanitized);
+  engine.hydrate(sanitized!);
+  assert.equal(engine.serialize().techDelivered.red_science ?? 0, 0, 'Negative techDelivered sanitized');
+  assert.equal(engine.machines.size, 1, 'Overlapping duplicate machine skipped during hydration');
+  const hydrated = engine.getMachineAt(10, 0)!;
+  assert.equal(hydrated.variantItemId, undefined, 'Mismatched variantItemId cleared');
+  assert.equal(hydrated.tierMult, 1, 'Invalid negative tierMult clamped');
+  assert.equal(hydrated.modules?.length ?? 0, 0, 'Chest has 0 module slots so invalid modules stripped');
+  assert.equal(hydrated.beltItems[0].progress, 1, 'Belt progress clamped to [0, 1]');
+  assert.equal(hydrated.inputBuffer.iron_ore, undefined, 'Negative inputBuffer entry dropped');
+  assert.equal(hydrated.inputBuffer.copper_ore, 3);
+  assert.equal(hydrated.outputBuffer.copper_plate, 2);
+
+  // 2. Factorio Blueprint Codec tunnel input/output pairing
+  const encoded = await encodeFactorioBlueprintString({
+    label: 'Tunnel Pair Test',
+    entries: [
+      { toolId: 'tunnel', baseType: 'tunnel', dx: 0, dz: 0, dir: 1 },
+      { toolId: 'tunnel', baseType: 'tunnel', dx: 3, dz: 0, dir: 1 },
+    ],
+  });
+  const decoded = await decodeFactorioBlueprintString(encoded);
+  assert.equal(decoded.ok, true);
+  assert.equal(decoded.blueprints[0].entries.length, 2);
+
+  // 3. Lua parser: concatenation, bracket indexing, unary not, and 1..2 tokenization
+  const parsed = parseCapytorioLuaCatalog(
+    `
+    data:extend({
+      {
+        type = "recipe",
+        name = "test-" .. "widget-" .. 1..2,
+        energy_required = 1.5,
+        enabled = not false,
+        ingredients = { { type = "item", name = "iron-plate", amount = 2 } },
+        results = { { type = "item", name = "test-" .. "widget-" .. 1..2, amount = 1 } }
+      }
+    })
+    `,
+    `data:extend({})`
+  );
+  const widgetRecipe = parsed.recipes.find((r) => r.id === 'test_widget_12');
+  assert.ok(widgetRecipe, 'Parsed recipe name with .. string concat and 1..2 numeric concat');
+  assert.equal(widgetRecipe!.unlockedByDefault, true, 'enabled = not false keeps recipe unlocked');
+
+  // 4. CapytorioPedia derives module, beacon, and fuel text from CapytorioData constants
+  const speedEntry = getCapytorioPediaEntry('speed_module');
+  assert.ok(speedEntry);
+  assert.ok(
+    speedEntry.description.includes(`+${Math.round(CAPYTORIO_MODULE_EFFECTS.speed_module.speedDelta * 100)}%`),
+    'Pedia speed_module description matches CAPYTORIO_MODULE_EFFECTS'
+  );
+  const beaconEntry = getCapytorioPediaEntry('beacon');
+  assert.ok(beaconEntry);
+  assert.ok(
+    beaconEntry.description.includes(`within ${CAPYTORIO_BEACON_SPEC.rangeTiles} tiles`),
+    'Pedia beacon description matches CAPYTORIO_BEACON_SPEC'
+  );
+  const coalEntry = getCapytorioPediaEntry('coal');
+  assert.ok(coalEntry);
+  const coalFuelStat = coalEntry.stats.find((s) => s.label === 'Fuel');
+  assert.ok(
+    coalFuelStat?.value.includes(`${CAPYTORIO_FUEL_BURN_SECONDS.coal.toFixed(1)}s burn`),
+    'Pedia coal Fuel stat matches CAPYTORIO_FUEL_BURN_SECONDS'
+  );
+});
+

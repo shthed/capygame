@@ -51,11 +51,23 @@ import {
   type IndirectDrawBatchSpec,
   type VolumetricShaftProjection,
 } from './gpu/GpuCullingAndClusterMath';
+import { DEFAULT_GPU_PIPELINE_CONFIG } from './gpu/GpuEngineTypes';
 import { HardwareGpuEngine } from './gpu/HardwareGpuEngine';
-import { computeEffectivePixelRatio } from './gpu/FramePerformanceGovernor';
+import {
+  PerformanceLogTracker,
+  computeAdaptiveGpuMitigation,
+  computeEffectivePixelRatio,
+  type AdaptiveGpuMitigationResult,
+} from './gpu/FramePerformanceGovernor';
+import { PerformanceProfiler } from './gpu/PerformanceProfiler';
+import { AaaWorldVfxEngine } from './gpu/AaaWorldVfxEngine';
 import { PbrTextureSynthesizer } from './gpu/PbrTextureSynthesizer';
 import { disposeObject3DTree } from './gpu/ThreeDisposal';
-import { installSightlineEdgeFadeShader } from './RealisticWorldEnvironment';
+import { createSpacetimeManifoldMaterial } from './UniverseShaders';
+import {
+  RealisticWorldEnvironment,
+  installSightlineEdgeFadeShader,
+} from './RealisticWorldEnvironment';
 import { createLiveTelemetryStore } from '../components/TelemetryReadout';
 
 test('Flight throttle gears & 3-button media controls (Fast Forward, Play/Pause, Rewind) run slow and steady', () => {
@@ -869,6 +881,394 @@ test('LiveTelemetryStore publishes telemetry snapshots to subscribers cleanly wi
   assert.equal(calls, 1, 'Unsubscribed listener is no longer notified');
   assert.equal(store.getSnapshot().primaryValue, '13 machines');
 });
+
+test('Phase 1 P0 Disposal: disposeObject3DTree preserves sharedAsset, disposes renderable root, InstancedMesh, extended PBR maps & ShaderMaterial uniforms', () => {
+  // 1. Shared geometry, material, and texture must NOT be disposed
+  const sharedGeo = new THREE.BoxGeometry(1, 1, 1);
+  sharedGeo.userData.sharedAsset = true;
+  let sharedGeoDisposed = 0;
+  sharedGeo.dispose = () => { sharedGeoDisposed++; };
+
+  const sharedTex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  sharedTex.userData.sharedAsset = true;
+  let sharedTexDisposed = 0;
+  sharedTex.dispose = () => { sharedTexDisposed++; };
+
+  const sharedMat = new THREE.MeshStandardMaterial({ map: sharedTex });
+  sharedMat.userData.sharedAsset = true;
+  let sharedMatDisposed = 0;
+  sharedMat.dispose = () => { sharedMatDisposed++; };
+
+  const sharedMesh = new THREE.Mesh(sharedGeo, sharedMat);
+  disposeObject3DTree(sharedMesh);
+  assert.equal(sharedGeoDisposed, 0, 'shared geometry must survive disposal');
+  assert.equal(sharedMatDisposed, 0, 'shared material must survive disposal');
+  assert.equal(sharedTexDisposed, 0, 'shared texture must survive disposal');
+
+  // 2. Renderable root Mesh/InstancedMesh itself MUST be disposed, including extended PBR maps & ShaderMaterial uniform textures
+  const envTex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const lightTex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const dispTex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const uniformTex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  let envDisposed = 0;
+  let lightDisposed = 0;
+  let dispDisposed = 0;
+  let uniformDisposed = 0;
+  envTex.dispose = () => { envDisposed++; };
+  lightTex.dispose = () => { lightDisposed++; };
+  dispTex.dispose = () => { dispDisposed++; };
+  uniformTex.dispose = () => { uniformDisposed++; };
+
+  const pbrMat = new THREE.MeshStandardMaterial({
+    envMap: envTex,
+    lightMap: lightTex,
+    displacementMap: dispTex,
+  });
+  const instGeo = new THREE.BoxGeometry(1, 1, 1);
+  let instGeoDisposed = 0;
+  instGeo.dispose = () => { instGeoDisposed++; };
+  let instMeshDisposed = 0;
+  const instMesh = new THREE.InstancedMesh(instGeo, pbrMat, 4);
+  instMesh.dispose = () => { instMeshDisposed++; return instMesh; };
+
+  const shaderMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uCustomMap: { value: uniformTex },
+      uSharedMap: { value: sharedTex },
+    },
+  });
+  const shaderMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), shaderMat);
+  instMesh.add(shaderMesh);
+
+  disposeObject3DTree(instMesh);
+  assert.equal(instMeshDisposed, 1, 'InstancedMesh root itself is disposed');
+  assert.equal(instGeoDisposed, 1, 'InstancedMesh geometry is disposed');
+  assert.equal(envDisposed, 1, 'envMap is disposed');
+  assert.equal(lightDisposed, 1, 'lightMap is disposed');
+  assert.equal(dispDisposed, 1, 'displacementMap is disposed');
+  assert.equal(uniformDisposed, 1, 'unshared ShaderMaterial uniform texture is disposed');
+  assert.equal(sharedTexDisposed, 0, 'shared ShaderMaterial uniform texture is preserved');
+});
+
+test('Phase 1 P0 Geometry Winding: ribbed fruit has outward normals & positive signed volume; alpine mountains face upward (+Y)', () => {
+  const fruitGeo = RealisticWorldEnvironment.getUnitRibbedFruitGeometry();
+  assert.equal(fruitGeo.userData.sharedAsset, true, 'Unit ribbed fruit geometry is marked sharedAsset');
+
+  const pos = fruitGeo.getAttribute('position') as THREE.BufferAttribute;
+  const norm = fruitGeo.getAttribute('normal') as THREE.BufferAttribute;
+  const idx = fruitGeo.getIndex()!;
+
+  // Compute signed volume = sum(v0 · (v1 x v2)) / 6; outward CCW winding => positive signed volume
+  const v0 = new THREE.Vector3();
+  const v1 = new THREE.Vector3();
+  const v2 = new THREE.Vector3();
+  const cross = new THREE.Vector3();
+  let signedVol6 = 0;
+  for (let i = 0; i < idx.count; i += 3) {
+    v0.fromBufferAttribute(pos, idx.getX(i));
+    v1.fromBufferAttribute(pos, idx.getX(i + 1));
+    v2.fromBufferAttribute(pos, idx.getX(i + 2));
+    cross.crossVectors(v1, v2);
+    signedVol6 += v0.dot(cross);
+  }
+  assert.ok(signedVol6 / 6 > 1.0, `Expected positive outward signed volume for ribbed fruit, got ${(signedVol6 / 6).toFixed(4)}`);
+
+  // Verify vertex normals point outward from origin
+  let outwardCount = 0;
+  for (let i = 0; i < pos.count; i++) {
+    const dot =
+      pos.getX(i) * norm.getX(i) +
+      pos.getY(i) * norm.getY(i) +
+      pos.getZ(i) * norm.getZ(i);
+    if (dot > 0) outwardCount++;
+  }
+  assert.ok(outwardCount / pos.count > 0.95, `Expected outward vertex normals on ribbed fruit (${outwardCount}/${pos.count})`);
+
+  // Alpine mountain ring must have upward-facing (+Y) normals so inner slopes are not backface-culled
+  const mtnGeo = RealisticWorldEnvironment.buildAlpineMountainGeometry(24);
+  const mtnNorm = mtnGeo.getAttribute('normal') as THREE.BufferAttribute;
+  let sumNy = 0;
+  for (let i = 0; i < mtnNorm.count; i++) {
+    sumNy += mtnNorm.getY(i);
+  }
+  assert.ok(sumNy / mtnNorm.count > 0.3, `Expected upward (+Y) average normal on alpine mountain ring, got ${(sumNy / mtnNorm.count).toFixed(4)}`);
+  mtnGeo.dispose();
+});
+
+test('Phase 1 P0 Scale & PhysicsWorldBridge: dt<=0 guards, tuning sanitization, and sweeper hammer tangential impulse sign', () => {
+  // 1. stepSteadyLogScaleTowardTarget returns currentLog (not targetLog) on dt<=0 or NaN
+  assert.equal(stepSteadyLogScaleTowardTarget(12.5, 5.0, 0), 12.5);
+  assert.equal(stepSteadyLogScaleTowardTarget(12.5, 5.0, -0.5), 12.5);
+  assert.equal(stepSteadyLogScaleTowardTarget(12.5, 5.0, Number.NaN), 12.5);
+  assert.equal(stepSteadyLogScaleTowardTarget(5.0002, 5.0, 0.016), 5.0);
+
+  // 2. PhysicsWorldBridge guards NaN/<=0 dt and NaN tuning values
+  const bridge = new PhysicsWorldBridge();
+  bridge.setPhysicsTuning({
+    seesawStiffnessScale: Number.NaN,
+    waterWaveSpeedScale: Number.POSITIVE_INFINITY,
+    fluidViscosityScale: Number.NaN,
+    trampolineBoostMultiplier: Number.NaN,
+  });
+
+  const noopRes = bridge.stepContiguousCharacterAndWorld(
+    {
+      wx: 2,
+      wy: 0.5,
+      wz: 3,
+      vx: 1,
+      vy: 0,
+      vz: -1,
+      desiredMoveVx: 4,
+      desiredMoveVz: 4,
+      radius: 0.68,
+      halfHeight: 0.55,
+      jumpImpulseY: 0,
+      gravityScale: 1,
+      dt: Number.NaN,
+    },
+    0,
+    []
+  );
+  assert.equal(noopRes.wx, 2);
+  assert.equal(noopRes.wz, 3);
+  assert.equal(noopRes.ccdSubsteps, 0);
+
+  // 3. Sweeper hammer tangential impulse obeys right-handed omega x r = omega * proj * (dirZ, -dirX)
+  // Hammer at (0, 0), angleY = 0 => arm axis dir = (1, 0), angularSpeed = +3.0 rad/s (CCW around +Y)
+  // At +X end (proj = +3.0, player at (3.0, 0.5, 0.1)): omega x (+3, 0, 0) = (0, 0, -9) => impZ < 0
+  const hitPosArm = bridge.stepContiguousCharacterAndWorld(
+    {
+      wx: 3.0,
+      wy: 0.5,
+      wz: 0.1,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      desiredMoveVx: 0,
+      desiredMoveVz: 0,
+      radius: 0.68,
+      halfHeight: 0.55,
+      jumpImpulseY: 0,
+      gravityScale: 1,
+      dt: 0.016,
+    },
+    0,
+    [{ wx: 0, wz: 0, angleY: 0, angularSpeed: 3.0, halfLen: 5.0 }]
+  );
+  const posArmImpZ = hitPosArm.hammerImpulseZ;
+  // At -X end (proj = -3.0, player at (-3.0, 0.5, -0.1)): omega x (-3, 0, 0) = (0, 0, +9) => impZ > 0
+  const hitNegArm = bridge.stepContiguousCharacterAndWorld(
+    {
+      wx: -3.0,
+      wy: 0.5,
+      wz: -0.1,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      desiredMoveVx: 0,
+      desiredMoveVz: 0,
+      radius: 0.68,
+      halfHeight: 0.55,
+      jumpImpulseY: 0,
+      gravityScale: 1,
+      dt: 0.016,
+    },
+    0,
+    [{ wx: 0, wz: 0, angleY: 0, angularSpeed: 3.0, halfLen: 5.0 }]
+  );
+  const negArmImpZ = hitNegArm.hammerImpulseZ;
+
+  assert.ok(posArmImpZ < -2.0, `Expected -Z tangential impulse on +X arm, got ${posArmImpZ}`);
+  assert.ok(negArmImpZ > 2.0, `Expected +Z tangential impulse on -X arm, got ${negArmImpZ}`);
+  bridge.dispose();
+});
+
+test('Phase 3: PerformanceLogTracker.recordFrame and computeAdaptiveGpuMitigation reuse scratch buffers with zero per-frame allocation', () => {
+  const tracker = new PerformanceLogTracker(1000);
+  const firstRef = tracker.recordFrame(8, 16.6, false, 'Sanctuary', 1016);
+  const secondRef = tracker.recordFrame(9, 16.6, false, 'Sanctuary', 1032);
+  // Drain warmup (4 frames) and verify steady-state call returns identical object reference
+  tracker.recordFrame(9, 16.6, false, 'Sanctuary', 1048);
+  tracker.recordFrame(9, 16.6, false, 'Sanctuary', 1064);
+  const steadyRef = tracker.recordFrame(12, 16.6, false, 'Sanctuary', 1080);
+  assert.strictEqual(firstRef, secondRef, 'Warmup recordFrame reuses scratch object');
+  assert.strictEqual(firstRef, steadyRef, 'Steady-state recordFrame reuses exact same scratch object');
+
+  const out: AdaptiveGpuMitigationResult = {
+    level: 0,
+    postProcessingEnabled: true,
+    ssaoEnabled: true,
+    bloomEnabled: true,
+    shadowQuality: 'pcf_soft',
+    antiAliasing: 'msaa_fxaa',
+    resolutionScale: 1,
+    maxCapyLodTier: 3,
+    disabledFeatures: [],
+  };
+  const featuresArrRef = out.disabledFeatures;
+  const res1 = computeAdaptiveGpuMitigation(DEFAULT_GPU_PIPELINE_CONFIG, true, 3, 4, out);
+  assert.strictEqual(res1, out);
+  assert.strictEqual(res1.disabledFeatures, featuresArrRef, 'Reuses out.disabledFeatures array');
+  assert.ok(res1.disabledFeatures.length > 0);
+  computeAdaptiveGpuMitigation(DEFAULT_GPU_PIPELINE_CONFIG, true, 3, 0, out);
+  assert.strictEqual(out.disabledFeatures, featuresArrRef, 'Resets and reuses out.disabledFeatures at tier 0');
+  assert.equal(out.disabledFeatures.length, 0);
+});
+
+test('Phase 3: PerformanceProfiler O(1) phase lookup and WebGLQuery dispose()', () => {
+  const profiler = new PerformanceProfiler(1000);
+  profiler.setEnabled(true);
+  const deletedQueries: unknown[] = [];
+  const fakeActive = { id: 'qActive' };
+  const fakePending = { id: 'qPending' };
+  const pPriv = profiler as unknown as {
+    glContext: { deleteQuery: (q: unknown) => void } | null;
+    queryActive: unknown;
+    queryPending: unknown;
+  };
+  pPriv.glContext = { deleteQuery: (q: unknown) => deletedQueries.push(q) };
+  pPriv.queryActive = fakeActive;
+  pPriv.queryPending = fakePending;
+
+  profiler.beginFrame();
+  profiler.startPhase('gpu_render_submit');
+  profiler.endPhase('gpu_render_submit');
+  profiler.endFrame();
+  const snap = profiler.getTelemetrySnapshot();
+  assert.ok(snap.modules.some((m) => m.id === 'gpu_render_submit'));
+
+  profiler.dispose();
+  assert.deepEqual(deletedQueries, [fakeActive, fakePending], 'dispose() deletes active and pending WebGLQuery handles');
+  assert.equal(pPriv.glContext, null);
+  assert.equal(pPriv.queryActive, null);
+  assert.equal(pPriv.queryPending, null);
+});
+
+test('Phase 3: HardwareGpuEngine updates uTexelSize without FXAA, resizes bloom via setSize, preserves camera layers, and cleans up scene on dispose', () => {
+  const mockRenderer = {
+    domElement: {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    },
+    capabilities: { isWebGL2: true, maxTextureSize: 4096, getMaxAnisotropy: () => 8 },
+    getContext: () => ({
+      RENDERER: 0x1f01,
+      getExtension: () => null,
+      getParameter: () => 'Mock Hardware GL',
+    }),
+    getPixelRatio: () => 2,
+    setPixelRatio: () => {},
+    setSize: () => {},
+    setRenderTarget: () => {},
+    render: () => {},
+    shadowMap: { enabled: false, autoUpdate: false, type: THREE.PCFSoftShadowMap, needsUpdate: false },
+    toneMapping: THREE.ACESFilmicToneMapping,
+    toneMappingExposure: 1.0,
+    autoClear: true,
+    autoClearColor: true,
+    autoClearDepth: true,
+    info: { render: { calls: 0, triangles: 0 }, memory: { textures: 0, geometries: 0 } },
+  } as unknown as THREE.WebGLRenderer;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 1000);
+  camera.layers.enable(1); // Non-default mask (layers 0 + 1)
+  const expectedMask = camera.layers.mask;
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+  let shadowMapDisposed = 0;
+  sunLight.shadow.map = { dispose: () => { shadowMapDisposed++; } } as unknown as THREE.WebGLRenderTarget;
+  scene.add(sunLight);
+
+  const engine = new HardwareGpuEngine(mockRenderer, scene, camera, sunLight, true, 1000, 500, {
+    qualityPreset: 'balanced',
+    postProcessingEnabled: false,
+  });
+
+  const priv = engine as unknown as {
+    fxaaPass: null;
+    masterFilterPass: { uniforms: Record<string, { value: THREE.Vector2 }> } | null;
+    bloomPass: { setSize: (w: number, h: number) => void } | null;
+    rimLight: THREE.DirectionalLight;
+    heroContactShadowMesh: THREE.Mesh;
+  };
+
+  let bloomSetSizeArgs: [number, number] | null = null;
+  const texelVec = new THREE.Vector2(0, 0);
+  priv.fxaaPass = null;
+  priv.masterFilterPass = {
+    uniforms: {
+      tDepth: { value: null },
+      uHasDepth: { value: 0 },
+      uCameraNear: { value: 0.1 },
+      uCameraFar: { value: 1000 },
+      uSsaoStrength: { value: 0 },
+      uSharpen: { value: 0 },
+      uSaturation: { value: 1 },
+      uContrast: { value: 1 },
+      uLift: { value: 0 },
+      uGamma: { value: 1 },
+      uTint: { value: new THREE.Vector3(1, 1, 1) },
+      uVignette: { value: 0 },
+      uChromatic: { value: 0 },
+      uScanlines: { value: 0 },
+      uTexelSize: { value: texelVec },
+    } as unknown as Record<string, { value: THREE.Vector2 }>,
+  };
+  priv.bloomPass = { setSize: (w: number, h: number) => { bloomSetSizeArgs = [w, h]; } };
+
+  engine.handleResize(800, 400);
+  assert.ok(bloomSetSizeArgs !== null, 'handleResize invokes bloomPass.setSize(...)');
+  assert.ok(Math.abs(texelVec.x - 1 / 1600) < 1e-6, 'uTexelSize updated even when fxaaPass is null');
+  assert.ok(Math.abs(texelVec.y - 1 / 800) < 1e-6);
+
+  // Crisp overlay pass preserves arbitrary camera layer masks
+  engine.setCrispOverlayActive(true);
+  engine.render();
+  assert.equal(camera.layers.mask, expectedMask, 'renderCrispOverlayPass restores prior camera.layers.mask');
+
+  // Clear mock passes before dispose so dispose() doesn't call .dispose() on mock objects
+  priv.masterFilterPass = null;
+  priv.bloomPass = null;
+  engine.dispose();
+  assert.equal(shadowMapDisposed, 1, 'dispose() frees sunLight.shadow.map');
+  assert.equal(priv.rimLight.parent, null, 'dispose() removes rimLight from scene');
+  assert.equal(priv.heroContactShadowMesh.parent, null, 'dispose() removes heroContactShadowMesh from scene');
+});
+
+test('Phase 3: AaaWorldVfxEngine preserves disabled motes visibility and guards zero sunDirection; shaders and __sourceGeometry dispose safely', () => {
+  const vfxScene = new THREE.Scene();
+  const vfx = new AaaWorldVfxEngine(vfxScene, false, 1, false);
+  const vfxPriv = vfx as unknown as {
+    motesPoints: THREE.Points;
+    godRayGroup: THREE.Group;
+  };
+  assert.equal(vfxPriv.motesPoints.visible, false);
+  vfx.update(0.016, 1.0, 0, 1, 0, new THREE.Vector3(0, 0, 0), 0, 0, true, false);
+  assert.equal(vfxPriv.motesPoints.visible, false, 'update() never re-enables disabled motesPoints');
+  for (const child of vfxPriv.godRayGroup.children) {
+    assert.ok(Number.isFinite(child.quaternion.x) && Number.isFinite(child.quaternion.w), 'Zero sun vector yields finite god-ray quaternion');
+  }
+  vfx.dispose();
+
+  const manifoldMat = createSpacetimeManifoldMaterial();
+  assert.ok(manifoldMat.fragmentShader.includes('max(fwidth('), 'Spacetime manifold guards fwidth against zero division');
+  assert.ok(manifoldMat.fragmentShader.includes('x = max(x, vec3(0.0))'), 'acesToneMap clamps negative HDR inputs');
+  manifoldMat.dispose();
+
+  // Verify __sourceGeometry cleanup in disposeObject3DTree
+  const group = new THREE.Group();
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial());
+  const srcGeo = new THREE.BufferGeometry();
+  let srcGeoDisposed = 0;
+  srcGeo.dispose = () => { srcGeoDisposed++; };
+  sprite.userData.__sourceGeometry = srcGeo;
+  group.add(sprite);
+  disposeObject3DTree(group);
+  assert.equal(srcGeoDisposed, 1, 'disposeObject3DTree disposes unshared __sourceGeometry');
+});
+
+
 
 
 

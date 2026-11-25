@@ -149,7 +149,7 @@ const parseArguments = () => {
   return options;
 };
 
-const PROTECTED_ROOT_DIRS = new Set(['.git', 'pull', 'assets', 'icons', 'docs', '.well-known', 'web1']);
+const PROTECTED_ROOT_DIRS = new Set(['.git', 'pull', 'assets', 'data', 'icons', 'docs', '.well-known', 'web1']);
 
 const findLegacyPreviewDirectories = (rootDir) => {
   const entries = fs.readdirSync(rootDir, { withFileTypes: true });

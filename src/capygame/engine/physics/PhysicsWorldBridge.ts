@@ -118,6 +118,12 @@ export class PhysicsWorldBridge {
         this.transportMode = 'transferable_worker';
       }
 
+      if (!this.pingPongBuf) {
+        this.pingPongBuf = new Float32Array(PHYSICS_SAB_FLOAT_COUNT);
+      }
+      this.workerInFlight = false;
+      this.workerReady = false;
+
       this.worker = new Worker(new URL('./physics.worker.ts', import.meta.url), {
         type: 'module',
       });
@@ -150,6 +156,24 @@ export class PhysicsWorldBridge {
         }
       };
 
+      this.worker.onerror = () => {
+        if (this.worker) {
+          this.worker.onmessage = null;
+          this.worker.onerror = null;
+          try {
+            this.worker.terminate();
+          } catch {
+            // Ignore termination error on crashed worker
+          }
+          this.worker = null;
+        }
+        this.workerReady = false;
+        this.workerInFlight = false;
+        if (!this.pingPongBuf) {
+          this.pingPongBuf = new Float32Array(PHYSICS_SAB_FLOAT_COUNT);
+        }
+      };
+
       this.worker.postMessage({
         type: 'init',
         sharedBuffer: this.sab ?? undefined,
@@ -160,6 +184,8 @@ export class PhysicsWorldBridge {
       });
     } catch {
       this.worker = null;
+      this.workerReady = false;
+      this.workerInFlight = false;
     }
   }
 
@@ -173,16 +199,16 @@ export class PhysicsWorldBridge {
     fluidViscosityScale?: number;
     trampolineBoostMultiplier?: number;
   }): void {
-    if (typeof opts.seesawStiffnessScale === 'number') {
+    if (typeof opts.seesawStiffnessScale === 'number' && Number.isFinite(opts.seesawStiffnessScale)) {
       this.seesawStiffnessScale = Math.max(0.25, Math.min(3.0, opts.seesawStiffnessScale));
     }
-    if (typeof opts.waterWaveSpeedScale === 'number') {
+    if (typeof opts.waterWaveSpeedScale === 'number' && Number.isFinite(opts.waterWaveSpeedScale)) {
       this.waterWaveSpeedScale = Math.max(0.2, Math.min(3.5, opts.waterWaveSpeedScale));
     }
-    if (typeof opts.fluidViscosityScale === 'number') {
+    if (typeof opts.fluidViscosityScale === 'number' && Number.isFinite(opts.fluidViscosityScale)) {
       this.fluidViscosityScale = Math.max(0.1, Math.min(3.0, opts.fluidViscosityScale));
     }
-    if (typeof opts.trampolineBoostMultiplier === 'number') {
+    if (typeof opts.trampolineBoostMultiplier === 'number' && Number.isFinite(opts.trampolineBoostMultiplier)) {
       this.trampolineBoostMultiplier = Math.max(0.5, Math.min(2.5, opts.trampolineBoostMultiplier));
     }
   }
@@ -240,6 +266,34 @@ export class PhysicsWorldBridge {
     hammerSpecs: Array<{ wx: number; wz: number; angleY: number; angularSpeed: number; halfLen: number }>
   ): CharacterStepResult {
     const tStart = performance.now();
+    if (!Number.isFinite(input.dt) || input.dt <= 0) {
+      const groundY = sampleContiguousGroundY(
+        input.wx,
+        input.wz,
+        this.homePoolSpec,
+        this.seeSawTilt0
+      );
+      _charStepOut.wx = input.wx;
+      _charStepOut.wy = input.wy;
+      _charStepOut.wz = input.wz;
+      _charStepOut.vx = input.vx;
+      _charStepOut.vy = input.vy;
+      _charStepOut.vz = input.vz;
+      _charStepOut.grounded = input.wy <= groundY + 0.05;
+      _charStepOut.groundY = groundY;
+      _charStepOut.inFluid = false;
+      _charStepOut.fluidSubmergence = 0;
+      _charStepOut.ccdSubsteps = 0;
+      _charStepOut.hitTreeId = null;
+      _charStepOut.hitNormalX = 0;
+      _charStepOut.hitNormalZ = 0;
+      _charStepOut.trampolineBoostY = 0;
+      _charStepOut.hammerImpulseX = 0;
+      _charStepOut.hammerImpulseY = 0;
+      _charStepOut.hammerImpulseZ = 0;
+      _charStepOut.activeDistrict = this.activeDistrict;
+      return _charStepOut;
+    }
     const dt = Math.min(0.05, Math.max(0.0005, input.dt));
 
     if (this.transportMode === 'shared_array_buffer') {
@@ -382,10 +436,14 @@ export class PhysicsWorldBridge {
           wx = closestX + nx * minBarSep;
           wz = closestZ + nz * minBarSep;
           // Tangential linear velocity v = omega x r transfers physical impulse!
+          // With bar axis dir = (cos a, -sin a), d(dir)/da = (-sin a, -cos a) = (dirZ, -dirX),
+          // so velocity at arm offset `proj` is omega * proj * (dirZ, -dirX).
           const tangSpeed = Math.max(4.5, Math.abs(hm.angularSpeed) * Math.max(1.2, Math.abs(proj)));
-          const sign = hm.angularSpeed >= 0 ? 1 : -1;
-          const impX = -dirZ * sign * tangSpeed * 0.85 + nx * 3.5;
-          const impZ = dirX * sign * tangSpeed * 0.85 + nz * 3.5;
+          const armSign = proj < 0 ? -1 : 1;
+          const spinSign = hm.angularSpeed >= 0 ? 1 : -1;
+          const tangSign = spinSign * armSign;
+          const impX = dirZ * tangSign * tangSpeed * 0.85 + nx * 3.5;
+          const impZ = -dirX * tangSign * tangSpeed * 0.85 + nz * 3.5;
           vx = impX;
           vz = impZ;
           vy = Math.max(vy, 7.6);
@@ -577,6 +635,8 @@ export class PhysicsWorldBridge {
     this.pausedSuspended = true;
     this.hadWorkerBeforePause = Boolean(this.worker);
     if (this.worker) {
+      this.worker.onmessage = null;
+      this.worker.onerror = null;
       this.worker.terminate();
       this.worker = null;
     }
@@ -605,10 +665,13 @@ export class PhysicsWorldBridge {
 
   public dispose(): void {
     if (this.worker) {
+      this.worker.onmessage = null;
+      this.worker.onerror = null;
       this.worker.terminate();
       this.worker = null;
     }
     this.workerReady = false;
+    this.workerInFlight = false;
     this.sab = null;
     this.sabInt32 = null;
     this.sabFloat32 = null;

@@ -114,9 +114,10 @@ export function stepSteadyLogScaleTowardTarget(
   dt: number,
   maxRateLogPerSec: number = STEADY_TARGET_GLIDE_MAX_LOG_PER_SEC
 ): number {
+  if (!Number.isFinite(dt) || dt <= 0) return currentLog;
   const diff = targetLog - currentLog;
   const absDiff = Math.abs(diff);
-  if (absDiff < 0.0004 || dt <= 0) return targetLog;
+  if (absDiff < 0.0004) return targetLog;
   const easeWindow = 0.25;
   const easeFactor = absDiff < easeWindow ? Math.max(0.3, absDiff / easeWindow) : 1.0;
   const step = Math.min(absDiff, Math.max(0.005 * dt, maxRateLogPerSec * easeFactor * dt));

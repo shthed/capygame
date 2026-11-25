@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import * as THREE from 'three';
 import { PbrTextureSynthesizer } from '../engine/gpu/PbrTextureSynthesizer';
 import { CapyModelGenerator } from '../engine/CapyModelGenerator';
+import { AudioService } from './AudioService';
+import { classifyError } from '../../components/AppErrorBoundary';
 import {
   DEFAULT_CAPY_SETTINGS,
   INITIAL_PLAYER_STATS,
@@ -29,6 +33,7 @@ import {
   OPEN_OCEAN_SEABED_Y,
   OPEN_OCEAN_SURFACE_Y,
   ShallowWaterFluidSolver,
+  XpbdSoftBodySolver,
   clampToContiguousWalkableWorld,
   evaluateDistrictClearances,
   getArchipelagoDistrictFootprints,
@@ -37,6 +42,7 @@ import {
 import {
   YuzuGhostRecorder,
   createGhostPoseScratch,
+  normalizeAngleRad,
   parseAndValidateGhostRun,
   sampleGhostRunAtTime,
 } from '../engine/physics/YuzuGhostRecorder';
@@ -1006,23 +1012,28 @@ test('Scene Matrix Cull & GPU Auto-Bench Regression: O(1) hidden subtree skip, c
   scene.updateMatrixWorld();
   assert.equal(childMatrixUpdates, 1);
 
-  // 2. Hidden subtree skips child updateMatrix() completely in O(1), even when parent uses force=true
+  // 2. Hidden subtree skips child updateMatrix() completely in O(1) on normal update
   group.visible = false;
   child.position.set(4, 5, 6);
-  scene.updateMatrixWorld(true);
-  assert.equal(childMatrixUpdates, 1);
-
-  // 3. Visible but matrixWorldAutoUpdate = false also skips child recursion
-  group.visible = true;
-  group.matrixWorldAutoUpdate = false;
   scene.updateMatrixWorld();
   assert.equal(childMatrixUpdates, 1);
+
+  // 2b. Explicit force=true MUST honor Three.js force semantics even on hidden subtrees
+  scene.updateMatrixWorld(true);
+  assert.equal(childMatrixUpdates, 2);
+
+  // 3. Visible but matrixWorldAutoUpdate = false also skips child recursion on normal update
+  group.visible = true;
+  group.matrixWorldAutoUpdate = false;
+  child.position.set(7, 8, 9);
+  scene.updateMatrixWorld();
+  assert.equal(childMatrixUpdates, 2);
 
   // 4. Re-enabling visibility + matrixWorldAutoUpdate catches up dirty matrices cleanly
   group.visible = true;
   group.matrixWorldAutoUpdate = true;
   scene.updateMatrixWorld();
-  assert.equal(childMatrixUpdates, 2);
+  assert.equal(childMatrixUpdates, 3);
 
   // 5. WebGPU telemetry prefers per-frame drawCalls over cumulative lifetime calls
   assert.equal(extractWebGpuRenderDrawCalls({ calls: 4509, drawCalls: 42 }, true), 42);
@@ -1519,3 +1530,219 @@ test('Capytorio Belt End Item Spill: disabled by default and sanitizes cleanly',
     false
   );
 });
+
+test('Phase 1 P0 Physics & Math Guards: O(1) normalizeAngleRad, spine floor clamp, and fluid/XPBD NaN dt rejection', () => {
+  // 1. normalizeAngleRad handles NaN/Infinity safely and normalizes huge angles in O(1)
+  assert.equal(normalizeAngleRad(Number.NaN), 0);
+  assert.equal(normalizeAngleRad(Number.POSITIVE_INFINITY), 0);
+  assert.equal(normalizeAngleRad(Number.NEGATIVE_INFINITY), 0);
+  const bigPos = normalizeAngleRad(1e9);
+  const bigNeg = normalizeAngleRad(-1e9);
+  assert.ok(Number.isFinite(bigPos) && bigPos > -Math.PI && bigPos <= Math.PI);
+  assert.ok(Number.isFinite(bigNeg) && bigNeg > -Math.PI && bigNeg <= Math.PI);
+  assert.ok(Math.abs(normalizeAngleRad(Math.PI * 3) - Math.PI) < 1e-6);
+
+  // 2. solveSpineVerticalCoupling never clamps a node below its own floorY even when neighbor is far lower
+  const sx = new Float32Array([0, 0]);
+  const sy = new Float32Array([0, 3.0]);
+  const sz = new Float32Array([0, -1.15]);
+  const support = new Float32Array([0, 2.5]); // Node 1 stands on an elevated 2.5m ledge
+  solveSpineVerticalCoupling(sx, sy, sz, support, 2, false, 0.016);
+  assert.ok(
+    sy[1] >= 2.5,
+    `Expected spine node on elevated ledge to stay >= floorY (2.5), got ${sy[1]}`
+  );
+
+  // 3. ShallowWaterFluidSolver & XpbdSoftBodySolver ignore NaN / <= 0 dt without poisoning arrays
+  const fluid = new ShallowWaterFluidSolver();
+  fluid.step(0.016, -8.8, 3.0, 3.0, 1.0, 1.0);
+  fluid.step(Number.NaN, -8.8, 3.0, 3.0, 1.0, 1.0);
+  fluid.step(0, -8.8, 3.0, 3.0, 1.0, 1.0);
+  fluid.step(-0.1, -8.8, 3.0, 3.0, 1.0, 1.0);
+  for (let i = 0; i < fluid.cellCount; i++) {
+    assert.ok(Number.isFinite(fluid.heightCur[i]), 'fluid heightCur remains finite');
+    assert.ok(Number.isFinite(fluid.velX[i]), 'fluid velX remains finite');
+  }
+
+  const xpbd = new XpbdSoftBodySolver();
+  xpbd.syncPads([{ id: 'pad_test', wx: 0, wy: 0, wz: 0, radius: 1.5 }]);
+  xpbd.applyImpact('pad_test', 5.0, 1.0);
+  xpbd.step(Number.NaN);
+  xpbd.step(0);
+  xpbd.step(-0.05);
+  assert.ok(Number.isFinite(xpbd.pads[0].compression), 'XPBD pad compression remains finite');
+  assert.ok(Number.isFinite(xpbd.pads[0].velocityY), 'XPBD pad velocityY remains finite');
+});
+
+test('Phase 4 Hardening: ProgressionService whitelist sanitization, corrupt save fallback & quota recovery', () => {
+  // 1. Whitelist sanitization strips unknown/pollution keys and rejects invalid enums
+  const malicious = JSON.parse(
+    '{"__proto__":{"polluted":true},"evilExtra":123,"gpuBackendPreference":"vulkan_hack","gpuQualityPreset":"mega","gpuVisualFilter":"neon_slop","gpuToneMapping":"bad","gpuTextureFilter":"bad","gpuAnisotropy":32,"gpuShadowQuality":"raytraced","gpuAntiAliasing":"dlss","touchControlsMode":"magic","weatherMode":"acid_rain","manualCapyLodTier":99,"fov":999,"cameraDistance":-5,"gpuExposure":99}'
+  );
+  const clean = ProgressionService.sanitizeGameSettings(malicious);
+  assert.equal(({} as Record<string, unknown>).polluted, undefined);
+  assert.equal('evilExtra' in clean, false);
+  assert.equal(clean.gpuBackendPreference, DEFAULT_CAPY_SETTINGS.gpuBackendPreference);
+  assert.equal(clean.gpuQualityPreset, DEFAULT_CAPY_SETTINGS.gpuQualityPreset);
+  assert.equal(clean.gpuVisualFilter, DEFAULT_CAPY_SETTINGS.gpuVisualFilter);
+  assert.equal(clean.gpuToneMapping, DEFAULT_CAPY_SETTINGS.gpuToneMapping);
+  assert.equal(clean.gpuTextureFilter, DEFAULT_CAPY_SETTINGS.gpuTextureFilter);
+  assert.equal(clean.gpuAnisotropy, DEFAULT_CAPY_SETTINGS.gpuAnisotropy);
+  assert.equal(clean.gpuShadowQuality, DEFAULT_CAPY_SETTINGS.gpuShadowQuality);
+  assert.equal(clean.gpuAntiAliasing, DEFAULT_CAPY_SETTINGS.gpuAntiAliasing);
+  assert.equal(clean.touchControlsMode, DEFAULT_CAPY_SETTINGS.touchControlsMode);
+  assert.equal(clean.weatherMode, DEFAULT_CAPY_SETTINGS.weatherMode);
+  assert.equal(clean.manualCapyLodTier, DEFAULT_CAPY_SETTINGS.manualCapyLodTier);
+  assert.equal(clean.fov, 75);
+  assert.equal(clean.cameraDistance, 0.45);
+  assert.equal(clean.gpuExposure, 2.0);
+
+  // 2. Corrupt primary save key falls back cleanly to legacy v2 key, and QuotaExceededError saves compact stats
+  const store = new Map<string, string>();
+  let failBigWrite = false;
+  const mockStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      if (failBigWrite && v.includes('capytorioFactory')) {
+        const err = new Error('QuotaExceeded');
+        err.name = 'QuotaExceededError';
+        throw err;
+      }
+      store.set(k, v);
+    },
+    removeItem: (k: string) => store.delete(k),
+    clear: () => store.clear(),
+  };
+
+  const origWindow = (globalThis as Record<string, unknown>).window;
+  const origLocalStorage = (globalThis as Record<string, unknown>).localStorage;
+  try {
+    (globalThis as Record<string, unknown>).window = {
+      addEventListener: () => {},
+    };
+    (globalThis as Record<string, unknown>).localStorage = mockStorage;
+
+    store.set('capy_game_save_v3', '{corrupt json!!!');
+    store.set('capy_game_save_v2', JSON.stringify({ dna: 777, coins: 888 }));
+    const recovered = ProgressionService.loadStats(true);
+    assert.equal(recovered.dna, 777);
+    assert.equal(recovered.coins, 888);
+
+    // Quota fallback omits capytorioFactory and still saves core stats without throwing
+    failBigWrite = true;
+    const withFactory = {
+      ...recovered,
+      dna: 999,
+      capytorioFactory: { version: 1, machines: [], belts: [], power: 0 } as unknown as typeof recovered.capytorioFactory,
+    };
+    ProgressionService.saveStats(withFactory);
+    const savedRaw = store.get('capy_game_save_v3');
+    assert.ok(savedRaw, 'Compact fallback save was persisted');
+    assert.equal(JSON.parse(savedRaw!).dna, 999);
+    assert.equal(JSON.parse(savedRaw!).capytorioFactory, undefined);
+  } finally {
+    if (origWindow === undefined) {
+      delete (globalThis as Record<string, unknown>).window;
+    } else {
+      (globalThis as Record<string, unknown>).window = origWindow;
+    }
+    if (origLocalStorage === undefined) {
+      delete (globalThis as Record<string, unknown>).localStorage;
+    } else {
+      (globalThis as Record<string, unknown>).localStorage = origLocalStorage;
+    }
+    ProgressionService.loadStats(true);
+  }
+});
+
+test('Phase 4 Hardening: AppErrorBoundary classifyError handles circular objects, AudioService pause guards, and sw.js same-origin guard', () => {
+  // 1. Circular object never throws inside classifyError
+  const circular: Record<string, unknown> = { label: 'loop' };
+  circular.self = circular;
+  const info = classifyError(circular);
+  assert.ok(typeof info.title === 'string' && info.title.length > 0);
+  assert.ok(typeof info.message === 'string' && info.message.length > 0);
+
+  const webglInfo = classifyError(new Error('WebGL context lost unexpectedly'));
+  assert.ok(webglInfo.title.includes('WebGL'));
+
+  // 2. AudioService pause/mute lifecycle never throws in headless Node and respects mute toggle
+  AudioService.suspendForPause();
+  AudioService.setMuted(true);
+  assert.equal(AudioService.getMuted(), true);
+  AudioService.setMuted(false);
+  assert.equal(AudioService.getMuted(), false);
+  // Calling SFX while paused must safely no-op without throwing
+  AudioService.playCoin();
+  AudioService.playFootstep('turf');
+  AudioService.resumeFromPause();
+  AudioService.stopAmbientMusic();
+
+  // 3. Service Worker strictly guards cross-origin fetches
+  const swSource = fs.readFileSync(path.resolve(process.cwd(), 'public/sw.js'), 'utf8');
+  assert.ok(
+    swSource.includes('url.origin !== self.location.origin'),
+    'public/sw.js must ignore cross-origin requests'
+  );
+});
+
+test('Phase 5 Build, Security Headers, Manifest & CI Invariants', () => {
+  const root = process.cwd();
+
+  // 1. Security & cache headers in public/_headers
+  const headers = fs.readFileSync(path.resolve(root, 'public/_headers'), 'utf8');
+  assert.ok(headers.includes('Cross-Origin-Opener-Policy: same-origin'));
+  assert.ok(headers.includes('Cross-Origin-Embedder-Policy: require-corp'));
+  assert.ok(headers.includes('X-Content-Type-Options: nosniff'));
+  assert.ok(headers.includes('Referrer-Policy: strict-origin-when-cross-origin'));
+  assert.ok(headers.includes('/sw.js'));
+  assert.ok(headers.includes('/manifest.webmanifest'));
+
+  // 2. Golden Invariant #2: relative base './' in vite.config.ts
+  const viteCfg = fs.readFileSync(path.resolve(root, 'vite.config.ts'), 'utf8');
+  assert.ok(viteCfg.includes("base: './'"), "vite.config.ts must preserve base: './'");
+
+  // 3. Manifest JSON validity and every icon/screenshot exists under public/
+  const manifestRaw = fs.readFileSync(path.resolve(root, 'public/manifest.webmanifest'), 'utf8');
+  const manifest = JSON.parse(manifestRaw) as {
+    start_url: string;
+    scope: string;
+    icons: Array<{ src: string }>;
+    screenshots: Array<{ src: string }>;
+  };
+  assert.equal(manifest.start_url, './');
+  assert.equal(manifest.scope, './');
+  for (const icon of manifest.icons) {
+    assert.ok(!icon.src.startsWith('/'), `Manifest icon must be relative: ${icon.src}`);
+    assert.ok(
+      fs.existsSync(path.resolve(root, 'public', icon.src)),
+      `Manifest icon missing on disk: public/${icon.src}`
+    );
+  }
+  for (const shot of manifest.screenshots) {
+    assert.ok(!shot.src.startsWith('/'), `Manifest screenshot must be relative: ${shot.src}`);
+    assert.ok(
+      fs.existsSync(path.resolve(root, 'public', shot.src)),
+      `Manifest screenshot missing on disk: public/${shot.src}`
+    );
+  }
+
+  // 4. GitHub Pages cleanup script protects 'data' directory
+  const cleanupScript = fs.readFileSync(
+    path.resolve(root, '.github/scripts/cleanup-gh-pages-previews.mjs'),
+    'utf8'
+  );
+  assert.ok(
+    cleanupScript.includes("'data'"),
+    "cleanup-gh-pages-previews.mjs must protect 'data' directory"
+  );
+
+  // 5. tsx is installed in devDependencies for offline/CI test:unit
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(root, 'package.json'), 'utf8')) as {
+    devDependencies?: Record<string, string>;
+  };
+  assert.ok(pkg.devDependencies?.tsx, 'tsx must be present in devDependencies');
+});
+
+
+

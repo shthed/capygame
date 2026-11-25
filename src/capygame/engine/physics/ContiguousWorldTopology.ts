@@ -430,6 +430,7 @@ export class ShallowWaterFluidSolver {
     waveSpeedScale: number = 1.0,
     viscosityScale: number = 1.0
   ): void {
+    if (!Number.isFinite(dt) || dt <= 0) return;
     this.simTime += dt;
     const n = this.gridSize;
     const waveSpeedSq = 14.0 * Math.max(0.2, Math.min(3.5, waveSpeedScale));
@@ -676,6 +677,7 @@ export class XpbdSoftBodySolver {
    * and compliant XPBD Lagrange multiplier `dLambda = -C / (w + alpha / dt^2)` restores equilibrium.
    */
   public step(dt: number): void {
+    if (!Number.isFinite(dt) || dt <= 0) return;
     const substeps = 4;
     const subDt = Math.min(0.025, dt) / substeps;
     const complianceAlpha = 0.00085; // Soft-elastic mushroom cap compliance

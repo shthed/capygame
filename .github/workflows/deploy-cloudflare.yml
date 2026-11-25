@@ -68,6 +68,13 @@ jobs:
           npm run lint
           npm run test:unit
           npm run build
+          # Enforce Cloudflare Workers 25 MiB per-asset limit before deploy
+          OVERSIZED="$(find dist -type f -size +25M)"
+          if [ -n "${OVERSIZED}" ]; then
+            echo "::error::One or more dist/ assets exceed Cloudflare Workers' 25 MiB limit:"
+            printf '%s\n' "${OVERSIZED}"
+            exit 1
+          fi
 
       - name: Clear conflicting DNS records (one-time cutover)
         if: steps.creds.outputs.enabled == 'true' && github.event_name == 'workflow_dispatch' && inputs.replace_dns

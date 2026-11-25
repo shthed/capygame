@@ -138,11 +138,158 @@ export const CAPYTORIO_CHEST_SLOTS = 12;
 export const CAPYTORIO_CHEST_ITEMS_PER_SLOT = 10;
 export const CAPYTORIO_CHEST_MAX_ITEMS = CAPYTORIO_CHEST_SLOTS * CAPYTORIO_CHEST_ITEMS_PER_SLOT;
 
+export interface CapytorioModuleEffectSpec {
+  speedDelta: number;
+  powerDelta: number;
+  prodDelta: number;
+}
+
+export const CAPYTORIO_MODULE_IDS = [
+  'speed_module',
+  'speed_module_2',
+  'efficiency_module',
+  'efficiency_module_2',
+  'productivity_module',
+  'productivity_module_2',
+] as const;
+
+export type CapytorioModuleId = (typeof CAPYTORIO_MODULE_IDS)[number];
+
+/**
+ * Single source of truth for module bonuses used by both CapytorioFactoryEngine and CapytorioPedia.
+ */
+export const CAPYTORIO_MODULE_EFFECTS: Readonly<Record<CapytorioModuleId, CapytorioModuleEffectSpec>> = {
+  speed_module: { speedDelta: 0.3, powerDelta: 0.2, prodDelta: 0 },
+  speed_module_2: { speedDelta: 0.5, powerDelta: 0.3, prodDelta: 0 },
+  efficiency_module: { speedDelta: 0, powerDelta: -0.3, prodDelta: 0 },
+  efficiency_module_2: { speedDelta: 0, powerDelta: -0.5, prodDelta: 0 },
+  productivity_module: { speedDelta: -0.05, powerDelta: 0.25, prodDelta: 0.15 },
+  productivity_module_2: { speedDelta: -0.1, powerDelta: 0.35, prodDelta: 0.25 },
+};
+
+export const CAPYTORIO_BEACON_SPEC = {
+  rangeTiles: 6,
+  baseSpeedBonus: 0.15,
+  transmissionEfficiency: 0.5,
+  broadcastsProductivity: false,
+} as const;
+
+export const CAPYTORIO_FUEL_BURN_SECONDS = {
+  coal: 10.0,
+  yuzu_sap: 6.5,
+  orange: 5.0,
+} as const;
+
+const STORAGE_CHEST_VARIANTS = new Set<string>([
+  'wooden_chest',
+  'iron_chest',
+  'steel_chest',
+  'passive_provider_chest',
+  'requester_chest',
+  'locomotive',
+  'cargo_wagon',
+  'roboport',
+]);
+
+const PASSIVE_NO_POWER_VARIANTS = new Set<string>([
+  'stone_wall',
+  'gate',
+  'small_electric_pole',
+  'medium_electric_pole',
+  'big_electric_pole',
+  'substation',
+  'pipe',
+  'pipe_to_ground',
+  'rail',
+  'train_stop',
+  'offshore_pump',
+  'gun_turret',
+]);
+
+const FUEL_FREE_GENERATOR_VARIANTS = new Set<string>([
+  'solar_panel',
+  'accumulator',
+  'nuclear_reactor',
+]);
+
+export function isCapytorioStorageChest(m: {
+  type: CapytorioMachineType;
+  variantItemId?: string;
+}): boolean {
+  if (m.type !== 'chest') return false;
+  return !m.variantItemId || STORAGE_CHEST_VARIANTS.has(m.variantItemId);
+}
+
+export function isCapytorioFunctionalInserter(m: {
+  type: CapytorioMachineType;
+  variantItemId?: string;
+}): boolean {
+  return (
+    m.type === 'inserter' &&
+    m.variantItemId !== 'gun_turret' &&
+    m.variantItemId !== 'laser_turret'
+  );
+}
+
+export function isCapytorioResearchLab(m: {
+  type: CapytorioMachineType;
+  variantItemId?: string;
+}): boolean {
+  return (
+    m.type === 'lab' &&
+    m.variantItemId !== 'beacon' &&
+    m.variantItemId !== 'radar'
+  );
+}
+
+export function isCapytorioFuelGenerator(m: {
+  type: CapytorioMachineType;
+  variantItemId?: string;
+}): boolean {
+  return (
+    m.type === 'generator' &&
+    (!m.variantItemId || !FUEL_FREE_GENERATOR_VARIANTS.has(m.variantItemId))
+  );
+}
+
+export function getCapytorioMachineBasePowerDemandMw(m: {
+  type: CapytorioMachineType;
+  variantItemId?: string;
+}): number {
+  const v = m.variantItemId;
+  if (v === 'roboport') return 0.5;
+  if (v === 'beacon') return 1.2;
+  if (v === 'radar') return 0.4;
+  if (v === 'pump') return 0.15;
+  if (v === 'laser_turret') return 0.8;
+  if (v && PASSIVE_NO_POWER_VARIANTS.has(v)) return 0;
+  return CAPYTORIO_MACHINE_SPECS[m.type].powerDemandMw;
+}
+
+export function getCapytorioMachinePowerSupplyMw(
+  m: {
+    type: CapytorioMachineType;
+    variantItemId?: string;
+    tierMult?: number;
+    fuelTimer?: number;
+  },
+  genBonus: number = 1.0
+): number {
+  if (m.type !== 'generator') return 0;
+  const spec = CAPYTORIO_MACHINE_SPECS.generator;
+  const tierMult = m.tierMult ?? 1.0;
+  if (!isCapytorioFuelGenerator(m)) {
+    return spec.powerSupplyMw * tierMult * genBonus;
+  }
+  return ((m.fuelTimer ?? 0) > 0 ? spec.powerSupplyMw : 1.5) * tierMult * genBonus;
+}
+
 /**
  * Returns the canonical North/South (dir 0 or 2) tile footprint for a machine or placeable variant.
  * Classic Factorio proportions:
  * - 1x1: Transport Belts, Underground Tunnels, Inserters, Chests, Poles, Walls, Pipes, Pumps, Rails, Train Stops
- * - 2x1: Belt Splitters, Locomotives, Cargo Wagons (rotate to 1x2 when facing East/West)
+ * - 2x1: Belt Splitters (rotate to 1x2 when facing East/West)
+ * - 1x2: Locomotives, Cargo Wagons aligned along Z-axis rails when facing North/South (rotate to 2x1 when facing East/West)
  * - 2x2: Furnaces (Stone / Steel / Electric), Burner Mining Drill, Boiler, Accumulator, Substation
  * - 3x3: Electric Mining Drill, Assembling Machines, Oil Refinery, Chemical Plant, Roboport, Labs, Generators, Solar, Nuclear, Rocket Silo
  */
@@ -161,7 +308,7 @@ export function getCapytorioBaseFootprint(
     return { width: 1, height: 1 };
   }
   if (variantItemId === 'locomotive' || variantItemId === 'cargo_wagon') {
-    return { width: 2, height: 1 };
+    return { width: 1, height: 2 };
   }
   if (
     variantItemId === 'burner_mining_drill' ||
@@ -199,7 +346,7 @@ export function getCapytorioBaseFootprint(
 
 /**
  * Returns the world-grid (X width, Z height) footprint for a machine facing `dir`.
- * Non-square machines (such as 2x1 Belt Splitters) swap width/height when facing East (1) or West (3).
+ * Non-square machines (such as 2x1 Belt Splitters or 1x2 Locomotives) swap width/height when facing East (1) or West (3).
  */
 export function getCapytorioFootprint(
   baseType: CapytorioMachineType,

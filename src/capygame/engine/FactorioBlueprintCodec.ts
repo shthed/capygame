@@ -708,6 +708,41 @@ function buildFactorioBlueprintPayload(input: {
   const entities: FactorioRawEntity[] = [];
   const iconCounts = new Map<string, number>();
 
+  // Infer Factorio underground belt input/output roles by pairing aligned tunnels within 1..6 tiles
+  const tunnelRoleByIndex = new Map<number, 'input' | 'output'>();
+  const dirDx = [0, 1, 0, -1] as const;
+  const dirDz = [-1, 0, 1, 0] as const;
+  const tunnelLookup = new Map<string, number>();
+  for (let i = 0; i < input.entries.length; i++) {
+    const e = input.entries[i];
+    if (e.baseType === 'tunnel') {
+      tunnelLookup.set(`${e.dx},${e.dz}`, i);
+    }
+  }
+  for (let i = 0; i < input.entries.length; i++) {
+    const e = input.entries[i];
+    if (e.baseType !== 'tunnel' || tunnelRoleByIndex.has(i)) continue;
+    const dxStep = dirDx[e.dir];
+    const dzStep = dirDz[e.dir];
+    let pairedIdx = -1;
+    for (let dist = 1; dist <= 6; dist++) {
+      const candIdx = tunnelLookup.get(`${e.dx + dxStep * dist},${e.dz + dzStep * dist}`);
+      if (candIdx !== undefined && candIdx !== i && !tunnelRoleByIndex.has(candIdx)) {
+        const cand = input.entries[candIdx];
+        if (cand.dir === e.dir) {
+          pairedIdx = candIdx;
+          break;
+        }
+      }
+    }
+    if (pairedIdx >= 0) {
+      tunnelRoleByIndex.set(i, 'input');
+      tunnelRoleByIndex.set(pairedIdx, 'output');
+    } else {
+      tunnelRoleByIndex.set(i, 'input');
+    }
+  }
+
   for (let i = 0; i < input.entries.length; i++) {
     const e = input.entries[i];
     const name = mapCapytorioEntryToFactorioEntityName(e);
@@ -730,7 +765,7 @@ function buildFactorioBlueprintPayload(input: {
     }
 
     if (e.baseType === 'tunnel') {
-      ent.type = 'input';
+      ent.type = tunnelRoleByIndex.get(i) ?? 'input';
     }
 
     if (e.baseType === 'assembler' && e.recipeId) {

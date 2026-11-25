@@ -776,11 +776,12 @@ export class HardwareGpuEngine {
   }
 
   private syncFxaaResolution(): void {
-    if (!this.fxaaPass) return;
     const pr = this.renderer.getPixelRatio();
     const invW = 1 / Math.max(1, this.viewportWidth * pr);
     const invH = 1 / Math.max(1, this.viewportHeight * pr);
-    this.fxaaPass.material.uniforms['resolution'].value.set(invW, invH);
+    if (this.fxaaPass) {
+      this.fxaaPass.material.uniforms['resolution'].value.set(invW, invH);
+    }
     if (this.masterFilterPass) {
       this.masterFilterPass.uniforms['uTexelSize'].value.set(invW, invH);
     }
@@ -1051,7 +1052,7 @@ export class HardwareGpuEngine {
       this.bloomPass.enabled = this.config.bloomEnabled;
       this.bloomPass.strength = this.config.bloomStrength;
       const bloomScale = computeBloomRenderScale(this.config.qualityPreset, this.isSoftwareGl);
-      this.bloomPass.resolution.set(
+      this.bloomPass.setSize(
         Math.max(1, Math.floor(this.viewportWidth * bloomScale)),
         Math.max(1, Math.floor(this.viewportHeight * bloomScale))
       );
@@ -1340,6 +1341,7 @@ export class HardwareGpuEngine {
     const prevAutoClearColor = this.renderer.autoClearColor;
     const prevAutoClearDepth = this.renderer.autoClearDepth;
     const prevToneMapping = this.renderer.toneMapping;
+    const prevLayerMask = this.camera.layers.mask;
     this.renderer.autoClear = false;
     this.renderer.autoClearColor = false;
     this.renderer.autoClearDepth = false;
@@ -1349,7 +1351,7 @@ export class HardwareGpuEngine {
       this.renderer.setRenderTarget(null);
       this.renderer.render(this.scene, this.camera);
     } finally {
-      this.camera.layers.set(0);
+      this.camera.layers.mask = prevLayerMask;
       this.renderer.toneMapping = prevToneMapping;
       this.renderer.autoClear = prevAutoClear;
       this.renderer.autoClearColor = prevAutoClearColor;
@@ -1413,7 +1415,7 @@ export class HardwareGpuEngine {
     }
     if (this.bloomPass) {
       const bloomScale = computeBloomRenderScale(this.config.qualityPreset, this.isSoftwareGl);
-      this.bloomPass.resolution.set(
+      this.bloomPass.setSize(
         Math.max(1, Math.floor(this.viewportWidth * bloomScale)),
         Math.max(1, Math.floor(this.viewportHeight * bloomScale))
       );
@@ -1546,6 +1548,23 @@ export class HardwareGpuEngine {
       this.iblEnvironmentTexture.dispose();
       this.iblEnvironmentTexture = null;
     }
+    this.scene.remove(this.rimLight);
+    this.scene.remove(this.rimLight.target);
+    this.rimLight.dispose();
+    if (this.studioAreaLight) {
+      this.scene.remove(this.studioAreaLight);
+      this.studioAreaLight.dispose();
+      this.studioAreaLight = null;
+    }
+    if (this.sunLight.shadow.map) {
+      this.sunLight.shadow.map.dispose();
+      this.sunLight.shadow.map = null;
+    }
+    if (this.moonLight?.shadow.map) {
+      this.moonLight.shadow.map.dispose();
+      this.moonLight.shadow.map = null;
+    }
+    this.scene.remove(this.heroContactShadowMesh);
     this.heroContactShadowMesh.geometry.dispose();
     this.heroContactShadowMat.dispose();
   }

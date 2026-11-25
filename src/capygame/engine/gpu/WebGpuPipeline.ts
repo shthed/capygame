@@ -820,6 +820,7 @@ export function convertLegacyShaderMaterialsToTsl(root: THREE.Object3D): number 
 
   for (let i = 0; i < pointUpgrades.length; i++) {
     const up = pointUpgrades[i];
+    up.sprite.userData.__sourceGeometry = up.oldPoints.geometry;
     up.parent.add(up.sprite);
     up.parent.remove(up.oldPoints);
     if (Array.isArray(up.oldPoints.material)) {
@@ -891,8 +892,8 @@ export class WebGpuPostAndComputePipeline {
   private builtWithAo = false;
   private builtWithBloom = false;
   private readonly isMobileViewport: boolean;
-  private readonly gpuDeviceRef: GPUDevice | null;
-  private readonly onUncapturedError: ((ev: Event) => void) | null = null;
+  private gpuDeviceRef: GPUDevice | null;
+  private onUncapturedError: ((ev: Event) => void) | null = null;
 
   constructor(
     renderer: THREE_WEBGPU.WebGPURenderer,
@@ -1215,6 +1216,7 @@ export class WebGpuPostAndComputePipeline {
     this.uAoStrength.value = cfg.ssaoEnabled ? 0.34 : 0;
 
     if (needRebuild) {
+      this.postProcessFaulted = false;
       this.rebuildPostProcessing();
     }
   }
@@ -1297,6 +1299,7 @@ export class WebGpuPostAndComputePipeline {
       const prevAutoClearColor = this.renderer.autoClearColor;
       const prevAutoClearDepth = this.renderer.autoClearDepth;
       const prevToneMapping = this.renderer.toneMapping;
+      const prevLayerMask = this.camera.layers.mask;
       this.renderer.autoClear = false;
       this.renderer.autoClearColor = false;
       this.renderer.autoClearDepth = false;
@@ -1305,7 +1308,7 @@ export class WebGpuPostAndComputePipeline {
       try {
         this.renderer.render(this.scene, this.camera);
       } finally {
-        this.camera.layers.set(0);
+        this.camera.layers.mask = prevLayerMask;
         this.renderer.toneMapping = prevToneMapping;
         this.renderer.autoClear = prevAutoClear;
         this.renderer.autoClearColor = prevAutoClearColor;
@@ -1325,6 +1328,8 @@ export class WebGpuPostAndComputePipeline {
     if (this.gpuDeviceRef && this.onUncapturedError) {
       this.gpuDeviceRef.removeEventListener('uncapturederror', this.onUncapturedError);
     }
+    this.gpuDeviceRef = null;
+    this.onUncapturedError = null;
     this.scene.remove(this.computeSprite);
     this.computeSprite.geometry.dispose();
     (this.computeSprite.material as THREE.Material).dispose();

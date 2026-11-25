@@ -12,13 +12,18 @@ interface AppErrorBoundaryState {
   errorDetails: string;
 }
 
-function classifyError(err: unknown): { title: string; message: string; details: string } {
-  const rawMessage =
-    err instanceof Error
-      ? err.message
-      : typeof err === 'string'
-        ? err
-        : JSON.stringify(err) || 'Unknown runtime error';
+function safeStringifyError(err: unknown): string {
+  if (err instanceof Error) return err.message || err.name || 'Unknown runtime error';
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err) || String(err) || 'Unknown runtime error';
+  } catch {
+    return String(err) || 'Unknown runtime error';
+  }
+}
+
+export function classifyError(err: unknown): { title: string; message: string; details: string } {
+  const rawMessage = safeStringifyError(err);
   const stack = err instanceof Error && err.stack ? err.stack : rawMessage;
 
   if (/webgl|context|three|shader|gpu/i.test(rawMessage)) {
@@ -133,7 +138,11 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     }
   };
 
+  private clearingCache = false;
+
   private handleClearCacheAndReload = async () => {
+    if (this.clearingCache) return;
+    this.clearingCache = true;
     try {
       if ('serviceWorker' in navigator && navigator.serviceWorker) {
         const regs = await navigator.serviceWorker.getRegistrations();

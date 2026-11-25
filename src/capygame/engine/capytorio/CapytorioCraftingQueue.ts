@@ -55,30 +55,64 @@ export function findPocketRecipeForItem(
   return null;
 }
 
+function subtractFromSurplusSources(
+  item: CapytorioItemId,
+  amount: number,
+  stepsOut: PlannedCraftStep[]
+): void {
+  let rem = amount;
+  for (let i = stepsOut.length - 1; i >= 0 && rem > 0; i--) {
+    const st = stepsOut[i];
+    if (st.resultId === item && st.surplusToPocket > 0) {
+      const take = Math.min(st.surplusToPocket, rem);
+      st.surplusToPocket -= take;
+      rem -= take;
+    }
+  }
+}
+
 export function planRecursiveIngredients(
   ingredients: ReadonlyArray<{ item: CapytorioItemId; count: number }>,
   simStock: Map<CapytorioItemId, number>,
   visiting: Set<CapytorioItemId>,
   stepsOut: PlannedCraftStep[],
-  isRecipeUnlocked: (recipeId: CapytorioRecipeId) => boolean
+  isRecipeUnlocked: (recipeId: CapytorioRecipeId) => boolean,
+  surplusStock?: Map<CapytorioItemId, number>
 ): { ok: boolean; directConsumed: Array<{ item: CapytorioItemId; count: number }> } {
   const directConsumedMap = new Map<CapytorioItemId, number>();
+  const localSurplus = surplusStock ?? new Map<CapytorioItemId, number>();
 
   for (let i = 0; i < ingredients.length; i++) {
     const ing = ingredients[i];
-    const have = simStock.get(ing.item) ?? 0;
-    const takeExisting = Math.min(have, ing.count);
-    if (takeExisting > 0) {
-      simStock.set(ing.item, have - takeExisting);
-      directConsumedMap.set(ing.item, (directConsumedMap.get(ing.item) ?? 0) + takeExisting);
+    let needed = ing.count;
+
+    // Consume any already-planned intermediate surplus first (never deducted from pocket!)
+    const availSurplus = localSurplus.get(ing.item) ?? 0;
+    const takeSurplus = Math.min(availSurplus, needed);
+    if (takeSurplus > 0) {
+      localSurplus.set(ing.item, availSurplus - takeSurplus);
+      subtractFromSurplusSources(ing.item, takeSurplus, stepsOut);
+      needed -= takeSurplus;
     }
-    const shortfall = ing.count - takeExisting;
-    if (shortfall > 0) {
+
+    // Consume from existing pocket stock next
+    if (needed > 0) {
+      const have = simStock.get(ing.item) ?? 0;
+      const takeExisting = Math.min(have, needed);
+      if (takeExisting > 0) {
+        simStock.set(ing.item, have - takeExisting);
+        directConsumedMap.set(ing.item, (directConsumedMap.get(ing.item) ?? 0) + takeExisting);
+        needed -= takeExisting;
+      }
+    }
+
+    // Recursively craft any remaining shortfall
+    if (needed > 0) {
       if (visiting.has(ing.item)) return { ok: false, directConsumed: [] };
       const subRec = findPocketRecipeForItem(ing.item, isRecipeUnlocked);
       if (!subRec) return { ok: false, directConsumed: [] };
       visiting.add(ing.item);
-      const subBatches = Math.ceil(shortfall / Math.max(1, subRec.resultCount));
+      const subBatches = Math.ceil(needed / Math.max(1, subRec.resultCount));
       const scaledSubIngs = subRec.ingredients.map((si) => ({
         item: si.item,
         count: si.count * subBatches,
@@ -88,14 +122,15 @@ export function planRecursiveIngredients(
         simStock,
         visiting,
         stepsOut,
-        isRecipeUnlocked
+        isRecipeUnlocked,
+        localSurplus
       );
       visiting.delete(ing.item);
       if (!subPlan.ok) return { ok: false, directConsumed: [] };
       const produced = subBatches * Math.max(1, subRec.resultCount);
-      const surplus = Math.max(0, produced - shortfall);
+      const surplus = Math.max(0, produced - needed);
       if (surplus > 0) {
-        simStock.set(ing.item, (simStock.get(ing.item) ?? 0) + surplus);
+        localSurplus.set(ing.item, (localSurplus.get(ing.item) ?? 0) + surplus);
       }
       stepsOut.push({
         recipeId: subRec.id,
@@ -144,14 +179,84 @@ export function getMaxAffordableCraftBatches(
   let count = 0;
   while (count < cap) {
     const snap = new Map(simStock);
+    const surplusSnap = new Map<CapytorioItemId, number>();
     const steps: PlannedCraftStep[] = [];
-    const res = planRecursiveIngredients(ingredients, snap, new Set(), steps, checkUnlocked);
+    const res = planRecursiveIngredients(
+      ingredients,
+      snap,
+      new Set(),
+      steps,
+      checkUnlocked,
+      surplusSnap
+    );
     if (!res.ok) break;
+    // Any unconsumed surplus from batch N becomes available pocket stock for batch N+1
+    for (const [sk, sv] of surplusSnap.entries()) {
+      if (sv > 0) snap.set(sk, (snap.get(sk) ?? 0) + sv);
+    }
     simStock.clear();
     for (const [k, v] of snap.entries()) simStock.set(k, v);
     count++;
   }
   return count;
+}
+
+function deductReservedEntries(
+  reserved: Array<{ item: CapytorioItemId; count: number }>,
+  item: CapytorioItemId,
+  amount: number
+): number {
+  let rem = amount;
+  for (let i = 0; i < reserved.length && rem > 0; i++) {
+    const entry = reserved[i];
+    if (entry.item === item && entry.count > 0) {
+      const take = Math.min(entry.count, rem);
+      entry.count -= take;
+      rem -= take;
+    }
+  }
+  return amount - rem;
+}
+
+function addHeldIntermediate(
+  held: Partial<Record<CapytorioItemId, number>>,
+  item: CapytorioItemId,
+  amount: number
+): void {
+  if (amount <= 0) return;
+  held[item] = (held[item] ?? 0) + amount;
+}
+
+function takeHeldIntermediate(
+  held: Partial<Record<CapytorioItemId, number>> | undefined,
+  item: CapytorioItemId,
+  amount: number
+): number {
+  if (!held || amount <= 0) return 0;
+  const have = held[item] ?? 0;
+  const take = Math.min(have, amount);
+  if (take > 0) {
+    const next = have - take;
+    if (next <= 0) delete held[item];
+    else held[item] = next;
+  }
+  return take;
+}
+
+function getBatchIngredientsForQueueItem(
+  q: CapytorioCraftQueueItem
+): ReadonlyArray<{ item: CapytorioItemId; count: number }> {
+  if (q.kind === 'machine' && q.machineType) {
+    const spec = CAPYTORIO_MACHINE_SPECS[q.machineType];
+    if (!spec) return [];
+    const out: Array<{ item: CapytorioItemId; count: number }> = [];
+    for (const [item, count] of Object.entries(spec.craftCost) as Array<[CapytorioItemId, number]>) {
+      if (count > 0) out.push({ item, count });
+    }
+    return out;
+  }
+  const rec = q.recipeId ? RECIPE_BY_ID.get(q.recipeId) : undefined;
+  return rec ? rec.ingredients : [];
 }
 
 export function enqueuePocketCraft(
@@ -210,7 +315,8 @@ export function enqueuePocketCraft(
         progress: 0,
         isIntermediate: true,
         parentUid,
-        reservedPerBatch: st.directConsumed,
+        reservedPerBatch: st.directConsumed.map((e) => ({ item: e.item, count: e.count })),
+        surplusToPocket: st.surplusToPocket > 0 ? st.surplusToPocket : undefined,
       });
       queuedIntermediates += st.batches;
     }
@@ -227,7 +333,8 @@ export function enqueuePocketCraft(
       craftTimeSec: Math.max(0.25, rec.craftTimeSec * 0.5),
       progress: 0,
       isIntermediate: false,
-      reservedPerBatch: plan.directConsumed,
+      reservedPerBatch: plan.directConsumed.map((e) => ({ item: e.item, count: e.count })),
+      heldIntermediates: {},
     });
     queuedBatches++;
   }
@@ -287,7 +394,8 @@ export function enqueueMachineCraft(
         progress: 0,
         isIntermediate: true,
         parentUid,
-        reservedPerBatch: st.directConsumed,
+        reservedPerBatch: st.directConsumed.map((e) => ({ item: e.item, count: e.count })),
+        surplusToPocket: st.surplusToPocket > 0 ? st.surplusToPocket : undefined,
       });
       queuedIntermediates += st.batches;
     }
@@ -304,7 +412,8 @@ export function enqueueMachineCraft(
       craftTimeSec: 0.55,
       progress: 0,
       isIntermediate: false,
-      reservedPerBatch: plan.directConsumed,
+      reservedPerBatch: plan.directConsumed.map((e) => ({ item: e.item, count: e.count })),
+      heldIntermediates: {},
     });
     queuedBatches++;
   }
@@ -326,12 +435,18 @@ export function cancelCraftQueueItem(
   for (let i = host.craftingQueue.length - 1; i >= 0; i--) {
     const q = host.craftingQueue[i];
     if (q.uid === rootUid || q.parentUid === rootUid) {
-      // Refund 100% of reserved materials for uncrafted batches
-      const frac = q.batchesTotal > 0 ? q.batchesRemaining / q.batchesTotal : 1;
+      // Refund exact unconsumed raw materials still held by this queue item
       for (let r = 0; r < q.reservedPerBatch.length; r++) {
         const entry = q.reservedPerBatch[r];
-        const refund = Math.max(0, Math.round(entry.count * frac));
-        if (refund > 0) host.addPocketItem(entry.item, refund);
+        if (entry.count > 0) host.addPocketItem(entry.item, entry.count);
+      }
+      // Refund exact already-crafted intermediates held for this chain
+      if (q.heldIntermediates) {
+        for (const [item, count] of Object.entries(q.heldIntermediates) as Array<
+          [CapytorioItemId, number]
+        >) {
+          if (count > 0) host.addPocketItem(item, count);
+        }
       }
       host.craftingQueue.splice(i, 1);
       cancelledCount++;
@@ -354,6 +469,27 @@ export function stepCraftingQueue(
   head.progress -= 1.0;
   head.batchesRemaining -= 1;
 
+  const parent =
+    head.isIntermediate && head.parentUid !== undefined
+      ? host.craftingQueue.find((q) => q.uid === head.parentUid)
+      : undefined;
+
+  // Consume exactly 1 batch of this step's recipe ingredients from its reserved raw materials
+  // and/or previously crafted intermediates held on the chain root.
+  const batchIngs = getBatchIngredientsForQueueItem(head);
+  const heldPool = head.isIntermediate ? parent?.heldIntermediates : head.heldIntermediates;
+  for (let i = 0; i < batchIngs.length; i++) {
+    const ing = batchIngs[i];
+    let need = ing.count;
+    // Consume held intermediates first so nested chains never double-count consumed intermediates
+    if (heldPool && need > 0) {
+      need -= takeHeldIntermediate(heldPool, ing.item, need);
+    }
+    if (need > 0) {
+      need -= deductReservedEntries(head.reservedPerBatch, ing.item, need);
+    }
+  }
+
   if (!head.isIntermediate) {
     if (head.kind === 'machine' && head.machineType) {
       host.pocketMachines[head.machineType] =
@@ -372,17 +508,34 @@ export function stepCraftingQueue(
     host.totalProduced += head.resultCountPerBatch;
     host.score += 5 * head.resultCountPerBatch;
     callbacks?.onCraftQueueCompleted?.(head.resultId, head.resultCountPerBatch);
-  } else if (head.batchesRemaining <= 0 && head.parentUid !== undefined) {
-    // Completed intermediate: check if parent still exists; if not, deliver to pocket
-    const parent = host.craftingQueue.find((q) => q.uid === head.parentUid);
+
+    // Safety net: if root finished with any leftover held intermediates (e.g. unconsumed surplus), return to pocket
+    if (head.batchesRemaining <= 0 && head.heldIntermediates) {
+      for (const [item, count] of Object.entries(head.heldIntermediates) as Array<
+        [CapytorioItemId, number]
+      >) {
+        if (count > 0) host.addPocketItem(item, count);
+      }
+      head.heldIntermediates = {};
+    }
+  } else {
+    // Completed 1 batch of an intermediate step: credit its output immediately to parent's heldIntermediates
+    // so mid-batch cancellation preserves completed outputs with zero loss or duplication.
     if (parent) {
-      // Track completed intermediate on parent so cancelling parent later refunds the crafted intermediate!
-      const totalOut = head.batchesTotal * head.resultCountPerBatch;
-      const existingRes = parent.reservedPerBatch.find((r) => r.item === head.resultId);
-      if (existingRes) existingRes.count += totalOut;
-      else parent.reservedPerBatch.push({ item: head.resultId, count: totalOut });
+      if (!parent.heldIntermediates) parent.heldIntermediates = {};
+      addHeldIntermediate(parent.heldIntermediates, head.resultId, head.resultCountPerBatch);
+      if (head.batchesRemaining <= 0 && (head.surplusToPocket ?? 0) > 0) {
+        const deliver = takeHeldIntermediate(
+          parent.heldIntermediates,
+          head.resultId,
+          head.surplusToPocket!
+        );
+        if (deliver > 0) {
+          host.addPocketItem(head.resultId, deliver);
+        }
+      }
     } else {
-      host.addPocketItem(head.resultId, head.batchesTotal * head.resultCountPerBatch);
+      host.addPocketItem(head.resultId, head.resultCountPerBatch);
     }
   }
 

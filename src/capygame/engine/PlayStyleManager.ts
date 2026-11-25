@@ -1354,8 +1354,11 @@ export class PlayStyleManager {
     }
   }
 
+  private deferredBootComplete: boolean = false;
+  private idleWarmupComplete: boolean = false;
+
   public setPaused(paused: boolean): void {
-    if (this.isPausedState === paused) return;
+    if (this.disposed || this.isPausedState === paused) return;
     this.isPausedState = paused;
     if (paused) {
       this.moveInput.x = 0;
@@ -1363,6 +1366,10 @@ export class PlayStyleManager {
       this.isJumping = false;
       this.pointerTargetX = null;
       this.autoZoomDirection = 0;
+      this.deferredBootCancel?.();
+      this.deferredBootCancel = null;
+      this.idleWarmupCancel?.();
+      this.idleWarmupCancel = null;
       ProgressionService.flushPendingSave();
       this.physicsBridge?.suspendForPause();
       this.gpuEngine?.suspendForPause();
@@ -1371,6 +1378,11 @@ export class PlayStyleManager {
       this.physicsBridge?.resumeFromPause();
       this.gpuEngine?.resumeFromPause();
       AudioService.resumeFromPause();
+      if (!this.deferredBootComplete) {
+        this.scheduleDeferredBootWork();
+      } else if (!this.idleWarmupComplete && !this.isWebGpu) {
+        this.scheduleIdlePipelineWarmup();
+      }
     }
   }
 
@@ -1498,6 +1510,7 @@ export class PlayStyleManager {
         return;
       }
       // Do NOT build playable Capybara Forest / Capytorio districts until the user selects "Play in Forest" or "Play Capytorio".
+      this.deferredBootComplete = true;
       if (!this.isWebGpu) {
         this.scheduleIdlePipelineWarmup();
       }
@@ -1629,12 +1642,13 @@ export class PlayStyleManager {
 
     const finishWarmup = () => {
       if (!cancelled && !this.disposed) {
+        this.idleWarmupComplete = true;
         this.gpuEngine?.markIdleWarmupComplete(true);
       }
     };
 
     const scheduleNext = () => {
-      if (cancelled || this.disposed) {
+      if (cancelled || this.disposed || this.isPausedState) {
         return;
       }
       if (index >= queue.length) {
@@ -1645,7 +1659,7 @@ export class PlayStyleManager {
         idleId = win.requestIdleCallback(
           (deadline) => {
             idleId = null;
-            if (cancelled || this.disposed) return;
+            if (cancelled || this.disposed || this.isPausedState) return;
             if (deadline.timeRemaining() > 4 || deadline.didTimeout) {
               const target = queue[index++];
               if (target) {
@@ -1669,7 +1683,7 @@ export class PlayStyleManager {
       } else {
         timerId = window.setTimeout(() => {
           timerId = null;
-          if (cancelled || this.disposed) return;
+          if (cancelled || this.disposed || this.isPausedState) return;
           const target = queue[index++];
           if (target) {
             void compileTargetAsync(target)
@@ -1829,6 +1843,11 @@ export class PlayStyleManager {
     if (this.placementGhost.active) {
       this.cancelBuildingPlacementGhost(true);
     }
+    if (this.yuzuGhostRunActive) {
+      this.yuzuGhostRunActive = false;
+      this.yuzuGhostRunElapsedSec = 0;
+      this.yuzuGhostRecorder.stopRun();
+    }
 
     const clampedTarget = THREE.MathUtils.clamp(
       targetLogMeters,
@@ -1987,7 +2006,6 @@ export class PlayStyleManager {
     this.syncUfoDomDataset();
     this.emitTelemetry();
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
-    this.gpuEngine.render();
   }
 
   private tickUfoSurfaceSequence(dt: number): boolean {
@@ -3061,9 +3079,15 @@ export class PlayStyleManager {
   }
 
   public switchMode(mode: PlayStyle, instant: boolean = false) {
+    if (this.disposed) return;
     this.ensureSurfaceWorldsBuilt();
     if (mode !== 'sanctuary' && this.placementGhost.active) {
       this.cancelBuildingPlacementGhost();
+    }
+    if (mode !== 'fallguys' && this.yuzuGhostRunActive) {
+      this.yuzuGhostRunActive = false;
+      this.yuzuGhostRunElapsedSec = 0;
+      this.yuzuGhostRecorder.stopRun();
     }
     const prevWorldPos = this.heroCapy.position.clone();
     this.currentMode = mode;
@@ -3613,6 +3637,17 @@ export class PlayStyleManager {
     stage: CosmicStage,
     options?: { skipCameraSnap?: boolean; skipRender?: boolean }
   ) {
+    if (this.disposed) return;
+    if (stage !== 'playing') {
+      if (this.placementGhost.active) {
+        this.cancelBuildingPlacementGhost(true);
+      }
+      if (this.yuzuGhostRunActive) {
+        this.yuzuGhostRunActive = false;
+        this.yuzuGhostRunElapsedSec = 0;
+        this.yuzuGhostRecorder.stopRun();
+      }
+    }
     if (stage === 'playing' || stage === 'capy_selection') {
       this.ensureSurfaceWorldsBuilt();
     }
@@ -6704,15 +6739,55 @@ export class PlayStyleManager {
 
   public feedScienceCapytorio(): number {
     if (!this.capytorioEngine) return 0;
-    const fed = this.capytorioEngine.feedPocketScienceToLabs();
+    const fed = this.capytorioEngine.feedPocketScienceToLabs(this.capytorioStepCallbacks);
     if (fed > 0) {
       AudioService.playCapytorioScienceFeed();
-      // Step once immediately so tech completes cleanly if threshold was met
-      this.capytorioEngine.step(0.05, this.capytorioStepCallbacks);
       this.markCapytorioDirty();
       this.emitTelemetry();
     }
     return fed;
+  }
+
+  public installCapytorioModule(
+    gx: number,
+    gz: number,
+    moduleItemId: CapytorioItemId
+  ): { ok: boolean; reason?: string } {
+    if (!this.capytorioEngine) return { ok: false, reason: 'Capytorio not ready' };
+    const res = this.capytorioEngine.installModuleOnMachine(gx, gz, moduleItemId);
+    if (res.ok) {
+      AudioService.playCapytorioUiClick('tool');
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return res;
+  }
+
+  public removeCapytorioModule(gx: number, gz: number, slotIndex: number): CapytorioItemId | null {
+    if (!this.capytorioEngine) return null;
+    const removed = this.capytorioEngine.removeModuleFromMachine(gx, gz, slotIndex);
+    if (removed) {
+      AudioService.playCapytorioPickup();
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return removed;
+  }
+
+  public repairCapytorioMachine(
+    gx: number,
+    gz: number
+  ): { ok: boolean; reason?: string; restored: number; overclockSec: number } {
+    if (!this.capytorioEngine) {
+      return { ok: false, reason: 'Capytorio not ready', restored: 0, overclockSec: 0 };
+    }
+    const res = this.capytorioEngine.useRepairPackAt(gx, gz);
+    if (res.ok) {
+      AudioService.playCapytorioUiClick('tool');
+      this.markCapytorioDirty();
+      this.emitTelemetry();
+    }
+    return res;
   }
 
   public collectAllCapytorioOutputs(): number {
@@ -9150,9 +9225,10 @@ export class PlayStyleManager {
   // PER-FRAME GAME LOOP (SHARED WORLD + 60 FPS LOD GOVERNOR + ATMOSPHERE/WEATHER)
   // ============================================================================
   public tick(delta: number, rawFrameDt?: number) {
+    if (this.disposed || this.isPausedState) return;
     this.profiler.beginFrame();
     const tickStartMs = performance.now();
-    const dt = Math.min(delta, 0.1);
+    const dt = Number.isFinite(delta) && delta > 0 ? Math.min(delta, 0.1) : 0.016;
     if (this.portalCooldown > 0) this.portalCooldown -= dt;
     if (this.snakeSelfHitCooldown > 0) this.snakeSelfHitCooldown -= dt;
     if (this.buddyBumpCooldown > 0) this.buddyBumpCooldown -= dt;
@@ -11102,72 +11178,77 @@ export class PlayStyleManager {
     if (!pool) return;
 
     // 1. Check if Hero Capybara is swimming inside the Home Pool under the running Tap Water stream
-    const dPool = Math.hypot(
-      this.heroLocalPos.x - pool.centerX,
-      this.heroLocalPos.z - pool.centerZ
-    );
-    const inHomePool =
-      dPool < pool.basinRadius - 0.32 &&
-      this.heroLocalPos.y <= pool.waterMesh.position.y - 0.18;
-    if (inHomePool) {
-      this.isSwimmingInPool = true;
-    }
-
-    if (inHomePool) {
-      const headX = this.heroLocalPos.x + Math.sin(this.heroYaw) * 0.52;
-      const headZ = this.heroLocalPos.z + Math.cos(this.heroYaw) * 0.52;
-      const dTap = Math.min(
-        Math.hypot(headX - pool.tapStreamWorldX, headZ - pool.tapStreamWorldZ),
-        Math.hypot(
-          this.heroLocalPos.x - pool.tapStreamWorldX,
-          this.heroLocalPos.z - pool.tapStreamWorldZ
-        )
+    // Only evaluate hero-local Home Pool / tap-wash logic while in Sanctuary so local coordinates in other districts never false-trigger!
+    if (this.currentMode === 'sanctuary') {
+      const dPool = Math.hypot(
+        this.heroLocalPos.x - pool.centerX,
+        this.heroLocalPos.z - pool.centerZ
       );
+      const inHomePool =
+        dPool < pool.basinRadius - 0.32 &&
+        this.heroLocalPos.y <= pool.waterMesh.position.y - 0.18;
+      if (inHomePool) {
+        this.isSwimmingInPool = true;
+      }
 
-      // Putting head under the running tap water washes extra fruits off your back into the pool until 1 Head Orange is left!
-      if (dTap < 1.12 && this.fruitsCarried > 1) {
-        this.tapWashAccum += dt;
-        while (this.tapWashAccum >= 0.16 && this.fruitsCarried > 1) {
-          this.tapWashAccum -= 0.16;
-          const prevCarried = this.fruitsCarried;
-          this.fruitsCarried = Math.max(1, this.fruitsCarried - 1);
-          if (this.fruitsCarried === 1) {
-            this.eatenFruitMass = 0;
-          } else {
-            this.eatenFruitMass = Math.max(
-              0,
-              this.eatenFruitMass * ((this.fruitsCarried - 1) / Math.max(1, prevCarried - 1))
+      if (inHomePool) {
+        const headX = this.heroLocalPos.x + Math.sin(this.heroYaw) * 0.52;
+        const headZ = this.heroLocalPos.z + Math.cos(this.heroYaw) * 0.52;
+        const dTap = Math.min(
+          Math.hypot(headX - pool.tapStreamWorldX, headZ - pool.tapStreamWorldZ),
+          Math.hypot(
+            this.heroLocalPos.x - pool.tapStreamWorldX,
+            this.heroLocalPos.z - pool.tapStreamWorldZ
+          )
+        );
+
+        // Putting head under the running tap water washes extra fruits off your back into the pool until 1 Head Orange is left!
+        if (dTap < 1.12 && this.fruitsCarried > 1) {
+          this.tapWashAccum += dt;
+          while (this.tapWashAccum >= 0.16 && this.fruitsCarried > 1) {
+            this.tapWashAccum -= 0.16;
+            const prevCarried = this.fruitsCarried;
+            this.fruitsCarried = Math.max(1, this.fruitsCarried - 1);
+            if (this.fruitsCarried === 1) {
+              this.eatenFruitMass = 0;
+            } else {
+              this.eatenFruitMass = Math.max(
+                0,
+                this.eatenFruitMass * ((this.fruitsCarried - 1) / Math.max(1, prevCarried - 1))
+              );
+            }
+            this.syncLogarithmicBodyLength(true);
+
+            // Drop the washed fruit into the pond water!
+            const angle = Math.random() * Math.PI * 2;
+            this.spawnPhysicsFruit(
+              pool.tapStreamWorldX + Math.cos(angle) * 0.25,
+              pool.waterMesh.position.y + 0.55,
+              pool.tapStreamWorldZ + Math.sin(angle) * 0.25,
+              Math.cos(angle) * 1.9 + 1.2,
+              -2.6,
+              Math.sin(angle) * 1.9,
+              0.25,
+              this.activeHeadOrangeIndex,
+              true,
+              999
             );
+            this.worldEnv.triggerPondSplashBurst(pool, 6);
+            AudioService.playSplash();
+
+            if (this.fruitsCarried === 1) {
+              this.callbacks.onModeNotification?.(
+                'Tap water washed all back fruits into your Home Pool — 1 signature Head Orange left!'
+              );
+            } else {
+              this.callbacks.onModeNotification?.(
+                `Tap water washing fruits off your back into the pool... (${this.fruitsCarried - 1} left on back)`
+              );
+            }
+            this.emitTelemetry();
           }
-          this.syncLogarithmicBodyLength(true);
-
-          // Drop the washed fruit into the pond water!
-          const angle = Math.random() * Math.PI * 2;
-          this.spawnPhysicsFruit(
-            pool.tapStreamWorldX + Math.cos(angle) * 0.25,
-            pool.waterMesh.position.y + 0.55,
-            pool.tapStreamWorldZ + Math.sin(angle) * 0.25,
-            Math.cos(angle) * 1.9 + 1.2,
-            -2.6,
-            Math.sin(angle) * 1.9,
-            0.25,
-            this.activeHeadOrangeIndex,
-            true,
-            999
-          );
-          this.worldEnv.triggerPondSplashBurst(pool, 6);
-          AudioService.playSplash();
-
-          if (this.fruitsCarried === 1) {
-            this.callbacks.onModeNotification?.(
-              'Tap water washed all back fruits into your Home Pool — 1 signature Head Orange left!'
-            );
-          } else {
-            this.callbacks.onModeNotification?.(
-              `Tap water washing fruits off your back into the pool... (${this.fruitsCarried - 1} left on back)`
-            );
-          }
-          this.emitTelemetry();
+        } else {
+          this.tapWashAccum = 0;
         }
       } else {
         this.tapWashAccum = 0;
@@ -11355,6 +11436,8 @@ export class PlayStyleManager {
         if (comp > 0.001) {
           const lateralPoisson = 1.0 / Math.sqrt(Math.max(0.55, 1.0 - comp));
           bm.scale.set(lateralPoisson, Math.max(0.58, 1.0 - comp), lateralPoisson);
+        } else if (bm.scale.x !== 1 || bm.scale.y !== 1 || bm.scale.z !== 1) {
+          bm.scale.set(1, 1, 1);
         }
       }
     }
@@ -11615,9 +11698,9 @@ export class PlayStyleManager {
 
       const physStep = this.physicsBridge.stepContiguousCharacterAndWorld(
         {
-          wx: activeLeaderX,
+          wx: prevLeaderX,
           wy: activeLeaderY,
-          wz: activeLeaderZ,
+          wz: prevLeaderZ,
           vx: 0,
           vy: this.heroVelocity.y,
           vz: 0,
@@ -11922,6 +12005,8 @@ export class PlayStyleManager {
       speed *= 2.1;
       dashVx = Math.sin(this.heroYaw) * 16.0;
       dashVz = Math.cos(this.heroYaw) * 16.0;
+    } else if (this.isJumping) {
+      this.isJumping = false;
     }
 
     const heroScale = Math.min(2.6, 0.85 + Math.log10(Math.max(10, this.sporeMass)) * 0.48);
@@ -11931,8 +12016,12 @@ export class PlayStyleManager {
     const prevLz = this.heroLocalPos.z;
     this.applyPlayerMovementAndCamera(dt, speed, 7.5 + heroScale * 2.2, 11.0 + heroScale * 1.8);
 
-    const desiredVx = (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) + dashVx;
-    const desiredVz = (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) + dashVz;
+    // applyPlayerMovementAndCamera already integrated heroVelocity.x/z into heroLocalPos; subtract it so
+    // PhysicsWorldBridge does not double-integrate knockback alongside vx/vz.
+    const desiredVx =
+      (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) - this.heroVelocity.x + dashVx;
+    const desiredVz =
+      (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) - this.heroVelocity.z + dashVz;
 
     // Step contiguous physics with Shallow-Water Lagoon Buoyancy & NW Promenade Causeway continuity
     const phys = this.physicsBridge.stepContiguousCharacterAndWorld(
@@ -12158,7 +12247,7 @@ export class PlayStyleManager {
   private tickRunner(dt: number) {
     const zone = ZONE_LOCATIONS.runner;
     const prevLx = this.heroLocalPos.x;
-    const prevLz = this.heroLocalPos.z;
+    let prevLz = this.heroLocalPos.z;
 
     const onBoostTrack =
       Math.abs(this.heroLocalPos.x) <= 4.35 &&
@@ -12191,6 +12280,7 @@ export class PlayStyleManager {
       // Bounded circuit turnaround at localZ <= -85.5: refresh math gates & loop cleanly to track head (z = 0)!
       if (this.heroLocalPos.z <= -85.5) {
         this.heroLocalPos.z = 0.0;
+        prevLz = 0.0;
         this.refreshRunnerCircuitGates();
       }
     } else {
@@ -12385,8 +12475,8 @@ export class PlayStyleManager {
         vx: this.heroVelocity.x,
         vy: this.heroVelocity.y,
         vz: this.heroVelocity.z,
-        desiredMoveVx: (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt),
-        desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt),
+        desiredMoveVx: (this.heroLocalPos.x - prevLx) / Math.max(0.001, dt) - this.heroVelocity.x,
+        desiredMoveVz: (this.heroLocalPos.z - prevLz) / Math.max(0.001, dt) - this.heroVelocity.z,
         radius: 0.68,
         halfHeight: 0.25,
         jumpImpulseY,
@@ -12473,7 +12563,9 @@ export class PlayStyleManager {
 
     if (this.yuzuGhostRunActive) {
       this.yuzuGhostRunElapsedSec += dt;
-      const planarVel = Math.hypot(this.heroVelocity.x, this.heroVelocity.z);
+      const planarSpeed =
+        Math.hypot(this.heroLocalPos.x - prevLx, this.heroLocalPos.z - prevLz) /
+        Math.max(0.001, dt);
       this.yuzuGhostRecorder.recordTick(
         this.yuzuGhostRunElapsedSec,
         this.heroLocalPos.x,
@@ -12483,7 +12575,7 @@ export class PlayStyleManager {
         this.moveInput.x,
         this.moveInput.z,
         this.isGrounded,
-        planarVel > 0.4,
+        planarSpeed > 0.4,
         !this.isGrounded
       );
 
@@ -12895,7 +12987,7 @@ export class PlayStyleManager {
     const horizonMinPitch =
       showPlayableSurface || inTerrestrialZoom
         ? 0.14
-        : THREE.MathUtils.lerp(-0.68, 0.14, THREE.MathUtils.smoothstep(logVal, 5.8, 4.7));
+        : THREE.MathUtils.lerp(-0.68, 0.14, smoothstep01(5.8, 4.7, logVal));
     const idleLookMs = performance.now() - this.mouselookLastActiveTimeMs;
     const isBasicComfortMode = !this.settings.advancedMode;
     const idleSpaceDrift =
@@ -13507,8 +13599,14 @@ export class PlayStyleManager {
   }
 
   public setSeamlessLogScale(nextLogMeters: number, immediate: boolean = false) {
+    if (this.disposed) return;
     if (this.placementGhost.active) {
       this.cancelBuildingPlacementGhost(true);
+    }
+    if (this.yuzuGhostRunActive) {
+      this.yuzuGhostRunActive = false;
+      this.yuzuGhostRunElapsedSec = 0;
+      this.yuzuGhostRecorder.stopRun();
     }
     const clamped = THREE.MathUtils.clamp(
       nextLogMeters,
@@ -13675,7 +13773,7 @@ export class PlayStyleManager {
       const inForestWindow = logVal >= -0.85 && logVal <= 2.85;
       const horizonMinPitch = inForestWindow
         ? 0.14
-        : THREE.MathUtils.lerp(-0.68, 0.14, THREE.MathUtils.smoothstep(logVal, 5.8, 4.7));
+        : THREE.MathUtils.lerp(-0.68, 0.14, smoothstep01(5.8, 4.7, logVal));
       const res = computeMouseLookAngles(
         this.cosmicOrbitYaw,
         this.cosmicOrbitPitch,
@@ -13941,7 +14039,7 @@ export class PlayStyleManager {
   }
 
   public handleResize(width: number, height: number) {
-    if (width < 16 || height < 16) return;
+    if (this.disposed || width < 16 || height < 16) return;
     const safeW = Math.max(16, Math.floor(width));
     const safeH = Math.max(16, Math.floor(height));
     const curSize = this.renderer.getSize(_rendererSizeVec2);
@@ -13971,6 +14069,8 @@ export class PlayStyleManager {
     this.idleWarmupCancel?.();
     this.idleWarmupCancel = null;
     this.cancelBuildingPlacementGhost(true);
+    this.yuzuGhostRunActive = false;
+    this.yuzuGhostRecorder.stopRun();
     ProgressionService.flushPendingSave();
     AudioService.dispose();
     this.physicsBridge?.dispose();
@@ -13979,6 +14079,8 @@ export class PlayStyleManager {
     this.chronoVessel?.dispose();
     this.chronoPad?.dispose();
     this.vfxEngine?.dispose();
+    this.worldEnv?.dispose();
+    this.profiler.dispose();
     this.gpuEngine?.dispose();
     this.runnerBannerTextureCache.forEach((tex) => tex.dispose());
     this.runnerBannerTextureCache.clear();
@@ -13986,7 +14088,7 @@ export class PlayStyleManager {
     this.sporeOrbDnaGeo?.dispose();
     this.sporeOrbPlanktonMat?.dispose();
     this.sporeOrbDnaMat?.dispose();
-    this.sporeRippleTexture?.dispose();
+    this.sporeRippleTexture = null;
     this.sporeWaterMat?.dispose();
     this.capytorioRenderer?.dispose();
     this.fallGuysGhostMat?.dispose();

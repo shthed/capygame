@@ -10,6 +10,7 @@ import {
   evaluatePlayAreaCutoutSightlineAlpha,
 } from './gpu/FramePerformanceGovernor';
 import { getWebGpuRuntime } from './gpu/WebGpuRuntime';
+import { disposeObject3DTree } from './gpu/ThreeDisposal';
 import { enforceWeatherParticleCameraClearance } from './physics/QuadrupedGaitSolver';
 
 // Zero-allocation scratch helpers for GPU particle & shader updates
@@ -430,6 +431,7 @@ export class RealisticWorldEnvironment {
     tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.generateMipmaps = false;
     tex.needsUpdate = true;
+    tex.userData.sharedAsset = true;
     this.sharedRippleDataTexture = tex;
     PbrTextureSynthesizer.registerManagedTexture(tex);
     return tex;
@@ -1200,12 +1202,14 @@ export class RealisticWorldEnvironment {
     albedo.wrapS = THREE.RepeatWrapping;
     albedo.wrapT = THREE.RepeatWrapping;
     albedo.anisotropy = anisotropy;
+    albedo.userData.sharedAsset = true;
 
     const bump = new THREE.CanvasTexture(bmpCanvas);
     bump.colorSpace = THREE.NoColorSpace;
     bump.wrapS = THREE.RepeatWrapping;
     bump.wrapT = THREE.RepeatWrapping;
     bump.anisotropy = anisotropy;
+    bump.userData.sharedAsset = true;
 
     const synth = PbrTextureSynthesizer.getSurfaceMaps(kind, albedo, bump);
 
@@ -1266,6 +1270,7 @@ export class RealisticWorldEnvironment {
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(16, 16);
+    tex.userData.sharedAsset = true;
     this.waterNormalTex = tex;
     return tex;
   }
@@ -1287,6 +1292,7 @@ export class RealisticWorldEnvironment {
     const tex = new THREE.CanvasTexture(canvas);
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
+    tex.userData.sharedAsset = true;
     this.peelBumpTex = tex;
     return tex;
   }
@@ -1317,7 +1323,7 @@ export class RealisticWorldEnvironment {
   // ============================================================================
   // 3D BACKGROUND ALPINE MOUNTAIN RANGE
   // ============================================================================
-  private buildAlpineMountainRange(radialSegs: number): THREE.Mesh {
+  public static buildAlpineMountainGeometry(radialSegs: number): THREE.BufferGeometry {
     const ringSegs = 28;
     const innerR = 390;
     const outerR = 620;
@@ -1385,8 +1391,8 @@ export class RealisticWorldEnvironment {
         const i1 = i0 + 1;
         const i2 = i0 + (radialSegs + 1);
         const i3 = i2 + 1;
-        indices.push(i0, i2, i1);
-        indices.push(i1, i2, i3);
+        indices.push(i0, i1, i2);
+        indices.push(i1, i3, i2);
       }
     }
 
@@ -1399,6 +1405,11 @@ export class RealisticWorldEnvironment {
     geo.setIndex(indices);
     geo.computeVertexNormals();
     PbrTextureSynthesizer.prepareGeometryForPbr(geo);
+    return geo;
+  }
+
+  private buildAlpineMountainRange(radialSegs: number): THREE.Mesh {
+    const geo = RealisticWorldEnvironment.buildAlpineMountainGeometry(radialSegs);
 
     const mtnTex = RealisticWorldEnvironment.getTextureSet('mountain');
     const mat = new THREE.MeshStandardMaterial({
@@ -1897,6 +1908,7 @@ export class RealisticWorldEnvironment {
     geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geo.setIndex(indices);
     geo.computeVertexNormals();
+    geo.userData.sharedAsset = true;
     this.sharedLeafGeo = geo;
     return geo;
   }
@@ -1958,6 +1970,7 @@ export class RealisticWorldEnvironment {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(mergedPos, 3));
     geo.setIndex(mergedIdx);
     geo.computeVertexNormals();
+    geo.userData.sharedAsset = true;
     this.sharedBlossomCorollaGeo = geo;
     return geo;
   }
@@ -2005,11 +2018,12 @@ export class RealisticWorldEnvironment {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(mergedPos, 3));
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(mergedNorm, 3));
     geo.setIndex(mergedIdx);
+    geo.userData.sharedAsset = true;
     this.sharedCalyxStarGeo = geo;
     return geo;
   }
 
-  private static getUnitRibbedFruitGeometry(): THREE.BufferGeometry {
+  public static getUnitRibbedFruitGeometry(): THREE.BufferGeometry {
     if (this.sharedUnitRibbedFruitGeo) return this.sharedUnitRibbedFruitGeo;
     // Unit-radius (R=1) organic 9-carpel ribbed citrus hesperidium with basal calyx dimple & stylar apex
     const latSegs = 16;
@@ -2050,7 +2064,7 @@ export class RealisticWorldEnvironment {
         const b = a + 1;
         const c = a + row;
         const d = c + 1;
-        indices.push(a, b, c, b, d, c);
+        indices.push(a, c, b, b, c, d);
       }
     }
 
@@ -2059,6 +2073,7 @@ export class RealisticWorldEnvironment {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geo.setIndex(indices);
     geo.computeVertexNormals();
+    geo.userData.sharedAsset = true;
     this.sharedUnitRibbedFruitGeo = geo;
     return geo;
   }
@@ -2991,5 +3006,16 @@ export class RealisticWorldEnvironment {
       this.weatherMesh.setMatrixAt(i, _matDummy.matrix);
     }
     this.weatherMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  public dispose(): void {
+    this.wettableMaterials.length = 0;
+    RealisticWorldEnvironment.trackedTslWaterMaterials.length = 0;
+    PbrTextureSynthesizer.pruneNonSharedManagedTextures();
+    disposeObject3DTree(this.skyMesh);
+    disposeObject3DTree(this.mountainMesh);
+    disposeObject3DTree(this.cloudGroup);
+    disposeObject3DTree(this.weatherMesh);
+    this.moonLight?.dispose();
   }
 }

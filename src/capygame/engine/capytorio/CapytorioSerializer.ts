@@ -2,9 +2,13 @@ import {
   CAPYTORIO_CHEST_SLOTS,
   CAPYTORIO_HOTBAR_ORDER,
   CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_TECHS,
   RECIPE_BY_ID,
   TECH_BY_ID,
+  getCapytorioFootprint,
+  isCapytorioFunctionalInserter,
+  isCapytorioStorageChest,
   type CapytorioDirection,
   type CapytorioItemId,
   type CapytorioMachineType,
@@ -15,6 +19,7 @@ import {
   MAX_CAPYTORIO_BLUEPRINT_LIBRARY,
   MAX_CAPYTORIO_SPILLED_ITEMS,
   MAX_RECENT_CAPYTORIO_TOOLS,
+  isCapytorioModuleItem,
   resolveCapytorioPlaceableSpec,
   tileKey,
   type CapytorioBlueprintEntry,
@@ -60,6 +65,15 @@ export interface CapytorioSerializerHost {
   allocateSpilledItemUid(): number;
   allocateBlueprintUid(): number;
   getRecentTools(): string[];
+  canFootprintFit(
+    gx: number,
+    gz: number,
+    width: number,
+    height: number,
+    ignoreMachine?: CapytorioMachine,
+    allowWater?: boolean
+  ): boolean;
+  getMachineModuleSlotLimit(m: CapytorioMachine): number;
   registerMachineOccupancy(m: CapytorioMachine): void;
   markHydratedAndRecomputePower(): void;
 }
@@ -244,40 +258,154 @@ export function hydrateCapytorioEngineState(
       }
     }
   }
-  host.activeTechId =
-    raw.activeTechId && TECH_BY_ID.has(raw.activeTechId)
-      ? raw.activeTechId
-      : (CAPYTORIO_TECHS[0]?.id ?? null);
-  host.techDelivered = raw.techDelivered ? { ...raw.techDelivered } : {};
-  host.rocketLaunches = Math.max(0, Math.round(raw.rocketLaunches || 0));
-  host.totalProduced = Math.max(0, Math.round(raw.totalProduced || 0));
-  host.score = Math.max(0, Math.round(raw.score || 0));
+  let activeTechId: CapytorioTechId | null = null;
+  if (raw.activeTechId && TECH_BY_ID.has(raw.activeTechId)) {
+    const tech = TECH_BY_ID.get(raw.activeTechId)!;
+    if (tech.repeatable || !host.unlockedTechs.has(raw.activeTechId)) {
+      activeTechId = raw.activeTechId;
+    }
+  }
+  if (!activeTechId) {
+    for (let i = 0; i < CAPYTORIO_TECHS.length; i++) {
+      const candidate = CAPYTORIO_TECHS[i];
+      if (candidate.repeatable || !host.unlockedTechs.has(candidate.id)) {
+        activeTechId = candidate.id;
+        break;
+      }
+    }
+  }
+  host.activeTechId = activeTechId;
+  host.techDelivered = {};
+  if (raw.techDelivered && typeof raw.techDelivered === 'object') {
+    for (const [k, v] of Object.entries(raw.techDelivered) as Array<[CapytorioItemId, number]>) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        host.techDelivered[k] = Math.round(v);
+      }
+    }
+  }
+  host.rocketLaunches =
+    typeof raw.rocketLaunches === 'number' && Number.isFinite(raw.rocketLaunches)
+      ? Math.max(0, Math.round(raw.rocketLaunches))
+      : 0;
+  host.totalProduced =
+    typeof raw.totalProduced === 'number' && Number.isFinite(raw.totalProduced)
+      ? Math.max(0, Math.round(raw.totalProduced))
+      : 0;
+  host.score =
+    typeof raw.score === 'number' && Number.isFinite(raw.score)
+      ? Math.max(0, Math.round(raw.score))
+      : 0;
   host.lastReportedScore = host.score;
+
+  const sanitizeItemBuffer = (
+    rawBuf: Partial<Record<CapytorioItemId, number>> | undefined
+  ): Partial<Record<CapytorioItemId, number>> => {
+    const out: Partial<Record<CapytorioItemId, number>> = {};
+    if (!rawBuf || typeof rawBuf !== 'object') return out;
+    for (const [k, v] of Object.entries(rawBuf) as Array<[CapytorioItemId, number]>) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        out[k] = Math.round(v);
+      }
+    }
+    return out;
+  };
 
   if (Array.isArray(raw.machines)) {
     for (let i = 0; i < raw.machines.length; i++) {
       const sm = raw.machines[i];
-      if (!sm || typeof sm.gx !== 'number' || typeof sm.gz !== 'number') continue;
+      if (
+        !sm ||
+        typeof sm.gx !== 'number' ||
+        !Number.isFinite(sm.gx) ||
+        typeof sm.gz !== 'number' ||
+        !Number.isFinite(sm.gz)
+      ) {
+        continue;
+      }
       if (!CAPYTORIO_MACHINE_SPECS[sm.type]) continue;
+      let cleanVariant: CapytorioItemId | undefined = undefined;
+      let defaultTierMult = 1.0;
+      if (typeof sm.variantItemId === 'string' && sm.variantItemId.length > 0) {
+        const mapping = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[sm.variantItemId];
+        if (mapping && mapping.baseType === sm.type) {
+          cleanVariant = sm.variantItemId;
+          defaultTierMult = mapping.tierMult;
+        }
+      }
+      const cleanTierMult =
+        typeof sm.tierMult === 'number' && Number.isFinite(sm.tierMult) && sm.tierMult > 0
+          ? Math.min(20, sm.tierMult)
+          : defaultTierMult;
+      const cleanGx = Math.round(sm.gx);
+      const cleanGz = Math.round(sm.gz);
+      const cleanDir = ((typeof sm.dir === 'number' && Number.isFinite(sm.dir) ? Math.round(sm.dir) : 1) &
+        3) as CapytorioDirection;
+      const fp = getCapytorioFootprint(sm.type, cleanVariant, cleanDir);
+      if (
+        !host.canFootprintFit(
+          cleanGx,
+          cleanGz,
+          fp.width,
+          fp.height,
+          undefined,
+          cleanVariant === 'offshore_pump'
+        )
+      ) {
+        continue;
+      }
+      const cleanRecipeId =
+        sm.type === 'assembler' && typeof sm.recipeId === 'string' && RECIPE_BY_ID.has(sm.recipeId)
+          ? sm.recipeId
+          : undefined;
       const maxBeltCap =
         sm.type === 'splitter'
           ? CAPYTORIO_BELT_MAX_ITEMS_PER_TILE * 2
           : CAPYTORIO_BELT_MAX_ITEMS_PER_TILE;
+      const functionalInserter = isCapytorioFunctionalInserter({
+        type: sm.type,
+        variantItemId: cleanVariant,
+      });
+      const storageChest = isCapytorioStorageChest({
+        type: sm.type,
+        variantItemId: cleanVariant,
+      });
+      const cleanBeltItems: CapytorioMachine['beltItems'] = [];
+      if (Array.isArray(sm.beltItems)) {
+        for (let bi = 0; bi < sm.beltItems.length && cleanBeltItems.length < maxBeltCap; bi++) {
+          const b = sm.beltItems[bi];
+          if (!b || typeof b.item !== 'string' || b.item.length === 0) continue;
+          const prog =
+            typeof b.progress === 'number' && Number.isFinite(b.progress)
+              ? Math.max(0, Math.min(1, b.progress))
+              : 0;
+          cleanBeltItems.push({
+            uid: host.allocateBeltItemUid(),
+            item: b.item,
+            progress: prog,
+            lane: b.lane === 1 ? 1 : 0,
+            squish: 0,
+            edgeProgress:
+              typeof b.edgeProgress === 'number' && Number.isFinite(b.edgeProgress)
+                ? Math.max(0, Math.min(1, b.edgeProgress))
+                : 0,
+          });
+        }
+      }
       const machine: CapytorioMachine = {
         id: host.allocateMachineId(),
         type: sm.type,
-        variantItemId: sm.variantItemId,
-        tierMult: sm.tierMult,
-        gx: Math.round(sm.gx),
-        gz: Math.round(sm.gz),
-        dir: ((sm.dir ?? 1) & 3) as CapytorioDirection,
-        recipeId: sm.recipeId,
+        variantItemId: cleanVariant,
+        tierMult: cleanTierMult,
+        gx: cleanGx,
+        gz: cleanGz,
+        dir: cleanDir,
+        recipeId: cleanRecipeId,
         craftProgress: 0,
         productivityProgress: 0,
         fuelTimer: 0,
         armSwing: 0,
         armExtend: 0,
-        inserterPhase: sm.type === 'inserter' ? 'idle_pickup' : undefined,
+        inserterPhase: functionalInserter ? 'idle_pickup' : undefined,
         holdingItem: null,
         splitterToggle: 0,
         splitterInputToggle: 0,
@@ -295,54 +423,55 @@ export function hydrateCapytorioEngineState(
               : undefined,
         splitterFilterItem: sm.type === 'splitter' ? (sm.splitterFilterItem ?? null) : undefined,
         inserterFilterMode:
-          sm.inserterFilterMode === 'blacklist'
-            ? 'blacklist'
-            : sm.type === 'inserter'
-              ? 'whitelist'
-              : undefined,
+          functionalInserter
+            ? sm.inserterFilterMode === 'blacklist'
+              ? 'blacklist'
+              : 'whitelist'
+            : undefined,
         inserterFilters:
-          sm.type === 'inserter' && Array.isArray(sm.inserterFilters)
-            ? sm.inserterFilters.slice(0, 5)
-            : sm.type === 'inserter'
+          functionalInserter && Array.isArray(sm.inserterFilters)
+            ? sm.inserterFilters.filter((f): f is string => typeof f === 'string' && f.length > 0).slice(0, 5)
+            : functionalInserter
               ? []
               : undefined,
         inserterStackLimit:
-          sm.type === 'inserter' &&
+          functionalInserter &&
           typeof sm.inserterStackLimit === 'number' &&
           Number.isFinite(sm.inserterStackLimit)
             ? Math.max(1, Math.min(12, Math.round(sm.inserterStackLimit)))
-            : sm.type === 'inserter'
+            : functionalInserter
               ? null
               : undefined,
         chestSlotLimit:
-          sm.type === 'chest' &&
+          storageChest &&
           typeof sm.chestSlotLimit === 'number' &&
           Number.isFinite(sm.chestSlotLimit)
             ? Math.max(1, Math.min(CAPYTORIO_CHEST_SLOTS, Math.round(sm.chestSlotLimit)))
-            : sm.type === 'chest'
+            : storageChest
               ? null
               : undefined,
-        modules: Array.isArray(sm.modules) ? sm.modules.slice(0, 4) : undefined,
+        modules: undefined,
         integrity:
           typeof sm.integrity === 'number' && Number.isFinite(sm.integrity)
             ? Math.max(10, Math.min(100, Math.round(sm.integrity)))
             : undefined,
-        inputBuffer: sm.inputBuffer ? { ...sm.inputBuffer } : {},
-        outputBuffer: sm.outputBuffer ? { ...sm.outputBuffer } : {},
-        beltItems: Array.isArray(sm.beltItems)
-          ? sm.beltItems.slice(0, maxBeltCap).map((b) => ({
-              uid: host.allocateBeltItemUid(),
-              item: b.item,
-              progress: b.progress,
-              lane: b.lane === 1 ? 1 : 0,
-              squish: 0,
-              edgeProgress:
-                typeof b.edgeProgress === 'number' && Number.isFinite(b.edgeProgress)
-                  ? Math.max(0, Math.min(1, b.edgeProgress))
-                  : 0,
-            }))
-          : [],
+        inputBuffer: sanitizeItemBuffer(sm.inputBuffer),
+        outputBuffer: sanitizeItemBuffer(sm.outputBuffer),
+        beltItems: cleanBeltItems,
       };
+      const slotLimit = host.getMachineModuleSlotLimit(machine);
+      if (slotLimit > 0 && Array.isArray(sm.modules)) {
+        const cleanMods: CapytorioItemId[] = [];
+        for (let mi = 0; mi < sm.modules.length && cleanMods.length < slotLimit; mi++) {
+          const modId = sm.modules[mi];
+          if (typeof modId === 'string' && isCapytorioModuleItem(modId)) {
+            cleanMods.push(modId);
+          }
+        }
+        if (cleanMods.length > 0) {
+          machine.modules = cleanMods;
+        }
+      }
       host.machines.set(tileKey(machine.gx, machine.gz), machine);
       host.registerMachineOccupancy(machine);
     }

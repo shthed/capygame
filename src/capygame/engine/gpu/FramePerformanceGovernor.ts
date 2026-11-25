@@ -95,7 +95,8 @@ export function computeAdaptiveGpuMitigation(
     antiAliasing = 'none';
   }
 
-  const features: string[] = [];
+  const features: string[] = out ? out.disabledFeatures : [];
+  features.length = 0;
   if (baseAutoLod && maxCapyLodTier < 3) {
     features.push(`LOD<=T${maxCapyLodTier}`);
   }
@@ -879,6 +880,7 @@ export class PerformanceLogTracker {
   public maxFpsLimit = 60;
   public activeGovernorTier = 0;
   public disabledFeatures: string[] = [];
+  private readonly frameRecordResult = { isLagDrop: false, shouldReduceLoad: false };
 
   constructor(startTimeMs: number = Date.now()) {
     this.startTimestampMs = startTimeMs;
@@ -916,7 +918,9 @@ export class PerformanceLogTracker {
     if (this.warmupFramesRemaining > 0) {
       this.warmupFramesRemaining--;
       this.liveFps = Math.min(displayCap, Math.round(this.smoothedFps));
-      return { isLagDrop: false, shouldReduceLoad: false };
+      this.frameRecordResult.isLagDrop = false;
+      this.frameRecordResult.shouldReduceLoad = false;
+      return this.frameRecordResult;
     }
 
     // On software GL headless pacing, measure actual CPU+GL draw execution time against budget
@@ -969,11 +973,10 @@ export class PerformanceLogTracker {
       }
     }
 
-    return {
-      isLagDrop,
-      shouldReduceLoad:
-        this.lock60FpsEnabled && (isLagDrop || this.getAvgFrameMs() > budgetMs * 1.09),
-    };
+    this.frameRecordResult.isLagDrop = isLagDrop;
+    this.frameRecordResult.shouldReduceLoad =
+      this.lock60FpsEnabled && (isLagDrop || this.getAvgFrameMs() > budgetMs * 1.09);
+    return this.frameRecordResult;
   }
 
   public recordSyntheticLagSpike(
@@ -1235,7 +1238,7 @@ export function installFastMatrixCull<T extends THREE.Object3D>(root: T): T {
   }
   root.userData.__fastMatrixCullInstalled = true;
   root.updateMatrixWorld = function fastUpdateMatrixWorld(force?: boolean): void {
-    if (!this.visible || !this.matrixWorldAutoUpdate) {
+    if (!force && (!this.visible || !this.matrixWorldAutoUpdate)) {
       this.matrixWorldNeedsUpdate = true;
       return;
     }

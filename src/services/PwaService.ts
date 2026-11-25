@@ -118,16 +118,25 @@ class PwaServiceClass {
             const cache = await caches.open(cacheName);
             const urlSet = new Set<string>();
 
-            const shouldCacheUrl = (u: string) =>
-              Boolean(u) &&
-              u.startsWith(window.location.origin) &&
-              !u.includes('/__vite_ping') &&
-              !u.includes('/__aistudio') &&
-              !u.includes('/_aistudio') &&
-              !u.includes('/__cookie_check') &&
-              !u.endsWith('/sw.js') &&
-              !u.endsWith('/warmup.html') &&
-              !u.endsWith('/forbidden.html');
+            const shouldCacheUrl = (u: string) => {
+              if (!u) return false;
+              let parsed: URL;
+              try {
+                parsed = new URL(u, window.location.href);
+              } catch {
+                return false;
+              }
+              return (
+                parsed.origin === window.location.origin &&
+                !parsed.pathname.includes('/__vite_ping') &&
+                !parsed.pathname.includes('/__aistudio') &&
+                !parsed.pathname.includes('/_aistudio') &&
+                !parsed.pathname.includes('/__cookie_check') &&
+                !parsed.pathname.endsWith('/sw.js') &&
+                !parsed.pathname.endsWith('/warmup.html') &&
+                !parsed.pathname.endsWith('/forbidden.html')
+              );
+            };
 
             document.querySelectorAll('script[src], link[rel="stylesheet"]').forEach((el) => {
               const src = 'src' in el ? (el as HTMLScriptElement).src : (el as HTMLLinkElement).href;
@@ -159,6 +168,12 @@ class PwaServiceClass {
             // Ignored
           }
         })();
+      }
+
+      // Surface an already-waiting service worker update immediately
+      if (reg.waiting && navigator.serviceWorker.controller) {
+        this.hasUpdate = true;
+        this.notifyListeners();
       }
 
       // Handle updates found
@@ -230,8 +245,17 @@ class PwaServiceClass {
 
   public applyUpdate() {
     if (this.registration && this.registration.waiting) {
+      let reloaded = false;
+      const doReload = () => {
+        if (reloaded) return;
+        reloaded = true;
+        window.location.reload();
+      };
+      if ('serviceWorker' in navigator && navigator.serviceWorker) {
+        navigator.serviceWorker.addEventListener('controllerchange', doReload, { once: true });
+      }
       this.registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-      window.location.reload();
+      window.setTimeout(doReload, 1500);
     }
   }
 

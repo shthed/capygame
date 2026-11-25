@@ -4,6 +4,7 @@ import {
   Check,
   ClipboardPaste,
   Copy,
+  Cpu,
   Eye,
   Flame,
   FlipHorizontal2,
@@ -17,6 +18,7 @@ import {
   Search,
   Settings,
   Undo2,
+  Wrench,
   X,
 } from 'lucide-react';
 import {
@@ -24,6 +26,7 @@ import {
   CAPYTORIO_CHEST_SLOTS,
   CAPYTORIO_ITEM_CATALOG,
   CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_MODULE_IDS,
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   getCapytorioFootprint,
@@ -186,6 +189,9 @@ export interface CapytorioHudProps {
     }
   ) => void;
   onSetChestSlotLimit: (gx: number, gz: number, slotLimit: number | null) => void;
+  onInstallModule?: (gx: number, gz: number, moduleItemId: CapytorioItemId) => void;
+  onRemoveModule?: (gx: number, gz: number, slotIndex: number) => void;
+  onRepairMachine?: (gx: number, gz: number) => void;
   showToast: (msg: string) => void;
 }
 
@@ -250,6 +256,9 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
   onSetSplitterConfig,
   onSetInserterConfig,
   onSetChestSlotLimit,
+  onInstallModule,
+  onRemoveModule,
+  onRepairMachine,
   showToast,
 }) => {
   const filterableItems = useMemo(() => {
@@ -268,7 +277,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
           (order[a.category] ?? 9) - (order[b.category] ?? 9) ||
           a.name.localeCompare(b.name)
       );
-  }, []);
+  }, [luaCatalogInfo.version]);
   const invSearchInputRef = useRef<HTMLInputElement | null>(null);
   const craftSearchInputRef = useRef<HTMLInputElement | null>(null);
   const assemblerSearchInputRef = useRef<HTMLInputElement | null>(null);
@@ -735,9 +744,11 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                         <div className="flex items-center justify-between text-[10px] font-mono tabular-nums text-[#c4c9d4]">
                           <span>
                             {inspected.type === 'generator'
-                              ? inspected.fuelTimer > 0
-                                ? `Burning Fuel · 6.0 MW (${inspected.fuelTimer.toFixed(1)}s)`
-                                : 'Idle · 1.5 MW (Feed Coal/Orange for 6.0 MW)'
+                              ? inspectedTile?.machine?.isFuelGenerator === false
+                                ? `Active · ${(inspectedTile.machine.powerSupplyMw ?? 0).toFixed(1)} MW (Fuel-Free)`
+                                : inspected.fuelTimer > 0
+                                  ? `Burning Fuel · ${(inspectedTile?.machine?.powerSupplyMw ?? 6.0).toFixed(1)} MW (${inspected.fuelTimer.toFixed(1)}s)`
+                                  : `Idle · ${(inspectedTile?.machine?.powerSupplyMw ?? 1.5).toFixed(1)} MW (Feed Coal/Orange)`
                               : `Craft Progress: ${Math.round(inspected.craftProgress * 100)}%`}
                           </span>
                           <span>
@@ -751,7 +762,9 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                             style={{
                               width: `${
                                 inspected.type === 'generator'
-                                  ? Math.min(100, Math.round((inspected.fuelTimer / 14) * 100))
+                                  ? inspectedTile?.machine?.isFuelGenerator === false
+                                    ? 100
+                                    : Math.min(100, Math.round((inspected.fuelTimer / 14) * 100))
                                   : Math.round(inspected.craftProgress * 100)
                               }%`,
                             }}
@@ -894,7 +907,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                       </div>
                     )}
 
-                    {inspectedTile?.machine?.type === 'inserter' && (
+                    {inspectedTile?.machine?.type === 'inserter' &&
+                      inspectedTile.machine.isFunctionalInserter !== false && (
                       <div className="p-2 rounded-[2px] bg-[#121417] border border-[#282b33] space-y-2 text-[10px]">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="font-mono text-[#9aa0ac]">
@@ -1003,7 +1017,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                       </div>
                     )}
 
-                    {inspectedTile?.machine?.type === 'chest' && (
+                    {inspectedTile?.machine?.type === 'chest' &&
+                      inspectedTile.machine.isStorageChest !== false && (
                       <div className="p-2 rounded-[2px] bg-[#121417] border border-[#282b33] space-y-1.5 text-[10px]">
                         <div className="flex items-center justify-between font-mono tabular-nums">
                           <span className="text-[#9aa0ac]">Chest Slot Limit (Red Bar)</span>
@@ -1046,9 +1061,136 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                       </div>
                     )}
 
+                    {/* Module Sockets (Speed / Efficiency / Productivity) */}
+                    {inspectedTile?.machine &&
+                      (inspectedTile.machine.moduleSlots ?? 0) > 0 &&
+                      onInstallModule &&
+                      onRemoveModule && (
+                        <div
+                          data-testid="capytorio-inspect-modules"
+                          className="p-2 rounded-[2px] bg-[#121417] border border-[#282b33] space-y-1.5 text-[10px]"
+                        >
+                          <div className="flex items-center justify-between font-mono tabular-nums">
+                            <span className="text-[#9aa0ac] flex items-center gap-1">
+                              <Cpu className="w-3 h-3 text-[#38bdf8]" />
+                              <span>Module Sockets</span>
+                            </span>
+                            <span className="text-[#f4b054] font-bold">
+                              {(inspectedTile.machine.modules ?? []).length}/
+                              {inspectedTile.machine.moduleSlots ?? 0}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1">
+                            {Array.from(
+                              { length: inspectedTile.machine.moduleSlots ?? 0 },
+                              (_, idx) => {
+                                const modId = inspectedTile.machine?.modules?.[idx];
+                                if (modId) {
+                                  const meta = getCapytorioItemMeta(modId);
+                                  return (
+                                    <button
+                                      key={idx}
+                                      type="button"
+                                      data-testid={`capytorio-module-slot-remove-${idx}`}
+                                      onClick={() =>
+                                        onRemoveModule(inspected.gx, inspected.gz, idx)
+                                      }
+                                      title={`Remove ${meta.name} to pocket`}
+                                      className="h-6 px-2 rounded-[2px] bg-[#1f2937] hover:bg-[#3a1a1a] border border-[#38bdf8]/65 font-mono text-[10px] text-[#e6e8ec] flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <span>{meta.shortName}</span>
+                                      <X className="w-2.5 h-2.5 text-[#f2857c]" />
+                                    </button>
+                                  );
+                                }
+                                return (
+                                  <span
+                                    key={idx}
+                                    className="h-6 px-2 rounded-[2px] bg-[#0e1013] border border-dashed border-[#3b404c] font-mono text-[9px] text-[#6d7380] flex items-center"
+                                  >
+                                    Empty
+                                  </span>
+                                );
+                              }
+                            )}
+                          </div>
+                          {(inspectedTile.machine.modules ?? []).length <
+                            (inspectedTile.machine.moduleSlots ?? 0) && (
+                            <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                              {CAPYTORIO_MODULE_IDS.map((modId) => {
+                                const stock = snap.pocketItems[modId] ?? 0;
+                                const meta = getCapytorioItemMeta(modId);
+                                return (
+                                  <button
+                                    key={modId}
+                                    type="button"
+                                    data-testid={`capytorio-module-install-${modId}`}
+                                    disabled={stock <= 0}
+                                    onClick={() =>
+                                      onInstallModule(inspected.gx, inspected.gz, modId)
+                                    }
+                                    title={
+                                      stock > 0
+                                        ? `Install ${meta.name} (${stock} in pocket)`
+                                        : `Craft ${meta.name} first`
+                                    }
+                                    className={`px-2 py-0.5 rounded-[2px] font-mono text-[9.5px] ${
+                                      stock > 0
+                                        ? `cursor-pointer ${FACTORIO_BTN_IDLE}`
+                                        : 'opacity-40 cursor-not-allowed bg-[#16181d] border border-[#2b2e35] text-[#6d7380]'
+                                    }`}
+                                  >
+                                    + {meta.shortName} ({stock})
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                    {/* Maintenance / Integrity / Overclock */}
+                    {inspectedTile?.machine && (
+                      <div className="px-2 py-1.5 rounded-[2px] bg-[#121417] border border-[#282b33] flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono tabular-nums">
+                        <div className="flex items-center gap-2 text-[#c4c9d4]">
+                          <span>
+                            Integrity:{' '}
+                            <strong className="text-[#86ef92]">
+                              {Math.round((inspectedTile.machine.integrity ?? 1) * 100)}%
+                            </strong>
+                          </span>
+                          {(inspectedTile.machine.overclockTimer ?? 0) > 0.1 && (
+                            <span className="text-[#f4b054]">
+                              Overclock +20% ({(inspectedTile.machine.overclockTimer ?? 0).toFixed(0)}s)
+                            </span>
+                          )}
+                        </div>
+                        {onRepairMachine && (
+                          <button
+                            type="button"
+                            data-testid="capytorio-inspect-repair-btn"
+                            disabled={(snap.pocketItems.repair_pack ?? 0) <= 0}
+                            onClick={() => onRepairMachine(inspected.gx, inspected.gz)}
+                            title="Use 1 Repair Pack to restore integrity and grant 60s +20% speed overclock"
+                            className={`px-2 py-0.5 rounded-[2px] flex items-center gap-1 ${
+                              (snap.pocketItems.repair_pack ?? 0) > 0
+                                ? `cursor-pointer ${FACTORIO_BTN_ACTIVE}`
+                                : 'opacity-45 cursor-not-allowed bg-[#16181d] border border-[#2b2e35] text-[#6d7380]'
+                            }`}
+                          >
+                            <Wrench className="w-2.5 h-2.5 shrink-0" />
+                            <span>
+                              Repair / Tune ({snap.pocketItems.repair_pack ?? 0})
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     {/* Action Controls */}
                     <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-                      {inspected.type === 'generator' && (
+                      {inspected.type === 'generator' &&
+                        inspectedTile?.machine?.isFuelGenerator !== false && (
                         <button
                           type="button"
                           data-testid="capytorio-inspect-fuel-btn"
@@ -1062,7 +1204,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
 
                       {(inspected.type === 'furnace' ||
                         inspected.type === 'assembler' ||
-                        inspected.type === 'lab') && (
+                        (inspected.type === 'lab' &&
+                          inspectedTile?.machine?.isResearchLab !== false)) && (
                         <button
                           type="button"
                           data-testid="capytorio-inspect-load-btn"
@@ -1086,8 +1229,10 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
 
                       {(inspected.type === 'assembler' ||
                         inspected.type === 'splitter' ||
-                        inspected.type === 'inserter' ||
-                        inspected.type === 'chest') && (
+                        (inspected.type === 'inserter' &&
+                          inspectedTile?.machine?.isFunctionalInserter !== false) ||
+                        (inspected.type === 'chest' &&
+                          inspectedTile?.machine?.isStorageChest !== false)) && (
                         <>
                           <button
                             type="button"
@@ -1436,6 +1581,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
             info={activeInfoTarget}
             isPinned={isInfoPinned}
             isTopBarVisible={isTopBarVisible}
+            catalogVersion={luaCatalogInfo.version}
             entitySettingsClipboard={snap.entitySettingsClipboard}
             onClearPin={onClearInspection}
             onOpenMachineModal={(gx, gz) => {

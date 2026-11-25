@@ -128,94 +128,136 @@ export class CapyModelGenerator {
   private static sharedCitrusBumpMap: THREE.CanvasTexture | null = null;
 
   // Shared anatomical sub-materials (varied roughness >= 0.25 for realistic PBR contrast)
-  private static rhinariumMaterial = new THREE.MeshStandardMaterial({
-    color: 0x26150e,
-    roughness: 0.24,
-    metalness: 0.06,
-  });
+  private static rhinariumMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0x26150e,
+      roughness: 0.24,
+      metalness: 0.06,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static eyeMaterial = new THREE.MeshStandardMaterial({
-    color: 0x120b07,
-    roughness: 0.06,
-    metalness: 0.12,
-  });
+  private static eyeMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0x120b07,
+      roughness: 0.06,
+      metalness: 0.12,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static eyeCatchlightMaterial = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-  });
+  private static eyeCatchlightMaterial = Object.assign(
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static innerEarMaterial = new THREE.MeshStandardMaterial({
-    color: 0xa66b59,
-    roughness: 0.76,
-    metalness: 0.02,
-  });
+  private static innerEarMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0xa66b59,
+      roughness: 0.76,
+      metalness: 0.02,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static cheekBlushMaterial = new THREE.MeshStandardMaterial({
-    color: 0xc97b63,
-    roughness: 0.90,
-    metalness: 0.0,
-  });
+  private static cheekBlushMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0xc97b63,
+      roughness: 0.90,
+      metalness: 0.0,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static incisorMaterial = new THREE.MeshStandardMaterial({
-    color: 0xfef9e7,
-    roughness: 0.22,
-    metalness: 0.04,
-  });
+  private static incisorMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0xfef9e7,
+      roughness: 0.22,
+      metalness: 0.04,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static legMaterial = new THREE.MeshStandardMaterial({
-    color: 0x663a1e,
-    roughness: 0.82,
-    metalness: 0.03,
-  });
+  private static legMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0x663a1e,
+      roughness: 0.82,
+      metalness: 0.03,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static webbingMaterial = new THREE.MeshStandardMaterial({
-    color: 0x472814,
-    roughness: 0.66,
-    metalness: 0.04,
-  });
+  private static webbingMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0x472814,
+      roughness: 0.66,
+      metalness: 0.04,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static clawMaterial = new THREE.MeshStandardMaterial({
-    color: 0x291a10,
-    roughness: 0.30,
-    metalness: 0.16,
-  });
+  private static clawMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0x291a10,
+      roughness: 0.30,
+      metalness: 0.16,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static whiskerMaterial = new THREE.MeshStandardMaterial({
-    color: 0xe7d5c0,
-    roughness: 0.42,
-    metalness: 0.05,
-  });
+  private static whiskerMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0xe7d5c0,
+      roughness: 0.42,
+      metalness: 0.05,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static yuzuMaterial = new THREE.MeshStandardMaterial({
-    color: 0xff8800,
-    normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
-    normalScale: new THREE.Vector2(0.24, 0.24),
-    roughness: 0.24,
-    metalness: 0.06,
-  });
+  private static yuzuMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0xff8800,
+      normalMap: PbrTextureSynthesizer.getCitrusPeelNormalMap(),
+      normalScale: new THREE.Vector2(0.24, 0.24),
+      roughness: 0.24,
+      metalness: 0.06,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static leafMaterial = new THREE.MeshStandardMaterial({
-    color: 0x15803d,
-    roughness: 0.48,
-    metalness: 0.02,
-  });
+  private static leafMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0x15803d,
+      roughness: 0.48,
+      metalness: 0.02,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
-  private static stemMaterial = new THREE.MeshStandardMaterial({
-    color: 0x452711,
-    roughness: 0.82,
-    metalness: 0.02,
-  });
+  private static stemMaterial = Object.assign(
+    new THREE.MeshStandardMaterial({
+      color: 0x452711,
+      roughness: 0.82,
+      metalness: 0.02,
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
   // Soft golden-tan eyebrow accent material
 
-  private static dachshundTanPointMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0xdfa763,
-    roughness: 0.82,
-    metalness: 0.02,
-    sheen: 0.62,
-    sheenRoughness: 0.60,
-    sheenColor: new THREE.Color(0xfef0d4),
-  });
+  private static dachshundTanPointMaterial = Object.assign(
+    new THREE.MeshPhysicalMaterial({
+      color: 0xdfa763,
+      roughness: 0.82,
+      metalness: 0.02,
+      sheen: 0.62,
+      sheenRoughness: 0.60,
+      sheenColor: new THREE.Color(0xfef0d4),
+    }),
+    { userData: { sharedAsset: true } }
+  );
 
   // Cached geometries & materials so NPCs/critters/herd/segments reuse existing GPU buffers
   private static sharedTorsoGeo: THREE.BufferGeometry | null = null;
@@ -235,6 +277,7 @@ export class CapyModelGenerator {
     const existing = this.geoCache.get(key);
     if (existing) return existing as T;
     const created = factory();
+    created.userData.sharedAsset = true;
     this.geoCache.set(key, created);
     return created;
   }
@@ -243,6 +286,7 @@ export class CapyModelGenerator {
     const existing = this.matCache.get(key);
     if (existing) return existing as T;
     const created = factory();
+    created.userData.sharedAsset = true;
     this.matCache.set(key, created);
     return created;
   }
@@ -323,6 +367,7 @@ export class CapyModelGenerator {
     tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(2, 2);
     tex.needsUpdate = true;
+    tex.userData.sharedAsset = true;
     PbrTextureSynthesizer.registerManagedTexture(tex);
     this.furAlbedoCache.set(baseHex, tex);
     return tex;
@@ -351,6 +396,7 @@ export class CapyModelGenerator {
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(2, 2);
+    tex.userData.sharedAsset = true;
     PbrTextureSynthesizer.registerManagedTexture(tex);
     this.sharedCitrusBumpMap = tex;
     return tex;
@@ -442,6 +488,7 @@ export class CapyModelGenerator {
     geo.scale(0.98, 1.03, 1.0);
     geo.computeVertexNormals();
     PbrTextureSynthesizer.prepareGeometryForPbr(geo);
+    geo.userData.sharedAsset = true;
     this.sharedTorsoGeo = geo;
     return geo;
   }
@@ -468,6 +515,7 @@ export class CapyModelGenerator {
     }
     geo.computeVertexNormals();
     PbrTextureSynthesizer.prepareGeometryForPbr(geo);
+    geo.userData.sharedAsset = true;
     this.sharedHeadGeo = geo;
     return geo;
   }
@@ -492,6 +540,7 @@ export class CapyModelGenerator {
     }
     geo.computeVertexNormals();
     PbrTextureSynthesizer.prepareGeometryForPbr(geo);
+    geo.userData.sharedAsset = true;
     this.sharedSnoutGeo = geo;
     return geo;
   }
@@ -501,6 +550,7 @@ export class CapyModelGenerator {
     // Soft, gentle underside plush fleece cushion tucked cleanly along chest & belly contour
     const geo = new THREE.SphereGeometry(0.036, 8, 6);
     geo.scale(0.86, 0.36, 1.32);
+    geo.userData.sharedAsset = true;
     this.sharedFurTuftGeo = geo;
     return geo;
   }
@@ -524,6 +574,7 @@ export class CapyModelGenerator {
     geo.scale(0.92, 1.0, 1.0);
     geo.computeVertexNormals();
     PbrTextureSynthesizer.prepareGeometryForPbr(geo);
+    geo.userData.sharedAsset = true;
     this.sharedDachshundBarrelGeo = geo;
     return geo;
   }

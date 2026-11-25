@@ -666,10 +666,12 @@ export class SeamlessUniverseSimulator {
       'rgba(255,252,235,1)',
       'rgba(251,191,36,0.42)'
     );
+    this.glowWarmTex.userData.sharedAsset = true;
     this.glowCoolTex = this.createSoftRadialTexture(
       'rgba(235,248,255,1)',
       'rgba(56,189,248,0.38)'
     );
+    this.glowCoolTex.userData.sharedAsset = true;
 
     for (let i = 0; i < UNIVERSE_SCALE_BANDS.length; i++) {
       const spec = UNIVERSE_SCALE_BANDS[i];
@@ -694,18 +696,22 @@ export class SeamlessUniverseSimulator {
   private populateScaleLayer(layer: ScaleLayerRuntime): void {
     if (layer.populated) return;
     layer.populated = true;
-    const glowWarm =
-      this.glowWarmTex ??
-      (this.glowWarmTex = this.createSoftRadialTexture(
+    if (!this.glowWarmTex) {
+      this.glowWarmTex = this.createSoftRadialTexture(
         'rgba(255,252,235,1)',
         'rgba(251,191,36,0.42)'
-      ));
-    const glowCool =
-      this.glowCoolTex ??
-      (this.glowCoolTex = this.createSoftRadialTexture(
+      );
+      this.glowWarmTex.userData.sharedAsset = true;
+    }
+    if (!this.glowCoolTex) {
+      this.glowCoolTex = this.createSoftRadialTexture(
         'rgba(235,248,255,1)',
         'rgba(56,189,248,0.38)'
-      ));
+      );
+      this.glowCoolTex.userData.sharedAsset = true;
+    }
+    const glowWarm = this.glowWarmTex;
+    const glowCool = this.glowCoolTex;
 
     const { spec, group } = layer;
     let tickFn:
@@ -4441,11 +4447,14 @@ export class SeamlessUniverseSimulator {
     }
   }
 
+  private woodlandElapsed = 0;
+
   public tickWoodlandCapys(dt: number) {
-    this.elapsed += dt;
+    if (!Number.isFinite(dt) || dt <= 0) return;
+    this.woodlandElapsed += dt;
     for (let i = 0; i < this.woodlandCapys.length; i++) {
       const w = this.woodlandCapys[i];
-      const t = this.elapsed * w.speed + w.phase;
+      const t = this.woodlandElapsed * w.speed + w.phase;
       const nx = w.anchorX + Math.cos(t) * w.orbitRadius;
       const nz = w.anchorZ + Math.sin(t) * w.orbitRadius;
       const dx = nx - w.capy.position.x;
@@ -4717,11 +4726,11 @@ export class SeamlessUniverseSimulator {
 
       let alpha = 1.0;
       if (isPlanet) {
-        // Unified Single Planet remains continuous through stratosphere clouds and hands off smoothly to emerald Land Masses
+        // Unified Single Planet remains continuous through stratosphere clouds & lod3 (2.15..2.75) into Land Masses
         if (scaledDelta < 0) {
           alpha = smoothstep01(maxShrinkDex, -2.05, scaledDelta);
         } else {
-          alpha = smoothstep01(2.85, 3.65, logScaleMeters);
+          alpha = smoothstep01(2.10, 2.75, logScaleMeters);
         }
       } else if (isGalaxy) {
         if (scaledDelta < 0) {
@@ -4923,9 +4932,17 @@ export class SeamlessUniverseSimulator {
         const sunGlareFade =
           (1.0 - smoothstep01(1.4, 3.6, scaledDelta)) * (1.0 - focusBlend * 0.9);
         if (this.solarCoronaSprite) {
-          this.solarCoronaSprite.visible = sunGlareFade > 0.02;
+          const coronaOpacity =
+            THREE.MathUtils.clamp(
+              0.72 + 0.14 * THREE.MathUtils.clamp(this.fineStructureRatio, 0.55, 2.2),
+              0.45,
+              0.98
+            ) *
+            THREE.MathUtils.clamp(sunGlareFade, 0, 1) *
+            alpha;
+          this.solarCoronaSprite.visible = coronaOpacity > 0.015;
           const cMat = this.solarCoronaSprite.material as THREE.SpriteMaterial;
-          cMat.opacity *= THREE.MathUtils.clamp(sunGlareFade, 0, 1);
+          cMat.opacity = coronaOpacity;
         }
         if (this.sunStarBeacon) {
           this.sunStarBeacon.visible = sunGlareFade > 0.02;
@@ -5041,18 +5058,26 @@ export class SeamlessUniverseSimulator {
             smoothstep01(3.50, 3.05, logScaleMeters) *
             smoothstep01(2.15, 2.75, logScaleMeters);
 
-        const lodPairs: Array<[THREE.Mesh | null, THREE.ShaderMaterial | undefined, number]> = [
-          [this.planetLod1Mesh, this.planetLodMats[0], lod1Op],
-          [this.planetLod2Mesh, this.planetLodMats[1], lod2Op],
-          [this.planetLod3Mesh, this.planetLodMats[2], lod3Op],
-        ];
-        for (let l = 0; l < lodPairs.length; l++) {
-          const [mesh, mat, op] = lodPairs[l];
-          if (!mesh || !mat) continue;
-          mesh.visible = op > 0.01;
-          if (mat.uniforms?.uOpacity) mat.uniforms.uOpacity.value = op;
-          if (mat.uniforms?.uDetailScale) mat.uniforms.uDetailScale.value = detailScale;
-          mat.depthWrite = op > 0.82 && logScaleMeters > 2.85;
+        const lodMat0 = this.planetLodMats[0];
+        if (this.planetLod1Mesh && lodMat0) {
+          this.planetLod1Mesh.visible = lod1Op > 0.01;
+          if (lodMat0.uniforms?.uOpacity) lodMat0.uniforms.uOpacity.value = lod1Op;
+          if (lodMat0.uniforms?.uDetailScale) lodMat0.uniforms.uDetailScale.value = detailScale;
+          lodMat0.depthWrite = lod1Op > 0.82 && logScaleMeters > 2.85;
+        }
+        const lodMat1 = this.planetLodMats[1];
+        if (this.planetLod2Mesh && lodMat1) {
+          this.planetLod2Mesh.visible = lod2Op > 0.01;
+          if (lodMat1.uniforms?.uOpacity) lodMat1.uniforms.uOpacity.value = lod2Op;
+          if (lodMat1.uniforms?.uDetailScale) lodMat1.uniforms.uDetailScale.value = detailScale;
+          lodMat1.depthWrite = lod2Op > 0.82 && logScaleMeters > 2.85;
+        }
+        const lodMat2 = this.planetLodMats[2];
+        if (this.planetLod3Mesh && lodMat2) {
+          this.planetLod3Mesh.visible = lod3Op > 0.01;
+          if (lodMat2.uniforms?.uOpacity) lodMat2.uniforms.uOpacity.value = lod3Op;
+          if (lodMat2.uniforms?.uDetailScale) lodMat2.uniforms.uDetailScale.value = detailScale;
+          lodMat2.depthWrite = lod3Op > 0.82 && logScaleMeters > 2.85;
         }
 
         // 7. Curved Troposphere / Stratosphere Cloud Deck Patches (skip in software WebGL; clear cleanly before UFO approach)
@@ -5245,8 +5270,27 @@ export class SeamlessUniverseSimulator {
   public dispose() {
     this.markerAnchors.length = 0;
     this.activeProjectedMarkers.length = 0;
+    this.woodlandCapys.length = 0;
+    this.solarPlanets.length = 0;
+    this.planetLodMats.length = 0;
+    this.planetCloudPatchMeshes.length = 0;
+    this.planetCloudPatchMats.length = 0;
+    this.celestialBackdropMats.length = 0;
+    this.layers.length = 0;
     disposeObject3DTree(this.forestGroveGroup);
     disposeObject3DTree(this.celestialBackdropGroup);
     disposeObject3DTree(this.rootGroup);
+    if (this.glowWarmTex) {
+      this.glowWarmTex.userData.sharedAsset = false;
+      this.glowWarmTex.dispose();
+      this.glowWarmTex = null;
+    }
+    if (this.glowCoolTex) {
+      this.glowCoolTex.userData.sharedAsset = false;
+      this.glowCoolTex.dispose();
+      this.glowCoolTex = null;
+    }
+    this.layersBuilt = false;
+    this.groveBuilt = false;
   }
 }

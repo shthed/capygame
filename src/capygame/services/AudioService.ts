@@ -98,6 +98,12 @@ class CapyAudioService {
 
   private initContext(): void {
     this.ensureLifecycleHooks();
+    if (this.ctx && this.ctx.state === 'closed') {
+      this.ctx = null;
+      this.masterInput = null;
+      this.reverbInput = null;
+      this.noiseBuffer = null;
+    }
     if (!this.ctx && typeof window !== 'undefined') {
       const AudioCtx =
         window.AudioContext ||
@@ -111,7 +117,7 @@ class CapyAudioService {
         }
       }
     }
-    if (this.ctx && this.ctx.state === 'suspended') {
+    if (this.ctx && this.ctx.state === 'suspended' && !this.isGamePaused && !this.isMuted) {
       this.ctx.resume().catch(() => {});
     }
   }
@@ -179,13 +185,17 @@ class CapyAudioService {
 
   public setMuted(muted: boolean): void {
     this.isMuted = muted;
-    if (muted && this.factoryHumGain && this.ctx) {
-      this.factoryHumGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.08);
+    if (muted && this.factoryHumGain && this.ctx && this.ctx.state !== 'closed') {
+      try {
+        this.factoryHumGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.08);
+      } catch {
+        // Ignore AudioParam timing errors
+      }
     }
-    if (muted && this.musicTimer) {
-      window.clearTimeout(this.musicTimer);
-      this.isMusicPlaying = false;
-    } else if (!muted && !this.isMusicPlaying) {
+    if (muted) {
+      this.stopAmbientMusic();
+      this.wasMusicPlayingBeforePause = false;
+    } else if (!this.isMusicPlaying && !this.isGamePaused) {
       this.startAmbientMusic();
     }
   }
@@ -196,7 +206,7 @@ class CapyAudioService {
 
   // Surface-aware Capybara Paw Footstep Foley ('turf' | 'cobble' | 'water')
   public playFootstep(surface: 'turf' | 'cobble' | 'water'): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (nowMs - this.lastFootstepMs < 95) return;
     this.lastFootstepMs = nowMs;
@@ -244,7 +254,7 @@ class CapyAudioService {
 
   // Coin / Berry Pickup Bell Chime (Dual-harmonic shimmer)
   public playCoin(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -278,7 +288,7 @@ class CapyAudioService {
 
   // Jump Hop
   public playJump(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -303,7 +313,7 @@ class CapyAudioService {
 
   // XPBD Soft-Body Trampoline Pad Launch (Punchy Sub-Bounce + Sparkling Harmonic Fifth)
   public playTrampolineLaunch(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -337,7 +347,7 @@ class CapyAudioService {
 
   // Brick / Block Crystal Smash Chime
   public playBrickHit(pitchMultiplier: number = 1.0): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -371,7 +381,7 @@ class CapyAudioService {
 
   // Yuzu Munch / Fruit Chomp
   public playChomp(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -402,7 +412,7 @@ class CapyAudioService {
 
   // Splash in Hot Spring / Home Pool / Lagoon (Filtered Liquid Spray + Bubble Pluck)
   public playSplash(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -541,7 +551,7 @@ class CapyAudioService {
 
   // Warm Detuned Zen Marimba / Rhodes Ambient Music Loop routed through Studio Reverb Bus
   public startAmbientMusic(): void {
-    if (this.isMuted || this.isMusicPlaying) return;
+    if (this.isMuted || this.isGamePaused || this.isMusicPlaying) return;
     this.initContext();
     this.isMusicPlaying = true;
 
@@ -651,7 +661,7 @@ class CapyAudioService {
   }
 
   public playComboChime(comboCount: number): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -684,7 +694,7 @@ class CapyAudioService {
   }
 
   public playDashWhoosh(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry || !this.noiseBuffer) return;
@@ -711,7 +721,7 @@ class CapyAudioService {
   }
 
   public playDescentRingChime(ringIndex: number): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
     if (!this.ctx || !dry) return;
@@ -748,7 +758,7 @@ class CapyAudioService {
   // ============================================================================
 
   public playCapytorioPlace(machineType?: string, isDrag: boolean = false): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (nowMs - this.lastCapytorioPlaceMs < (isDrag ? 48 : 28)) return;
     this.lastCapytorioPlaceMs = nowMs;
@@ -1544,11 +1554,15 @@ class CapyAudioService {
       }
     }
 
-    const t = this.ctx.currentTime;
-    this.factoryHumOscA?.frequency.setTargetAtTime(mix.humHz, t, 0.25);
-    this.factoryHumOscB?.frequency.setTargetAtTime(mix.humHz * 2.01, t, 0.25);
-    this.factoryHumFilter?.frequency.setTargetAtTime(mix.filterHz, t, 0.25);
-    this.factoryHumGain?.gain.setTargetAtTime(mix.targetGain, t, 0.25);
+    try {
+      const t = this.ctx.currentTime;
+      this.factoryHumOscA?.frequency.setTargetAtTime(mix.humHz, t, 0.25);
+      this.factoryHumOscB?.frequency.setTargetAtTime(mix.humHz * 2.01, t, 0.25);
+      this.factoryHumFilter?.frequency.setTargetAtTime(mix.filterHz, t, 0.25);
+      this.factoryHumGain?.gain.setTargetAtTime(mix.targetGain, t, 0.25);
+    } catch {
+      // Ignore AudioParam state errors during suspend/close transitions
+    }
   }
 
   // Smooth pneumatic landing strut lock + descending anti-gravity power-down hum

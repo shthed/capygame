@@ -51,10 +51,11 @@ function clampInt16(v: number): number {
   return r < -32767 ? -32767 : r > 32767 ? 32767 : r;
 }
 
-function normalizeAngleRad(rad: number): number {
-  let a = rad;
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
+export function normalizeAngleRad(rad: number): number {
+  if (!Number.isFinite(rad)) return 0;
+  const twoPi = Math.PI * 2;
+  let a = ((rad + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
+  if (a <= -Math.PI) a += twoPi;
   return a;
 }
 

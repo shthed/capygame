@@ -466,13 +466,16 @@ export class AaaWorldVfxEngine {
     this.rootGroup.visible = visible;
     if (!visible) return;
 
-    this.motesPoints.visible = !perfMode;
+    // Keep legacy WebGL2 atmospheric motes hidden on WebGPU (handled by WGSL compute sprite)
+    // and when explicitly disabled at startup so update() never clobbers their visibility.
+    const showLegacyMotes = !perfMode && !this.isWebGpu && Boolean(this.motesMat) && this.motesPoints.visible;
+    this.motesPoints.visible = showLegacyMotes;
     if (perfMode) {
       this.godRayGroup.visible = false;
     }
 
-    // 1. Update Atmospheric Sun-Motes / Bioluminescent Fireflies Uniforms (WebGL2 only)
-    if (!perfMode && this.motesMat) {
+    // 1. Update Atmospheric Sun-Motes / Bioluminescent Fireflies Uniforms (WebGL2 only when active)
+    if (showLegacyMotes && this.motesMat) {
       this.motesMat.uniforms.uTime.value = elapsedTime;
       this.motesMat.uniforms.uNightFactor.value = nightFactor;
       (this.motesMat.uniforms.uFocusCenter.value as THREE.Vector3).set(
@@ -484,7 +487,11 @@ export class AaaWorldVfxEngine {
 
     // 2. Align Crepuscular Solar God-Rays to Live Sun Vector (Hardware GPUs)
     if (!perfMode && !this.isSoftwareGl) {
-      this._sunDirNorm.copy(sunDirection).normalize();
+      if (sunDirection.lengthSq() > 1e-6) {
+        this._sunDirNorm.copy(sunDirection).normalize();
+      } else {
+        this._sunDirNorm.set(0.4, 0.8, 0.3).normalize();
+      }
       const sunElev = this._sunDirNorm.y;
       const dayClear = Math.max(0, 1.0 - nightFactor * 1.35) * (1.0 - stormFactor * 0.85);
       // Peak crepuscular scattering during golden hour (0.12 <= sunElev <= 0.65)

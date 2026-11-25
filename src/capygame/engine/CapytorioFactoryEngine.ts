@@ -1,9 +1,12 @@
 import {
+  CAPYTORIO_BEACON_SPEC,
   CAPYTORIO_CHEST_ITEMS_PER_SLOT,
   CAPYTORIO_CHEST_MAX_ITEMS,
   CAPYTORIO_CHEST_SLOTS,
+  CAPYTORIO_FUEL_BURN_SECONDS,
   CAPYTORIO_HOTBAR_ORDER,
   CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_MODULE_EFFECTS,
   CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_RECIPES,
   CAPYTORIO_TECHS,
@@ -15,10 +18,17 @@ import {
   getCapytorioFootprint,
   getCapytorioInserterReach,
   getCapytorioItemMeta,
+  getCapytorioMachineBasePowerDemandMw,
+  getCapytorioMachinePowerSupplyMw,
   getCapytorioSmeltSpec,
+  isCapytorioFuelGenerator,
+  isCapytorioFunctionalInserter,
+  isCapytorioResearchLab,
+  isCapytorioStorageChest,
   type CapytorioDirection,
   type CapytorioItemId,
   type CapytorioMachineType,
+  type CapytorioModuleId,
   type CapytorioRecipeId,
   type CapytorioTechId,
 } from './CapytorioData';
@@ -207,6 +217,10 @@ export interface CapytorioCraftQueueItem {
   isIntermediate: boolean;
   parentUid?: number;
   reservedPerBatch: Array<{ item: CapytorioItemId; count: number }>;
+  /** Extra intermediate units produced by batch rounding to deliver to pocket upon completion */
+  surplusToPocket?: number;
+  /** Completed intermediate items currently held for this root job (refunded on cancel) */
+  heldIntermediates?: Partial<Record<CapytorioItemId, number>>;
 }
 
 export interface CapytorioMachine {
@@ -367,6 +381,10 @@ export interface CapytorioInspectedMachineDetail {
   integrity?: number;
   overclockTimer?: number;
   roboportFleetCount?: number;
+  isStorageChest?: boolean;
+  isFunctionalInserter?: boolean;
+  isResearchLab?: boolean;
+  isFuelGenerator?: boolean;
 }
 
 export type CapytorioTileInspectionKind =
@@ -464,6 +482,8 @@ export interface CapytorioMachineUndoSnapshot {
   inserterFilters?: CapytorioItemId[];
   inserterStackLimit?: number | null;
   chestSlotLimit?: number | null;
+  modules?: CapytorioItemId[];
+  integrity?: number;
   inputBuffer: Partial<Record<CapytorioItemId, number>>;
   outputBuffer: Partial<Record<CapytorioItemId, number>>;
   beltItems: CapytorioBeltItem[];
@@ -816,25 +836,11 @@ function accumulateSingleModuleEffect(
   scale: number,
   acc: CapytorioModuleModifiers
 ): void {
-  if (modId === 'speed_module') {
-    acc.speedMult += 0.3 * scale;
-    acc.powerMult += 0.2 * scale;
-  } else if (modId === 'speed_module_2') {
-    acc.speedMult += 0.5 * scale;
-    acc.powerMult += 0.3 * scale;
-  } else if (modId === 'efficiency_module') {
-    acc.powerMult -= 0.3 * scale;
-  } else if (modId === 'efficiency_module_2') {
-    acc.powerMult -= 0.5 * scale;
-  } else if (modId === 'productivity_module') {
-    acc.prodBonus += 0.15 * scale;
-    acc.powerMult += 0.25 * scale;
-    acc.speedMult -= 0.05 * scale;
-  } else if (modId === 'productivity_module_2') {
-    acc.prodBonus += 0.25 * scale;
-    acc.powerMult += 0.35 * scale;
-    acc.speedMult -= 0.1 * scale;
-  }
+  const spec = CAPYTORIO_MODULE_EFFECTS[modId as CapytorioModuleId];
+  if (!spec) return;
+  acc.speedMult += spec.speedDelta * scale;
+  acc.powerMult += spec.powerDelta * scale;
+  acc.prodBonus += spec.prodDelta * scale;
 }
 
 export class CapytorioFactoryEngine {
@@ -914,6 +920,7 @@ export class CapytorioFactoryEngine {
 
   // Reusable ordered snapshot list for zero-allocation iteration inside step()
   private machineStepList: CapytorioMachine[] = [];
+  private beaconStepList: CapytorioMachine[] = [];
   private machineListDirty = true;
   /** Monotonic revision incremented on machine placement/demolish/rotate, tree harvest, ore depletion, reset, or hydrate */
   public topologyRevision = 1;
@@ -1134,6 +1141,9 @@ export class CapytorioFactoryEngine {
       allocateSpilledItemUid: () => this.nextSpilledItemUid++,
       allocateBlueprintUid: () => this.nextBlueprintUid++,
       getRecentTools: () => this.getRecentTools(),
+      canFootprintFit: (gx, gz, width, height, ignoreMachine, allowWater) =>
+        this.canFootprintFit(gx, gz, width, height, ignoreMachine, allowWater),
+      getMachineModuleSlotLimit: (m) => this.getMachineModuleSlotLimit(m),
       registerMachineOccupancy: (m) => this.registerMachineOccupancy(m),
       markHydratedAndRecomputePower: () => {
         this.machineListDirty = true;
@@ -1883,7 +1893,7 @@ export class CapytorioFactoryEngine {
     }
   ): boolean {
     const m = this.getMachineAt(gx, gz);
-    if (!m || m.type !== 'inserter') return false;
+    if (!m || !isCapytorioFunctionalInserter(m)) return false;
     const beforeSnap = this.snapshotMachineForUndo(m);
     if (config.filterMode !== undefined) {
       m.inserterFilterMode = config.filterMode;
@@ -1916,7 +1926,7 @@ export class CapytorioFactoryEngine {
 
   public setChestSlotLimitAt(gx: number, gz: number, slotLimit: number | null): boolean {
     const m = this.getMachineAt(gx, gz);
-    if (!m || m.type !== 'chest') return false;
+    if (!m || !isCapytorioStorageChest(m)) return false;
     const beforeSnap = this.snapshotMachineForUndo(m);
     m.chestSlotLimit =
       slotLimit === null
@@ -2040,22 +2050,22 @@ export class CapytorioFactoryEngine {
       }
     }
 
-    // Apply aura from nearby placed Beacons (50% of beacon module effects + 15% base speed broadcast)
+    // Apply aura from nearby placed Beacons using O(beacons) pre-indexed list
     if (m.variantItemId !== 'beacon' && this.getMachineModuleSlotLimit(m) > 0) {
       this.ensureMachineList();
-      for (let i = 0; i < this.machineStepList.length; i++) {
-        const other = this.machineStepList[i];
-        if (other.variantItemId !== 'beacon') continue;
+      const rangeSq = CAPYTORIO_BEACON_SPEC.rangeTiles * CAPYTORIO_BEACON_SPEC.rangeTiles;
+      for (let i = 0; i < this.beaconStepList.length; i++) {
+        const other = this.beaconStepList[i];
         const dx = other.gx - m.gx;
         const dz = other.gz - m.gz;
-        if (dx * dx + dz * dz <= 36) {
-          out.speedMult += 0.15;
+        if (dx * dx + dz * dz <= rangeSq) {
+          out.speedMult += CAPYTORIO_BEACON_SPEC.baseSpeedBonus;
           if (other.modules && other.modules.length > 0) {
             for (let j = 0; j < other.modules.length; j++) {
               const bMod = other.modules[j];
               // Beacons transmit speed & efficiency (canonical Factorio rule)
               if (bMod.startsWith('speed_') || bMod.startsWith('efficiency_')) {
-                accumulateSingleModuleEffect(bMod, 0.5, out);
+                accumulateSingleModuleEffect(bMod, CAPYTORIO_BEACON_SPEC.transmissionEfficiency, out);
               }
             }
           }
@@ -2109,7 +2119,7 @@ export class CapytorioFactoryEngine {
     const pocket =
       this.getPocketItemCount('logistic_robot') + this.getPocketItemCount('construction_robot');
     // Always maintain 2 ambient station drones on a placed Roboport, scaling up to 6 with crafted bots
-    return Math.min(6, Math.max(2, stored + Math.min(4, pocket)));
+    return Math.min(6, Math.max(2, stored + pocket));
   }
 
   /**
@@ -2148,7 +2158,7 @@ export class CapytorioFactoryEngine {
       };
       return { ok: true, label };
     }
-    if (m.type === 'inserter') {
+    if (isCapytorioFunctionalInserter(m)) {
       const fCount = m.inserterFilters?.length ?? 0;
       const label =
         fCount > 0
@@ -2163,7 +2173,7 @@ export class CapytorioFactoryEngine {
       };
       return { ok: true, label };
     }
-    if (m.type === 'chest') {
+    if (isCapytorioStorageChest(m)) {
       const slots = m.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS;
       const label = `Chest · ${slots} slots`;
       this.entitySettingsClipboard = {
@@ -2212,7 +2222,7 @@ export class CapytorioFactoryEngine {
       });
       return { ok: true, label: clip.sourceLabel };
     }
-    if (m.type === 'inserter') {
+    if (isCapytorioFunctionalInserter(m)) {
       this.setInserterConfigAt(m.gx, m.gz, {
         filterMode: clip.inserterFilterMode ?? 'whitelist',
         filters: clip.inserterFilters ? [...clip.inserterFilters] : [],
@@ -2220,11 +2230,11 @@ export class CapytorioFactoryEngine {
       });
       return { ok: true, label: clip.sourceLabel };
     }
-    if (m.type === 'chest') {
+    if (isCapytorioStorageChest(m)) {
       this.setChestSlotLimitAt(m.gx, m.gz, clip.chestSlotLimit ?? null);
       return { ok: true, label: clip.sourceLabel };
     }
-    return { ok: false, reason: 'Unable to apply settings' };
+    return { ok: false, reason: 'This building variant does not accept pasted settings' };
   }
 
   public demolishAt(gx: number, gz: number): CapytorioMachineType | null {
@@ -2316,7 +2326,7 @@ export class CapytorioFactoryEngine {
       }
     }
     const fp = getCapytorioToolFootprint(toolOrType, targetDir);
-    if (!this.canFootprintFit(gx, gz, fp.width, fp.height)) {
+    if (!this.canFootprintFit(gx, gz, fp.width, fp.height, undefined, toolOrType === 'offshore_pump')) {
       return { ok: false, appliedDir: targetDir };
     }
     const res = this.placeMachine(toolOrType, gx, gz, targetDir);
@@ -2342,6 +2352,8 @@ export class CapytorioFactoryEngine {
       inserterFilters: m.inserterFilters ? [...m.inserterFilters] : undefined,
       inserterStackLimit: m.inserterStackLimit,
       chestSlotLimit: m.chestSlotLimit,
+      modules: m.modules && m.modules.length > 0 ? [...m.modules] : undefined,
+      integrity: m.integrity,
       inputBuffer: { ...m.inputBuffer },
       outputBuffer: { ...m.outputBuffer },
       beltItems: m.beltItems.map((bi) => ({ ...bi })),
@@ -2436,28 +2448,64 @@ export class CapytorioFactoryEngine {
 
   private restoreMachineSnapshotFromPocket(snap: CapytorioMachineUndoSnapshot): boolean {
     const key = tileKey(snap.gx, snap.gz);
+    const snapFp = getCapytorioFootprint(
+      snap.baseType,
+      snap.toolId === snap.baseType ? undefined : snap.toolId,
+      snap.dir
+    );
+    const allowWater = snap.toolId === 'offshore_pump';
     const existing = this.machines.get(key);
     if (existing) {
       const sameTool =
         existing.type === snap.baseType &&
         (existing.variantItemId ?? existing.type) === snap.toolId;
       if (sameTool) {
+        // Check footprint clearance before rotating asymmetric buildings (e.g., 2x1 <-> 1x2)
+        if (!this.canFootprintFit(existing.gx, existing.gz, snapFp.width, snapFp.height, existing, allowWater)) {
+          for (let dx = 0; dx < snapFp.width; dx++) {
+            for (let dz = 0; dz < snapFp.height; dz++) {
+              const occ = this.getMachineAt(existing.gx + dx, existing.gz + dz);
+              if (occ && occ !== existing) {
+                this.demolishAt(occ.gx, occ.gz);
+              }
+            }
+          }
+          if (!this.canFootprintFit(existing.gx, existing.gz, snapFp.width, snapFp.height, existing, allowWater)) {
+            return false;
+          }
+        }
         this.unregisterMachineOccupancy(existing);
         existing.dir = snap.dir;
         this.registerMachineOccupancy(existing);
         this.applyConfigSnapshotToMachine(existing, snap);
+        if (existing.modules && existing.modules.length > 0) {
+          for (let i = 0; i < existing.modules.length; i++) {
+            this.addPocketItem(existing.modules[i], 1);
+          }
+          existing.modules.length = 0;
+        }
+        if (snap.modules && snap.modules.length > 0) {
+          const limit = this.getMachineModuleSlotLimit(existing);
+          if (!existing.modules) existing.modules = [];
+          for (let i = 0; i < snap.modules.length && existing.modules.length < limit; i++) {
+            const modId = snap.modules[i];
+            if (isCapytorioModuleItem(modId) && this.consumePocketItem(modId, 1)) {
+              existing.modules.push(modId);
+            }
+          }
+        }
+        if (typeof snap.integrity === 'number') {
+          existing.integrity = snap.integrity;
+        }
+        this.powerDirty = true;
         this.topologyRevision++;
+        this.recomputePowerMetrics();
         return true;
       }
       this.demolishAt(snap.gx, snap.gz);
     }
 
     // Clear any overlapping occupants inside target footprint before restoring
-    const snapFp = getCapytorioFootprint(
-      snap.baseType,
-      snap.toolId === snap.baseType ? undefined : snap.toolId,
-      snap.dir
-    );
     for (let dx = 0; dx < snapFp.width; dx++) {
       for (let dz = 0; dz < snapFp.height; dz++) {
         const occ = this.getMachineAt(snap.gx + dx, snap.gz + dz);
@@ -2468,6 +2516,23 @@ export class CapytorioFactoryEngine {
     const placed = this.placeMachine(snap.toolId, snap.gx, snap.gz, snap.dir, snap.recipeId);
     if (!placed.ok || !placed.machine) return false;
     this.applyConfigSnapshotToMachine(placed.machine, snap);
+    if (snap.modules && snap.modules.length > 0) {
+      const limit = this.getMachineModuleSlotLimit(placed.machine);
+      if (limit > 0) {
+        placed.machine.modules = [];
+        for (let i = 0; i < snap.modules.length && placed.machine.modules.length < limit; i++) {
+          const modId = snap.modules[i];
+          if (isCapytorioModuleItem(modId) && this.consumePocketItem(modId, 1)) {
+            placed.machine.modules.push(modId);
+          }
+        }
+        this.powerDirty = true;
+        this.recomputePowerMetrics();
+      }
+    }
+    if (typeof snap.integrity === 'number') {
+      placed.machine.integrity = snap.integrity;
+    }
     for (const [k, qty] of Object.entries(snap.inputBuffer) as Array<[CapytorioItemId, number]>) {
       const take = Math.min(qty, this.pocketItems[k] ?? 0);
       if (take > 0) {
@@ -3026,7 +3091,7 @@ export class CapytorioFactoryEngine {
    */
   public insertPocketFuelToGenerator(gx: number, gz: number, maxAmount: number = 5): number {
     const m = this.getMachineAt(gx, gz);
-    if (!m || m.type !== 'generator') return 0;
+    if (!m || !isCapytorioFuelGenerator(m)) return 0;
 
     let loaded = 0;
     const fuels: readonly CapytorioItemId[] = ['coal', 'yuzu_sap', 'orange'];
@@ -3045,15 +3110,15 @@ export class CapytorioFactoryEngine {
       if ((m.inputBuffer.coal ?? 0) > 0) {
         m.inputBuffer.coal = (m.inputBuffer.coal ?? 1) - 1;
         if (m.inputBuffer.coal <= 0) delete m.inputBuffer.coal;
-        m.fuelTimer = 10.0;
+        m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.coal;
       } else if ((m.inputBuffer.yuzu_sap ?? 0) > 0) {
         m.inputBuffer.yuzu_sap = (m.inputBuffer.yuzu_sap ?? 1) - 1;
         if (m.inputBuffer.yuzu_sap <= 0) delete m.inputBuffer.yuzu_sap;
-        m.fuelTimer = 6.5;
+        m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.yuzu_sap;
       } else if ((m.inputBuffer.orange ?? 0) > 0) {
         m.inputBuffer.orange = (m.inputBuffer.orange ?? 1) - 1;
         if (m.inputBuffer.orange <= 0) delete m.inputBuffer.orange;
-        m.fuelTimer = 5.0;
+        m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.orange;
       }
     }
     if (loaded > 0) {
@@ -3071,7 +3136,7 @@ export class CapytorioFactoryEngine {
     const m = this.getMachineAt(gx, gz);
     if (!m) return 0;
 
-    if (m.type === 'generator') {
+    if (isCapytorioFuelGenerator(m)) {
       return this.insertPocketFuelToGenerator(m.gx, m.gz, batches);
     }
 
@@ -3111,7 +3176,7 @@ export class CapytorioFactoryEngine {
       return transferred;
     }
 
-    if (m.type === 'lab') {
+    if (isCapytorioResearchLab(m)) {
       const activeTech = this.activeTechId ? TECH_BY_ID.get(this.activeTechId) : null;
       const targetScienceIds: CapytorioItemId[] = activeTech
         ? (Object.keys(activeTech.cost) as CapytorioItemId[])
@@ -3308,7 +3373,10 @@ export class CapytorioFactoryEngine {
     this.evaluateMilestones(callbacks);
   }
 
-  public evaluateMilestones(callbacks?: CapytorioStepCallbacks): CapytorioMilestoneStatus[] {
+  public evaluateMilestones(
+    callbacks?: CapytorioStepCallbacks,
+    readOnly: boolean = false
+  ): CapytorioMilestoneStatus[] {
     let drillCount = 0;
     let beltCount = 0;
     let furnaceOrGenActive = false;
@@ -3318,9 +3386,12 @@ export class CapytorioFactoryEngine {
       const m = this.machineStepList[i];
       if (m.type === 'drill') drillCount++;
       else if (m.type === 'belt' || m.type === 'tunnel' || m.type === 'splitter') beltCount++;
-      else if (m.type === 'furnace' || (m.type === 'generator' && m.fuelTimer > 0)) {
+      else if (
+        m.type === 'furnace' ||
+        (m.type === 'generator' && (!isCapytorioFuelGenerator(m) || m.fuelTimer > 0))
+      ) {
         furnaceOrGenActive = true;
-      } else if (m.type === 'lab') labCount++;
+      } else if (isCapytorioResearchLab(m)) labCount++;
     }
 
     const totalSci =
@@ -3383,7 +3454,7 @@ export class CapytorioFactoryEngine {
     const out: CapytorioMilestoneStatus[] = [];
     for (let i = 0; i < defs.length; i++) {
       const d = defs[i];
-      if (d.met && !this.completedMilestones.has(d.id)) {
+      if (!readOnly && d.met && !this.completedMilestones.has(d.id)) {
         this.completedMilestones.add(d.id);
         this.score += 40;
         callbacks?.onMilestoneCompleted?.(d.id, d.label, 0);
@@ -3392,13 +3463,13 @@ export class CapytorioFactoryEngine {
         id: d.id,
         label: d.label,
         hint: d.hint,
-        completed: this.completedMilestones.has(d.id),
+        completed: readOnly ? this.completedMilestones.has(d.id) || d.met : this.completedMilestones.has(d.id),
       });
     }
     return out;
   }
 
-  public feedPocketScienceToLabs(): number {
+  public feedPocketScienceToLabs(callbacks?: CapytorioStepCallbacks): number {
     if (!this.activeTechId) return 0;
     const tech = TECH_BY_ID.get(this.activeTechId);
     if (!tech) return 0;
@@ -3414,6 +3485,9 @@ export class CapytorioFactoryEngine {
         fed += take;
       }
     }
+    if (fed > 0) {
+      this.checkAndCompleteActiveTech(callbacks);
+    }
     return fed;
   }
 
@@ -3426,7 +3500,7 @@ export class CapytorioFactoryEngine {
     this.ensureMachineList();
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
-      if (m.type !== 'chest' && m.type !== 'furnace' && m.type !== 'assembler') continue;
+      if (!isCapytorioStorageChest(m) && m.type !== 'furnace' && m.type !== 'assembler') continue;
       const fp = this.getMachineFootprint(m);
       const wx = capytorioMachineCenterLocalX(m.gx, fp.width);
       const wz = capytorioMachineCenterLocalZ(m.gz, fp.height);
@@ -3498,8 +3572,12 @@ export class CapytorioFactoryEngine {
   private ensureMachineList(): void {
     if (!this.machineListDirty) return;
     this.machineStepList.length = 0;
+    this.beaconStepList.length = 0;
     for (const m of this.machines.values()) {
       this.machineStepList.push(m);
+      if (m.variantItemId === 'beacon') {
+        this.beaconStepList.push(m);
+      }
     }
     this.machineListDirty = false;
   }
@@ -3514,38 +3592,16 @@ export class CapytorioFactoryEngine {
 
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
-      const spec = CAPYTORIO_MACHINE_SPECS[m.type];
-      const tierMult = m.tierMult ?? 1.0;
-      let baseDemand = spec.powerDemandMw;
-      if (m.variantItemId === 'roboport') {
-        baseDemand = 0.5;
-      } else if (m.variantItemId === 'beacon') {
-        baseDemand = 1.2;
-      } else if (m.variantItemId === 'radar') {
-        baseDemand = 0.4;
-      } else if (m.variantItemId === 'pump') {
-        baseDemand = 0.15;
-      } else if (
-        m.variantItemId === 'stone_wall' ||
-        m.variantItemId === 'gate' ||
-        m.variantItemId === 'small_electric_pole' ||
-        m.variantItemId === 'medium_electric_pole' ||
-        m.variantItemId === 'big_electric_pole' ||
-        m.variantItemId === 'substation' ||
-        m.variantItemId === 'pipe' ||
-        m.variantItemId === 'pipe_to_ground' ||
-        m.variantItemId === 'rail' ||
-        m.variantItemId === 'train_stop'
-      ) {
-        baseDemand = 0;
-      }
+      const baseDemand = getCapytorioMachineBasePowerDemandMw(m);
       if (baseDemand > 0) {
         const mods = this.computeMachineModuleModifiers(m, _moduleModScratch);
         demand += baseDemand * mods.powerMult;
       }
       if (m.type === 'generator') {
-        if (m.fuelTimer > 0) activeGenerators++;
-        supply += (m.fuelTimer > 0 ? spec.powerSupplyMw : 1.5) * tierMult * genBonus;
+        if (!isCapytorioFuelGenerator(m) || m.fuelTimer > 0) {
+          activeGenerators++;
+        }
+        supply += getCapytorioMachinePowerSupplyMw(m, genBonus);
       }
     }
 
@@ -3614,6 +3670,10 @@ export class CapytorioFactoryEngine {
       const tDz = DIR_DZ[target.dir];
       const relX = fromGx - target.gx;
       const relZ = fromGz - target.gz;
+      // Reject head-on belt-to-belt feed into the front exit of an opposing belt
+      if (!isInserterDrop && target.type === 'belt' && relX === tDx && relZ === tDz) {
+        return false;
+      }
       const rightDx = -tDz;
       const rightDz = tDx;
 
@@ -3751,7 +3811,7 @@ export class CapytorioFactoryEngine {
       return false;
     }
 
-    if (target.type === 'chest') {
+    if (isCapytorioStorageChest(target)) {
       const total = this.countMapValues(target.outputBuffer);
       if (total >= this.getEffectiveChestCapacity(target)) return false;
       target.outputBuffer[item] = (target.outputBuffer[item] ?? 0) + 1;
@@ -3784,7 +3844,7 @@ export class CapytorioFactoryEngine {
       return true;
     }
 
-    if (target.type === 'generator') {
+    if (isCapytorioFuelGenerator(target)) {
       if (item !== 'coal' && item !== 'yuzu_sap' && item !== 'orange') return false;
       const cur = target.inputBuffer[item] ?? 0;
       if (cur >= 16) return false;
@@ -3792,7 +3852,7 @@ export class CapytorioFactoryEngine {
       return true;
     }
 
-    if (target.type === 'lab') {
+    if (isCapytorioResearchLab(target)) {
       const meta = getCapytorioItemMeta(item);
       if (meta.category !== 'science') return false;
       const cur = target.inputBuffer[item] ?? 0;
@@ -3876,6 +3936,9 @@ export class CapytorioFactoryEngine {
     const clampedDt = Math.min(0.1, dt);
     this.ensureMachineList();
     this.stepCraftingQueue(clampedDt, callbacks);
+    if (this.activeTechId && this.hasAnyTechDelivered()) {
+      this.checkAndCompleteActiveTech(callbacks);
+    }
 
     // Update fuel timers & recompute power only when power-relevant state changes
     let anyFuelChanged = false;
@@ -3883,6 +3946,10 @@ export class CapytorioFactoryEngine {
     for (let i = 0; i < this.machineStepList.length; i++) {
       const m = this.machineStepList[i];
       if (m.type !== 'generator') continue;
+      if (!isCapytorioFuelGenerator(m)) {
+        activeGenerators++;
+        continue;
+      }
       if (m.fuelTimer > 0) {
         m.fuelTimer = Math.max(0, m.fuelTimer - clampedDt);
         if (m.fuelTimer <= 0) anyFuelChanged = true;
@@ -3891,17 +3958,17 @@ export class CapytorioFactoryEngine {
         if ((m.inputBuffer.coal ?? 0) > 0) {
           m.inputBuffer.coal = (m.inputBuffer.coal ?? 1) - 1;
           if (m.inputBuffer.coal <= 0) delete m.inputBuffer.coal;
-          m.fuelTimer = 10.0;
+          m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.coal;
           anyFuelChanged = true;
         } else if ((m.inputBuffer.yuzu_sap ?? 0) > 0) {
           m.inputBuffer.yuzu_sap = (m.inputBuffer.yuzu_sap ?? 1) - 1;
           if (m.inputBuffer.yuzu_sap <= 0) delete m.inputBuffer.yuzu_sap;
-          m.fuelTimer = 6.5;
+          m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.yuzu_sap;
           anyFuelChanged = true;
         } else if ((m.inputBuffer.orange ?? 0) > 0) {
           m.inputBuffer.orange = (m.inputBuffer.orange ?? 1) - 1;
           if (m.inputBuffer.orange <= 0) delete m.inputBuffer.orange;
-          m.fuelTimer = 5.0;
+          m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.orange;
           anyFuelChanged = true;
         }
       }
@@ -4020,7 +4087,7 @@ export class CapytorioFactoryEngine {
           ejectTarget &&
           (ejectTarget.type === 'belt' ||
             ejectTarget.type === 'splitter' ||
-            ejectTarget.type === 'chest' ||
+            isCapytorioStorageChest(ejectTarget) ||
             ejectTarget.type === 'tunnel')
         ) {
           for (const k in m.outputBuffer) {
@@ -4079,7 +4146,7 @@ export class CapytorioFactoryEngine {
           ejectTarget &&
           (ejectTarget.type === 'belt' ||
             ejectTarget.type === 'splitter' ||
-            ejectTarget.type === 'chest' ||
+            isCapytorioStorageChest(ejectTarget) ||
             ejectTarget.type === 'tunnel')
         ) {
           for (const k in m.outputBuffer) {
@@ -4095,7 +4162,7 @@ export class CapytorioFactoryEngine {
           }
         }
       } else if (m.type === 'lab') {
-        if (this.activeTechId && m.variantItemId !== 'beacon' && m.variantItemId !== 'radar') {
+        if (this.activeTechId && isCapytorioResearchLab(m)) {
           const tech = TECH_BY_ID.get(this.activeTechId);
           if (tech) {
             let consumedPack = false;
@@ -4336,30 +4403,33 @@ export class CapytorioFactoryEngine {
         }
       } else if (m.type === 'tunnel') {
         if (m.beltItems.length > 0) {
-          const item = m.beltItems[0].item;
-          let jumped = false;
+          const bItem = m.beltItems[0];
+          const item = bItem.item;
+          const lane: 0 | 1 = bItem.lane === 1 ? 1 : 0;
+          let foundExitTunnel = false;
           for (let dist = 1; dist <= 6; dist++) {
             const exitM = this.getMachineAt(
               m.gx + DIR_DX[m.dir] * dist,
               m.gz + DIR_DZ[m.dir] * dist
             );
             if (exitM && exitM.type === 'tunnel' && exitM.dir === m.dir) {
+              foundExitTunnel = true;
               const afterExit = this.getMachineAt(
                 exitM.gx + DIR_DX[m.dir],
                 exitM.gz + DIR_DZ[m.dir]
               );
-              if (afterExit && this.tryAcceptItemIntoTarget(afterExit, item, exitM.gx, exitM.gz)) {
+              if (afterExit && this.tryAcceptItemIntoTarget(afterExit, item, exitM.gx, exitM.gz, lane)) {
                 m.beltItems.shift();
-                jumped = true;
               }
               break;
             }
           }
-          if (!jumped && frontTarget && this.tryAcceptItemIntoTarget(frontTarget, item, m.gx, m.gz)) {
+          // Only eject directly ahead if this tunnel is an unpaired exit hood
+          if (!foundExitTunnel && frontTarget && this.tryAcceptItemIntoTarget(frontTarget, item, m.gx, m.gz, lane)) {
             m.beltItems.shift();
           }
         }
-      } else if (m.type === 'inserter') {
+      } else if (isCapytorioFunctionalInserter(m)) {
         const iFwdDx = DIR_DX[m.dir];
         const iFwdDz = DIR_DZ[m.dir];
         const iRightDx = -iFwdDz;
@@ -4434,7 +4504,7 @@ export class CapytorioFactoryEngine {
                 srcM.type === 'drill' ||
                 srcM.type === 'furnace' ||
                 srcM.type === 'assembler' ||
-                srcM.type === 'chest'
+                isCapytorioStorageChest(srcM)
               ) {
                 for (const k in srcM.outputBuffer) {
                   const cand = k as CapytorioItemId;
@@ -4542,7 +4612,7 @@ export class CapytorioFactoryEngine {
                 srcM.type === 'drill' ||
                 srcM.type === 'furnace' ||
                 srcM.type === 'assembler' ||
-                srcM.type === 'chest'
+                isCapytorioStorageChest(srcM)
               ) {
                 m.pickupLocalX = 0;
                 m.pickupLocalZ = defaultReachDist;
@@ -4645,7 +4715,7 @@ export class CapytorioFactoryEngine {
                 if (
                   effectiveStack > 1 &&
                   srcM &&
-                  (srcM.type === 'chest' || srcM.type === 'furnace' || srcM.type === 'assembler' || srcM.type === 'drill')
+                  (isCapytorioStorageChest(srcM) || srcM.type === 'furnace' || srcM.type === 'assembler' || srcM.type === 'drill')
                 ) {
                   for (let extra = 1; extra < effectiveStack; extra++) {
                     const avail = srcM.outputBuffer[m.holdingItem] ?? 0;
@@ -4871,7 +4941,7 @@ export class CapytorioFactoryEngine {
     if (target.type === 'belt' || target.type === 'tunnel') {
       return target.beltItems.length < CAPYTORIO_BELT_MAX_ITEMS_PER_TILE;
     }
-    if (target.type === 'chest') {
+    if (isCapytorioStorageChest(target)) {
       return this.countMapValues(target.outputBuffer) < this.getEffectiveChestCapacity(target);
     }
     if (target.type === 'furnace') {
@@ -4887,10 +4957,10 @@ export class CapytorioFactoryEngine {
       }
       return false;
     }
-    if (target.type === 'generator') {
+    if (isCapytorioFuelGenerator(target)) {
       return (item === 'coal' || item === 'yuzu_sap' || item === 'orange') && (target.inputBuffer[item] ?? 0) < 16;
     }
-    if (target.type === 'lab') {
+    if (isCapytorioResearchLab(target)) {
       const meta = getCapytorioItemMeta(item);
       return meta.category === 'science' && (target.inputBuffer[item] ?? 0) < 16;
     }
@@ -5003,10 +5073,18 @@ export class CapytorioFactoryEngine {
       beltItemsByType.sort((a, b) => b.count - a.count || a.item.localeCompare(b.item));
 
       const recipeMeta = machine.recipeId ? RECIPE_BY_ID.get(machine.recipeId) : undefined;
-      const chestCap = machine.type === 'chest' ? this.getEffectiveChestCapacity(machine) : CAPYTORIO_CHEST_MAX_ITEMS;
-      const inserterReach = machine.type === 'inserter' ? getCapytorioInserterReach(machine.variantItemId) : undefined;
-      const inserterMaxStack =
-        machine.type === 'inserter' ? this.getEffectiveInserterMaxStack(machine) : undefined;
+      const storageChest = isCapytorioStorageChest(machine);
+      const functionalInserter = isCapytorioFunctionalInserter(machine);
+      const researchLab = isCapytorioResearchLab(machine);
+      const fuelGenerator = isCapytorioFuelGenerator(machine);
+      const chestCap = storageChest ? this.getEffectiveChestCapacity(machine) : CAPYTORIO_CHEST_MAX_ITEMS;
+      const inserterReach = functionalInserter ? getCapytorioInserterReach(machine.variantItemId) : undefined;
+      const inserterMaxStack = functionalInserter ? this.getEffectiveInserterMaxStack(machine) : undefined;
+      const mods = this.computeMachineModuleModifiers(machine, _moduleModScratch);
+      const baseDemandMw = getCapytorioMachineBasePowerDemandMw(machine);
+      const effectiveDemandMw = baseDemandMw > 0 ? +(baseDemandMw * mods.powerMult).toFixed(2) : 0;
+      const genBonus = this.unlockedTechs.has('bioflux_chemistry') ? 1.25 : 1.0;
+      const effectiveSupplyMw = +getCapytorioMachinePowerSupplyMw(machine, genBonus).toFixed(2);
 
       let status: CapytorioInspectedMachineDetail['status'] = 'Idle';
       if (machine.type === 'belt' || machine.type === 'splitter' || machine.type === 'tunnel') {
@@ -5018,22 +5096,58 @@ export class CapytorioFactoryEngine {
               ? 'Working'
               : 'Idle';
       } else if (machine.type === 'generator') {
-        status = machine.fuelTimer > 0 ? 'Working' : 'No Fuel';
+        status = !fuelGenerator ? 'Working' : machine.fuelTimer > 0 ? 'Working' : 'No Fuel';
       } else if (machine.type === 'chest') {
-        status = outputTotal >= chestCap ? 'Full' : outputTotal > 0 ? 'Working' : 'Idle';
-      } else if (baseSpec.powerDemandMw > 0 && this.powerEfficiency <= 0.05) {
+        if (!storageChest) {
+          status = baseDemandMw > 0 && this.powerEfficiency <= 0.05 ? 'No Power' : baseDemandMw > 0 ? 'Working' : 'Idle';
+        } else {
+          status = outputTotal >= chestCap ? 'Full' : outputTotal > 0 ? 'Working' : 'Idle';
+        }
+      } else if (baseDemandMw > 0 && this.powerEfficiency <= 0.05) {
         status = 'No Power';
       } else if (machine.type === 'drill') {
-        status = !oreTile ? 'No Resource' : outputTotal >= 20 ? 'Full' : 'Working';
+        if (machine.variantItemId === 'offshore_pump') {
+          status = 'Working';
+        } else {
+          status = !oreTile ? 'No Resource' : outputTotal >= 4 ? 'Full' : 'Working';
+        }
       } else if (machine.type === 'inserter') {
-        status = machine.holdingItem || machine.inserterPhase !== 'idle_pickup' ? 'Working' : 'Idle';
-      } else if (machine.type === 'furnace' || machine.type === 'assembler' || machine.type === 'lab') {
+        if (!functionalInserter) {
+          status = baseDemandMw > 0 && this.powerEfficiency <= 0.05 ? 'No Power' : 'Idle';
+        } else {
+          status = machine.holdingItem || machine.inserterPhase !== 'idle_pickup' ? 'Working' : 'Idle';
+        }
+      } else if (machine.type === 'furnace') {
         status =
-          outputTotal >= 20
+          outputTotal >= 16
             ? 'Full'
             : machine.craftProgress > 0.01 || inputTotal > 0
               ? 'Working'
               : 'Idle';
+      } else if (machine.type === 'assembler') {
+        let hasAllRecipeInputs = false;
+        if (recipeMeta && recipeMeta.ingredients.length > 0) {
+          hasAllRecipeInputs = true;
+          for (let ri = 0; ri < recipeMeta.ingredients.length; ri++) {
+            const ing = recipeMeta.ingredients[ri];
+            if ((machine.inputBuffer[ing.item] ?? 0) < ing.count) {
+              hasAllRecipeInputs = false;
+              break;
+            }
+          }
+        }
+        status =
+          outputTotal >= 20
+            ? 'Full'
+            : machine.craftProgress > 0.01 || hasAllRecipeInputs
+              ? 'Working'
+              : 'Idle';
+      } else if (machine.type === 'lab') {
+        if (!researchLab) {
+          status = baseDemandMw > 0 && this.powerEfficiency <= 0.05 ? 'No Power' : 'Working';
+        } else {
+          status = machine.craftProgress > 0.01 || inputTotal > 0 ? 'Working' : 'Idle';
+        }
       }
 
       const beltSpeedItemsPerSec =
@@ -5059,9 +5173,8 @@ export class CapytorioFactoryEngine {
         tierMult: +tierMult.toFixed(2),
         colorHex: resolved?.tintHex ?? baseSpec.colorHex,
         status,
-        powerDemandMw: baseSpec.powerDemandMw,
-        powerSupplyMw:
-          machine.type === 'generator' ? (machine.fuelTimer > 0 ? 6.0 : 1.5) : baseSpec.powerSupplyMw,
+        powerDemandMw: effectiveDemandMw,
+        powerSupplyMw: effectiveSupplyMw,
         recipeId: machine.recipeId,
         recipeName: recipeMeta?.name,
         craftProgress: +machine.craftProgress.toFixed(2),
@@ -5074,16 +5187,16 @@ export class CapytorioFactoryEngine {
         splitterFilterItem:
           machine.type === 'splitter' ? (machine.splitterFilterItem ?? null) : undefined,
         inserterFilterMode:
-          machine.type === 'inserter' ? (machine.inserterFilterMode ?? 'whitelist') : undefined,
+          functionalInserter ? (machine.inserterFilterMode ?? 'whitelist') : undefined,
         inserterFilters:
-          machine.type === 'inserter' ? [...(machine.inserterFilters ?? [])] : undefined,
+          functionalInserter ? [...(machine.inserterFilters ?? [])] : undefined,
         inserterStackLimit:
-          machine.type === 'inserter' ? (machine.inserterStackLimit ?? null) : undefined,
+          functionalInserter ? (machine.inserterStackLimit ?? null) : undefined,
         inserterMaxStack,
         inserterReach,
         chestSlotLimit:
-          machine.type === 'chest' ? (machine.chestSlotLimit ?? null) : undefined,
-        chestCapacityItems: machine.type === 'chest' ? chestCap : undefined,
+          storageChest ? (machine.chestSlotLimit ?? null) : undefined,
+        chestCapacityItems: storageChest ? chestCap : undefined,
         inputTotal,
         outputTotal,
         inputBuffer: { ...machine.inputBuffer },
@@ -5103,6 +5216,10 @@ export class CapytorioFactoryEngine {
         overclockTimer: +(machine.overclockTimer ?? 0).toFixed(1),
         roboportFleetCount:
           machine.variantItemId === 'roboport' ? this.getRoboportFleetCount(machine) : undefined,
+        isStorageChest: storageChest,
+        isFunctionalInserter: functionalInserter,
+        isResearchLab: researchLab,
+        isFuelGenerator: fuelGenerator,
       };
     }
 
@@ -5191,21 +5308,47 @@ export class CapytorioFactoryEngine {
         subtitle = `${fpLabel} Splitter · ${filterLabel} · ${machineDetail.beltSpeedItemsPerSec}/s`;
         actionHint = 'Configure priority/filter · Shift+RMB copy · Shift+LMB paste';
       } else if (machineDetail.type === 'drill') {
-        subtitle = resourceDetail
-          ? `${fpLabel} Mining ${resourceDetail.shortName} · ${machineDetail.tierMult.toFixed(1)}x`
-          : `${fpLabel} Mining Drill · No Resource Below`;
-        actionHint = 'Outputs directly onto front-center belt, chest, or furnace';
+        if (machineDetail.variantItemId === 'offshore_pump') {
+          subtitle = `${fpLabel} Shoreline Water Intake · 0 MW`;
+          actionHint = 'Pumps coastal water to feed boilers and chemical lines';
+        } else {
+          subtitle = resourceDetail
+            ? `${fpLabel} Mining ${resourceDetail.shortName} · ${machineDetail.tierMult.toFixed(1)}x`
+            : `${fpLabel} Mining Drill · No Resource Below`;
+          actionHint = 'Outputs directly onto front-center belt, chest, or furnace';
+        }
       } else if (machineDetail.type === 'inserter') {
-        const reachLabel = machineDetail.inserterReach === 2 ? '2-Tile Reach' : '1-Tile Reach';
-        subtitle = `Logistics · ${reachLabel} · ${machineDetail.tierMult.toFixed(1)}x`;
-        actionHint = 'Picks behind · Drops ahead · Shift+RMB copy · [R] Rotate';
+        if (!machineDetail.isFunctionalInserter) {
+          subtitle = `${fpLabel} Perimeter Defense · ${machineDetail.powerDemandMw.toFixed(1)} MW`;
+          actionHint = 'Guards nearby factory sectors · Press [R] to orient';
+        } else {
+          const reachLabel = machineDetail.inserterReach === 2 ? '2-Tile Reach' : '1-Tile Reach';
+          subtitle = `Logistics · ${reachLabel} · ${machineDetail.tierMult.toFixed(1)}x`;
+          actionHint = 'Picks behind · Drops ahead · Shift+RMB copy · [R] Rotate';
+        }
       } else if (machineDetail.type === 'chest') {
-        const slotsUsed = machineDetail.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS;
-        subtitle = `Storage · ${machineDetail.outputTotal}/${machineDetail.chestCapacityItems ?? CAPYTORIO_CHEST_MAX_ITEMS} · ${slotsUsed}/${CAPYTORIO_CHEST_SLOTS} slots`;
-        actionHint = 'Set red-bar slot cap · Shift+RMB copy · Shift+LMB paste';
+        if (!machineDetail.isStorageChest) {
+          subtitle =
+            machineDetail.powerDemandMw > 0
+              ? `${fpLabel} Infrastructure · ${machineDetail.powerDemandMw.toFixed(2)} MW`
+              : `${fpLabel} Infrastructure · 0 MW`;
+          actionHint = 'Press [R] to rotate · Right-click or [X] to demolish';
+        } else {
+          const slotsUsed = machineDetail.chestSlotLimit ?? CAPYTORIO_CHEST_SLOTS;
+          subtitle = `Storage · ${machineDetail.outputTotal}/${machineDetail.chestCapacityItems ?? CAPYTORIO_CHEST_MAX_ITEMS} · ${slotsUsed}/${CAPYTORIO_CHEST_SLOTS} slots`;
+          actionHint = 'Set red-bar slot cap · Shift+RMB copy · Shift+LMB paste';
+        }
       } else if (machineDetail.type === 'generator') {
         subtitle = `${fpLabel} Power · ${machineDetail.powerSupplyMw.toFixed(1)} MW`;
-        actionHint = 'Feed Coal or Fresh Orange for 6.0 MW surge';
+        actionHint = machineDetail.isFuelGenerator
+          ? 'Feed Coal, Yuzu Sap, or Fresh Orange for peak output'
+          : 'Fuel-free continuous power generation';
+      } else if (machineDetail.variantItemId === 'beacon') {
+        subtitle = `${fpLabel} Aura Beacon · ${CAPYTORIO_BEACON_SPEC.rangeTiles}-Tile Range · ${machineDetail.powerDemandMw.toFixed(1)} MW`;
+        actionHint = 'Socket Speed or Efficiency modules to boost nearby machines';
+      } else if (machineDetail.variantItemId === 'radar') {
+        subtitle = `${fpLabel} Sector Scanner · ${machineDetail.powerDemandMw.toFixed(1)} MW`;
+        actionHint = 'Charts distant ore deposits and terrain sectors';
       } else {
         subtitle = `${fpLabel} Building · ${machineDetail.status}`;
         actionHint = 'Click Open to manage buffers, recipes, or Shift+RMB copy';
@@ -5284,7 +5427,7 @@ export class CapytorioFactoryEngine {
       }
     }
 
-    const milestones = this.evaluateMilestones();
+    const milestones = this.evaluateMilestones(undefined, true);
     let milestonesCompletedCount = 0;
     for (let i = 0; i < milestones.length; i++) {
       if (milestones[i].completed) milestonesCompletedCount++;

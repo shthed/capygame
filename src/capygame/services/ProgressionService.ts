@@ -232,105 +232,169 @@ export class ProgressionService {
   }
 
   public static sanitizeGameSettings(raw: unknown, warnings?: string[]): CapyGameSettings {
-    if (!raw || typeof raw !== 'object') {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       warnings?.push('Missing settings object; using default simulation settings.');
       return { ...DEFAULT_CAPY_SETTINGS };
     }
-    const parsed = raw as Partial<CapyGameSettings>;
+    const parsed = raw as Record<string, unknown>;
+    const cleanBool = (val: unknown, fallback: boolean): boolean =>
+      val === undefined ? fallback : Boolean(val);
+    const cleanNum = (val: unknown, fallback: number, min: number, max: number): number =>
+      typeof val === 'number' && Number.isFinite(val)
+        ? Math.max(min, Math.min(max, val))
+        : fallback;
+
+    const gpuQualityPreset: CapyGameSettings['gpuQualityPreset'] =
+      parsed.gpuQualityPreset === 'performance' ||
+      parsed.gpuQualityPreset === 'balanced' ||
+      parsed.gpuQualityPreset === 'high' ||
+      parsed.gpuQualityPreset === 'ultra'
+        ? parsed.gpuQualityPreset
+        : DEFAULT_CAPY_SETTINGS.gpuQualityPreset;
+
+    const gpuBackendPreference: CapyGameSettings['gpuBackendPreference'] =
+      parsed.gpuBackendPreference === 'auto' ||
+      parsed.gpuBackendPreference === 'webgpu' ||
+      parsed.gpuBackendPreference === 'webgl2'
+        ? parsed.gpuBackendPreference
+        : DEFAULT_CAPY_SETTINGS.gpuBackendPreference;
+
+    const gpuVisualFilter: CapyGameSettings['gpuVisualFilter'] =
+      parsed.gpuVisualFilter === 'natural_pbr' ||
+      parsed.gpuVisualFilter === 'cinema_filmic' ||
+      parsed.gpuVisualFilter === 'vibrant_hdr' ||
+      parsed.gpuVisualFilter === 'golden_hour' ||
+      parsed.gpuVisualFilter === 'noir_contrast' ||
+      parsed.gpuVisualFilter === 'retro_crt'
+        ? parsed.gpuVisualFilter
+        : DEFAULT_CAPY_SETTINGS.gpuVisualFilter;
+
+    const gpuToneMapping: CapyGameSettings['gpuToneMapping'] =
+      parsed.gpuToneMapping === 'agx' ||
+      parsed.gpuToneMapping === 'aces' ||
+      parsed.gpuToneMapping === 'neutral' ||
+      parsed.gpuToneMapping === 'reinhard'
+        ? parsed.gpuToneMapping
+        : DEFAULT_CAPY_SETTINGS.gpuToneMapping;
+
+    const gpuTextureFilter: CapyGameSettings['gpuTextureFilter'] =
+      parsed.gpuTextureFilter === 'trilinear_aniso' ||
+      parsed.gpuTextureFilter === 'bilinear' ||
+      parsed.gpuTextureFilter === 'nearest_retro'
+        ? parsed.gpuTextureFilter
+        : DEFAULT_CAPY_SETTINGS.gpuTextureFilter;
+
+    const gpuAnisotropy: CapyGameSettings['gpuAnisotropy'] =
+      parsed.gpuAnisotropy === 1 ||
+      parsed.gpuAnisotropy === 4 ||
+      parsed.gpuAnisotropy === 8 ||
+      parsed.gpuAnisotropy === 16
+        ? parsed.gpuAnisotropy
+        : DEFAULT_CAPY_SETTINGS.gpuAnisotropy;
+
+    const gpuShadowQuality: CapyGameSettings['gpuShadowQuality'] =
+      parsed.gpuShadowQuality === 'pcf_soft' ||
+      parsed.gpuShadowQuality === 'pcf' ||
+      parsed.gpuShadowQuality === 'vsm' ||
+      parsed.gpuShadowQuality === 'off'
+        ? parsed.gpuShadowQuality
+        : DEFAULT_CAPY_SETTINGS.gpuShadowQuality;
+
+    const gpuAntiAliasing: CapyGameSettings['gpuAntiAliasing'] =
+      parsed.gpuAntiAliasing === 'msaa_fxaa' ||
+      parsed.gpuAntiAliasing === 'fxaa' ||
+      parsed.gpuAntiAliasing === 'none'
+        ? parsed.gpuAntiAliasing
+        : DEFAULT_CAPY_SETTINGS.gpuAntiAliasing;
+
+    const touchControlsMode: CapyGameSettings['touchControlsMode'] =
+      parsed.touchControlsMode === 'auto' ||
+      parsed.touchControlsMode === 'always' ||
+      parsed.touchControlsMode === 'hidden'
+        ? parsed.touchControlsMode
+        : DEFAULT_CAPY_SETTINGS.touchControlsMode;
+
+    const weatherMode: CapyGameSettings['weatherMode'] =
+      parsed.weatherMode === 'auto' ||
+      parsed.weatherMode === 'clear' ||
+      parsed.weatherMode === 'rain' ||
+      parsed.weatherMode === 'storm' ||
+      parsed.weatherMode === 'mist' ||
+      parsed.weatherMode === 'snow'
+        ? parsed.weatherMode
+        : DEFAULT_CAPY_SETTINGS.weatherMode;
+
+    const manualCapyLodTier: CapyGameSettings['manualCapyLodTier'] =
+      parsed.manualCapyLodTier === 0 ||
+      parsed.manualCapyLodTier === 1 ||
+      parsed.manualCapyLodTier === 2 ||
+      parsed.manualCapyLodTier === 3
+        ? parsed.manualCapyLodTier
+        : DEFAULT_CAPY_SETTINGS.manualCapyLodTier;
+
+    const flightTrajectoryUserSelected = Boolean(parsed.flightTrajectoryUserSelected);
+
     return {
-      ...DEFAULT_CAPY_SETTINGS,
-      ...parsed,
       advancedMode: Boolean(parsed.advancedMode),
+      cameraFollowBehind: cleanBool(parsed.cameraFollowBehind, DEFAULT_CAPY_SETTINGS.cameraFollowBehind),
       capytorioCameraMode: parsed.capytorioCameraMode === 'chase' ? 'chase' : 'oblique',
       capytorioBeltEndSpill: Boolean(parsed.capytorioBeltEndSpill),
+      mouselookEnabled: cleanBool(parsed.mouselookEnabled, DEFAULT_CAPY_SETTINGS.mouselookEnabled),
+      mouselookSensitivity:
+        typeof parsed.mouselookSensitivity === 'number' &&
+        Number.isFinite(parsed.mouselookSensitivity)
+          ? Math.max(0.2, Math.min(2.5, Math.round(parsed.mouselookSensitivity * 20) / 20))
+          : DEFAULT_CAPY_SETTINGS.mouselookSensitivity,
+      invertMouseY: cleanBool(parsed.invertMouseY, DEFAULT_CAPY_SETTINGS.invertMouseY),
+      cameraDistance: cleanNum(parsed.cameraDistance, DEFAULT_CAPY_SETTINGS.cameraDistance, 0.45, 2.2),
+      turnSensitivity: cleanNum(parsed.turnSensitivity, DEFAULT_CAPY_SETTINGS.turnSensitivity, 0.5, 2.0),
+      fov: Math.round(cleanNum(parsed.fov, DEFAULT_CAPY_SETTINGS.fov, 45, 75)),
       worldFogEnabled: false,
       drawDistance:
         typeof parsed.drawDistance === 'number' && Number.isFinite(parsed.drawDistance)
           ? Math.max(90, Math.min(1350, Math.round(parsed.drawDistance)))
-          : parsed.gpuQualityPreset === 'performance'
+          : gpuQualityPreset === 'performance'
             ? 135
             : DEFAULT_CAPY_SETTINGS.drawDistance,
-      realityScaleGamma:
-        typeof parsed.realityScaleGamma === 'number' &&
-        Number.isFinite(parsed.realityScaleGamma)
-          ? Math.max(0.28, Math.min(1.0, parsed.realityScaleGamma))
-          : DEFAULT_CAPY_SETTINGS.realityScaleGamma,
-      showObjectMarkers: Boolean(parsed.showObjectMarkers),
-      astrophysicsPalette:
-        parsed.astrophysicsPalette === 'hubble' ? 'hubble' : 'natural',
-      flightTrajectory:
-        parsed.flightTrajectoryUserSelected === true && parsed.flightTrajectory === 'straight'
-          ? 'straight'
-          : 'spiral',
-      flightTrajectoryUserSelected: Boolean(parsed.flightTrajectoryUserSelected),
-      cameraDistance:
-        typeof parsed.cameraDistance === 'number' && Number.isFinite(parsed.cameraDistance)
-          ? Math.max(0.45, Math.min(2.2, parsed.cameraDistance))
-          : DEFAULT_CAPY_SETTINGS.cameraDistance,
-      turnSensitivity:
-        typeof parsed.turnSensitivity === 'number' && Number.isFinite(parsed.turnSensitivity)
-          ? Math.max(0.5, Math.min(2.0, parsed.turnSensitivity))
-          : DEFAULT_CAPY_SETTINGS.turnSensitivity,
-      fov:
-        typeof parsed.fov === 'number' && Number.isFinite(parsed.fov)
-          ? Math.max(45, Math.min(75, Math.round(parsed.fov)))
-          : DEFAULT_CAPY_SETTINGS.fov,
-      timeOfDayHours:
-        typeof parsed.timeOfDayHours === 'number' && Number.isFinite(parsed.timeOfDayHours)
-          ? Math.max(0, Math.min(24, parsed.timeOfDayHours))
-          : DEFAULT_CAPY_SETTINGS.timeOfDayHours,
-      gpuExposure:
-        typeof parsed.gpuExposure === 'number' && Number.isFinite(parsed.gpuExposure)
-          ? Math.max(0.5, Math.min(2.0, parsed.gpuExposure))
-          : DEFAULT_CAPY_SETTINGS.gpuExposure,
-      gpuBloomStrength:
-        typeof parsed.gpuBloomStrength === 'number' &&
-        Number.isFinite(parsed.gpuBloomStrength)
-          ? Math.max(0.0, Math.min(1.5, parsed.gpuBloomStrength))
-          : DEFAULT_CAPY_SETTINGS.gpuBloomStrength,
-      gpuSharpenAmount:
-        typeof parsed.gpuSharpenAmount === 'number' &&
-        Number.isFinite(parsed.gpuSharpenAmount)
-          ? Math.max(0.0, Math.min(1.0, parsed.gpuSharpenAmount))
-          : DEFAULT_CAPY_SETTINGS.gpuSharpenAmount,
+      touchControlsMode,
+      showAboutOnStartup: cleanBool(parsed.showAboutOnStartup, DEFAULT_CAPY_SETTINGS.showAboutOnStartup),
+      autoCapyLod: cleanBool(parsed.autoCapyLod, DEFAULT_CAPY_SETTINGS.autoCapyLod),
+      manualCapyLodTier,
+      lock60FpsGovernor: cleanBool(parsed.lock60FpsGovernor, DEFAULT_CAPY_SETTINGS.lock60FpsGovernor),
       maxFpsLimit:
         typeof parsed.maxFpsLimit === 'number' && Number.isFinite(parsed.maxFpsLimit)
           ? parsed.maxFpsLimit <= 0
             ? 0
             : Math.max(24, Math.min(240, Math.round(parsed.maxFpsLimit)))
           : DEFAULT_CAPY_SETTINGS.maxFpsLimit,
-      fpsTarget:
-        typeof parsed.fpsTarget === 'number' && Number.isFinite(parsed.fpsTarget)
-          ? Math.max(24, Math.min(240, Math.round(parsed.fpsTarget)))
-          : DEFAULT_CAPY_SETTINGS.fpsTarget,
-      showFpsButton:
-        parsed.showFpsButton === undefined
-          ? DEFAULT_CAPY_SETTINGS.showFpsButton
-          : Boolean(parsed.showFpsButton),
-      mouselookEnabled:
-        parsed.mouselookEnabled === undefined
-          ? DEFAULT_CAPY_SETTINGS.mouselookEnabled
-          : Boolean(parsed.mouselookEnabled),
-      mouselookSensitivity:
-        typeof parsed.mouselookSensitivity === 'number' &&
-        Number.isFinite(parsed.mouselookSensitivity)
-          ? Math.max(0.2, Math.min(2.5, Math.round(parsed.mouselookSensitivity * 20) / 20))
-          : DEFAULT_CAPY_SETTINGS.mouselookSensitivity,
-      invertMouseY:
-        parsed.invertMouseY === undefined
-          ? DEFAULT_CAPY_SETTINGS.invertMouseY
-          : Boolean(parsed.invertMouseY),
-      gpuResolutionScale:
-        typeof parsed.gpuResolutionScale === 'number' &&
-        Number.isFinite(parsed.gpuResolutionScale)
-          ? Math.max(0.5, Math.min(1.5, parsed.gpuResolutionScale))
-          : DEFAULT_CAPY_SETTINGS.gpuResolutionScale,
-      gpuAntiAliasing:
-        parsed.gpuAntiAliasing === 'msaa_fxaa' ||
-        parsed.gpuAntiAliasing === 'fxaa' ||
-        parsed.gpuAntiAliasing === 'none'
-          ? parsed.gpuAntiAliasing
-          : DEFAULT_CAPY_SETTINGS.gpuAntiAliasing,
+      fpsTarget: Math.round(cleanNum(parsed.fpsTarget, DEFAULT_CAPY_SETTINGS.fpsTarget, 24, 240)),
+      showFpsButton: cleanBool(parsed.showFpsButton, DEFAULT_CAPY_SETTINGS.showFpsButton),
+      dayNightAutoCycle: cleanBool(parsed.dayNightAutoCycle, DEFAULT_CAPY_SETTINGS.dayNightAutoCycle),
+      timeOfDayHours: cleanNum(parsed.timeOfDayHours, DEFAULT_CAPY_SETTINGS.timeOfDayHours, 0, 24),
+      weatherMode,
+      flightTrajectory:
+        flightTrajectoryUserSelected && parsed.flightTrajectory === 'straight'
+          ? 'straight'
+          : 'spiral',
+      flightTrajectoryUserSelected,
+      showObjectMarkers: Boolean(parsed.showObjectMarkers),
+      realityScaleGamma: cleanNum(parsed.realityScaleGamma, DEFAULT_CAPY_SETTINGS.realityScaleGamma, 0.28, 1.0),
+      astrophysicsPalette: parsed.astrophysicsPalette === 'hubble' ? 'hubble' : 'natural',
+      gpuBackendPreference,
+      gpuQualityPreset,
+      gpuPostProcessing: cleanBool(parsed.gpuPostProcessing, DEFAULT_CAPY_SETTINGS.gpuPostProcessing),
+      gpuVisualFilter,
+      gpuToneMapping,
+      gpuExposure: cleanNum(parsed.gpuExposure, DEFAULT_CAPY_SETTINGS.gpuExposure, 0.5, 2.0),
+      gpuTextureFilter,
+      gpuAnisotropy,
+      gpuShadowQuality,
+      gpuAntiAliasing,
+      gpuResolutionScale: cleanNum(parsed.gpuResolutionScale, DEFAULT_CAPY_SETTINGS.gpuResolutionScale, 0.5, 1.5),
+      gpuBloomEnabled: cleanBool(parsed.gpuBloomEnabled, DEFAULT_CAPY_SETTINGS.gpuBloomEnabled),
+      gpuBloomStrength: cleanNum(parsed.gpuBloomStrength, DEFAULT_CAPY_SETTINGS.gpuBloomStrength, 0.0, 1.5),
+      gpuSsaoEnabled: cleanBool(parsed.gpuSsaoEnabled, DEFAULT_CAPY_SETTINGS.gpuSsaoEnabled),
+      gpuSharpenAmount: cleanNum(parsed.gpuSharpenAmount, DEFAULT_CAPY_SETTINGS.gpuSharpenAmount, 0.0, 1.0),
     };
   }
 
@@ -423,20 +487,20 @@ export class ProgressionService {
   public static loadStats(forceReload: boolean = false): PlayerStats {
     this.ensureLifecycleHooks();
     if (this.cachedStats && !forceReload) return this.cachedStats;
-    try {
-      if (typeof window !== 'undefined') {
-        const raw =
-          localStorage.getItem(SAVE_KEY) ||
-          localStorage.getItem(LEGACY_SAVE_KEY_V2) ||
-          localStorage.getItem('capy_game_save_v1');
-        if (raw) {
+    if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+      const candidateKeys = [SAVE_KEY, LEGACY_SAVE_KEY_V2, 'capy_game_save_v1'];
+      for (let i = 0; i < candidateKeys.length; i++) {
+        const key = candidateKeys[i];
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
           const loaded = this.sanitizePlayerStats(JSON.parse(raw));
           this.cachedStats = loaded;
           return loaded;
+        } catch (e) {
+          console.warn(`Failed to parse CapyGame stats from ${key}`, e);
         }
       }
-    } catch (e) {
-      console.warn('Failed to load CapyGame stats', e);
     }
     const fallback: PlayerStats = structuredClone(INITIAL_PLAYER_STATS);
     this.cachedStats = fallback;
@@ -450,11 +514,28 @@ export class ProgressionService {
     }
     if (!this.pendingFlush || !this.cachedStats) return;
     this.pendingFlush = false;
+    if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
     try {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(SAVE_KEY, JSON.stringify(this.cachedStats));
-      }
+      localStorage.setItem(SAVE_KEY, JSON.stringify(this.cachedStats));
     } catch (e) {
+      // On QuotaExceededError, retry saving core progression without large factory payload
+      const isQuotaError =
+        e instanceof Error &&
+        (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED');
+      if (isQuotaError && this.cachedStats.capytorioFactory) {
+        try {
+          const compactStats: PlayerStats = {
+            ...this.cachedStats,
+            capytorioFactory: undefined,
+          };
+          localStorage.setItem(SAVE_KEY, JSON.stringify(compactStats));
+          console.warn('Storage quota exceeded; saved core CapyGame stats without factory snapshot.');
+          return;
+        } catch (retryErr) {
+          console.warn('Failed to flush compact CapyGame stats', retryErr);
+          return;
+        }
+      }
       console.warn('Failed to flush CapyGame stats', e);
     }
   }
@@ -485,10 +566,10 @@ export class ProgressionService {
     return fresh;
   }
 
-  public static loadSettings(): CapyGameSettings {
-    if (this.cachedSettings) return this.cachedSettings;
+  public static loadSettings(forceReload: boolean = false): CapyGameSettings {
+    if (this.cachedSettings && !forceReload) return this.cachedSettings;
     try {
-      if (typeof window !== 'undefined') {
+      if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
         const raw = localStorage.getItem(SETTINGS_KEY);
         if (raw) {
           const loaded = this.sanitizeGameSettings(JSON.parse(raw));

@@ -86,6 +86,7 @@ export interface CapytorioEntityInfoPanelProps {
   info: CapytorioTileInspection;
   isPinned: boolean;
   isTopBarVisible: boolean;
+  catalogVersion?: number;
   entitySettingsClipboard?: {
     sourceType: 'assembler' | 'splitter' | 'inserter' | 'chest';
     sourceLabel: string;
@@ -125,6 +126,7 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
   info,
   isPinned,
   isTopBarVisible,
+  catalogVersion = 0,
   entitySettingsClipboard,
   onClearPin,
   onOpenMachineModal,
@@ -158,7 +160,7 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
           (order[a.category] ?? 9) - (order[b.category] ?? 9) ||
           a.name.localeCompare(b.name)
       );
-  }, []);
+  }, [catalogVersion]);
 
   const m = info.machine;
   const isBeltLike =
@@ -296,14 +298,17 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
     if (m) {
       let compactStat: string = m.status;
       if (m.type === 'generator') {
-        compactStat = m.fuelTimer > 0 ? `${m.powerSupplyMw.toFixed(1)}MW` : 'No Fuel';
-      } else if (m.type === 'inserter') {
+        compactStat =
+          m.isFuelGenerator === false || m.fuelTimer > 0
+            ? `${m.powerSupplyMw.toFixed(1)}MW`
+            : 'No Fuel';
+      } else if (m.type === 'inserter' && m.isFunctionalInserter !== false) {
         compactStat = m.holdingItem
           ? getCapytorioItemMeta(m.holdingItem).shortName
           : m.inserterReach === 2
             ? '2-Tile'
             : m.status;
-      } else if (m.type === 'chest') {
+      } else if (m.type === 'chest' && m.isStorageChest !== false) {
         const cap = m.chestCapacityItems ?? CAPYTORIO_CHEST_SLOTS * CAPYTORIO_CHEST_ITEMS_PER_SLOT;
         compactStat = `${totalStored}/${cap}`;
       } else if (m.status === 'Working') {
@@ -707,9 +712,11 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                     <div className="flex items-center justify-between font-mono tabular-nums text-[8.5px] text-[#c4c9d4]">
                       <span className="truncate">
                         {m.type === 'generator'
-                          ? m.fuelTimer > 0
-                            ? `Burn ${m.fuelTimer.toFixed(1)}s`
-                            : 'Needs fuel'
+                          ? m.isFuelGenerator === false
+                            ? 'Fuel-Free'
+                            : m.fuelTimer > 0
+                              ? `Burn ${m.fuelTimer.toFixed(1)}s`
+                              : 'Needs fuel'
                           : m.recipeName ?? m.type}
                       </span>
                       <span className="shrink-0">
@@ -724,7 +731,9 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                         style={{
                           width: `${
                             m.type === 'generator'
-                              ? Math.min(100, Math.round((m.fuelTimer / 14) * 100))
+                              ? m.isFuelGenerator === false
+                                ? 100
+                                : Math.min(100, Math.round((m.fuelTimer / 14) * 100))
                               : Math.round(m.craftProgress * 100)
                           }%`,
                         }}
@@ -733,7 +742,7 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                   </div>
                 )}
 
-                {m.type === 'inserter' && (
+                {m.type === 'inserter' && m.isFunctionalInserter !== false && (
                   <div className="space-y-1">
                     <div className="flex items-center justify-between text-[9px]">
                       <span className="text-[#9aa0ac]">
@@ -864,7 +873,7 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
                   </div>
                 )}
 
-                {m.type === 'chest' && onSetChestSlotLimit && (
+                {m.type === 'chest' && m.isStorageChest !== false && onSetChestSlotLimit && (
                   <div className="space-y-1">
                     <div className="flex items-center justify-between font-mono tabular-nums text-[8.5px]">
                       <span className="text-[#9aa0ac]">Slot Limit (Red Bar)</span>
@@ -1021,8 +1030,8 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
             {m &&
               (m.type === 'assembler' ||
                 m.type === 'splitter' ||
-                m.type === 'inserter' ||
-                m.type === 'chest') &&
+                (m.type === 'inserter' && m.isFunctionalInserter !== false) ||
+                (m.type === 'chest' && m.isStorageChest !== false)) &&
               onCopyEntitySettings &&
               onPasteEntitySettings && (
                 <div className="px-1.5 py-1 bg-[#14161a] flex items-center gap-1">

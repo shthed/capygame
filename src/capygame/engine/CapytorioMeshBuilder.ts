@@ -9,8 +9,12 @@ import {
   RECIPE_BY_ID,
   getCapytorioInserterReach,
   getCapytorioItemMeta,
+  getCapytorioMachineBasePowerDemandMw,
   getCapytorioSmeltSpec,
+  isCapytorioFunctionalInserter,
+  isCapytorioStorageChest,
   resolveCapytorioItemShape,
+  subscribeCapytorioLuaChanges,
   type CapytorioDirection,
   type CapytorioItemShape,
   type CapytorioMachineType,
@@ -74,6 +78,7 @@ const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
 const _activeKeysScratch = new Set<string>();
 const _blueprintStockScratch = new Map<string, number>();
+const _blueprintPlannedTilesScratch = new Set<string>();
 const _ghostBeltLookup = new Map<string, CapytorioBlueprintEntry>();
 const _ghostUsedCountsByKey = new Map<string, number>();
 const _beltTierCounts: [number, number, number] = [0, 0, 0];
@@ -1261,6 +1266,7 @@ export class Capytorio3DRenderer {
   private readonly altModeTexCache = new Map<string, THREE.CanvasTexture>();
   private readonly altModePlaceholderMat: THREE.SpriteMaterial;
   private activeAltSpriteCount: number = 0;
+  private unsubscribeLua: (() => void) | null = null;
 
   public hasVisibleAltOverlay(): boolean {
     return this.root.visible && this.altModeRoot.visible && this.activeAltSpriteCount > 0;
@@ -2161,6 +2167,22 @@ export class Capytorio3DRenderer {
       this.ghostBeltDeckValidMat,
       this.ghostBeltDeckInvalidMat
     );
+
+    this.unsubscribeLua = subscribeCapytorioLuaChanges(() => {
+      this.clearAltModeBadgeCache();
+    });
+  }
+
+  private clearAltModeBadgeCache(): void {
+    for (let i = 0; i < this.altModeSpritePool.length; i++) {
+      const sp = this.altModeSpritePool[i];
+      sp.material = this.altModePlaceholderMat;
+      sp.visible = false;
+    }
+    this.altModeMatCache.forEach((mat) => mat.dispose());
+    this.altModeTexCache.forEach((tex) => tex.dispose());
+    this.altModeMatCache.clear();
+    this.altModeTexCache.clear();
   }
 
   private getOrCreateAltModeSprite(idx: number): THREE.Sprite {
@@ -2191,8 +2213,8 @@ export class Capytorio3DRenderer {
       return existing;
     }
 
-    // Enforce 128-entry LRU eviction cap so badge textures/materials never grow unbounded
-    while (this.altModeMatCache.size >= 128) {
+    // Enforce 64-entry LRU eviction cap so badge textures/materials stay well within mobile VRAM budgets
+    while (this.altModeMatCache.size >= 64) {
       const oldestKey = this.altModeMatCache.keys().next().value;
       if (oldestKey === undefined) break;
       const evictedMat = this.altModeMatCache.get(oldestKey);
@@ -2216,8 +2238,8 @@ export class Capytorio3DRenderer {
 
     let tex: THREE.CanvasTexture | null = null;
     if (typeof document !== 'undefined') {
-      // 512x512 power-of-two canvas for razor-sharp retina & mobile legibility
-      const S = 512;
+      // 256x256 power-of-two canvas: 4x smaller VRAM footprint while keeping badges crisp
+      const S = 256;
       const canvas = document.createElement('canvas');
       canvas.width = S;
       canvas.height = S;
@@ -2228,10 +2250,10 @@ export class Capytorio3DRenderer {
         ctx.imageSmoothingQuality = 'high';
 
         // Crisp high-contrast dark industrial plate
-        const pad = 16;
+        const pad = 8;
         const w = S - pad * 2;
         const h = S - pad * 2;
-        const r = 56;
+        const r = 28;
         ctx.beginPath();
         ctx.moveTo(pad + r, pad);
         ctx.lineTo(pad + w - r, pad);
@@ -2246,12 +2268,12 @@ export class Capytorio3DRenderer {
 
         ctx.fillStyle = isWarn ? 'rgba(69, 10, 10, 0.94)' : 'rgba(9, 14, 26, 0.93)';
         ctx.fill();
-        ctx.lineWidth = 18;
+        ctx.lineWidth = 9;
         ctx.strokeStyle = accentCss;
         ctx.stroke();
 
         // Crisp dark inner hairline framing the accent border
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 2;
         ctx.strokeStyle = 'rgba(2, 6, 23, 0.72)';
         ctx.stroke();
 
@@ -2259,52 +2281,52 @@ export class Capytorio3DRenderer {
         ctx.fillStyle = accentCss;
         if (isWarn) {
           ctx.beginPath();
-          ctx.moveTo(256, 56);
-          ctx.lineTo(342, 200);
-          ctx.lineTo(170, 200);
+          ctx.moveTo(128, 28);
+          ctx.lineTo(171, 100);
+          ctx.lineTo(85, 100);
           ctx.closePath();
           ctx.fill();
-          ctx.lineWidth = 6;
+          ctx.lineWidth = 3;
           ctx.lineJoin = 'round';
           ctx.strokeStyle = 'rgba(255,255,255,0.75)';
           ctx.stroke();
           ctx.fillStyle = '#090e1a';
-          ctx.font = '900 104px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.font = '900 52px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText('!', 256, 152);
+          ctx.fillText('!', 128, 76);
         } else {
           ctx.beginPath();
-          ctx.arc(256, 128, 62, 0, Math.PI * 2);
+          ctx.arc(128, 64, 31, 0, Math.PI * 2);
           ctx.fill();
           ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-          ctx.lineWidth = 8;
+          ctx.lineWidth = 4;
           ctx.stroke();
         }
 
         // Bold high-contrast primary label with dark outline for sharp readability at any zoom
         const primaryText = label.slice(0, 7);
-        const primaryY = sub ? 292 : 334;
-        ctx.font = '900 112px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const primaryY = sub ? 146 : 167;
+        ctx.font = '900 56px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.lineJoin = 'round';
         ctx.miterLimit = 2;
-        ctx.lineWidth = 14;
+        ctx.lineWidth = 7;
         ctx.strokeStyle = '#020617';
-        ctx.strokeText(primaryText, 256, primaryY, 424);
+        ctx.strokeText(primaryText, 128, primaryY, 212);
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(primaryText, 256, primaryY, 424);
+        ctx.fillText(primaryText, 128, primaryY, 212);
 
         // Optional subline (priority/reach/cap/filter mode/count)
         if (sub) {
           const subText = sub.slice(0, 9);
-          ctx.font = '800 86px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-          ctx.lineWidth = 12;
+          ctx.font = '800 43px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.lineWidth = 6;
           ctx.strokeStyle = '#020617';
-          ctx.strokeText(subText, 256, 408, 424);
+          ctx.strokeText(subText, 128, 204, 212);
           ctx.fillStyle = accentCss;
-          ctx.fillText(subText, 256, 408, 424);
+          ctx.fillText(subText, 128, 204, 212);
         }
 
         tex = new THREE.CanvasTexture(canvas);
@@ -2312,7 +2334,7 @@ export class Capytorio3DRenderer {
         tex.generateMipmaps = true;
         tex.minFilter = THREE.LinearMipmapNearestFilter;
         tex.magFilter = THREE.LinearFilter;
-        tex.anisotropy = 8;
+        tex.anisotropy = 4;
         tex.needsUpdate = true;
         this.altModeTexCache.set(key, tex);
       }
@@ -2332,9 +2354,8 @@ export class Capytorio3DRenderer {
   }
 
   private fillAltModeBadge(engine: CapytorioFactoryEngine, m: CapytorioMachine): boolean {
-    const baseSpec = CAPYTORIO_MACHINE_SPECS[m.type];
-    // High-priority operational alerts
-    if (baseSpec.powerDemandMw > 0 && engine.powerEfficiency <= 0.05) {
+    // High-priority operational alerts (variant-aware power demand)
+    if (getCapytorioMachineBasePowerDemandMw(m) > 0 && engine.powerEfficiency <= 0.05) {
       _altBadgeScratch.key = 'warn:nopwr';
       _altBadgeScratch.label = 'NO PWR';
       _altBadgeScratch.sub = '0%';
@@ -2377,9 +2398,9 @@ export class Capytorio3DRenderer {
       }
     }
     if (m.type === 'drill') {
-      if (m.variantItemId === 'offshore_pump' || m.variantItemId === 'pump') {
-        _altBadgeScratch.key = `pump:${m.variantItemId}`;
-        _altBadgeScratch.label = m.variantItemId === 'offshore_pump' ? 'WATER' : 'FLUID';
+      if (m.variantItemId === 'offshore_pump') {
+        _altBadgeScratch.key = 'pump:offshore_pump';
+        _altBadgeScratch.label = 'WATER';
         _altBadgeScratch.sub = 'PUMP';
         _altBadgeScratch.accent = '#38bdf8';
         _altBadgeScratch.warn = false;
@@ -2470,6 +2491,7 @@ export class Capytorio3DRenderer {
       return true;
     }
     if (m.type === 'inserter') {
+      if (!isCapytorioFunctionalInserter(m)) return false;
       const filters = m.inserterFilters;
       const hasFilters = Boolean(filters && filters.length > 0);
       const reach = getCapytorioInserterReach(m.variantItemId);
@@ -2496,6 +2518,14 @@ export class Capytorio3DRenderer {
       return true;
     }
     if (m.type === 'chest') {
+      if (m.variantItemId === 'pump') {
+        _altBadgeScratch.key = 'pump:pump';
+        _altBadgeScratch.label = 'FLUID';
+        _altBadgeScratch.sub = 'PUMP';
+        _altBadgeScratch.accent = '#38bdf8';
+        _altBadgeScratch.warn = false;
+        return true;
+      }
       if (m.variantItemId === 'roboport') {
         const fleet = engine.getRoboportFleetCount(m);
         _altBadgeScratch.key = `roboport:${fleet}`;
@@ -2505,6 +2535,7 @@ export class Capytorio3DRenderer {
         _altBadgeScratch.warn = false;
         return true;
       }
+      if (!isCapytorioStorageChest(m)) return false;
       let topItem: string | null = null;
       let topCount = 0;
       for (const k in m.outputBuffer) {
@@ -4529,7 +4560,7 @@ export class Capytorio3DRenderer {
             if (lamp.material !== desiredLamp) lamp.material = desiredLamp;
           }
         } else if (m.type === 'assembler') {
-          const isWorking = m.craftProgress > 0.005 || m.recipeId !== null;
+          const isWorking = m.craftProgress > 0.005;
           const speedMult = engine.getCraftSpeedMultiplier() * engine.powerEfficiency;
           const spin = timeSec * 3.2 * speedMult * (isWorking ? 1.0 : 0.25);
           if (group.userData.gearA) (group.userData.gearA as THREE.Object3D).rotation.y = spin;
@@ -4980,6 +5011,7 @@ export class Capytorio3DRenderer {
     if (showCursorAndRing && isPasteMode && engine.clipboard) {
       this.bpTileMat.opacity = 0.22;
       _blueprintStockScratch.clear();
+      _blueprintPlannedTilesScratch.clear();
       _ghostBeltLookup.clear();
       const entries = engine.clipboard.entries;
       const anchorGx = engine.pasteAnchor ? engine.pasteAnchor.gx : engine.hoveredGx;
@@ -5008,17 +5040,32 @@ export class Capytorio3DRenderer {
         const gz = anchorGz + entry.dz;
         const efp = getCapytorioToolFootprint(entry.toolId, entry.dir);
         const existingAt = engine.machines.get(tileKey(gx, gz));
-        let valid = true;
-        if (
-          existingAt &&
-          existingAt.type === entry.baseType &&
+        let selfOverlaps = false;
+        for (let ox = 0; ox < efp.width && !selfOverlaps; ox++) {
+          for (let oz = 0; oz < efp.height; oz++) {
+            if (_blueprintPlannedTilesScratch.has(tileKey(gx + ox, gz + oz))) {
+              selfOverlaps = true;
+              break;
+            }
+          }
+        }
+        const entryVariant = entry.toolId === entry.baseType ? undefined : entry.toolId;
+        const canOverlayExisting =
+          Boolean(existingAt) &&
+          existingAt!.type === entry.baseType &&
           (entry.baseType === 'assembler' ||
             entry.baseType === 'splitter' ||
-            entry.baseType === 'inserter' ||
-            entry.baseType === 'chest')
-        ) {
+            (entry.baseType === 'inserter' &&
+              isCapytorioFunctionalInserter(existingAt!) &&
+              isCapytorioFunctionalInserter({ type: entry.baseType, variantItemId: entryVariant })) ||
+            (entry.baseType === 'chest' &&
+              isCapytorioStorageChest(existingAt!) &&
+              isCapytorioStorageChest({ type: entry.baseType, variantItemId: entryVariant })));
+        let valid = !selfOverlaps;
+        if (valid && canOverlayExisting) {
           valid = true;
         } else if (
+          !valid ||
           !engine.canFootprintFit(
             gx,
             gz,
@@ -5032,6 +5079,7 @@ export class Capytorio3DRenderer {
         } else {
           if (
             entry.baseType === 'drill' &&
+            entry.toolId !== 'offshore_pump' &&
             !engine.findFirstOreInFootprint(gx, gz, efp.width, efp.height)
           ) {
             valid = false;
@@ -5050,6 +5098,13 @@ export class Capytorio3DRenderer {
               } else {
                 _blueprintStockScratch.set(stockKey, used + 1);
               }
+            }
+          }
+        }
+        if (valid) {
+          for (let ox = 0; ox < efp.width; ox++) {
+            for (let oz = 0; oz < efp.height; oz++) {
+              _blueprintPlannedTilesScratch.add(tileKey(gx + ox, gz + oz));
             }
           }
         }
@@ -5334,15 +5389,20 @@ export class Capytorio3DRenderer {
   }
 
   public dispose(): void {
+    this.unsubscribeLua?.();
+    this.unsubscribeLua = null;
     for (let i = 0; i < this.sharedGeometries.length; i++) {
       this.sharedGeometries[i].dispose();
     }
+    this.sharedGeometries.length = 0;
     for (let i = 0; i < this.sharedMaterials.length; i++) {
       this.sharedMaterials[i].dispose();
     }
+    this.sharedMaterials.length = 0;
     for (let i = 0; i < this.sharedTextures.length; i++) {
       this.sharedTextures[i].dispose();
     }
+    this.sharedTextures.length = 0;
     this.altModeMatCache.forEach((mat) => mat.dispose());
     this.altModeTexCache.forEach((tex) => tex.dispose());
     this.altModeMatCache.clear();
@@ -5354,5 +5414,6 @@ export class Capytorio3DRenderer {
     this.machineGeoCache.clear();
     this.accentMatCache.clear();
     this.heldItemMatCache.clear();
+    this.root.clear();
   }
 }

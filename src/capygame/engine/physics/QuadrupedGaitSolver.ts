@@ -403,7 +403,7 @@ export function solveSpineVerticalCoupling(
     // Hard 3D vertical link constraint: adjacent spine nodes cannot separate vertically beyond joint bend limit
     const maxDy = restLen * maxJointSlopeRatio;
     const minAllowedY = Math.max(floorY, spineY[prev] - maxDy);
-    const maxAllowedY = spineY[prev] + maxDy;
+    const maxAllowedY = Math.max(floorY, spineY[prev] + maxDy);
     if (nextY < minAllowedY) nextY = minAllowedY;
     else if (nextY > maxAllowedY) nextY = maxAllowedY;
 
