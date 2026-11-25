@@ -97,6 +97,16 @@ import { createLiveTelemetryStore, TelemetryReadout } from './TelemetryReadout';
 const LazyCapytorioHud = React.lazy(() =>
   import('./CapytorioHud').then((m) => ({ default: m.CapytorioHud }))
 );
+import { formatAppVersionLabel } from '../config/appVersion';
+import {
+  ActiveTutorialState,
+  CAPYGAME_OVERVIEW_COPY,
+  CAPYGAME_TUTORIALS,
+  CapyTutorial,
+  clampTutorialStepIndex,
+  getTutorialById,
+  stepTutorialState,
+} from '../engine/TutorialCatalog';
 import {
   Sparkles,
   Volume2,
@@ -111,6 +121,8 @@ import {
   Trophy,
   ChevronUp,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Compass,
   Settings as SettingsIcon,
   Info,
@@ -147,6 +159,7 @@ import {
   Package,
   Flame,
   Home,
+  HelpCircle,
 } from 'lucide-react';
 
 type DockTab = 'modes' | 'build' | 'dna' | 'upgrades' | 'wardrobe';
@@ -411,6 +424,7 @@ export const CapyGameView: React.FC = () => {
   const [isMuted, setIsMuted] = useState<boolean>(() => AudioService.getMuted());
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
+  const [activeTutorial, setActiveTutorial] = useState<ActiveTutorialState | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
   const [isBountiesOpen, setIsBountiesOpen] = useState<boolean>(false);
@@ -897,6 +911,7 @@ export const CapyGameView: React.FC = () => {
     CapytorioHudProps,
     | 'onToggleTopBar'
     | 'onOpenSettings'
+    | 'onOpenAbout'
     | 'onSelectTool'
     | 'onMineTileAt'
     | 'onInspectTileAt'
@@ -952,6 +967,10 @@ export const CapyGameView: React.FC = () => {
       onOpenSettings: () => {
         AudioService.playCapytorioUiClick('tool');
         setIsSettingsOpen(true);
+      },
+      onOpenAbout: () => {
+        AudioService.playCapytorioUiClick('tool');
+        setIsAboutOpen(true);
       },
       onSelectTool: (toolId, promoteToRecent = false) => {
         if (toolId !== 'mine' && toolId !== 'demolish') {
@@ -3091,6 +3110,34 @@ export const CapyGameView: React.FC = () => {
     showToast(`Transiting to ${zone.title}`);
   };
 
+  const handleStartTutorial = (tutorial: CapyTutorial) => {
+    setIsAboutOpen(false);
+    setIsMenuOpen(false);
+    setIsSettingsOpen(false);
+    setIsScaleAtlasOpen(false);
+    setIsOpticsOpen(false);
+    setIsInfographicExpanded(false);
+    setIsPerfLogOpen(false);
+
+    if (tutorial.launchTarget === 'cosmos') {
+      if (managerRef.current) {
+        managerRef.current.launchIntoCosmos(24.0);
+        managerRef.current.setSeamlessLogScale(24.0, true);
+        setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
+      }
+      AudioService.playCosmicWarp(1.08);
+    } else if (tutorial.launchTarget === 'sanctuary') {
+      handleSelectMode('sanctuary');
+    } else if (tutorial.launchTarget === 'capytorio') {
+      handleSelectMode('capytorio');
+    } else if (tutorial.launchTarget === 'genesis_setup') {
+      handleOpenFirstRunSetup();
+    }
+
+    setActiveTutorial({ tutorialId: tutorial.id, stepIndex: 0 });
+    showToast(`Tutorial started: ${tutorial.title}`);
+  };
+
   const handleSelectTab = (tab: DockTab) => {
     if (!isTabUnlocked(tab)) {
       setAllFeaturesUnlocked(true);
@@ -3899,20 +3946,36 @@ export const CapyGameView: React.FC = () => {
           !webglError &&
           capytorioSnap
         ) && (
-          <button
-            type="button"
-            data-testid="reveal-top-bar-btn"
-            onClick={() => {
-              AudioService.playCoin();
-              setIsTopBarVisible(true);
-            }}
-            title="Show World & Scale Menu Bar"
-            aria-label="Show Top Menu Bar"
-            className="fixed top-2 right-2 z-30 h-7 px-2 rounded bg-zinc-950/90 hover:bg-zinc-900 border border-white/15 text-zinc-100 text-[11px] font-medium flex items-center gap-1.5 shadow-lg pointer-events-auto cursor-pointer"
-          >
-            <Menu className="w-3.5 h-3.5 text-sky-400" />
-            <span>Menu</span>
-          </button>
+          <div className="fixed top-2 right-2 z-30 flex items-center gap-1.5 pointer-events-auto">
+            <button
+              type="button"
+              data-testid="quick-help-btn"
+              onClick={() => {
+                AudioService.playCoin();
+                setIsAboutOpen(true);
+              }}
+              title="About CapyGame & Tutorials"
+              aria-label="Open About CapyGame and Tutorials"
+              className="h-7 px-2 rounded bg-zinc-950/90 hover:bg-zinc-900 border border-white/15 text-zinc-100 text-[11px] font-medium flex items-center gap-1 shadow-lg cursor-pointer"
+            >
+              <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
+              <span>Help</span>
+            </button>
+            <button
+              type="button"
+              data-testid="reveal-top-bar-btn"
+              onClick={() => {
+                AudioService.playCoin();
+                setIsTopBarVisible(true);
+              }}
+              title="Show World & Scale Menu Bar"
+              aria-label="Show Top Menu Bar"
+              className="h-7 px-2 rounded bg-zinc-950/90 hover:bg-zinc-900 border border-white/15 text-zinc-100 text-[11px] font-medium flex items-center gap-1.5 shadow-lg cursor-pointer"
+            >
+              <Menu className="w-3.5 h-3.5 text-sky-400" />
+              <span>Menu</span>
+            </button>
+          </div>
         )}
 
       {isTopBarVisible && (
@@ -4352,21 +4415,20 @@ export const CapyGameView: React.FC = () => {
             <SettingsIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
           </button>
 
-          {isAdvancedMode && (
-            <button
-              type="button"
-              data-testid="open-about-btn"
-              onClick={() => {
-                AudioService.playCoin();
-                setIsAboutOpen(true);
-              }}
-              title="Universe Architecture Overview"
-              aria-label="Open Overview"
-              className="w-5 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0"
-            >
-              <Info className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-            </button>
-          )}
+          <button
+            type="button"
+            data-testid="open-about-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              setIsAboutOpen(true);
+            }}
+            title="About CapyGame & Tutorials"
+            aria-label="Open About CapyGame and Help"
+            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-7 sm:h-7' : 'h-7 px-1.5 sm:px-2 gap-1'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 text-[11px] font-medium transition-colors cursor-pointer shrink-0`}
+          >
+            <HelpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-300 shrink-0" />
+            {!isAdvancedMode && <span className="hidden md:inline">Help</span>}
+          </button>
 
           {isAdvancedMode && gameSettings.showFpsButton !== false && (
             <button
@@ -5611,6 +5673,18 @@ export const CapyGameView: React.FC = () => {
                       Pick a Hat
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    data-testid="infographic-open-about-btn"
+                    onClick={() => {
+                      setIsInfographicExpanded(false);
+                      setIsAboutOpen(true);
+                    }}
+                    className="w-full py-2 px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 font-medium text-xs border border-white/12 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
+                    <span>About CapyGame &amp; Tutorials</span>
+                  </button>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -7396,70 +7470,112 @@ export const CapyGameView: React.FC = () => {
         </div>
       )}
 
-      {/* OVERVIEW / ABOUT MODAL */}
+      {/* ABOUT CAPYGAME & HELP / TUTORIALS MODAL */}
       {isAboutOpen && (
         <div
           data-testid="capygame-about-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/85"
+          className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-zinc-950/85"
         >
-          <div className="relative w-full max-w-2xl bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100">
-            <div className="bg-zinc-950 px-5 py-4 border-b border-white/10 flex items-center justify-between">
-              <div>
-                <h2 className="text-sm sm:text-base font-semibold tracking-wider uppercase text-zinc-100">
-                  CapyGame 3D · System Architecture
-                </h2>
-                <p className="text-xs font-mono text-zinc-400 mt-0.5">
-                  63-Order Seamless Zoom (10^+28m to 10^-35m) · N-Body Galaxies · 5 Surface Sectors
+          <div className="relative w-full max-w-2xl max-h-[88vh] sm:max-h-[85vh] bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100 flex flex-col">
+            <div className="bg-zinc-950 px-4 sm:px-5 py-3.5 border-b border-white/10 flex items-center justify-between gap-3 shrink-0">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-sm sm:text-base font-semibold tracking-wide text-zinc-100">
+                    {CAPYGAME_OVERVIEW_COPY.heading}
+                  </h2>
+                  <span
+                    data-testid="about-version-label"
+                    className="text-[11px] font-mono px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-400/35"
+                  >
+                    {formatAppVersionLabel()}
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  {CAPYGAME_OVERVIEW_COPY.subtitle}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsAboutOpen(false)}
-                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
-                aria-label="Close Overview Modal"
+                className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
+                aria-label="Close About CapyGame Modal"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
-              <p className="text-xs text-zinc-300 leading-relaxed">
-                The simulation initializes at the Multiverse void overlooking pocket universes.
-                Navigate any cosmic scale or surface world with WASD, drag with Left/Right mouse
-                to Mouselook (or press M to toggle Free Mouselook), scroll the wheel to control
-                spaceship throttle or chase distance, and press Space or quick-tap to jump.
-              </p>
+            <div className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
+              <div className="p-3.5 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">
+                <p className="text-xs sm:text-[13px] text-zinc-200 leading-relaxed">
+                  {CAPYGAME_OVERVIEW_COPY.summary}
+                </p>
+                <p className="text-[11px] text-zinc-400 leading-relaxed border-t border-white/8 pt-2">
+                  <span className="text-zinc-300 font-medium">Quick Controls:</span>{' '}
+                  {CAPYGAME_OVERVIEW_COPY.controlsSummary}
+                </p>
+              </div>
 
-              <div>
-                <h3 className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-2">
-                  Surface Sectors (Click to Transit)
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {PLAY_STYLE_LIST.map((m) => (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Interactive Tutorials</span>
+                  </h3>
+                  <span className="text-[11px] text-zinc-400">Pick a guide to jump right in</span>
+                </div>
+                <div
+                  data-testid="about-tutorials-list"
+                  className="grid grid-cols-1 sm:grid-cols-2 gap-2"
+                >
+                  {CAPYGAME_TUTORIALS.map((tut) => (
                     <button
-                      key={m.id}
+                      key={tut.id}
                       type="button"
-                      onClick={() => {
-                        handleSelectMode(m.id);
-                        setIsAboutOpen(false);
-                      }}
-                      className="flex items-start justify-between p-2.5 rounded-lg bg-zinc-950/80 border border-white/10 hover:border-sky-400/50 text-left transition-colors cursor-pointer"
+                      data-testid={`start-tutorial-${tut.id}`}
+                      onClick={() => handleStartTutorial(tut)}
+                      className="flex flex-col justify-between p-3 rounded-lg bg-zinc-950/85 border border-white/10 hover:border-amber-400/50 hover:bg-zinc-950 text-left transition-colors cursor-pointer gap-2"
                     >
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-semibold text-zinc-100">{m.title}</span>
-                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-sky-400 border border-white/10">
-                            {m.compass}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-zinc-100">
+                            {tut.title}
+                          </span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-400/30 shrink-0">
+                            {tut.badge}
                           </span>
                         </div>
-                        <p className="text-[11px] text-zinc-400 mt-0.5">{m.description}</p>
+                        <p className="text-[11px] text-zinc-400 leading-relaxed">
+                          {tut.summary}
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-white/8">
+                        <span className="text-zinc-500 font-mono">{tut.durationLabel}</span>
+                        <span className="text-sky-300 font-medium inline-flex items-center gap-0.5">
+                          <span>Start Tutorial</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </span>
                       </div>
                     </button>
                   ))}
                 </div>
               </div>
+            </div>
 
-              <div className="flex items-center justify-between gap-3 pt-2 border-t border-white/10">
+            <div className="bg-zinc-950 px-4 sm:px-5 py-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  data-testid="about-open-settings-btn"
+                  onClick={() => {
+                    AudioService.playCoin();
+                    setIsAboutOpen(false);
+                    setIsSettingsOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
+                >
+                  <SettingsIcon className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Settings</span>
+                </button>
                 <button
                   type="button"
                   data-testid="open-privacy-policy-btn"
@@ -7473,19 +7589,19 @@ export const CapyGameView: React.FC = () => {
                   <Shield className="w-3.5 h-3.5 text-emerald-400" />
                   <span>Privacy Policy</span>
                 </button>
-                <button
-                  type="button"
-                  data-testid="close-about-btn"
-                  onClick={() => {
-                    AudioService.playCoin();
-                    setIsAboutOpen(false);
-                  }}
-                  className="flex items-center gap-1.5 bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Resume Simulation</span>
-                </button>
               </div>
+              <button
+                type="button"
+                data-testid="close-about-btn"
+                onClick={() => {
+                  AudioService.playCoin();
+                  setIsAboutOpen(false);
+                }}
+                className="flex items-center gap-1.5 bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Resume Game</span>
+              </button>
             </div>
           </div>
         </div>
@@ -7820,6 +7936,19 @@ export const CapyGameView: React.FC = () => {
                         className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-semibold border border-white/10 cursor-pointer"
                       >
                         Unlock Everything
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="settings-open-about-btn"
+                        onClick={() => {
+                          AudioService.playCoin();
+                          setIsSettingsOpen(false);
+                          setIsAboutOpen(true);
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                      >
+                        <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
+                        <span>About &amp; Tutorials</span>
                       </button>
                       <button
                         type="button"
@@ -9146,6 +9275,19 @@ export const CapyGameView: React.FC = () => {
                   </button>
                   <button
                     type="button"
+                    data-testid="settings-open-about-btn"
+                    onClick={() => {
+                      AudioService.playCoin();
+                      setIsSettingsOpen(false);
+                      setIsAboutOpen(true);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
+                    <span>About &amp; Tutorials</span>
+                  </button>
+                  <button
+                    type="button"
                     data-testid="open-privacy-policy-btn"
                     onClick={() => {
                       AudioService.playCoin();
@@ -10347,6 +10489,114 @@ export const CapyGameView: React.FC = () => {
           </div>
         </div>
       )}
+      {/* NON-BLOCKING ACTIVE TUTORIAL STEP BANNER */}
+      {activeTutorial &&
+        !isAboutOpen &&
+        !isSettingsOpen &&
+        !isPrivacyOpen &&
+        !isJsonEditorOpen &&
+        !isDebugReportOpen &&
+        !isMenuOpen &&
+        !isScaleAtlasOpen &&
+        !isOpticsOpen &&
+        !isInfographicExpanded &&
+        !isPerfLogOpen &&
+        !isGamePaused &&
+        !webglError &&
+        (() => {
+          const tutorial = getTutorialById(activeTutorial.tutorialId);
+          if (!tutorial || tutorial.steps.length === 0) return null;
+          const stepIndex = clampTutorialStepIndex(tutorial, activeTutorial.stepIndex);
+          const step = tutorial.steps[stepIndex];
+          const isLastStep = stepIndex >= tutorial.steps.length - 1;
+          const dockClass = isFirstRunSetupOpen
+            ? 'top-12 left-2 right-2 sm:left-[396px] sm:right-auto sm:w-[400px]'
+            : 'top-12 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:w-[460px]';
+          return (
+            <aside
+              data-testid="active-tutorial-banner"
+              aria-label={`${tutorial.title} Step ${stepIndex + 1} of ${tutorial.steps.length}`}
+              className={`fixed z-30 pointer-events-auto rounded-xl bg-zinc-950/95 border border-amber-400/45 shadow-2xl p-3 text-zinc-100 space-y-2 ${dockClass}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/35 shrink-0">
+                    Step {stepIndex + 1}/{tutorial.steps.length}
+                  </span>
+                  <span className="text-xs font-semibold text-zinc-100 truncate">
+                    {tutorial.title}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  data-testid="tutorial-close-btn"
+                  onClick={() => setActiveTutorial(null)}
+                  aria-label="Close Tutorial"
+                  className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-white/10 cursor-pointer shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-xs font-semibold text-amber-200">{step.title}</div>
+                <p className="text-[11px] sm:text-xs text-zinc-300 leading-relaxed">
+                  {step.instruction}
+                </p>
+              </div>
+
+              <div className="pt-1.5 border-t border-white/10 space-y-1.5 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:gap-2">
+                <span className="block text-[10px] font-mono text-sky-300">
+                  {step.controlHint}
+                </span>
+                <div className="flex items-center justify-end gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    data-testid="tutorial-all-btn"
+                    onClick={() => {
+                      AudioService.playCoin();
+                      setIsAboutOpen(true);
+                    }}
+                    className="px-2 py-1 rounded text-[11px] font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 cursor-pointer"
+                  >
+                    All Tutorials
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="tutorial-prev-btn"
+                    disabled={stepIndex === 0}
+                    onClick={() => {
+                      AudioService.playCoin();
+                      setActiveTutorial((prev) => stepTutorialState(prev, -1));
+                    }}
+                    className="px-2 py-1 rounded text-[11px] font-medium bg-zinc-900 hover:bg-zinc-800 disabled:opacity-40 text-zinc-200 border border-white/10 inline-flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <ChevronLeft className="w-3 h-3" />
+                    <span>Prev</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="tutorial-next-btn"
+                    onClick={() => {
+                      AudioService.playCoin();
+                      setActiveTutorial((prev) => {
+                        const next = stepTutorialState(prev, 1);
+                        if (!next) {
+                          showToast(`Finished: ${tutorial.title}`);
+                        }
+                        return next;
+                      });
+                    }}
+                    className="px-2.5 py-1 rounded text-[11px] font-semibold bg-amber-400 hover:bg-amber-300 text-zinc-950 inline-flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <span>{isLastStep ? 'Finish' : 'Next'}</span>
+                    {!isLastStep && <ChevronRight className="w-3 h-3" />}
+                  </button>
+                </div>
+              </div>
+            </aside>
+          );
+        })()}
     </div>
   );
 };

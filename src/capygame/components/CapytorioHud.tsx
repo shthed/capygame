@@ -9,6 +9,7 @@ import {
   Flame,
   FlipHorizontal2,
   FlipVertical2,
+  HelpCircle,
   Menu,
   Pause,
   Play,
@@ -98,6 +99,7 @@ export interface CapytorioHudProps {
   onOpenSettings: () => void;
   isPaused?: boolean;
   onTogglePause?: () => void;
+  onOpenAbout?: () => void;
   pointerHoverActive: boolean;
   drawerTab: CapytorioDrawerTab;
   setDrawerTab: React.Dispatch<React.SetStateAction<CapytorioDrawerTab>>;
@@ -202,6 +204,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
   onOpenSettings,
   isPaused = false,
   onTogglePause,
+  onOpenAbout,
   pointerHoverActive,
   drawerTab,
   setDrawerTab,
@@ -531,6 +534,19 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
               }`}
             >
               {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+            </button>
+          )}
+
+          {onOpenAbout && (
+            <button
+              type="button"
+              data-testid="capytorio-open-about-btn"
+              title="About CapyGame & Tutorials"
+              aria-label="Open About CapyGame and Help"
+              onClick={onOpenAbout}
+              className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
+            >
+              <HelpCircle className="w-3.5 h-3.5" />
             </button>
           )}
 

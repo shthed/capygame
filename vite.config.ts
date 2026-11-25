@@ -55,8 +55,23 @@ function disableViteHmrWebSocketPlugin(): Plugin {
   };
 }
 
+const PACKAGE_VERSION = (() => {
+  try {
+    const pkgPath = path.resolve(process.cwd(), 'package.json');
+    const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+    return typeof parsed.version === 'string' && parsed.version.trim()
+      ? parsed.version.trim()
+      : '1.1.0';
+  } catch {
+    return '1.1.0';
+  }
+})();
+
 export default defineConfig({
   base: './',
+  define: {
+    __CAPYGAME_VERSION__: JSON.stringify(PACKAGE_VERSION),
+  },
   plugins: [react(), tailwindcss(), capytorioLuaSourcesPlugin(), disableViteHmrWebSocketPlugin()],
   worker: {
     format: 'es',
