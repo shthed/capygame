@@ -1553,10 +1553,10 @@ class CapyAudioService {
 
   // Smooth pneumatic landing strut lock + descending anti-gravity power-down hum
   public playUfoTouchdown(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
-    if (!this.ctx || !dry) return;
+    if (!this.ctx || !dry || this.ctx.state !== 'running') return;
 
     const t = this.ctx.currentTime;
     const sub = this.ctx.createOscillator();
@@ -1604,10 +1604,10 @@ class CapyAudioService {
 
   // Anti-gravity turbine spool-up + rising harmonic chord for UFO liftoff to orbit
   public playUfoLiftoff(): void {
-    if (this.isMuted) return;
+    if (this.isMuted || this.isGamePaused) return;
     this.initContext();
     const dry = this.getDryNode();
-    if (!this.ctx || !dry) return;
+    if (!this.ctx || !dry || this.ctx.state !== 'running') return;
 
     const t = this.ctx.currentTime;
     const turbine = this.ctx.createOscillator();

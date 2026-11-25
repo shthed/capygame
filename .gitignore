@@ -6,6 +6,7 @@ playwright-report/
 .playwright-cli/
 .artifacts/
 .aistudio/
+public/assets/aistudio/
 .wrangler/
 
 # Secrets & Environment Files
