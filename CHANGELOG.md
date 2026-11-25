@@ -4,8 +4,126 @@ All notable changes to CapyGame are documented in this file using Semantic Versi
 
 ## [1.1.0] - 2026-11-25
 
-- Renamed the overview page to "About CapyGame" with the live application version (`v1.1.0`) shown in the header.
-- Removed the "System Architecture" title and "Surface Sectors" grid so the page focuses on a plain-language overview of what CapyGame is and quick controls.
-- Added interactive tutorial launchers from the Help / About page for Cosmic Flight, Capy Island & Capy-Snake, Capytorio Factory, and Pilot & Spaceship Setup, complete with a non-blocking step-by-step banner (`Prev`, `Next`, `All Tutorials`, and `Finish`).
-- Made the Help button easy to reach from both Basic and Advanced top bars, the collapsed top-right corner, Settings, Adventure Guide, and the Capytorio toolbar.
-- Added the SemVer + `CHANGELOG.md` workflow rule to `AGENTS.md` and synced `package.json`, `package-lock.json`, and `vite.config.ts`.
+- Renamed the overview modal to "About CapyGame" with the live application version (`v1.1.0`) shown in the header and removed "System Architecture" and "Surface Sectors" (`4536578`).
+- Added interactive tutorial launchers from the Help / About modal for Cosmic Flight, Capy Island & Capy-Snake, Capytorio Factory, and Pilot & Spaceship Setup with a non-blocking step banner (`Prev`, `Next`, `All Tutorials`, and `Finish`) (`4536578`).
+- Made the Help button easy to reach from Basic and Advanced top bars, the collapsed top-right corner, Settings, Adventure Guide, and the Capytorio toolbar (`4536578`).
+- Added the SemVer + `CHANGELOG.md` workflow rule to `AGENTS.md` and synced `package.json`, `package-lock.json`, and `vite.config.ts` (`4536578`).
+
+## [1.0.0] - 2026-11-25
+
+Initial `1.0.0` development history spanning `2026-11-10` through `2026-11-25` prior to adopting incremental SemVer releases.
+
+### 2026-11-25
+
+- Restored clean `npm ci` lockfile sync, simplified unit test execution, fixed the Capytorio integrity percentage readout and repair tooltip, disposed `InstancedMesh` GPU buffers, and tightened Service Worker and error boundary origin isolation (`4fff42d`).
+- Added deployment safeguards, security headers, and engine/physics/UI hardening across the codebase (`433059c`).
+- Fixed 1-frame UFO touchdown camera/hero pops, aligned Capytorio orbital fade curves, optimized camera handling and audio state transitions, and removed oversized debug media (`122f2de`).
+- Optimized scene rendering and culling specifically for Capytorio factory mode (`cac52dd`).
+
+### 2026-11-24
+
+- Added the UFO boarding and orbital flight launch/landing sequence between surface worlds and space (`624f890`).
+- Implemented the crisp Alt-Mode overlay layer displaying recipes and machine icons in Capytorio (`f3f0a70`).
+- Normalized triangle winding for curved transport belts so belt geometry renders right-side-out (`ac7514b`).
+- Optimized development server configuration (`f587f0b`).
+- Added the steam turbine machine and expanded entity icon variants (`7fa5e6c`).
+- Optimized Service Worker caching and lazy-loaded heavy UI panels (`0b01a6f`).
+- Optimized terrain rendering performance and HUD telemetry updates (`b26f3ad`).
+- Ignored the `.aistudio` directory in git (`ea2ebff`).
+- Cleaned up Capytorio engine internals and UI assets (`cb4fd7a`).
+- Cleaned up shader warmup state and optimized dependencies (`32ed210`).
+- Added Factorio blueprint string import and export support to Capytorio (`c69ef3f`).
+
+### 2026-11-23
+
+- Enabled GitHub Pages auto-deploy on `capyboop/capygame` and guarded build artifact propagation (#7) (`086df33`).
+- Added offshore pump support for Capytorio and refined dev server config (`666d48b`).
+- Updated 3rd-person sightline occlusion to smooth `4x4` screen-space Bayer dither transparency (`0f4a0d7`).
+- Switched sightline occlusion to a focused play-area cutout corridor (`d07b164`).
+- Added public community docs, issue/PR templates, and clean-room replay workflow for `capyboop/capygame` (#6) (`d9afb09`).
+- Implemented custom Capytorio hover tooltips and optimized cosmic initialization (`69d5464`).
+
+### 2026-11-22
+
+- Implemented entity settings copy and paste across Capytorio factory machines (`4c9b7d6`).
+- Added the built-in Capytoriopedia (`Pedia`) reference system (`e52b08e`).
+- Added support for partial blueprint pasting when some tiles are obstructed (`e9e93e2`).
+- Added clipboard copy and cut selection tools for factory layouts (`42eb77b`).
+- Implemented interactive box and lasso clipboard selection controls (`72b4742`).
+- Added tile hover previews and machine inspection state in Capytorio (`c990705`).
+
+### 2026-11-21
+
+- Extracted the Capytorio interface into a dedicated `CapytorioHud` component (`04bf89a`).
+- Updated Cloudflare Worker routing to redirect `capyboop.com/paint` and `paint.capyboop.com` straight to `capypaint.com` (#5) (`27478a0`).
+
+### 2026-11-19
+
+- Added Cloudflare Worker redirect from `capyboop.com/paint` to `paint.capyboop.com` (#4) (`75c1a7d`).
+- Implemented the dual-lane transport belt simulation and distinct 3D item shapes (`8185fc9`).
+- Configured Cloudflare Worker deployment for `capyboop.com` (#3) (`5114f04`).
+
+### 2026-11-18
+
+- Implemented mobile zoom controls and smooth orbit-to-surface transitions (`fa2e6ca`).
+- Refined the Capytorio UI, pocket crafting workflow, and HUD responsiveness (`68ebd75`).
+- Updated cosmic Playwright tests to use reliable click interactions (`73f8318`).
+
+### 2026-11-17
+
+- Added the Capytorio Lua data integration layer for Factorio-compatible recipes and technologies (`41f78bb`).
+- Added orbital/surface gameplay math helpers and updated store metadata (`1a9574c`).
+
+### 2026-11-16
+
+- Persisted the player's Straight vs. Spiral flight trajectory preference in settings (`575b7c2`).
+- Set curved 360-degree Spiral flight as the default space trajectory (`207a875`).
+- Refactored spaceship cruise control physics for smooth momentum-damped flight (`b80afaa`).
+- Replaced the space speed slider with compact 3-button media transport controls (`Rewind`, `Play/Pause`, `Fast Forward`) (`9b4968d`).
+- Updated hero starting positions and tuned jump physics in tests (`43bd6a9`).
+
+### 2026-11-15
+
+- Added fullscreen toggle support and vertical spine physics coupling (`49ea9b4`).
+- Implemented Dachshund Capy-Snake hybrid body mechanics and orange trail growth (`7e13347`).
+- Updated world scale parameters and Play Store roadmap documentation (`140a5cd`).
+- Added `UniverseScaleMath` utilities and expanded the unit test suite (`9c8f0a9`).
+- Updated E2E test coverage and improved PWA offline cache resilience (`1229827`).
+- Merged pull request #2 (`shthed/docs/drop-3d-branding`) dropping the `3D` suffix across docs (`2b2f08b`).
+- Merged pull request #1 (`shthed/antigravity/capyboop-mirror-and-ci`) setting up the public mirror and CI (`683ab10`).
+- Dropped the `3D` suffix from CapyGame repository documentation (`ad2f23c`).
+- Added the Forest Micro-Diorama glade system (`10^-2 m`) with 11 randomized specimens (`9218c9f`).
+
+### 2026-11-14
+
+- Configured the clean-room `capyboop` mirror and hardened CI workflows (`6bb73cc`).
+- Added kid-friendly Basic Mode and automated scale-band thumbnail captures (`e36edf9`).
+- Implemented the Yuzu Mountain ghost recording and playback system (`4a36345`).
+- Configured Cloudflare Pages deployment pipeline (`e87b664`).
+- Implemented low-memory mode to bound GPU texture and buffer footprint (`d7c1925`).
+- Implemented `O(1)` hidden-subtree scene matrix culling and WebGPU optimizations (`1404b95`).
+- Updated the application favicon (`3b1188b`).
+- Added desktop/iframe mouselook camera controls and configurable sensitivity/inversion settings (`6aaa597`).
+
+### 2026-11-13
+
+- Expanded universe zoom scale documentation and updated the project roadmap (`0406b46`).
+- Integrated native WebGPU initialization and Three.js Shading Language (TSL) pipelines (`97b4710`).
+- Added the Chrono-Vessel spacecraft rig and Chrono-Genesis pilot/universe setup configurator (`bdd094c`).
+
+### 2026-11-12
+
+- Implemented whole-screen sightline clearing for unobstructed 3rd-person visibility (`74c0a5b`).
+- Implemented localized sightline occlusion fading (`8d3cda4`).
+- Added automated unit testing, updated helper scripts, and synced docs (`0083a36`).
+- Implemented the unified stellar system architecture for continuous cosmic zooming (`1892f0b`).
+- Flattened the repository directory structure to the project root (`cefcc16`).
+
+### 2026-11-10
+
+- Removed Android APK build steps from the web deployment workflow (`228c96a`).
+- Improved robustness of the Android build pipeline step (`b19e0f6`).
+- Updated application configuration and build pipeline scripts (`e68e13e`).
+- Expanded CapyGame with DNA evolution traits and Sanctuary building placement (`3323d36`).
+- Added GitHub Actions automation for cleaning up stale branches and PR previews (`50ab5a9`).
+- Initial commit establishing the CapyGame 3D universe simulator and archipelago (`af29e1e`).
