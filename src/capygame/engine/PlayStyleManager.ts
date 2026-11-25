@@ -474,6 +474,7 @@ export class PlayStyleManager {
 
   // Shared 3D World Groups (all 5 game zones live simultaneously in one contiguous world)
   private worldBaseGroup = new THREE.Group();
+  private archipelagoStructuresGroup = new THREE.Group();
   private sanctuaryGroup = new THREE.Group();
   private sporeGroup = new THREE.Group();
   private capytorioGroup = new THREE.Group();
@@ -1913,10 +1914,19 @@ export class PlayStyleManager {
       CHRONO_VESSEL_ONE_TO_ONE_SCALE
     );
 
-    const showRemoteDistricts = !this.isSoftwareGl;
+    const isCapytorioTarget = targetMode === 'capytorio';
+    const showRemoteDistricts = !this.isSoftwareGl && !isCapytorioTarget;
     this.setCosmicStage('playing');
     this.worldBaseGroup.visible = true;
     this.worldBaseGroup.matrixWorldAutoUpdate = true;
+    if (this.oceanMesh) {
+      this.oceanMesh.visible = !isCapytorioTarget;
+    }
+    this.archipelagoStructuresGroup.visible = !isCapytorioTarget;
+    this.archipelagoStructuresGroup.matrixWorldAutoUpdate = !isCapytorioTarget;
+    if (this.worldEnv) {
+      this.worldEnv.mountainMesh.visible = !isCapytorioTarget;
+    }
     this.sanctuaryGroup.visible = targetMode === 'sanctuary' || showRemoteDistricts;
     this.sanctuaryGroup.matrixWorldAutoUpdate = this.sanctuaryGroup.visible;
     this.sporeGroup.visible = showRemoteDistricts;
@@ -1927,6 +1937,11 @@ export class PlayStyleManager {
     this.runnerGroup.matrixWorldAutoUpdate = showRemoteDistricts;
     this.fallGuysGroup.visible = showRemoteDistricts;
     this.fallGuysGroup.matrixWorldAutoUpdate = showRemoteDistricts;
+    if (this.seamlessUniverse) {
+      const showForestGrove = !isCapytorioTarget;
+      this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
+    }
     if (this.dachshundGroup) {
       this.dachshundGroup.visible = false;
     }
@@ -1953,6 +1968,16 @@ export class PlayStyleManager {
     this.camera.position.copy(savedCamPos);
     this.ufoCinematicCamStartPos.copy(savedCamPos);
     this.camera.lookAt(curVesselX, curVesselY + 0.35, curVesselZ);
+    if (this.worldEnv) {
+      const handoffFar = computeEffectiveCameraFar(
+        this.settings.drawDistance ?? 650,
+        this.settings.gpuQualityPreset ?? 'high',
+        true,
+        CAPYBARA_FOREST_LOG_METERS
+      );
+      this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
+      this.worldEnv.skyMesh.scale.setScalar(handoffFar.skyScale);
+    }
     this.syncUfoDomDataset();
     this.emitTelemetry();
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
@@ -1964,6 +1989,22 @@ export class PlayStyleManager {
     const isCapytorio = site.id === 'capytorio';
     const originX = isCapytorio ? CAPYTORIO_WORLD_ORIGIN_X : 0;
     const originZ = isCapytorio ? CAPYTORIO_WORLD_ORIGIN_Z : 0;
+
+    if (isCapytorio) {
+      if (this.capytorioEngine) {
+        this.ensureCapytorioRenderer()?.sync(
+          this.capytorioEngine,
+          site.padX,
+          site.padZ,
+          dt,
+          this.worldEnv?.elapsedSeconds ?? performance.now() * 0.001,
+          true,
+          26
+        );
+      } else {
+        void this.ensureCapytorioLoaded();
+      }
+    }
 
     if (this.chronoVessel) {
       this.chronoVessel.setMode('chase_pod');
@@ -2597,6 +2638,16 @@ export class PlayStyleManager {
       this.currentLogScaleMeters
     );
 
+    const activeFlightMode: 'sanctuary' | 'capytorio' = this.autoLandAtForestPending
+      ? this.autoLandTargetMode
+      : this.lastLaunchSourceMode;
+    const suppressArchipelagoForCapytorio =
+      (this.seamlessZoomActive &&
+        (this.autoLandAtForestPending || this.orbitalAscentFromSurfaceActive) &&
+        activeFlightMode === 'capytorio') ||
+      (this.currentMode === 'capytorio' &&
+        (this.isUfoSequenceActive() || this.camera.position.x >= 680));
+
     const isCapytorioObliqueHighAlt =
       isSurfaceVisible &&
       this.cosmicStage === 'playing' &&
@@ -2626,12 +2677,14 @@ export class PlayStyleManager {
         this.worldEnv.mountainMesh.visible = false;
       }
       if (this.oceanMesh) {
-        this.oceanMesh.visible = pose.logAlt <= 3.65;
+        this.oceanMesh.visible = !suppressArchipelagoForCapytorio && pose.logAlt <= 3.65;
         if (this.oceanMesh.visible) {
           this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
           this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
         }
       }
+      this.archipelagoStructuresGroup.visible = !suppressArchipelagoForCapytorio;
+      this.archipelagoStructuresGroup.matrixWorldAutoUpdate = !suppressArchipelagoForCapytorio;
       if (this.seamlessUniverse) {
         this.seamlessUniverse.forestGroveGroup.visible = false;
         this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = false;
@@ -2653,7 +2706,7 @@ export class PlayStyleManager {
           );
         }
         if (this.oceanMesh) {
-          this.oceanMesh.visible = isSurfaceVisible;
+          this.oceanMesh.visible = isSurfaceVisible && !suppressArchipelagoForCapytorio;
         }
         this.seamlessUniverse?.hide();
       }
@@ -2673,19 +2726,27 @@ export class PlayStyleManager {
         this.worldEnv.mountainMesh.visible =
           isSurfaceVisible &&
           farInfo.showMountains &&
+          !suppressArchipelagoForCapytorio &&
           this.camera.position.x < 450 &&
           this.currentMode !== 'capytorio';
       }
 
-      if (this.oceanMesh && isSurfaceVisible) {
-        this.oceanMesh.visible = true;
-        this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
-        this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
+      if (this.oceanMesh) {
+        const showOcean = isSurfaceVisible && !suppressArchipelagoForCapytorio;
+        this.oceanMesh.visible = showOcean;
+        if (showOcean) {
+          this.oceanMesh.position.x = Math.round(this.camera.position.x / 32) * 32;
+          this.oceanMesh.position.z = Math.round(this.camera.position.z / 32) * 32;
+        }
       }
+      const showArchStructures = isSurfaceVisible && !suppressArchipelagoForCapytorio;
+      this.archipelagoStructuresGroup.visible = showArchStructures;
+      this.archipelagoStructuresGroup.matrixWorldAutoUpdate = showArchStructures;
 
       if (this.seamlessUniverse) {
         const showForestGrove =
           isSurfaceVisible &&
+          !suppressArchipelagoForCapytorio &&
           this.currentMode !== 'capytorio' &&
           ((this.seamlessZoomActive &&
             this.currentLogScaleMeters >= -0.85 &&
@@ -2705,44 +2766,52 @@ export class PlayStyleManager {
       const camX = this.camera.position.x;
       const camZ = this.camera.position.z;
 
-      const visSanctuary = shouldRenderDistrict(
-        ZONE_LOCATIONS.sanctuary.x,
-        ZONE_LOCATIONS.sanctuary.z,
-        40,
-        camX,
-        camZ,
-        drawDist,
-        this.currentMode === 'sanctuary'
-      );
-      const visSpore = shouldRenderDistrict(
-        ZONE_LOCATIONS.spore.x,
-        ZONE_LOCATIONS.spore.z,
-        44,
-        camX,
-        camZ,
-        drawDist,
-        this.currentMode === 'spore'
-      );
+      const visSanctuary =
+        !suppressArchipelagoForCapytorio &&
+        shouldRenderDistrict(
+          ZONE_LOCATIONS.sanctuary.x,
+          ZONE_LOCATIONS.sanctuary.z,
+          40,
+          camX,
+          camZ,
+          drawDist,
+          this.currentMode === 'sanctuary'
+        );
+      const visSpore =
+        !suppressArchipelagoForCapytorio &&
+        shouldRenderDistrict(
+          ZONE_LOCATIONS.spore.x,
+          ZONE_LOCATIONS.spore.z,
+          44,
+          camX,
+          camZ,
+          drawDist,
+          this.currentMode === 'spore'
+        );
       const visCapytorio =
         this.currentMode === 'capytorio' || camX >= 450 - drawDist;
-      const visRunner = shouldRenderDistrict(
-        ZONE_LOCATIONS.runner.x,
-        ZONE_LOCATIONS.runner.z - 43,
-        64,
-        camX,
-        camZ,
-        drawDist,
-        this.currentMode === 'runner'
-      );
-      const visFallGuys = shouldRenderDistrict(
-        ZONE_LOCATIONS.fallguys.x,
-        ZONE_LOCATIONS.fallguys.z - 28,
-        48,
-        camX,
-        camZ,
-        drawDist,
-        this.currentMode === 'fallguys'
-      );
+      const visRunner =
+        !suppressArchipelagoForCapytorio &&
+        shouldRenderDistrict(
+          ZONE_LOCATIONS.runner.x,
+          ZONE_LOCATIONS.runner.z - 43,
+          64,
+          camX,
+          camZ,
+          drawDist,
+          this.currentMode === 'runner'
+        );
+      const visFallGuys =
+        !suppressArchipelagoForCapytorio &&
+        shouldRenderDistrict(
+          ZONE_LOCATIONS.fallguys.x,
+          ZONE_LOCATIONS.fallguys.z - 28,
+          48,
+          camX,
+          camZ,
+          drawDist,
+          this.currentMode === 'fallguys'
+        );
 
       this.sanctuaryGroup.visible = visSanctuary;
       this.sanctuaryGroup.matrixWorldAutoUpdate = visSanctuary;
@@ -2781,6 +2850,8 @@ export class PlayStyleManager {
     ocean.userData.ignoreCameraFade = true;
     this.oceanMesh = ocean;
     this.worldBaseGroup.add(ocean);
+    installFastMatrixCull(this.archipelagoStructuresGroup);
+    this.worldBaseGroup.add(this.archipelagoStructuresGroup);
 
     // 4 Wide Walkable Grand Promenade Causeways (9.6m wide) directly connecting Sanctuary (0,0)
     // to Spore Lagoon, Capytorio Frontier, Number Stampede & Yuzu Mountain across open ocean channels
@@ -2870,7 +2941,7 @@ export class PlayStyleManager {
         }
       }
 
-      this.worldBaseGroup.add(bridgeGroup);
+      this.archipelagoStructuresGroup.add(bridgeGroup);
     }
 
     // Welcoming Sandy Beach Rim around Spore Lagoon (-75, -75) so you walk seamlessly from bridge into water
@@ -2898,7 +2969,7 @@ export class PlayStyleManager {
     lagoonRim.position.set(ZONE_LOCATIONS.spore.x, 0.015, ZONE_LOCATIONS.spore.z);
     lagoonRim.receiveShadow = true;
     lagoonRim.userData.ignoreCameraFade = true;
-    this.worldBaseGroup.add(lagoonRim);
+    this.archipelagoStructuresGroup.add(lagoonRim);
 
     // Note: Capytorio Continental Shelf at wx >= 500 is rendered directly by Capytorio3DRenderer
 
@@ -2914,7 +2985,7 @@ export class PlayStyleManager {
     );
     runnerForecourt.receiveShadow = true;
     runnerForecourt.userData.ignoreCameraFade = true;
-    this.worldBaseGroup.add(runnerForecourt);
+    this.archipelagoStructuresGroup.add(runnerForecourt);
 
     for (const side of [-1, 1]) {
       const boardwalk = new THREE.Mesh(
@@ -2928,7 +2999,7 @@ export class PlayStyleManager {
       );
       boardwalk.receiveShadow = true;
       boardwalk.userData.ignoreCameraFade = true;
-      this.worldBaseGroup.add(boardwalk);
+      this.archipelagoStructuresGroup.add(boardwalk);
     }
 
     const runnerTurnaround = new THREE.Mesh(
@@ -2942,7 +3013,7 @@ export class PlayStyleManager {
     );
     runnerTurnaround.receiveShadow = true;
     runnerTurnaround.userData.ignoreCameraFade = true;
-    this.worldBaseGroup.add(runnerTurnaround);
+    this.archipelagoStructuresGroup.add(runnerTurnaround);
 
     // Yuzu Mountain Entry Ramp, Continuous Safety Promenade & Summit Return Walkway (+75, +75)
     const fgRamp = new THREE.Mesh(new THREE.BoxGeometry(16.8, 0.5, 11.0), promenadeDeckMat);
@@ -2950,7 +3021,7 @@ export class PlayStyleManager {
     fgRamp.rotation.x = 0.08;
     fgRamp.receiveShadow = true;
     fgRamp.userData.ignoreCameraFade = true;
-    this.worldBaseGroup.add(fgRamp);
+    this.archipelagoStructuresGroup.add(fgRamp);
 
     const fgUnderDeck = new THREE.Mesh(
       new THREE.BoxGeometry(16.8, 0.8, 76.0),
@@ -2963,7 +3034,7 @@ export class PlayStyleManager {
     );
     fgUnderDeck.receiveShadow = true;
     fgUnderDeck.userData.ignoreCameraFade = true;
-    this.worldBaseGroup.add(fgUnderDeck);
+    this.archipelagoStructuresGroup.add(fgUnderDeck);
   }
 
   public switchMode(mode: PlayStyle, instant: boolean = false) {
@@ -2978,22 +3049,28 @@ export class PlayStyleManager {
     }
     this.physicsBridge?.setActiveDistrict(mode);
 
-    // Keep all 5 game zones permanently active & visible in the same contiguous world!
+    // Keep all 5 game zones active in the contiguous world, while isolating Capytorio from archipelago meshes/ocean
+    const showArchipelago = mode !== 'capytorio';
     this.worldBaseGroup.visible = true;
     this.worldBaseGroup.matrixWorldAutoUpdate = true;
-    this.sanctuaryGroup.visible = true;
-    this.sanctuaryGroup.matrixWorldAutoUpdate = true;
-    this.sporeGroup.visible = true;
-    this.sporeGroup.matrixWorldAutoUpdate = true;
+    if (this.oceanMesh) {
+      this.oceanMesh.visible = showArchipelago;
+    }
+    this.archipelagoStructuresGroup.visible = showArchipelago;
+    this.archipelagoStructuresGroup.matrixWorldAutoUpdate = showArchipelago;
+    this.sanctuaryGroup.visible = showArchipelago;
+    this.sanctuaryGroup.matrixWorldAutoUpdate = showArchipelago;
+    this.sporeGroup.visible = showArchipelago;
+    this.sporeGroup.matrixWorldAutoUpdate = showArchipelago;
     this.capytorioGroup.visible = true;
     this.capytorioGroup.matrixWorldAutoUpdate = true;
-    this.runnerGroup.visible = true;
-    this.runnerGroup.matrixWorldAutoUpdate = true;
-    this.fallGuysGroup.visible = true;
-    this.fallGuysGroup.matrixWorldAutoUpdate = true;
+    this.runnerGroup.visible = showArchipelago;
+    this.runnerGroup.matrixWorldAutoUpdate = showArchipelago;
+    this.fallGuysGroup.visible = showArchipelago;
+    this.fallGuysGroup.matrixWorldAutoUpdate = showArchipelago;
     if (this.seamlessUniverse) {
-      this.seamlessUniverse.forestGroveGroup.visible = true;
-      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = true;
+      this.seamlessUniverse.forestGroveGroup.visible = showArchipelago;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showArchipelago;
     }
 
     this.heroVelocity.set(0, 0, 0);
@@ -3511,7 +3588,7 @@ export class PlayStyleManager {
     }
     if (this.seamlessUniverse) {
       this.seamlessUniverse.hide();
-      const showForestGrove = stage === 'playing';
+      const showForestGrove = stage === 'playing' && this.currentMode !== 'capytorio';
       this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
       this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
     }
@@ -3577,18 +3654,24 @@ export class PlayStyleManager {
     this.targetLogScaleMeters = stageLogMap[stage];
     this.cosmicUiTelemetryAccum = 0;
 
+    const showArchipelagoStage = isSurfaceStage && !(stage === 'playing' && this.currentMode === 'capytorio');
     this.worldBaseGroup.visible = isSurfaceStage;
     this.worldBaseGroup.matrixWorldAutoUpdate = isSurfaceStage;
-    this.sanctuaryGroup.visible = isSurfaceStage;
-    this.sanctuaryGroup.matrixWorldAutoUpdate = isSurfaceStage;
-    this.sporeGroup.visible = isSurfaceStage;
-    this.sporeGroup.matrixWorldAutoUpdate = isSurfaceStage;
+    if (this.oceanMesh) {
+      this.oceanMesh.visible = showArchipelagoStage;
+    }
+    this.archipelagoStructuresGroup.visible = showArchipelagoStage;
+    this.archipelagoStructuresGroup.matrixWorldAutoUpdate = showArchipelagoStage;
+    this.sanctuaryGroup.visible = showArchipelagoStage;
+    this.sanctuaryGroup.matrixWorldAutoUpdate = showArchipelagoStage;
+    this.sporeGroup.visible = showArchipelagoStage;
+    this.sporeGroup.matrixWorldAutoUpdate = showArchipelagoStage;
     this.capytorioGroup.visible = isSurfaceStage;
     this.capytorioGroup.matrixWorldAutoUpdate = isSurfaceStage;
-    this.runnerGroup.visible = isSurfaceStage;
-    this.runnerGroup.matrixWorldAutoUpdate = isSurfaceStage;
-    this.fallGuysGroup.visible = isSurfaceStage;
-    this.fallGuysGroup.matrixWorldAutoUpdate = isSurfaceStage;
+    this.runnerGroup.visible = showArchipelagoStage;
+    this.runnerGroup.matrixWorldAutoUpdate = showArchipelagoStage;
+    this.fallGuysGroup.visible = showArchipelagoStage;
+    this.fallGuysGroup.matrixWorldAutoUpdate = showArchipelagoStage;
 
     this.selectableCapyGroup.visible = stage === 'capy_selection';
     this.selectableCapyGroup.matrixWorldAutoUpdate = stage === 'capy_selection';
@@ -3974,6 +4057,7 @@ export class PlayStyleManager {
 
   public engageCapytorioLanding(): void {
     this.autoLandTargetMode = 'capytorio';
+    this.lastLaunchSourceMode = 'capytorio';
     void this.ensureCapytorioLoaded();
     this.engageForestLandingDescent();
   }
@@ -3988,6 +4072,10 @@ export class PlayStyleManager {
     this.orbitalAscentFromSurfaceActive = false;
     this.dockedChronoVesselVisible = false;
     this.nearParkedUfoCached = false;
+    if (this.autoLandTargetMode === 'capytorio') {
+      this.descentRingsGroup.visible = false;
+      this.descentRingsGroup.matrixWorldAutoUpdate = false;
+    }
     this.vesselMode = 'chase_pod';
     this.chronoVessel?.setMode('chase_pod');
     this.chronoVessel?.setPilotVisible(true);
@@ -5418,7 +5506,11 @@ export class PlayStyleManager {
               this.emitCapytorioSnapshot();
             });
           }
-          if (this.currentMode === 'capytorio' || this.capytorioGroup.visible) {
+          const capytorioActiveOrDescending =
+            this.currentMode === 'capytorio' ||
+            this.capytorioGroup.visible ||
+            (this.autoLandAtForestPending && this.autoLandTargetMode === 'capytorio');
+          if (capytorioActiveOrDescending) {
             const initPose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
             this.ensureCapytorioRenderer()?.sync(
               this.capytorioEngine,
@@ -9144,9 +9236,9 @@ export class PlayStyleManager {
       this.profiler.startPhase('gpu_shadow_cascade');
       this.gpuEngine.updateLightingAndShadowCascade(
         dt,
-        this.heroCapy.position.x,
-        this.heroCapy.position.y,
-        this.heroCapy.position.z,
+        _seamlessFocalPos.x,
+        _seamlessFocalPos.y,
+        _seamlessFocalPos.z,
         0,
         orbBlend.inSurfaceWindow && orbBlend.terrestrialBlend > 0.25,
         this.worldEnv.currentNightFactor,
@@ -12514,13 +12606,26 @@ export class PlayStyleManager {
 
     const logVal = this.currentLogScaleMeters;
     const approachDamping = computeDescentApproachDampingFactor((prevLogVal + logVal) * 0.5);
+    const activeSurfaceFlightMode: 'sanctuary' | 'capytorio' = this.autoLandAtForestPending
+      ? this.autoLandTargetMode
+      : this.lastLaunchSourceMode;
+    const surfaceFlightActive =
+      this.autoLandAtForestPending || this.orbitalAscentFromSurfaceActive;
+    const isCapytorioSurfaceFlight =
+      surfaceFlightActive && activeSurfaceFlightMode === 'capytorio';
+
     let spiralAngle = 0;
     let spiralAngularVel = 0;
     if (this.flightTrajectory === 'spiral') {
       const prevSpiral = computeSpiralOrbitAngleRadians(prevLogVal, this.spiralBandLogs);
       spiralAngle = computeSpiralOrbitAngleRadians(logVal, this.spiralBandLogs);
-      // During explicit orbital landing, keep a graceful gentle arc along the clear sunlit cloud corridor
-      const landingCorridorFactor = this.autoLandAtForestPending ? 0.16 : 1.0;
+      // During explicit Capytorio orbital landing, drop straight down over the factory without lateral spin;
+      // for Sanctuary, keep a graceful gentle arc along the clear sunlit cloud corridor.
+      const landingCorridorFactor = isCapytorioSurfaceFlight
+        ? 0.0
+        : this.autoLandAtForestPending
+          ? 0.16
+          : 1.0;
       const deltaSpiralYaw = (spiralAngle - prevSpiral) * approachDamping * landingCorridorFactor;
       this.cosmicOrbitYaw += deltaSpiralYaw;
       spiralAngularVel = dt > 0.0005 ? deltaSpiralYaw / dt : 0;
@@ -12544,9 +12649,7 @@ export class PlayStyleManager {
       return;
     }
 
-    const activeLandingSite = this.getActiveLandingSite(
-      this.autoLandAtForestPending ? this.autoLandTargetMode : this.lastLaunchSourceMode
-    );
+    const activeLandingSite = this.getActiveLandingSite(activeSurfaceFlightMode);
 
     // Keep landing zone active before touchdown so the target pad is aligned under the approaching UFO
     if (this.autoLandAtForestPending && logVal <= 2.8) {
@@ -12554,8 +12657,6 @@ export class PlayStyleManager {
     }
 
     // Only build & display playable Capybara Forest / archipelago surface worlds during landing descent or surface liftoff
-    const surfaceFlightActive =
-      this.autoLandAtForestPending || this.orbitalAscentFromSurfaceActive;
     if (surfaceFlightActive && !this.surfaceWorldsBuilt) {
       this.ensureSurfaceWorldsBuilt();
     }
@@ -12569,21 +12670,51 @@ export class PlayStyleManager {
     this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = false;
     this.worldBaseGroup.visible = showPlayableSurface;
     this.worldBaseGroup.matrixWorldAutoUpdate = showPlayableSurface;
-    this.sanctuaryGroup.visible = showPlayableSurface;
-    this.sanctuaryGroup.matrixWorldAutoUpdate = showPlayableSurface;
-    this.seamlessUniverse.forestGroveGroup.visible = showPlayableSurface;
-    this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showPlayableSurface;
 
-    // Reveal outer archipelago mini-game islands smoothly during landing descent or surface liftoff
-    const archVisible = surfaceFlightActive && orbBlend.archipelagoVisible;
-    this.sporeGroup.visible = archVisible;
-    this.sporeGroup.matrixWorldAutoUpdate = archVisible;
-    this.capytorioGroup.visible = archVisible;
-    this.capytorioGroup.matrixWorldAutoUpdate = archVisible;
-    this.runnerGroup.visible = archVisible;
-    this.runnerGroup.matrixWorldAutoUpdate = archVisible;
-    this.fallGuysGroup.visible = archVisible;
-    this.fallGuysGroup.matrixWorldAutoUpdate = archVisible;
+    if (isCapytorioSurfaceFlight) {
+      // Capytorio orbital descent/ascent: isolate strictly to sky dome + Capytorio continental factory!
+      if (this.oceanMesh) {
+        this.oceanMesh.visible = false;
+      }
+      this.archipelagoStructuresGroup.visible = false;
+      this.archipelagoStructuresGroup.matrixWorldAutoUpdate = false;
+      if (this.worldEnv) {
+        this.worldEnv.mountainMesh.visible = false;
+      }
+      this.sanctuaryGroup.visible = false;
+      this.sanctuaryGroup.matrixWorldAutoUpdate = false;
+      this.seamlessUniverse.forestGroveGroup.visible = false;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = false;
+      this.sporeGroup.visible = false;
+      this.sporeGroup.matrixWorldAutoUpdate = false;
+      this.runnerGroup.visible = false;
+      this.runnerGroup.matrixWorldAutoUpdate = false;
+      this.fallGuysGroup.visible = false;
+      this.fallGuysGroup.matrixWorldAutoUpdate = false;
+      this.capytorioGroup.visible = showPlayableSurface;
+      this.capytorioGroup.matrixWorldAutoUpdate = showPlayableSurface;
+    } else {
+      if (this.oceanMesh) {
+        this.oceanMesh.visible = showPlayableSurface;
+      }
+      this.archipelagoStructuresGroup.visible = showPlayableSurface;
+      this.archipelagoStructuresGroup.matrixWorldAutoUpdate = showPlayableSurface;
+      this.sanctuaryGroup.visible = showPlayableSurface;
+      this.sanctuaryGroup.matrixWorldAutoUpdate = showPlayableSurface;
+      this.seamlessUniverse.forestGroveGroup.visible = showPlayableSurface;
+      this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showPlayableSurface;
+
+      // Reveal outer archipelago mini-game islands smoothly during landing descent or surface liftoff
+      const archVisible = surfaceFlightActive && orbBlend.archipelagoVisible;
+      this.sporeGroup.visible = archVisible;
+      this.sporeGroup.matrixWorldAutoUpdate = archVisible;
+      this.capytorioGroup.visible = archVisible;
+      this.capytorioGroup.matrixWorldAutoUpdate = archVisible;
+      this.runnerGroup.visible = archVisible;
+      this.runnerGroup.matrixWorldAutoUpdate = archVisible;
+      this.fallGuysGroup.visible = archVisible;
+      this.fallGuysGroup.matrixWorldAutoUpdate = archVisible;
+    }
 
     this.selectableCapyGroup.visible = false;
     this.selectableCapyGroup.matrixWorldAutoUpdate = false;
@@ -12604,7 +12735,12 @@ export class PlayStyleManager {
     this.scene.fog = null;
 
     // Fade atmospheric sky dome continuously during explicit landing plunge
-    this.setSkyDomeAlpha(showPlayableSurface ? smoothstep01(0.16, 0.86, orbBlend.terrestrialBlend) : 0.0);
+    const skyDomeAlpha = !showPlayableSurface
+      ? 0.0
+      : isCapytorioSurfaceFlight
+        ? 1.0 - smoothstep01(3.05, 4.15, logVal)
+        : smoothstep01(0.16, 0.86, orbBlend.terrestrialBlend);
+    this.setSkyDomeAlpha(skyDomeAlpha);
 
     if (this.worldEnv) {
       const tb = orbBlend.terrestrialBlend;
@@ -12671,8 +12807,8 @@ export class PlayStyleManager {
       }
     }
 
-    // Keep sanctuary companion Capybaras gently alive during explicit landing descent
-    if (showPlayableSurface) {
+    // Keep sanctuary companion Capybaras gently alive during explicit Sanctuary landing descent
+    if (showPlayableSurface && !isCapytorioSurfaceFlight) {
       for (let i = 0; i < this.sanctuaryCapys.length; i++) {
         const buddy = this.sanctuaryCapys[i];
         if (!buddy.capy.visible) continue;
@@ -12721,13 +12857,16 @@ export class PlayStyleManager {
 
     // Smooth yaw orientation stabilization during final orbital plunge so camera never stays tilted sideways
     if (
-      (isBasicComfortMode || (logVal <= 2.4 && approachDamping < 0.35)) &&
+      (isBasicComfortMode ||
+        (isCapytorioSurfaceFlight && this.autoLandAtForestPending) ||
+        (logVal <= 2.4 && approachDamping < 0.35)) &&
       !this.mouselookLocked &&
       idleLookMs > 900
     ) {
       if (Math.abs(this.moveInput.z) < 0.05) {
-        const comfortPitchTarget =
-          showPlayableSurface || inTerrestrialZoom
+        const comfortPitchTarget = isCapytorioSurfaceFlight
+          ? THREE.MathUtils.lerp(0.48, 1.14, smoothstep01(0.85, 1.85, logVal))
+          : showPlayableSurface || inTerrestrialZoom
             ? 0.34
             : logVal >= 6.0 && logVal <= 14.5
               ? 0.32
@@ -12735,19 +12874,24 @@ export class PlayStyleManager {
         this.cosmicOrbitPitch = THREE.MathUtils.damp(
           this.cosmicOrbitPitch,
           Math.max(horizonMinPitch, comfortPitchTarget),
-          2.2,
+          isCapytorioSurfaceFlight ? 3.2 : 2.2,
           dt
         );
       }
       if (
-        (this.flightTrajectory !== 'spiral' || approachDamping < 0.35) &&
+        (isCapytorioSurfaceFlight || this.flightTrajectory !== 'spiral' || approachDamping < 0.35) &&
         Math.abs(this.moveInput.x) < 0.05 &&
         logVal >= 0.4 &&
         logVal <= 14.8
       ) {
         const signedYaw = normalizeAngleSigned(this.cosmicOrbitYaw);
-        const guideYaw = logVal <= 3.2 ? 0.15 : 0.06;
-        const dampedYaw = THREE.MathUtils.damp(signedYaw, guideYaw, 1.8, dt);
+        const guideYaw = isCapytorioSurfaceFlight ? 0.22 : logVal <= 3.2 ? 0.15 : 0.06;
+        const dampedYaw = THREE.MathUtils.damp(
+          signedYaw,
+          guideYaw,
+          isCapytorioSurfaceFlight ? 2.8 : 1.8,
+          dt
+        );
         this.cosmicOrbitYaw = dampedYaw;
       }
     }
@@ -12760,11 +12904,65 @@ export class PlayStyleManager {
     // Compute projective-invariant camera radius & smooth multi-sector focal anchor
     const canonicalRadius = 38.0;
     const chaseBaseDist = 11.4 * (this.settings.cameraDistance || 1.0);
-    const camRadius = showPlayableSurface
-      ? computeContinuousDescentCamRadius(logVal, chaseBaseDist)
-      : canonicalRadius;
+    let camRadius = canonicalRadius;
+    const surfaceFarInfo = computeEffectiveCameraFar(
+      this.settings.drawDistance ?? 650,
+      this.settings.gpuQualityPreset ?? 'high',
+      showPlayableSurface,
+      logVal
+    );
 
-    if (showPlayableSurface) {
+    if (isCapytorioSurfaceFlight) {
+      // Keep Capytorio orbital descent/ascent anchored coaxially over the factory from orbit to touchdown!
+      _seamlessFocalPos.set(
+        activeLandingSite.padX,
+        activeLandingSite.padSurfaceY + 1.15,
+        activeLandingSite.padZ
+      );
+      if (showPlayableSurface) {
+        const minLogAlt = Math.log10(Math.max(6.0, chaseBaseDist));
+        const altFrac = THREE.MathUtils.clamp(
+          (logVal - CAPYBARA_FOREST_LOG_METERS) / (4.15 - CAPYBARA_FOREST_LOG_METERS),
+          0,
+          1
+        );
+        camRadius = Math.pow(10, THREE.MathUtils.lerp(minLogAlt, 4.15, altFrac));
+        const desiredNear = THREE.MathUtils.clamp(camRadius * 0.004, 0.08, 4.0);
+        const desiredFar = Math.max(surfaceFarInfo.cameraFar, camRadius * 36.0);
+        if (
+          Math.abs(this.camera.near - desiredNear) > Math.max(0.01, desiredNear * 0.08) ||
+          Math.abs(this.camera.far - desiredFar) > Math.max(0.5, desiredFar * 0.05)
+        ) {
+          this.camera.near = desiredNear;
+          this.camera.far = desiredFar;
+          this.camera.updateProjectionMatrix();
+        }
+        if (this.capytorioEngine) {
+          this.ensureCapytorioRenderer()?.sync(
+            this.capytorioEngine,
+            activeLandingSite.padX,
+            activeLandingSite.padZ,
+            dt,
+            this.worldEnv?.elapsedSeconds ?? performance.now() * 0.001,
+            true,
+            camRadius
+          );
+        } else {
+          void this.ensureCapytorioLoaded();
+        }
+      } else {
+        const desiredNear = logVal > 14 ? 0.25 : 0.08;
+        if (
+          this.camera.near !== desiredNear ||
+          Math.abs(this.camera.far - surfaceFarInfo.cameraFar) > 0.5
+        ) {
+          this.camera.near = desiredNear;
+          this.camera.far = surfaceFarInfo.cameraFar;
+          this.camera.updateProjectionMatrix();
+        }
+      }
+    } else if (showPlayableSurface) {
+      camRadius = computeContinuousDescentCamRadius(logVal, chaseBaseDist);
       const lowBlend = THREE.MathUtils.smoothstep(logVal, -0.85, -0.22);
       const highBlend = 1 - THREE.MathUtils.smoothstep(logVal, 1.85, 3.35);
       const anchorWeight = lowBlend * highBlend;
@@ -12773,29 +12971,20 @@ export class PlayStyleManager {
         (activeLandingSite.padSurfaceY + 1.15) * anchorWeight,
         activeLandingSite.padZ * anchorWeight
       );
-      const forestFar = computeEffectiveCameraFar(
-        this.settings.drawDistance ?? 650,
-        this.settings.gpuQualityPreset ?? 'high',
-        true,
-        logVal
-      ).cameraFar;
-      if (this.camera.near !== 0.04 || Math.abs(this.camera.far - forestFar) > 0.5) {
+      if (this.camera.near !== 0.04 || Math.abs(this.camera.far - surfaceFarInfo.cameraFar) > 0.5) {
         this.camera.near = 0.04;
-        this.camera.far = forestFar;
+        this.camera.far = surfaceFarInfo.cameraFar;
         this.camera.updateProjectionMatrix();
       }
     } else {
       _seamlessFocalPos.set(0, 0, 0);
       const desiredNear = logVal > 14 ? 0.25 : 0.08;
-      const cosmicFar = computeEffectiveCameraFar(
-        this.settings.drawDistance ?? 650,
-        this.settings.gpuQualityPreset ?? 'high',
-        false,
-        logVal
-      ).cameraFar;
-      if (this.camera.near !== desiredNear || Math.abs(this.camera.far - cosmicFar) > 0.5) {
+      if (
+        this.camera.near !== desiredNear ||
+        Math.abs(this.camera.far - surfaceFarInfo.cameraFar) > 0.5
+      ) {
         this.camera.near = desiredNear;
-        this.camera.far = cosmicFar;
+        this.camera.far = surfaceFarInfo.cameraFar;
         this.camera.updateProjectionMatrix();
       }
     }
@@ -12818,18 +13007,20 @@ export class PlayStyleManager {
       effectiveGamma,
       effectiveMarkers,
       paletteMode,
-      this.autoLandAtForestPending
+      this.autoLandAtForestPending,
+      isCapytorioSurfaceFlight
     );
     this.seamlessUniverse.rootGroup.scale.setScalar(camRadius / canonicalRadius);
 
     // Blend background sky color cleanly across cosmic stratosphere -> daylight/night horizon during landing
-    if (showPlayableSurface && orbBlend.terrestrialBlend > 0.005) {
+    const skyColorBlend = isCapytorioSurfaceFlight ? skyDomeAlpha : orbBlend.terrestrialBlend;
+    if (showPlayableSurface && skyColorBlend > 0.005) {
       if (this.worldEnv) {
         _colorHelper.copy(this.worldEnv.currentHorizonSkyColor);
       } else {
         _colorHelper.setHex(this.activeBiome?.skyHex ?? 0x38bdf8);
       }
-      _seamlessSkyColor.lerp(_colorHelper, orbBlend.terrestrialBlend);
+      _seamlessSkyColor.lerp(_colorHelper, skyColorBlend);
     }
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background.copy(_seamlessSkyColor);
@@ -12838,9 +13029,11 @@ export class PlayStyleManager {
     }
 
     const spiralPitchMod =
-      this.flightTrajectory === 'spiral' ? Math.sin(spiralAngle) * 0.085 * approachDamping : 0;
+      this.flightTrajectory === 'spiral' && !isCapytorioSurfaceFlight
+        ? Math.sin(spiralAngle) * 0.085 * approachDamping
+        : 0;
     const spiralRadiusScale =
-      this.flightTrajectory === 'spiral'
+      this.flightTrajectory === 'spiral' && !isCapytorioSurfaceFlight
         ? 1.0 + Math.sin(spiralAngle * 2.0) * 0.07 * approachDamping
         : 1.0;
     const effectiveOrbitPitch = THREE.MathUtils.clamp(
@@ -12859,6 +13052,14 @@ export class PlayStyleManager {
     );
     this.camera.position.copy(_camTarget);
     this.camera.lookAt(_seamlessFocalPos);
+    if (this.worldEnv && showPlayableSurface) {
+      this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
+      this.worldEnv.skyMesh.scale.setScalar(
+        isCapytorioSurfaceFlight
+          ? Math.max(1.0, (this.camera.far * 0.72) / 720)
+          : surfaceFarInfo.skyScale
+      );
+    }
 
     // Anchor Future Capybara Chrono-Vessel with seamless HUD -> True 1:1 Meter World Scale convergence!
     if (this.chronoVessel) {
@@ -12950,8 +13151,9 @@ export class PlayStyleManager {
           this.moveInput.z + navPitchZ + this.mouselookPitchZ
         );
 
-        // Animate & check 6 Atmospheric Skydiving Descent Rings during explicit landing descent
-        const showRings = this.autoLandAtForestPending && logVal >= 1.0 && logVal <= 5.2;
+        // Animate & check 6 Atmospheric Skydiving Descent Rings during explicit Sanctuary landing descent
+        const showRings =
+          this.autoLandAtForestPending && !isCapytorioSurfaceFlight && logVal >= 1.0 && logVal <= 5.2;
         this.descentRingsGroup.visible = showRings;
         this.descentRingsGroup.matrixWorldAutoUpdate = showRings;
         if (showRings && this.descentRingMeshes.length === DESCENT_RING_SPECS.length) {
@@ -13234,7 +13436,10 @@ export class PlayStyleManager {
       forestSpecimenId: this.seamlessUniverse.getActiveForestSpecimenSpec().id,
       forestSpecimenLabel: this.seamlessUniverse.getActiveForestSpecimenSpec().label,
       descentRingsHit: this.descentRingsHitCount,
-      descentRingsTotal: this.autoLandAtForestPending ? DESCENT_RING_SPECS.length : 0,
+      descentRingsTotal:
+        this.autoLandAtForestPending && this.autoLandTargetMode !== 'capytorio'
+          ? DESCENT_RING_SPECS.length
+          : 0,
       dockedOnChronoPad: this.dockedChronoVesselVisible,
       ufoFlightPhase: this.ufoFlightState.phase,
       nearParkedUfo: this.nearParkedUfoCached,
@@ -13497,7 +13702,7 @@ export class PlayStyleManager {
         this.seamlessUniverse.hide();
         this.setSkyDomeAlpha(1.0);
         if (this.oceanMesh) {
-          this.oceanMesh.visible = true;
+          this.oceanMesh.visible = this.camera.position.x < 680;
         }
         this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
       }
