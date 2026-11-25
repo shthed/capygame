@@ -1678,11 +1678,19 @@ test('Phase 4 Hardening: AppErrorBoundary classifyError handles circular objects
   AudioService.resumeFromPause();
   AudioService.stopAmbientMusic();
 
-  // 3. Service Worker strictly guards cross-origin fetches
+  // 3. Service Worker strictly guards cross-origin fetches, defers skipWaiting to message, and preserves scoped sibling caches
   const swSource = fs.readFileSync(path.resolve(process.cwd(), 'public/sw.js'), 'utf8');
   assert.ok(
     swSource.includes('url.origin !== self.location.origin'),
     'public/sw.js must ignore cross-origin requests'
+  );
+  assert.ok(
+    !swSource.includes('await self.skipWaiting();'),
+    'public/sw.js install handler must not call unconditional skipWaiting()'
+  );
+  assert.ok(
+    swSource.includes("key.startsWith('capy-cache-') && !key.includes(':')"),
+    'public/sw.js activate handler must only purge unscoped legacy capy-cache-* entries'
   );
 });
 
@@ -1697,6 +1705,14 @@ test('Phase 5 Build, Security Headers, Manifest & CI Invariants', () => {
   assert.ok(headers.includes('Referrer-Policy: strict-origin-when-cross-origin'));
   assert.ok(headers.includes('/sw.js'));
   assert.ok(headers.includes('/manifest.webmanifest'));
+  assert.ok(headers.includes('/data/*'));
+  assert.ok(headers.includes('/assets/*.js'));
+  assert.ok(headers.includes('/assets/*.css'));
+  assert.ok(headers.includes('/assets/*.wasm'));
+  assert.ok(
+    !headers.includes('/assets/*\n  Cache-Control: public, max-age=31536000, immutable'),
+    'unhashed /assets/* images/icons must not be marked immutable'
+  );
 
   // 2. Golden Invariant #2: relative base './' in vite.config.ts
   const viteCfg = fs.readFileSync(path.resolve(root, 'vite.config.ts'), 'utf8');
@@ -1737,11 +1753,22 @@ test('Phase 5 Build, Security Headers, Manifest & CI Invariants', () => {
     "cleanup-gh-pages-previews.mjs must protect 'data' directory"
   );
 
-  // 5. tsx is installed in devDependencies for offline/CI test:unit
+  // 5. tsx is installed in devDependencies, test:unit uses local tsx, and bun.lock is absent
   const pkg = JSON.parse(fs.readFileSync(path.resolve(root, 'package.json'), 'utf8')) as {
+    scripts?: Record<string, string>;
     devDependencies?: Record<string, string>;
   };
   assert.ok(pkg.devDependencies?.tsx, 'tsx must be present in devDependencies');
+  assert.ok(
+    pkg.scripts?.['test:unit']?.startsWith('tsx --test '),
+    'test:unit must invoke local tsx directly in a single run'
+  );
+  assert.equal(fs.existsSync(path.resolve(root, 'bun.lock')), false, 'bun.lock must not exist');
+
+  // 6. Privacy policy lists yuzu ghost storage key and clickable issues link
+  const privacyHtml = fs.readFileSync(path.resolve(root, 'public/privacy.html'), 'utf8');
+  assert.ok(privacyHtml.includes('capy_game_yuzu_ghost_v1'));
+  assert.ok(privacyHtml.includes('https://github.com/capyboop/capygame/issues'));
 });
 
 

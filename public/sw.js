@@ -80,8 +80,6 @@ self.addEventListener('install', (event) => {
           }
         })
       );
-
-      await self.skipWaiting();
     })()
   );
 });
@@ -93,8 +91,8 @@ self.addEventListener('activate', (event) => {
       const cacheKeys = await caches.keys();
       await Promise.all(
         cacheKeys.map((key) => {
-          // Purge legacy un-scoped capy-cache-* entries or older generations of THIS scope only
-          const isLegacyUnscoped = key.startsWith('capy-cache-');
+          // Purge legacy un-scoped capy-cache-* entries (without scope suffix) or older generations of THIS scope only
+          const isLegacyUnscoped = key.startsWith('capy-cache-') && !key.includes(':');
           const isSameScopeOlderGen =
             key.startsWith(CACHE_PREFIX) &&
             key.endsWith(`:${SCOPE_PATH}`) &&

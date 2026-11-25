@@ -1156,7 +1156,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                           <span>
                             Integrity:{' '}
                             <strong className="text-[#86ef92]">
-                              {Math.round((inspectedTile.machine.integrity ?? 1) * 100)}%
+                              {Math.round(inspectedTile.machine.integrity ?? 100)}%
                             </strong>
                           </span>
                           {(inspectedTile.machine.overclockTimer ?? 0) > 0.1 && (
@@ -1171,7 +1171,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                             data-testid="capytorio-inspect-repair-btn"
                             disabled={(snap.pocketItems.repair_pack ?? 0) <= 0}
                             onClick={() => onRepairMachine(inspected.gx, inspected.gz)}
-                            title="Use 1 Repair Pack to restore integrity and grant 60s +20% speed overclock"
+                            title="Use 1 Repair Pack to restore integrity and grant 30s +20% speed overclock"
                             className={`px-2 py-0.5 rounded-[2px] flex items-center gap-1 ${
                               (snap.pocketItems.repair_pack ?? 0) > 0
                                 ? `cursor-pointer ${FACTORIO_BTN_ACTIVE}`

@@ -3425,3 +3425,49 @@ test('Phase 2: Save hydration sanitizes corrupted data, Factorio codec pairs tun
   );
 });
 
+test('Capytorio3DRenderer.dispose() disposes every InstancedMesh GPU buffer and HUD integrity uses 0..100 scale', () => {
+  const renderer = new Capytorio3DRenderer();
+  const instancedMeshes: THREE.InstancedMesh[] = [];
+  renderer.root.traverse((obj) => {
+    if ((obj as THREE.InstancedMesh).isInstancedMesh) {
+      instancedMeshes.push(obj as THREE.InstancedMesh);
+    }
+  });
+  assert.ok(instancedMeshes.length >= 20, `Expected >=20 InstancedMesh objects, found ${instancedMeshes.length}`);
+
+  let disposedCount = 0;
+  for (const inst of instancedMeshes) {
+    const origDispose = inst.dispose.bind(inst);
+    inst.dispose = () => {
+      disposedCount += 1;
+      return origDispose();
+    };
+  }
+
+  renderer.dispose();
+  assert.equal(
+    disposedCount,
+    instancedMeshes.length,
+    'Every InstancedMesh under Capytorio3DRenderer.root must have .dispose() called'
+  );
+  assert.equal(renderer.root.children.length, 0, 'Capytorio3DRenderer.root cleared after dispose');
+
+  const hudSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/components/CapytorioHud.tsx'),
+    'utf8'
+  );
+  assert.ok(
+    hudSrc.includes('{Math.round(inspectedTile.machine.integrity ?? 100)}%'),
+    'CapytorioHud renders machine.integrity directly on 0..100 scale'
+  );
+  assert.ok(
+    !hudSrc.includes('(inspectedTile.machine.integrity ?? 1) * 100'),
+    'CapytorioHud must not multiply 0..100 integrity by 100'
+  );
+  assert.ok(
+    hudSrc.includes('30s +20% speed overclock'),
+    'Repair button tooltip matches 30s overclock duration in useRepairPackAt()'
+  );
+});
+
+

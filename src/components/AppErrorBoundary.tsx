@@ -143,10 +143,15 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
   private handleClearCacheAndReload = async () => {
     if (this.clearingCache) return;
     this.clearingCache = true;
+    const ownScopeUrl = new URL('./', window.location.href);
+    const ownScopeHref = ownScopeUrl.href;
+    const ownScopePath = ownScopeUrl.pathname;
     try {
       if ('serviceWorker' in navigator && navigator.serviceWorker) {
         const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.allSettled(regs.map((r) => r.unregister()));
+        await Promise.allSettled(
+          regs.filter((r) => r.scope === ownScopeHref).map((r) => r.unregister())
+        );
       }
     } catch {
       // Ignored
@@ -155,7 +160,10 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     try {
       if ('caches' in window && window.caches) {
         const keys = await caches.keys();
-        await Promise.allSettled(keys.map((k) => caches.delete(k)));
+        const ownKeys = keys.filter(
+          (k) => k.startsWith('capygame-cache-') && k.endsWith(`:${ownScopePath}`)
+        );
+        await Promise.allSettled(ownKeys.map((k) => caches.delete(k)));
       }
     } catch {
       // Ignored

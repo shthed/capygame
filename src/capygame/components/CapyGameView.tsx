@@ -1406,7 +1406,11 @@ export const CapyGameView: React.FC = () => {
       isAboutOpen ||
       isJsonEditorOpen ||
       isDebugReportOpen ||
-      isPrivacyOpen;
+      isPrivacyOpen ||
+      isFirstRunSetupOpen;
+    if (overlayPausedNow) {
+      clearHeldInputsRef.current?.();
+    }
     if (wasOverlayPausedRef.current && !overlayPausedNow && managerRef.current?.isSoftwareGl) {
       managerRef.current.renderImmediateFrame(0.016);
     }
@@ -1422,6 +1426,7 @@ export const CapyGameView: React.FC = () => {
     isOpticsOpen,
     isInfographicExpanded,
     isPerfLogOpen,
+    isFirstRunSetupOpen,
   ]);
 
   useEffect(() => {
@@ -1965,20 +1970,24 @@ export const CapyGameView: React.FC = () => {
           }
           return;
         }
-        if (
-          key === 'w' ||
-          key === 'arrowup' ||
-          key === 's' ||
-          key === 'arrowdown' ||
-          key === 'a' ||
-          key === 'arrowleft' ||
-          key === 'd' ||
-          key === 'arrowright'
-        ) {
-          heldMoveKeys.add(key);
-          syncMoveInput();
+        const overlayBlockingMovement =
+          modalOpenRef.current || menuOpenRef.current || firstRunSetupOpenRef.current;
+        if (!overlayBlockingMovement) {
+          if (
+            key === 'w' ||
+            key === 'arrowup' ||
+            key === 's' ||
+            key === 'arrowdown' ||
+            key === 'a' ||
+            key === 'arrowleft' ||
+            key === 'd' ||
+            key === 'arrowright'
+          ) {
+            heldMoveKeys.add(key);
+            syncMoveInput();
+          }
+          if (key === ' ') managerRef.current.isJumping = true;
         }
-        if (key === ' ') managerRef.current.isJumping = true;
         const inCapytorioActive =
           managerRef.current.currentMode === 'capytorio' &&
           managerRef.current.cosmicStage === 'playing' &&
@@ -2377,6 +2386,10 @@ export const CapyGameView: React.FC = () => {
         window.removeEventListener('blur', handleWindowBlur);
         document.removeEventListener('pointerlockchange', handlePointerLockChange);
         document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
+        const winRef = window as unknown as { __capyManager?: PlayStyleManager };
+        if (winRef.__capyManager === manager) {
+          delete winRef.__capyManager;
+        }
         manager.dispose();
         managerRef.current = null;
       };

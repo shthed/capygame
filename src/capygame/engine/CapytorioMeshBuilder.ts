@@ -5391,6 +5391,11 @@ export class Capytorio3DRenderer {
   public dispose(): void {
     this.unsubscribeLua?.();
     this.unsubscribeLua = null;
+    this.root.traverse((obj) => {
+      if ((obj as THREE.InstancedMesh).isInstancedMesh) {
+        (obj as THREE.InstancedMesh).dispose();
+      }
+    });
     for (let i = 0; i < this.sharedGeometries.length; i++) {
       this.sharedGeometries[i].dispose();
     }
