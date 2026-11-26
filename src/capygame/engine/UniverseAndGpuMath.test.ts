@@ -364,10 +364,20 @@ test('Arcade Combo Multiplier, Yuzu Fever state & Rotating 3-Slot Bounties persi
   assert.equal(combo.count, 0);
   assert.equal(combo.feverActive, false);
 
-  // Legacy save backfill adds 3 valid default bounties
+  // Legacy save backfill adds 3 valid default bounties (Orchard Shake, Citrus Harvest, Belly-Flop Splash)
   const legacyCleaned = sanitizeBountyState(undefined);
   assert.equal(legacyCleaned.length, 3);
-  assert.equal(legacyCleaned[0].id, 'descent_rings');
+  assert.equal(legacyCleaned[0].id, 'shake_citrus_trees');
+
+  // Existing saves carrying retired 'descent_rings' migrate safely to 'shake_citrus_trees'
+  const migrated = sanitizeBountyState([
+    { id: 'descent_rings', progress: 2, completedCount: 1 },
+    { id: 'collect_yuzu', progress: 1, completedCount: 0 },
+  ]);
+  assert.equal(migrated.length, 3);
+  assert.equal(migrated[0].id, 'shake_citrus_trees');
+  assert.equal(migrated[0].progress, 2);
+  assert.equal(migrated[0].completedCount, 1);
 
   // Completing a bounty slot awards rewards and rotates to a fresh objective
   const prog1 = ProgressionService.recordBountyProgress(INITIAL_PLAYER_STATS, 'collect_yuzu', 5);

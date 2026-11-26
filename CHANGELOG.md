@@ -2,6 +2,14 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.2.10] - 2026-11-26
+
+- Trimmed 755 KB of 512px PWA install icons (`icon-512.png` and `icon-maskable-512.png`) from the Service Worker background precache list in `public/sw.js` while keeping `favicon.svg`, `icon-192.png`, and `apple-touch-icon.png` precached.
+- Moved periodic Capytorio factory autosave serialization off the animation frame into `requestIdleCallback` (with a `setTimeout` fallback) to eliminate frame hitches on large factories, while keeping explicit flushes on mode switch, pause, UFO launch, and unload synchronous.
+- Extracted the Settings Modal, Performance Diagnostics & Debug Report Modal, First-Run Chrono-Genesis Setup Modal, and secondary cold-boot-invisible panels out of `CapyGameView` into `React.lazy()` components so the initial `index.js` bundle drops cleanly below 250 KB raw.
+- Dynamically imported and instantiated the legacy `CosmicUniverseBuilder` only when a legacy cosmic stage is activated, removing it from cold-boot loading and initialization.
+- Replaced the stale `"Orbital Skydive"` bounty in Forest Games with `"Orchard Shake"` (wired to shaking ripe fruit from matching Sanctuary citrus trees, with safe migration for existing saved player bounties) and removed the unused `tickCapytorioEcosystemOnly` method from `PlayStyleManager`.
+
 ## [1.2.9] - 2026-11-26
 
 - Replaced the monolithic synchronous surface world builder with mode-scoped lazy building and incremental background hydration so entering Forest Games builds only the active district immediately and entering Capytorio never builds Forest districts or downloads the 4.24 MB Rapier3D physics worker.

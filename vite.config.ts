@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.2.9';
+      : '1.2.10';
   } catch {
-    return '1.2.9';
+    return '1.2.10';
   }
 })();
 

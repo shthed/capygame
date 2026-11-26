@@ -2,6 +2,7 @@ import React from 'react';
 import {
   BookOpen,
   Check,
+  ChevronLeft,
   ChevronRight,
   Settings as SettingsIcon,
   Shield,
@@ -9,9 +10,13 @@ import {
 } from 'lucide-react';
 import { formatAppVersionLabel } from '../config/appVersion';
 import {
+  ActiveTutorialState,
   CAPYGAME_OVERVIEW_COPY,
   CAPYGAME_TUTORIALS,
   CapyTutorial,
+  clampTutorialStepIndex,
+  getTutorialById,
+  stepTutorialState,
 } from '../engine/TutorialCatalog';
 import { AudioService } from '../services/AudioService';
 
@@ -162,3 +167,151 @@ export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
     </div>
   );
 };
+
+export interface CapyPrivacyModalProps {
+  onClose: () => void;
+}
+
+export const CapyPrivacyModal: React.FC<CapyPrivacyModalProps> = ({ onClose }) => (
+  <div
+    data-testid="privacy-policy-modal"
+    className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/90"
+  >
+    <div className="relative w-full max-w-2xl bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100 flex flex-col max-h-[90vh]">
+      <div className="bg-zinc-950 px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2">
+          <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
+          <div>
+            <h2 className="text-sm font-semibold tracking-wider uppercase text-zinc-100">
+              CapyGame · Privacy Policy
+            </h2>
+            <p className="text-[11px] font-mono text-zinc-400">
+              100% On-Device Saves · Zero Tracking SDKs
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          data-testid="close-privacy-policy-btn"
+          onClick={onClose}
+          className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
+          aria-label="Close Privacy Policy"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="p-3 bg-zinc-950 flex-1 min-h-0">
+        <iframe
+          src="./privacy.html"
+          title="CapyGame Privacy Policy"
+          className="w-full h-[64vh] rounded-lg border border-white/10 bg-zinc-950"
+        />
+      </div>
+    </div>
+  </div>
+);
+
+export interface CapyTutorialBannerProps {
+  activeTutorial: ActiveTutorialState;
+  isFirstRunSetupOpen: boolean;
+  onClose: () => void;
+  onOpenAllTutorials: () => void;
+  onStepChange: (next: ActiveTutorialState | null, finishedTitle?: string) => void;
+}
+
+export const CapyTutorialBanner: React.FC<CapyTutorialBannerProps> = ({
+  activeTutorial,
+  isFirstRunSetupOpen,
+  onClose,
+  onOpenAllTutorials,
+  onStepChange,
+}) => {
+  const tutorial = getTutorialById(activeTutorial.tutorialId);
+  if (!tutorial || tutorial.steps.length === 0) return null;
+  const stepIndex = clampTutorialStepIndex(tutorial, activeTutorial.stepIndex);
+  const step = tutorial.steps[stepIndex];
+  const isLastStep = stepIndex >= tutorial.steps.length - 1;
+  const dockClass = isFirstRunSetupOpen
+    ? 'top-12 left-2 right-2 sm:left-[396px] sm:right-auto sm:w-[400px]'
+    : 'top-12 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:w-[460px]';
+  return (
+    <aside
+      data-testid="active-tutorial-banner"
+      aria-label={`${tutorial.title} Step ${stepIndex + 1} of ${tutorial.steps.length}`}
+      className={`fixed z-30 pointer-events-auto rounded-xl bg-zinc-950/95 border border-amber-400/45 shadow-2xl p-3 text-zinc-100 space-y-2 ${dockClass}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/35 shrink-0">
+            Step {stepIndex + 1}/{tutorial.steps.length}
+          </span>
+          <span className="text-xs font-semibold text-zinc-100 truncate">
+            {tutorial.title}
+          </span>
+        </div>
+        <button
+          type="button"
+          data-testid="tutorial-close-btn"
+          onClick={onClose}
+          aria-label="Close Tutorial"
+          className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-white/10 cursor-pointer shrink-0"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        <div className="text-xs font-semibold text-amber-200">{step.title}</div>
+        <p className="text-[11px] sm:text-xs text-zinc-300 leading-relaxed">
+          {step.instruction}
+        </p>
+      </div>
+
+      <div className="pt-1.5 border-t border-white/10 space-y-1.5 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:gap-2">
+        <span className="block text-[10px] font-mono text-sky-300">
+          {step.controlHint}
+        </span>
+        <div className="flex items-center justify-end gap-1.5 shrink-0">
+          <button
+            type="button"
+            data-testid="tutorial-all-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              onOpenAllTutorials();
+            }}
+            className="px-2 py-1 rounded text-[11px] font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 cursor-pointer"
+          >
+            All Tutorials
+          </button>
+          <button
+            type="button"
+            data-testid="tutorial-prev-btn"
+            disabled={stepIndex === 0}
+            onClick={() => {
+              AudioService.playCoin();
+              onStepChange(stepTutorialState(activeTutorial, -1));
+            }}
+            className="px-2 py-1 rounded text-[11px] font-medium bg-zinc-900 hover:bg-zinc-800 disabled:opacity-40 text-zinc-200 border border-white/10 inline-flex items-center gap-0.5 cursor-pointer"
+          >
+            <ChevronLeft className="w-3 h-3" />
+            <span>Prev</span>
+          </button>
+          <button
+            type="button"
+            data-testid="tutorial-next-btn"
+            onClick={() => {
+              AudioService.playCoin();
+              const next = stepTutorialState(activeTutorial, 1);
+              onStepChange(next, next ? undefined : tutorial.title);
+            }}
+            className="px-2.5 py-1 rounded text-[11px] font-semibold bg-amber-400 hover:bg-amber-300 text-zinc-950 inline-flex items-center gap-0.5 cursor-pointer"
+          >
+            <span>{isLastStep ? 'Finish' : 'Next'}</span>
+            {!isLastStep && <ChevronRight className="w-3 h-3" />}
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+};
+

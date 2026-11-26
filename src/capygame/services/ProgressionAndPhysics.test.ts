@@ -2070,3 +2070,102 @@ test('Phase 6 Runtime Performance Invariants: Mode-Scoped Lazy Surface Build, Le
     'CapyGameView should not eagerly import PROCEDURAL_CONFIG_PRESETS into index.js'
   );
 });
+
+test('Bundle-Diet & Cleanup Pass (v1.2.10): SW precache trim, idle Capytorio autosave, lazy modals & CosmicUniverseBuilder, Forest bounty cleanup', () => {
+  const root = process.cwd();
+  const swSrc = fs.readFileSync(path.resolve(root, 'public/sw.js'), 'utf8');
+  const managerSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/engine/PlayStyleManager.ts'),
+    'utf8'
+  );
+  const viewSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/components/CapyGameView.tsx'),
+    'utf8'
+  );
+
+  // 1. SW precache excludes 512px icons (755 KB) while keeping favicon.svg & icon-192.png
+  assert.equal(
+    swSrc.includes('./assets/icon-512.png'),
+    false,
+    'public/sw.js must not precache 450 KB ./assets/icon-512.png'
+  );
+  assert.equal(
+    swSrc.includes('./assets/icon-maskable-512.png'),
+    false,
+    'public/sw.js must not precache 305 KB ./assets/icon-maskable-512.png'
+  );
+  assert.ok(swSrc.includes('./assets/favicon.svg'), 'public/sw.js must keep ./assets/favicon.svg');
+  assert.ok(swSrc.includes('./assets/icon-192.png'), 'public/sw.js must keep ./assets/icon-192.png');
+
+  // 2. Periodic Capytorio autosave runs in requestIdleCallback while flushCapytorioAutosave stays synchronous
+  assert.ok(
+    managerSrc.includes('private scheduleIdleCapytorioAutosave(): void'),
+    'PlayStyleManager must schedule periodic Capytorio autosave off-frame via scheduleIdleCapytorioAutosave()'
+  );
+  assert.ok(
+    managerSrc.includes('requestIdleCallback(runSave'),
+    'scheduleIdleCapytorioAutosave must use requestIdleCallback with fallback'
+  );
+  assert.ok(
+    managerSrc.includes('public flushCapytorioAutosave(): boolean {\n    this.cancelIdleCapytorioAutosave();'),
+    'flushCapytorioAutosave must cancel pending idle callbacks and synchronously serialize'
+  );
+
+  // 3. Remaining heavy modals and secondary panels are lazy-loaded via React.lazy out of CapyGameView
+  assert.ok(
+    viewSrc.includes("import('./CapySettingsModal')"),
+    'CapyGameView must lazy-load CapySettingsModal'
+  );
+  assert.ok(
+    viewSrc.includes("import('./CapyDebugReportModal')"),
+    'CapyGameView must lazy-load CapyDebugReportModal'
+  );
+  assert.ok(
+    viewSrc.includes("import('./CapyFirstRunSetupModal')"),
+    'CapyGameView must lazy-load CapyFirstRunSetupModal'
+  );
+  assert.ok(
+    viewSrc.includes("import('./CapyPerfLogPopover')"),
+    'CapyGameView must lazy-load CapyPerfLogPopover'
+  );
+  assert.ok(
+    viewSrc.includes("import('./CapyScaleAtlasAndOptics')"),
+    'CapyGameView must lazy-load CapyScaleAtlasAndOptics'
+  );
+  assert.ok(
+    viewSrc.includes("import('./CapyInfographicPanel')"),
+    'CapyGameView must lazy-load CapyInfographicPanel'
+  );
+  assert.ok(
+    viewSrc.includes("import('./CapyForestMenuDrawer')"),
+    'CapyGameView must lazy-load CapyForestMenuDrawer'
+  );
+
+  // 4. Legacy CosmicUniverseBuilder is dynamically imported on demand instead of statically imported/constructed at boot
+  assert.ok(
+    managerSrc.includes("import type {\n  CosmicUniverseBuilder,"),
+    'PlayStyleManager must import CosmicUniverseBuilder as type-only at top level'
+  );
+  assert.ok(
+    managerSrc.includes("import('./CosmicUniverseBuilder')"),
+    'PlayStyleManager must dynamically import CosmicUniverseBuilder on demand'
+  );
+  assert.equal(
+    managerSrc.includes('new CosmicUniverseBuilder('),
+    false,
+    'PlayStyleManager must not eagerly construct CosmicUniverseBuilder in constructor'
+  );
+
+  // 5. Unused tickCapytorioEcosystemOnly is removed and Orchard Shake Forest bounty is wired
+  assert.equal(
+    managerSrc.includes('tickCapytorioEcosystemOnly'),
+    false,
+    'PlayStyleManager must not contain unused tickCapytorioEcosystemOnly method'
+  );
+  assert.ok(
+    managerSrc.includes("onBountyEvent?.('shake_citrus_trees', 1)"),
+    'PlayStyleManager must wire Orchard Shake bounty progress on Sanctuary tree shake'
+  );
+});
+
+

@@ -15,8 +15,6 @@ const PRECACHE_RELATIVE_URLS = [
   './data/capytorio/technology.lua',
   './assets/favicon.svg',
   './assets/icon-192.png',
-  './assets/icon-512.png',
-  './assets/icon-maskable-512.png',
   './assets/apple-touch-icon.png',
 ];
 

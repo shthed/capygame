@@ -1,5 +1,5 @@
 export type BountyEventType =
-  | 'descent_rings'
+  | 'shake_citrus_trees'
   | 'collect_yuzu'
   | 'ground_pound_splash'
   | 'mushroom_bounce'
@@ -76,9 +76,9 @@ export const DESCENT_RING_SPECS: readonly DescentRingSpec[] = [
 
 export const BOUNTY_CATALOG: readonly BountyCatalogSpec[] = [
   {
-    id: 'descent_rings',
-    title: 'Orbital Skydive',
-    description: 'Glide through 3 Atmospheric Descent Rings',
+    id: 'shake_citrus_trees',
+    title: 'Orchard Shake',
+    description: 'Shake ripe fruit from 3 matching Sanctuary Trees',
     target: 3,
     coinReward: 18,
     dnaReward: 4,
@@ -144,6 +144,10 @@ export const BOUNTY_CATALOG: readonly BountyCatalogSpec[] = [
 const BOUNTY_BY_ID: ReadonlyMap<BountyEventType, BountyCatalogSpec> = new Map(
   BOUNTY_CATALOG.map((b) => [b.id, b])
 );
+
+const LEGACY_BOUNTY_ID_MIGRATIONS: Readonly<Record<string, BountyEventType>> = {
+  descent_rings: 'shake_citrus_trees',
+};
 
 export function clamp01(v: number): number {
   return v <= 0 ? 0 : v >= 1 ? 1 : v;
@@ -287,7 +291,7 @@ export function createBountyItem(
 
 export function createDefaultBounties(): BountyProgressItem[] {
   return [
-    createBountyItem(BOUNTY_CATALOG[0]), // descent_rings
+    createBountyItem(BOUNTY_CATALOG[0]), // shake_citrus_trees
     createBountyItem(BOUNTY_CATALOG[1]), // collect_yuzu
     createBountyItem(BOUNTY_CATALOG[2]), // ground_pound_splash
   ];
@@ -302,7 +306,8 @@ export function sanitizeBountyState(raw: unknown): BountyProgressItem[] {
   for (let i = 0; i < raw.length && cleaned.length < 3; i++) {
     const item = raw[i] as Partial<BountyProgressItem> | null | undefined;
     if (!item || typeof item !== 'object' || typeof item.id !== 'string') continue;
-    const spec = BOUNTY_BY_ID.get(item.id as BountyEventType);
+    const migratedId = (LEGACY_BOUNTY_ID_MIGRATIONS[item.id] ?? item.id) as BountyEventType;
+    const spec = BOUNTY_BY_ID.get(migratedId);
     if (!spec || seen.has(spec.id)) continue;
     seen.add(spec.id);
     const prog =

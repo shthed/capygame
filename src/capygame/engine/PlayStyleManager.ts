@@ -6,7 +6,7 @@ import {
   DachshundCabooseGroup,
   DachshundSegmentGroup,
 } from './CapyModelGenerator';
-import {
+import type {
   CosmicUniverseBuilder,
   StellarColorMappingMode,
 } from './CosmicUniverseBuilder';
@@ -490,7 +490,9 @@ export class PlayStyleManager {
 
   // Cosmic Genesis & Multi-Scale Universe State
   public cosmicStage: CosmicStage = 'playing';
-  public cosmicBuilder: CosmicUniverseBuilder;
+  public cosmicBuilder: CosmicUniverseBuilder | null = null;
+  private cosmicBuilderLoadPromise: Promise<CosmicUniverseBuilder | null> | null = null;
+  private isLowMemDevice: boolean = false;
   public seamlessUniverse: SeamlessUniverseSimulator;
   public chronoVessel!: ChronoVesselRig;
   public chronoPad: SanctuaryChronoPadSystem | null = null;
@@ -858,6 +860,7 @@ export class PlayStyleManager {
   private capytorioUiAccum: number = 0;
   private capytorioAutoSaveDirty: boolean = false;
   private capytorioAutoSaveTimer: number = 0;
+  private capytorioIdleSaveCancel: (() => void) | null = null;
   private pendingLandingPlayStyle: PlayStyle = 'sanctuary';
   private readonly capytorioStepCallbacks: CapytorioStepCallbacks;
   private unsubscribeCapytorioLua: (() => void) | null = null;
@@ -1208,10 +1211,8 @@ export class PlayStyleManager {
     this.physicsBridge = new PhysicsWorldBridge(!skipCosmic);
 
     // 6. Build Chrono-Vessel Rig & Multi-Scale Universe Simulator
-    //    (CosmicUniverseBuilder stays lazy & suspended so Multiverse boots in a fraction of the time)
-    this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl, isLowMem, !skipCosmic);
-    this.cosmicBuilder.setSuspended(true);
-    this.scene.add(this.cosmicBuilder.rootGroup);
+    //    (Legacy CosmicUniverseBuilder is dynamically imported on demand only if a legacy cosmic stage is activated)
+    this.isLowMemDevice = isLowMem;
     this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl);
     this.scene.add(this.seamlessUniverse.rootGroup);
     this.scene.add(this.seamlessUniverse.celestialBackdropGroup);
@@ -1249,7 +1250,6 @@ export class PlayStyleManager {
     installFastMatrixCull(this.capytorioGroup);
     installFastMatrixCull(this.runnerGroup);
     installFastMatrixCull(this.fallGuysGroup);
-    installFastMatrixCull(this.cosmicBuilder.rootGroup);
     installFastMatrixCull(this.vfxEngine.rootGroup);
     installFastMatrixCull(this.selectableCapyGroup);
     installFastMatrixCull(this.heroCapy);
@@ -2091,7 +2091,57 @@ export class PlayStyleManager {
     );
   }
 
+  private cancelIdleCapytorioAutosave(): void {
+    if (this.capytorioIdleSaveCancel) {
+      this.capytorioIdleSaveCancel();
+      this.capytorioIdleSaveCancel = null;
+    }
+  }
+
+  private scheduleIdleCapytorioAutosave(): void {
+    if (this.disposed || !this.capytorioEngine || !this.capytorioAutoSaveDirty) {
+      return;
+    }
+    if (this.capytorioIdleSaveCancel) {
+      return;
+    }
+    const runSave = () => {
+      this.capytorioIdleSaveCancel = null;
+      if (this.disposed || !this.capytorioEngine || !this.capytorioAutoSaveDirty) {
+        return;
+      }
+      this.capytorioAutoSaveDirty = false;
+      this.capytorioAutoSaveTimer = 0;
+      this.callbacks.onCapytorioFactorySaved?.(this.capytorioEngine.serialize());
+    };
+    const win = typeof window !== 'undefined' ? window : null;
+    const reqIdle =
+      win &&
+      typeof (
+        win as unknown as {
+          requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number;
+        }
+      ).requestIdleCallback === 'function'
+        ? (
+            win as unknown as {
+              requestIdleCallback: (cb: () => void, opts?: { timeout?: number }) => number;
+              cancelIdleCallback?: (id: number) => void;
+            }
+          )
+        : null;
+    if (reqIdle) {
+      const idleId = reqIdle.requestIdleCallback(runSave, { timeout: 2000 });
+      this.capytorioIdleSaveCancel = () => reqIdle.cancelIdleCallback?.(idleId);
+    } else if (win) {
+      const timeoutId = win.setTimeout(runSave, 0);
+      this.capytorioIdleSaveCancel = () => win.clearTimeout(timeoutId);
+    } else {
+      runSave();
+    }
+  }
+
   public flushCapytorioAutosave(): boolean {
+    this.cancelIdleCapytorioAutosave();
     if (!this.capytorioEngine || !this.capytorioAutoSaveDirty) {
       return false;
     }
@@ -2099,6 +2149,56 @@ export class PlayStyleManager {
     this.capytorioAutoSaveTimer = 0;
     this.callbacks.onCapytorioFactorySaved?.(this.capytorioEngine.serialize());
     return true;
+  }
+
+  private ensureCosmicBuilderLoaded(): Promise<CosmicUniverseBuilder | null> {
+    if (this.disposed) return Promise.resolve(null);
+    if (this.cosmicBuilder) return Promise.resolve(this.cosmicBuilder);
+    if (!this.cosmicBuilderLoadPromise) {
+      this.cosmicBuilderLoadPromise = import('./CosmicUniverseBuilder')
+        .then((mod) => {
+          if (this.disposed) return null;
+          const builder = new mod.CosmicUniverseBuilder(
+            this.isSoftwareGl,
+            this.isLowMemDevice,
+            false
+          );
+          installFastMatrixCull(builder.rootGroup);
+          builder.setOrbitTimeScale(this.orbitTimeScale);
+          this.scene.add(builder.rootGroup);
+          this.cosmicBuilder = builder;
+
+          const legacyCosmic =
+            !this.seamlessZoomActive &&
+            this.cosmicStage !== 'playing' &&
+            this.cosmicStage !== 'capy_selection';
+          builder.setSuspended(!legacyCosmic);
+          builder.rootGroup.visible = legacyCosmic;
+          builder.rootGroup.matrixWorldAutoUpdate = legacyCosmic;
+          if (legacyCosmic) {
+            if (this.cosmicStage === 'galaxy_view') {
+              builder.populateGalaxyView(this.selectedGalaxyIndex);
+            } else if (this.cosmicStage === 'star_system_view') {
+              builder.populateStarSystemView(this.selectedGalaxyIndex, this.selectedStarIndex);
+            } else if (this.cosmicStage === 'planet_orbit') {
+              builder.populatePlanetOrbitView(
+                this.selectedGalaxyIndex,
+                this.selectedStarIndex,
+                this.selectedPlanetIndex
+              );
+            }
+            builder.syncStageVisibility(this.cosmicStage);
+            this.emitCosmicState();
+            this.gpuEngine?.render();
+          }
+          return builder;
+        })
+        .catch(() => {
+          this.cosmicBuilderLoadPromise = null;
+          return null;
+        });
+    }
+    return this.cosmicBuilderLoadPromise;
   }
 
   private hideAllSurfaceWorldsForInfiniteZoom(): void {
@@ -4011,8 +4111,11 @@ export class PlayStyleManager {
       this.seamlessUniverse.forestGroveGroup.visible = showForestGrove;
       this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = showForestGrove;
     }
+    const legacyCosmic = stage !== 'playing' && stage !== 'capy_selection';
+    if (legacyCosmic && !this.cosmicBuilder) {
+      void this.ensureCosmicBuilderLoaded();
+    }
     if (this.cosmicBuilder) {
-      const legacyCosmic = stage !== 'playing' && stage !== 'capy_selection';
       this.cosmicBuilder.setSuspended(!legacyCosmic);
       this.cosmicBuilder.rootGroup.visible = legacyCosmic;
       this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = legacyCosmic;
@@ -4131,21 +4234,21 @@ export class PlayStyleManager {
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'galaxy_view') {
       this.setSceneBackgroundHex(0x030712);
-      this.cosmicBuilder.populateGalaxyView(this.selectedGalaxyIndex);
+      this.cosmicBuilder?.populateGalaxyView(this.selectedGalaxyIndex);
       this.cosmicOrbitYaw = 0;
       this.cosmicOrbitPitch = 0.38;
       this.cosmicCamPos.set(0, 26, 68);
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'star_system_view') {
       this.setSceneBackgroundHex(0x030712);
-      this.cosmicBuilder.populateStarSystemView(this.selectedGalaxyIndex, this.selectedStarIndex);
+      this.cosmicBuilder?.populateStarSystemView(this.selectedGalaxyIndex, this.selectedStarIndex);
       this.cosmicOrbitYaw = 0;
       this.cosmicOrbitPitch = 0.42;
       this.cosmicCamPos.set(0, 28, 66);
       this.cosmicCamLook.set(0, 0, 0);
     } else if (stage === 'planet_orbit') {
       this.setSceneBackgroundHex(0x020617);
-      this.cosmicBuilder.populatePlanetOrbitView(
+      this.cosmicBuilder?.populatePlanetOrbitView(
         this.selectedGalaxyIndex,
         this.selectedStarIndex,
         this.selectedPlanetIndex
@@ -4173,7 +4276,7 @@ export class PlayStyleManager {
       }
     }
 
-    this.cosmicBuilder.syncStageVisibility(stage);
+    this.cosmicBuilder?.syncStageVisibility(stage);
     this.applyFogSetting();
 
     this.emitCosmicState();
@@ -4195,30 +4298,31 @@ export class PlayStyleManager {
   }
 
   public pulseGravityWave() {
-    this.cosmicBuilder.triggerGravityWaveBurst(0, 0, 0);
+    this.cosmicBuilder?.triggerGravityWaveBurst(0, 0, 0);
     AudioService.playCosmicWarp(1.15);
     this.emitCosmicState();
   }
 
   public adjustGravityConstant(delta: number) {
-    this.cosmicBuilder.adjustGravityConstant(delta);
+    this.cosmicBuilder?.adjustGravityConstant(delta);
     AudioService.playCoin();
     this.emitCosmicState();
   }
 
   public setStellarColorMode(mode: StellarColorMappingMode) {
-    this.cosmicBuilder.setStellarColorMode(mode);
+    this.cosmicBuilder?.setStellarColorMode(mode);
     AudioService.playCoin();
     this.emitCosmicState();
   }
 
   public cycleStellarColorMode() {
-    this.cosmicBuilder.cycleStellarColorMode();
+    this.cosmicBuilder?.cycleStellarColorMode();
     AudioService.playCoin();
     this.emitCosmicState();
   }
 
   public pickRandomTrackedStar(): number {
+    if (!this.cosmicBuilder) return 0;
     const idx = this.cosmicBuilder.pickRandomTrackedStar();
     const ts = this.cosmicBuilder.getTrackedStarTelemetry();
     this.selectedGalaxyIndex = ts.hostGalaxyIndex;
@@ -4229,6 +4333,7 @@ export class PlayStyleManager {
   }
 
   public toggleFollowTrackedStar(): boolean {
+    if (!this.cosmicBuilder) return false;
     const following = this.cosmicBuilder.toggleCameraFollowingTrackedStar();
     AudioService.playCoin();
     this.emitCosmicState();
@@ -4236,12 +4341,13 @@ export class PlayStyleManager {
   }
 
   public triggerSupernovaOnTrackedStar() {
-    this.cosmicBuilder.triggerTrackedStarSupernova();
+    this.cosmicBuilder?.triggerTrackedStarSupernova();
     AudioService.playBigBang();
     this.emitCosmicState();
   }
 
   public followTrackedStarToPlanet() {
+    if (!this.cosmicBuilder) return;
     const ts = this.cosmicBuilder.getTrackedStarTelemetry();
     this.selectedGalaxyIndex = THREE.MathUtils.clamp(
       ts.hostGalaxyIndex,
@@ -4283,7 +4389,7 @@ export class PlayStyleManager {
 
   public setOrbitTimeScale(scaleId: OrbitTimeScaleId) {
     this.orbitTimeScale = scaleId;
-    this.cosmicBuilder.setOrbitTimeScale(scaleId);
+    this.cosmicBuilder?.setOrbitTimeScale(scaleId);
     this.seamlessUniverse.setOrbitTimeScale(scaleId);
     this.callbacks.onOrbitTelemetryChange?.(this.getOrbitTelemetry());
   }
@@ -4293,6 +4399,15 @@ export class PlayStyleManager {
   }
 
   public getOrbitTelemetry(): OrbitTelemetry {
+    if (!this.cosmicBuilder) {
+      return {
+        scaleId: this.orbitTimeScale,
+        multiplier: 1,
+        simElapsedYears: 0,
+        simElapsedDays: 0,
+        earthOrbitDurationSec: 60,
+      };
+    }
     return this.cosmicBuilder.getOrbitTelemetry(this.selectedPlanetIndex);
   }
 
@@ -4856,10 +4971,9 @@ export class PlayStyleManager {
     _raycaster.setFromCamera(_pointerNdc, this.camera);
 
     if (this.cosmicStage === 'big_bang') {
-      const perturbed = this.cosmicBuilder.handleBigBangRaycastPerturbation(
-        _raycaster,
-        this.camera
-      );
+      const perturbed = this.cosmicBuilder
+        ? this.cosmicBuilder.handleBigBangRaycastPerturbation(_raycaster, this.camera)
+        : false;
       if (perturbed) {
         AudioService.playCosmicWarp(1.12);
         this.emitCosmicState();
@@ -4880,7 +4994,7 @@ export class PlayStyleManager {
       return false;
     }
 
-    if (this.cosmicStage !== 'playing') {
+    if (this.cosmicStage !== 'playing' && this.cosmicBuilder) {
       const hits = _raycaster.intersectObjects(this.cosmicBuilder.clickableObjects, false);
       if (hits.length > 0) {
         const { cosmicType, index } = hits[0].object.userData || {};
@@ -8398,6 +8512,7 @@ export class PlayStyleManager {
     if (dropped > 0) {
       const v = HEAD_ORANGE_VARIETIES[tree.varietyIndex];
       const cm = Math.round(tree.fruitRadius * 100);
+      this.callbacks.onBountyEvent?.('shake_citrus_trees', 1);
       this.callbacks.onModeNotification?.(
         `Shook Tier ${tree.tier + 1} ${v.name} Tree! ${dropped} ripe ${cm}cm fruits fell & started rolling!`
       );
@@ -10278,6 +10393,10 @@ export class PlayStyleManager {
   }
 
   private tickCosmicExperience(dt: number) {
+    if (!this.cosmicBuilder) {
+      void this.ensureCosmicBuilderLoaded();
+      return;
+    }
     const shouldAdvance = this.cosmicBuilder.tick(dt, this.cosmicStage, this.camera);
     if (shouldAdvance && this.cosmicStage === 'big_bang') {
       this.setCosmicStage('universe_flight');
@@ -11941,22 +12060,6 @@ export class PlayStyleManager {
     this.capytorioEngine.configOreRichnessMult = cCfg.oreRichnessMultiplier;
   }
 
-  private tickCapytorioEcosystemOnly(dt: number) {
-    if (!this.capytorioEngine) return;
-    this.syncCapytorioConfigMultipliers();
-    this.capytorioEngine.step(dt, this.capytorioStepCallbacks);
-    if (this.capytorioGroup.visible) {
-      this.ensureCapytorioRenderer()?.sync(
-        this.capytorioEngine,
-        this.camera.position.x,
-        this.camera.position.z,
-        dt,
-        this.worldEnv?.elapsedSeconds ?? performance.now() * 0.001,
-        true
-      );
-    }
-  }
-
   private tickRunnerEcosystemOnly(dt: number) {
     for (let i = 0; i < this.runnerHerdMeshes.length; i++) {
       if (!this.runnerHerdMeshes[i].visible) continue;
@@ -12687,8 +12790,7 @@ export class PlayStyleManager {
       this.capytorioAutoSaveTimer += dt;
       if (this.capytorioAutoSaveTimer >= 1.5) {
         this.capytorioAutoSaveTimer = 0;
-        this.capytorioAutoSaveDirty = false;
-        this.callbacks.onCapytorioFactorySaved?.(this.capytorioEngine.serialize());
+        this.scheduleIdleCapytorioAutosave();
       }
     }
   }
@@ -13256,9 +13358,11 @@ export class PlayStyleManager {
       logVal <= CAPYTORIO_ORBITAL_SURFACE_MAX_LOG;
     const showPlayableSurface = showCapytorioSurface;
 
-    this.cosmicBuilder.setSuspended(true);
-    this.cosmicBuilder.rootGroup.visible = false;
-    this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = false;
+    if (this.cosmicBuilder) {
+      this.cosmicBuilder.setSuspended(true);
+      this.cosmicBuilder.rootGroup.visible = false;
+      this.cosmicBuilder.rootGroup.matrixWorldAutoUpdate = false;
+    }
     this.worldBaseGroup.visible = showCapytorioSurface;
     this.worldBaseGroup.matrixWorldAutoUpdate = showCapytorioSurface;
 
@@ -13771,7 +13875,6 @@ export class PlayStyleManager {
               NativeBridge.haptic('tick');
               this.awardProgress(2, 'sanctuary', this.descentRingsHitCount * 10);
               this.registerArcadeCombo('Descent Ring!', 0);
-              this.callbacks.onBountyEvent?.('descent_rings', 1);
               this.callbacks.onModeNotification?.(
                 `Orbital Descent Ring ${this.descentRingsHitCount}/${DESCENT_RING_SPECS.length}! +2 DNA`
               );
