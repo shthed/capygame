@@ -383,7 +383,7 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   gpuAntiAliasing: 'msaa_fxaa',
   gpuResolutionScale: 1.0,
   gpuBloomEnabled: true,
-  gpuBloomStrength: 0.24,
+  gpuBloomStrength: 0.15,
   gpuSsaoEnabled: true,
   gpuSharpenAmount: 0.26,
 };

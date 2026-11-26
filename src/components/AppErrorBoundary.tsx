@@ -1,5 +1,5 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertTriangle, Check, Copy, RefreshCw, Trash2 } from 'lucide-react';
 
 interface AppErrorBoundaryProps {
   children: ReactNode;
@@ -10,6 +10,43 @@ interface AppErrorBoundaryState {
   errorTitle: string;
   errorMessage: string;
   errorDetails: string;
+  copied: boolean;
+}
+
+export function formatErrorCopyText(title: string, details: string): string {
+  const cleanTitle = (title || 'CapyGame Runtime Error').trim();
+  const cleanDetails = (details || 'Unknown error').trim();
+  return `${cleanTitle}\n\n${cleanDetails}`;
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to legacy textarea copy (needed inside restricted iframes)
+  }
+  try {
+    if (typeof document === 'undefined' || !document.body) return false;
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 function safeStringifyError(err: unknown): string {
@@ -62,6 +99,8 @@ export function classifyError(err: unknown): { title: string; message: string; d
 }
 
 export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  private copyResetTimer: number | null = null;
+
   constructor(props: AppErrorBoundaryProps) {
     super(props);
 
@@ -82,6 +121,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
         errorTitle: classified.title,
         errorMessage: classified.message,
         errorDetails: classified.details,
+        copied: false,
       };
     } else {
       this.state = {
@@ -89,6 +129,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
         errorTitle: '',
         errorMessage: '',
         errorDetails: '',
+        copied: false,
       };
     }
   }
@@ -100,6 +141,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
       errorTitle: classified.title,
       errorMessage: classified.message,
       errorDetails: classified.details,
+      copied: false,
     };
   }
 
@@ -116,16 +158,36 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
           errorTitle: classified.title,
           errorMessage: classified.message,
           errorDetails: classified.details,
+          copied: false,
         });
       };
     }
   }
 
   componentWillUnmount() {
+    if (this.copyResetTimer !== null) {
+      window.clearTimeout(this.copyResetTimer);
+      this.copyResetTimer = null;
+    }
     if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>).__capyShowError) {
       delete (window as unknown as Record<string, unknown>).__capyShowError;
     }
   }
+
+  private handleCopyError = async () => {
+    const text = formatErrorCopyText(this.state.errorTitle, this.state.errorDetails);
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      this.setState({ copied: true });
+      if (this.copyResetTimer !== null) {
+        window.clearTimeout(this.copyResetTimer);
+      }
+      this.copyResetTimer = window.setTimeout(() => {
+        this.copyResetTimer = null;
+        this.setState({ copied: false });
+      }, 2200);
+    }
+  };
 
   private handleReload = () => {
     try {
@@ -181,7 +243,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
       <div
         data-testid="app-error-boundary"
         role="alert"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/95 p-4 text-slate-100 overflow-y-auto"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/95 p-4 text-slate-100 overflow-y-auto select-text"
       >
         <div className="w-full max-w-md rounded-3xl border border-rose-500/40 bg-slate-900 p-6 shadow-2xl">
           <div className="flex items-center gap-3 mb-4">
@@ -206,12 +268,32 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
           </p>
 
           <div className="rounded-xl bg-slate-950/90 border border-slate-800 p-3 mb-5">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-              Technical Error Details
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                Technical Error Details
+              </span>
+              <button
+                type="button"
+                data-testid="error-copy-btn"
+                onClick={this.handleCopyError}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2.5 py-1 text-[11px] font-semibold text-slate-200 transition-colors cursor-pointer select-none"
+              >
+                {this.state.copied ? (
+                  <>
+                    <Check size={12} className="text-emerald-400" />
+                    <span className="text-emerald-300">Copied</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={12} />
+                    <span>Copy Error</span>
+                  </>
+                )}
+              </button>
             </div>
             <pre
               data-testid="app-error-message"
-              className="text-xs font-mono text-rose-300 whitespace-pre-wrap break-words max-h-32 overflow-y-auto"
+              className="text-xs font-mono text-rose-300 whitespace-pre-wrap break-words max-h-40 overflow-y-auto select-text cursor-text"
             >
               {this.state.errorDetails || 'Unknown error'}
             </pre>
@@ -222,7 +304,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
               type="button"
               data-testid="error-reload-btn"
               onClick={this.handleReload}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-3 text-sm font-black text-slate-950 shadow-lg transition-all active:scale-95"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-3 text-sm font-black text-slate-950 shadow-lg transition-all active:scale-95 cursor-pointer select-none"
             >
               <RefreshCw size={16} />
               <span>Reload Application</span>
@@ -232,10 +314,10 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
               type="button"
               data-testid="error-clear-cache-btn"
               onClick={this.handleClearCacheAndReload}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-2.5 text-xs font-bold text-slate-200 transition-all active:scale-95"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-2.5 text-xs font-bold text-slate-200 transition-all active:scale-95 cursor-pointer select-none"
             >
               <Trash2 size={14} />
-              <span>Clear Offline Cache & Reload</span>
+              <span>Clear Offline Cache &amp; Reload</span>
             </button>
           </div>
         </div>

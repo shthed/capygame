@@ -807,7 +807,7 @@ export class HardwareGpuEngine {
         qualityPreset: 'balanced',
         postProcessingEnabled: true,
         bloomEnabled: true,
-        bloomStrength: 0.22,
+        bloomStrength: 0.12,
         ssaoEnabled: false,
         sharpenAmount: 0.18,
         textureFilter: 'trilinear_aniso',
@@ -823,7 +823,7 @@ export class HardwareGpuEngine {
         qualityPreset: 'ultra',
         postProcessingEnabled: true,
         bloomEnabled: true,
-        bloomStrength: 0.34,
+        bloomStrength: 0.20,
         ssaoEnabled: true,
         sharpenAmount: 0.32,
         textureFilter: 'trilinear_aniso',
@@ -839,7 +839,7 @@ export class HardwareGpuEngine {
         qualityPreset: 'high',
         postProcessingEnabled: true,
         bloomEnabled: true,
-        bloomStrength: 0.24,
+        bloomStrength: 0.15,
         ssaoEnabled: true,
         sharpenAmount: 0.26,
         textureFilter: 'trilinear_aniso',
@@ -1072,7 +1072,7 @@ export class HardwareGpuEngine {
       ? 0
       : isSurfaceVisible
         ? iblEnvIntensity
-        : 0.78;
+        : 0.52;
 
     // 2. Texel-Snapped Mutually-Exclusive Sun / Moon Directional Shadow Cascade (never both active in one frame!)
     const shadowsAllowed = !this.isSoftwareGl && this.config.shadowQuality !== 'off';
@@ -1164,10 +1164,10 @@ export class HardwareGpuEngine {
       }
     }
 
-    // 3. Keep HDR Bloom restrained strictly to solar/lunar water/metal glints & cosmic stars
+    // 3. Keep HDR Bloom subtle and strictly free of artificial specular reflection halos
     if (this.bloomPass && this.config.bloomEnabled) {
-      const cosmicOrNightBoost = !isSurfaceVisible ? 1.15 : 1.0 + nightFactor * 0.2;
-      this.bloomPass.strength = this.config.bloomStrength * cosmicOrNightBoost;
+      const nightBoost = isSurfaceVisible ? 1.0 + nightFactor * 0.12 : 1.0;
+      this.bloomPass.strength = this.config.bloomStrength * nightBoost;
     }
 
     // 4. Screen-space Volumetric Crepuscular Rays + District Indirect Culling Parity

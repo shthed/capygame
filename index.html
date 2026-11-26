@@ -60,7 +60,7 @@
           overlay.setAttribute('data-testid', 'boot-error-fallback');
           overlay.setAttribute('role', 'alert');
           overlay.style.cssText =
-            'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#020617;color:#f8fafc;padding:16px;font-family:system-ui,-apple-system,sans-serif;z-index:9999;';
+            'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#020617;color:#f8fafc;padding:16px;font-family:system-ui,-apple-system,sans-serif;z-index:9999;user-select:text;-webkit-user-select:text;';
 
           var card = document.createElement('div');
           card.style.cssText =
@@ -80,13 +80,57 @@
           body.textContent =
             'CapyGame encountered an error while loading application scripts on your device. Try reloading or clearing cached offline data.';
 
+          var detailText = String(detail || 'Unknown startup error');
           var pre = document.createElement('pre');
           pre.style.cssText =
-            'font-size:11px;background:#020617;border:1px solid #1e293b;border-radius:10px;padding:10px;color:#fda4af;white-space:pre-wrap;word-break:break-word;max-height:110px;overflow:auto;margin:0 0 16px 0;';
-          pre.textContent = String(detail || 'Unknown startup error');
+            'font-size:11px;background:#020617;border:1px solid #1e293b;border-radius:10px;padding:10px;color:#fda4af;white-space:pre-wrap;word-break:break-word;max-height:140px;overflow:auto;margin:0 0 16px 0;user-select:text;-webkit-user-select:text;cursor:text;';
+          pre.textContent = detailText;
 
           var actions = document.createElement('div');
           actions.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+
+          var copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.setAttribute('data-testid', 'boot-error-copy-btn');
+          copyBtn.style.cssText =
+            'padding:10px 16px;border-radius:12px;border:1px solid #334155;background:#1e293b;color:#e2e8f0;font-weight:700;font-size:12px;cursor:pointer;';
+          copyBtn.textContent = 'Copy Error Details';
+          copyBtn.addEventListener('click', function () {
+            var fullText = heading.textContent + '\n\n' + detailText;
+            var markCopied = function () {
+              copyBtn.textContent = 'Copied Error Details';
+              setTimeout(function () {
+                copyBtn.textContent = 'Copy Error Details';
+              }, 2000);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(fullText).then(markCopied).catch(function () {
+                try {
+                  var ta = document.createElement('textarea');
+                  ta.value = fullText;
+                  ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
+                  document.body.appendChild(ta);
+                  ta.focus();
+                  ta.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(ta);
+                  markCopied();
+                } catch (err) {}
+              });
+            } else {
+              try {
+                var ta = document.createElement('textarea');
+                ta.value = fullText;
+                ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                markCopied();
+              } catch (err) {}
+            }
+          });
 
           var reloadBtn = document.createElement('button');
           reloadBtn.type = 'button';
@@ -97,6 +141,7 @@
             window.location.reload();
           });
 
+          actions.appendChild(copyBtn);
           actions.appendChild(reloadBtn);
           card.appendChild(kicker);
           card.appendChild(heading);

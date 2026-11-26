@@ -474,7 +474,7 @@ export class PlayStyleManager {
     antiAliasing: 'msaa_fxaa',
     resolutionScale: 1.0,
     bloomEnabled: true,
-    bloomStrength: 0.24,
+    bloomStrength: 0.15,
     ssaoEnabled: true,
     sharpenAmount: 0.26,
   };
@@ -2593,7 +2593,7 @@ export class PlayStyleManager {
       antiAliasing: s.gpuAntiAliasing ?? 'msaa_fxaa',
       resolutionScale: s.gpuResolutionScale ?? 1.0,
       bloomEnabled: s.gpuBloomEnabled !== false,
-      bloomStrength: s.gpuBloomStrength ?? 0.24,
+      bloomStrength: s.gpuBloomStrength ?? 0.15,
       ssaoEnabled: s.gpuSsaoEnabled !== false,
       sharpenAmount: s.gpuSharpenAmount ?? 0.26,
       drawDistance: s.drawDistance ?? 650,
@@ -2613,7 +2613,7 @@ export class PlayStyleManager {
     out.antiAliasing = s.gpuAntiAliasing ?? 'msaa_fxaa';
     out.resolutionScale = s.gpuResolutionScale ?? 1.0;
     out.bloomEnabled = s.gpuBloomEnabled !== false;
-    out.bloomStrength = s.gpuBloomStrength ?? 0.24;
+    out.bloomStrength = s.gpuBloomStrength ?? 0.15;
     out.ssaoEnabled = s.gpuSsaoEnabled !== false;
     out.sharpenAmount = s.gpuSharpenAmount ?? 0.26;
     out.drawDistance = s.drawDistance ?? 650;
@@ -9986,18 +9986,24 @@ export class PlayStyleManager {
       this.stats.activeMutations.includes('glow_tail') ||
       (this.cosmicStage === 'playing' &&
         Boolean(this.activeHeroSpec?.mutations?.includes('glow_tail')));
-    this.heroTailAuraMesh.visible = hasGlowTail;
-    this.heroTailAuraMat.opacity = hasGlowTail
-      ? (0.08 + glowBoost * 0.42) * pulse
-      : 0;
+    if (this.heroTailAuraMesh) {
+      this.heroTailAuraMesh.visible = hasGlowTail;
+    }
+    if (this.heroTailAuraMat) {
+      this.heroTailAuraMat.opacity = hasGlowTail
+        ? (0.08 + glowBoost * 0.42) * pulse
+        : 0;
+    }
 
-    const mutGroup = this.heroCapy.userData.mutationGroup;
-    for (let i = 0; i < mutGroup.children.length; i++) {
-      const child = mutGroup.children[i] as THREE.Mesh;
-      if (child.userData?.isBioluminescentTail && child.isMesh) {
-        const mat = child.material as THREE.MeshStandardMaterial;
-        if (mat && mat.emissive !== undefined) {
-          mat.emissiveIntensity = (0.72 + glowBoost * 2.35) * pulse;
+    const mutGroup = this.heroCapy?.userData?.mutationGroup as THREE.Group | undefined;
+    if (mutGroup?.children) {
+      for (let i = 0; i < mutGroup.children.length; i++) {
+        const child = mutGroup.children[i] as THREE.Mesh;
+        if (child.userData?.isBioluminescentTail && child.isMesh) {
+          const mat = child.material as THREE.MeshStandardMaterial;
+          if (mat && mat.emissive !== undefined) {
+            mat.emissiveIntensity = (0.72 + glowBoost * 2.35) * pulse;
+          }
         }
       }
     }
@@ -10198,7 +10204,7 @@ export class PlayStyleManager {
         if (surfaceLightBlend <= 0.01) {
           this.worldEnv.ambientLight.intensity = 0.08;
           this.worldEnv.hemiLight.intensity = 0.24;
-          this.worldEnv.sunLight.intensity = 2.45;
+          this.worldEnv.sunLight.intensity = 1.55;
           this.worldEnv.moonLight.intensity = 0.0;
         } else {
           this.worldEnv.ambientLight.intensity = THREE.MathUtils.lerp(
@@ -10212,7 +10218,7 @@ export class PlayStyleManager {
             surfaceLightBlend
           );
           this.worldEnv.sunLight.intensity = THREE.MathUtils.lerp(
-            2.45,
+            1.55,
             this.worldEnv.lastSunIntensity,
             surfaceLightBlend
           );
@@ -13098,7 +13104,7 @@ export class PlayStyleManager {
         this.worldEnv.hemiLight.groundColor.copy(_colorHelper);
         this.worldEnv.hemiLight.intensity = THREE.MathUtils.lerp(0.24, 0.72, gladeDaylight);
         this.worldEnv.sunLight.color.setHex(0xfffaf0);
-        this.worldEnv.sunLight.intensity = THREE.MathUtils.lerp(2.45, 1.78, gladeDaylight);
+        this.worldEnv.sunLight.intensity = THREE.MathUtils.lerp(1.55, 1.72, gladeDaylight);
         if (gladeDaylight > 0.05) {
           const sunDir = this.seamlessUniverse.getSharedSunDir();
           this.worldEnv.sunLight.position.set(
@@ -13133,7 +13139,7 @@ export class PlayStyleManager {
         _colorHelper.setHex(0xfffaf0).lerp(this.worldEnv.sunLight.color, tb);
         this.worldEnv.sunLight.color.copy(_colorHelper);
         this.worldEnv.sunLight.intensity = THREE.MathUtils.lerp(
-          2.45,
+          1.55,
           this.worldEnv.lastSunIntensity,
           tb
         );

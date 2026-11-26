@@ -15,7 +15,6 @@ import {
   PROGRESSIVE_UNLOCKS,
   COSMIC_GALAXIES,
   CosmicStage,
-  ChronoVesselViewMode,
   GalaxyMorphology,
   GPU_VISUAL_FILTER_PROFILES,
   GpuAntiAliasingMode,
@@ -56,6 +55,14 @@ import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
 import type { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
 import { getPresetPatchForGpuQuality } from '../engine/gpu/GpuEngineTypes';
 import { GamePauseController } from '../engine/GamePauseController';
+import {
+  canProcessGameKeyboardEvent,
+  canRequestProgrammaticFocus,
+  detectEmbeddedIframe,
+  isEditableKeyboardTarget,
+  readDocumentFocusState,
+  shouldAutoSuspendBackgroundLoop,
+} from '../engine/FocusGuard';
 import { AudioService } from '../services/AudioService';
 import { NativeBridge } from '../../services/NativeBridge';
 import { PwaService } from '../../services/PwaService';
@@ -138,7 +145,8 @@ import {
   Crosshair,
   Code2,
   Rocket,
-  Eye,
+  Trees,
+  Factory,
   Pause,
   Play,
   Copy,
@@ -394,6 +402,11 @@ export const CapyGameView: React.FC = () => {
   const pauseControllerRef = useRef<GamePauseController>(new GamePauseController());
   const [isGamePaused, setIsGamePaused] = useState<boolean>(false);
   const isGamePausedRef = useRef<boolean>(false);
+  const isEmbeddedIframeRef = useRef<boolean>(detectEmbeddedIframe());
+  const isWindowFocusedRef = useRef<boolean>(readDocumentFocusState().documentHasFocus);
+  const isBackgroundSuspendedRef = useRef<boolean>(false);
+  const syncBackgroundSuspensionRef = useRef<(() => void) | null>(null);
+  const activePointerCaptureIdRef = useRef<number | null>(null);
   const suspendAnimLoopRef = useRef<(() => void) | null>(null);
   const resumeAnimLoopRef = useRef<(() => void) | null>(null);
   const [capytorioSelectionOverlay, setCapytorioSelectionOverlay] = useState<{
@@ -464,7 +477,6 @@ export const CapyGameView: React.FC = () => {
   const [jsonValidationError, setJsonValidationError] = useState<string | null>(null);
   const [jsonValidationWarnings, setJsonValidationWarnings] = useState<string[]>([]);
   const [jsonCopyLabel, setJsonCopyLabel] = useState<string>('Copy JSON');
-  const [isFlightStripCollapsed, setIsFlightStripCollapsed] = useState<boolean>(false);
   const [pwaStatus, setPwaStatus] = useState(() => ({
     installable: PwaService.isInstallable,
     standalone: PwaService.isStandalone,
@@ -904,8 +916,12 @@ export const CapyGameView: React.FC = () => {
       suspendAnimLoopRef.current?.();
       managerRef.current?.setPaused(true);
     } else {
-      managerRef.current?.setPaused(false);
-      resumeAnimLoopRef.current?.();
+      if (syncBackgroundSuspensionRef.current) {
+        syncBackgroundSuspensionRef.current();
+      } else {
+        managerRef.current?.setPaused(false);
+        resumeAnimLoopRef.current?.();
+      }
     }
   }, []);
 
@@ -1358,6 +1374,17 @@ export const CapyGameView: React.FC = () => {
       return;
     }
 
+    const docFocus = readDocumentFocusState();
+    if (
+      !canRequestProgrammaticFocus({
+        hasWindowFocus: isWindowFocusedRef.current,
+        documentHasFocus: docFocus.documentHasFocus,
+        visibilityState: docFocus.visibilityState,
+      })
+    ) {
+      return;
+    }
+
     freeMouseFallbackLastRef.current.x = null;
     freeMouseFallbackLastRef.current.y = null;
     isFreeMouselookRef.current = true;
@@ -1751,7 +1778,7 @@ export const CapyGameView: React.FC = () => {
       };
 
       const scheduleNextFrame = (didDrawGl: boolean) => {
-        if (cancelled || isGamePausedRef.current) return;
+        if (cancelled || isGamePausedRef.current || isBackgroundSuspendedRef.current) return;
         if (!manager.isSoftwareGl) {
           animFrameId = window.requestAnimationFrame(animate);
           return;
@@ -1774,7 +1801,12 @@ export const CapyGameView: React.FC = () => {
             activeFenceSync = sync;
             const fenceStartMs = performance.now();
             const poll = () => {
-              if (cancelled || isGamePausedRef.current || glCtx.isContextLost()) {
+              if (
+                cancelled ||
+                isGamePausedRef.current ||
+                isBackgroundSuspendedRef.current ||
+                glCtx.isContextLost()
+              ) {
                 if (activeFenceSync === sync && !glCtx.isContextLost()) {
                   glCtx.deleteSync(sync);
                 }
@@ -1791,7 +1823,7 @@ export const CapyGameView: React.FC = () => {
                 if (activeFenceSync === sync) activeFenceSync = null;
                 paceTimerId = window.setTimeout(() => {
                   paceTimerId = null;
-                  if (!cancelled && !isGamePausedRef.current) {
+                  if (!cancelled && !isGamePausedRef.current && !isBackgroundSuspendedRef.current) {
                     animFrameId = window.requestAnimationFrame(animate);
                   }
                 }, delayMs);
@@ -1803,7 +1835,7 @@ export const CapyGameView: React.FC = () => {
         }
         paceTimerId = window.setTimeout(() => {
           paceTimerId = null;
-          if (!cancelled && !isGamePausedRef.current) {
+          if (!cancelled && !isGamePausedRef.current && !isBackgroundSuspendedRef.current) {
             animFrameId = window.requestAnimationFrame(animate);
           }
         }, delayMs);
@@ -1811,9 +1843,34 @@ export const CapyGameView: React.FC = () => {
 
       let firstFrameRendered = false;
 
+      const syncBackgroundSuspension = () => {
+        if (cancelled) return;
+        const docFocus = readDocumentFocusState();
+        const shouldSuspend = shouldAutoSuspendBackgroundLoop({
+          isManuallyPaused: isGamePausedRef.current,
+          isDocumentHidden: docFocus.visibilityState === 'hidden',
+          isEmbeddedIframe: isEmbeddedIframeRef.current,
+          isWindowFocused: isWindowFocusedRef.current && docFocus.documentHasFocus,
+          firstFrameRendered,
+        });
+        isBackgroundSuspendedRef.current = shouldSuspend;
+        if (shouldSuspend || isGamePausedRef.current) {
+          cancelScheduledFrame();
+          manager.setPaused(true);
+        } else {
+          manager.setPaused(false);
+          lastTime = performance.now();
+          uiSyncAccum = 0;
+          if (animFrameId === 0 && paceTimerId === null) {
+            animFrameId = window.requestAnimationFrame(animate);
+          }
+        }
+      };
+      syncBackgroundSuspensionRef.current = syncBackgroundSuspension;
+
       const animate = (now: number) => {
         animFrameId = 0;
-        if (cancelled || isGamePausedRef.current) return;
+        if (cancelled || isGamePausedRef.current || isBackgroundSuspendedRef.current) return;
         if (manager.isSoftwareGl && (modalOpenRef.current || menuOpenRef.current)) {
           lastTime = now;
           modalWakeParity ^= 1;
@@ -1853,6 +1910,10 @@ export const CapyGameView: React.FC = () => {
         if (!firstFrameRendered) {
           firstFrameRendered = true;
           setEngineReady(true);
+          syncBackgroundSuspension();
+          if (isBackgroundSuspendedRef.current) {
+            return;
+          }
         }
 
         if (uiSyncAccum >= 0.35) {
@@ -1873,7 +1934,7 @@ export const CapyGameView: React.FC = () => {
 
       suspendAnimLoopRef.current = cancelScheduledFrame;
       resumeAnimLoopRef.current = () => {
-        if (cancelled || isGamePausedRef.current) return;
+        if (cancelled || isGamePausedRef.current || isBackgroundSuspendedRef.current) return;
         lastTime = performance.now();
         uiSyncAccum = 0;
         if (animFrameId === 0 && paceTimerId === null) {
@@ -1923,6 +1984,32 @@ export const CapyGameView: React.FC = () => {
       const handleKeyDown = (e: KeyboardEvent) => {
         if (!managerRef.current) return;
         const target = e.target;
+        const docFocus = readDocumentFocusState();
+        if (
+          !canRequestProgrammaticFocus({
+            hasWindowFocus: isWindowFocusedRef.current,
+            documentHasFocus: docFocus.documentHasFocus,
+            visibilityState: docFocus.visibilityState,
+          })
+        ) {
+          return;
+        }
+        if (isEditableKeyboardTarget(target)) {
+          if (e.key.toLowerCase() === 'escape' && target instanceof HTMLElement) {
+            target.blur();
+          }
+          return;
+        }
+        if (
+          !canProcessGameKeyboardEvent({
+            hasWindowFocus: isWindowFocusedRef.current,
+            documentHasFocus: docFocus.documentHasFocus,
+            visibilityState: docFocus.visibilityState,
+            target,
+          })
+        ) {
+          return;
+        }
         if (
           (e.ctrlKey || e.metaKey) &&
           !e.repeat &&
@@ -1939,16 +2026,6 @@ export const CapyGameView: React.FC = () => {
             setCapytorioDrawerTab('inventory');
           }
           setCapytorioSearchFocusNonce((n) => n + 1);
-          return;
-        }
-        if (
-          target instanceof HTMLInputElement ||
-          target instanceof HTMLTextAreaElement ||
-          target instanceof HTMLSelectElement
-        ) {
-          if (e.key.toLowerCase() === 'escape') {
-            (target as HTMLElement).blur();
-          }
           return;
         }
         const key = e.key.toLowerCase();
@@ -2248,7 +2325,11 @@ export const CapyGameView: React.FC = () => {
         if (e.key === 'Alt') {
           if (altTapCandidateRef.current) {
             altTapCandidateRef.current = false;
+            const docFocus = readDocumentFocusState();
             const inCapytorioActive =
+              isWindowFocusedRef.current &&
+              docFocus.documentHasFocus &&
+              docFocus.visibilityState === 'visible' &&
               managerRef.current.currentMode === 'capytorio' &&
               managerRef.current.cosmicStage === 'playing' &&
               !modalOpenRef.current &&
@@ -2271,12 +2352,34 @@ export const CapyGameView: React.FC = () => {
         }
       };
 
+      const releaseCanvasPointerCapture = () => {
+        const pid = activePointerCaptureIdRef.current;
+        activePointerCaptureIdRef.current = null;
+        if (pid === null) return;
+        const el = mountRef.current;
+        if (el && typeof el.releasePointerCapture === 'function') {
+          try {
+            if (!el.hasPointerCapture || el.hasPointerCapture(pid)) {
+              el.releasePointerCapture(pid);
+            }
+          } catch {
+            // Ignore pointer capture release errors
+          }
+        }
+      };
+
       const handleWindowPointerDown = () => {
         altTapCandidateRef.current = false;
+        if (!isWindowFocusedRef.current) {
+          isWindowFocusedRef.current = true;
+          syncBackgroundSuspension();
+        }
       };
 
       const handleWindowMouseMove = (e: MouseEvent) => {
         if (
+          !isWindowFocusedRef.current ||
+          !readDocumentFocusState().documentHasFocus ||
           !isFreeMouselookRef.current ||
           !managerRef.current ||
           gameSettingsRef.current.mouselookEnabled === false ||
@@ -2321,22 +2424,47 @@ export const CapyGameView: React.FC = () => {
         }
       };
 
+      const handleWindowFocus = () => {
+        isWindowFocusedRef.current = true;
+        syncBackgroundSuspension();
+      };
+
       const handleWindowBlur = () => {
+        isWindowFocusedRef.current = false;
         altTapCandidateRef.current = false;
         clearHeldInputs();
+        stopMobileZoomHold();
+        releaseCanvasPointerCapture();
         if (isFreeMouselookRef.current) {
           setFreeMouselookActive(false);
         }
+        if (typeof document !== 'undefined') {
+          const activeEl = document.activeElement;
+          if (activeEl instanceof HTMLElement && activeEl !== document.body) {
+            try {
+              activeEl.blur();
+            } catch {
+              // Ignore blur errors
+            }
+          }
+        }
+        syncBackgroundSuspension();
       };
 
       const handleDocumentVisibilityChange = () => {
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          isWindowFocusedRef.current = false;
           altTapCandidateRef.current = false;
           clearHeldInputs();
+          stopMobileZoomHold();
+          releaseCanvasPointerCapture();
           if (isFreeMouselookRef.current) {
             setFreeMouselookActive(false);
           }
+        } else {
+          isWindowFocusedRef.current = readDocumentFocusState().documentHasFocus;
         }
+        syncBackgroundSuspension();
       };
 
       const handleTouchStart = (e: TouchEvent) => {
@@ -2381,16 +2509,20 @@ export const CapyGameView: React.FC = () => {
       window.addEventListener('keyup', handleKeyUp);
       window.addEventListener('pointerdown', handleWindowPointerDown, true);
       window.addEventListener('mousemove', handleWindowMouseMove);
+      window.addEventListener('focus', handleWindowFocus);
       window.addEventListener('blur', handleWindowBlur);
       document.addEventListener('pointerlockchange', handlePointerLockChange);
       document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
 
       cleanupFn = () => {
         clearHeldInputs();
+        releaseCanvasPointerCapture();
         clearHeldInputsRef.current = null;
         syncMoveInputRef.current = null;
+        syncBackgroundSuspensionRef.current = null;
         suspendAnimLoopRef.current = null;
         resumeAnimLoopRef.current = null;
+        isBackgroundSuspendedRef.current = false;
         cancelScheduledFrame();
         containerEl.removeEventListener('touchstart', handleTouchStart);
         containerEl.removeEventListener('touchmove', handleTouchMove);
@@ -2401,6 +2533,7 @@ export const CapyGameView: React.FC = () => {
         window.removeEventListener('keyup', handleKeyUp);
         window.removeEventListener('pointerdown', handleWindowPointerDown, true);
         window.removeEventListener('mousemove', handleWindowMouseMove);
+        window.removeEventListener('focus', handleWindowFocus);
         window.removeEventListener('blur', handleWindowBlur);
         document.removeEventListener('pointerlockchange', handlePointerLockChange);
         document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
@@ -2465,6 +2598,7 @@ export const CapyGameView: React.FC = () => {
     if (!managerRef.current) return;
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
+      activePointerCaptureIdRef.current = e.pointerId;
     } catch {
       // Ignore pointer capture errors on synthetic events
     }
@@ -2891,6 +3025,16 @@ export const CapyGameView: React.FC = () => {
   const handleCanvasPointerUpOrCancel = (e: React.PointerEvent<HTMLDivElement>) => {
     const g = pointerGestureRef.current;
     if (g.pointerId !== e.pointerId) return;
+    if (activePointerCaptureIdRef.current === e.pointerId) {
+      activePointerCaptureIdRef.current = null;
+    }
+    try {
+      if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore pointer capture release errors
+    }
 
     const wasCapytorioPress = capytorioDragRef.current.active;
     const wasDragPaint = wasCapytorioPress && capytorioDragRef.current.placedAny;
@@ -3621,6 +3765,16 @@ export const CapyGameView: React.FC = () => {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
       } else {
+        const docFocus = readDocumentFocusState();
+        if (
+          !canRequestProgrammaticFocus({
+            hasWindowFocus: isWindowFocusedRef.current,
+            documentHasFocus: docFocus.documentHasFocus,
+            visibilityState: docFocus.visibilityState,
+          })
+        ) {
+          throw new Error('Window is not focused');
+        }
         const ta = document.createElement('textarea');
         ta.value = text;
         document.body.appendChild(ta);
@@ -4029,7 +4183,7 @@ export const CapyGameView: React.FC = () => {
       {webglError && (
         <div
           data-testid="capygame-webgl-error"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/95"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/95 select-text"
         >
           <div className="max-w-md w-full bg-zinc-900 rounded-xl p-5 shadow-2xl border border-white/15 text-zinc-100 space-y-4">
             <div className="flex items-center gap-3 text-amber-400">
@@ -4043,14 +4197,22 @@ export const CapyGameView: React.FC = () => {
                 </p>
               </div>
             </div>
-            <p className="text-xs font-mono text-zinc-300 leading-relaxed bg-zinc-950 p-3 rounded-lg border border-white/10">
+            <pre className="text-xs font-mono text-zinc-300 leading-relaxed bg-zinc-950 p-3 rounded-lg border border-white/10 whitespace-pre-wrap break-words max-h-40 overflow-y-auto select-text cursor-text">
               {webglError}
-            </p>
+            </pre>
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <button
                 type="button"
+                data-testid="webgl-error-copy-btn"
+                onClick={() => void handleCopyDebugReport(webglError)}
+                className="py-2 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-medium cursor-pointer border border-white/10 select-none"
+              >
+                Copy Error
+              </button>
+              <button
+                type="button"
                 onClick={() => window.location.reload()}
-                className="flex-1 py-2 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-medium cursor-pointer border border-white/10"
+                className="flex-1 py-2 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-medium cursor-pointer border border-white/10 select-none"
               >
                 Reinitialize Context
               </button>
@@ -7559,9 +7721,7 @@ export const CapyGameView: React.FC = () => {
             cosmicStage === 'playing' && !universeScale.active && activeMode === 'capytorio';
           let positionClass = 'bottom-3 right-3';
           if (universeScale.active) {
-            positionClass = isAdvancedMode
-              ? 'bottom-44 sm:bottom-[88px] right-2'
-              : 'bottom-[88px] right-2';
+            positionClass = 'bottom-[150px] sm:bottom-[96px] right-2';
           } else if (isCapytorioCompactZoom) {
             positionClass = 'bottom-[78px] right-2';
           } else if (showTouchDpad) {
@@ -10268,9 +10428,7 @@ export const CapyGameView: React.FC = () => {
             <aside
               data-testid="right-flight-speed-panel"
               aria-label="Flight Trajectory and Speed Controls"
-              className={`fixed right-2 z-30 pointer-events-auto flex flex-col items-end gap-1.5 select-none ${
-                isAdvancedMode ? 'bottom-24 sm:bottom-2' : 'bottom-2'
-              }`}
+              className="fixed right-2 bottom-[62px] sm:bottom-2 z-30 pointer-events-auto flex flex-col items-end gap-1.5 select-none"
             >
               <button
                 type="button"
@@ -10362,75 +10520,72 @@ export const CapyGameView: React.FC = () => {
         })()}
 
       {/* =====================================================================
-          FUTURE CAPYBARA CHRONO-VESSEL FLIGHT STRIP (Clean Landing CTA Only in Basic Mode)
-          Crisp solid zinc surface (zero backdrop-blur) during cosmic voyage.
+          INFINITE ZOOM BOTTOM STATUS BAR & QUICK GAME-SKIP BUTTONS
+          Displays the active zoom level name and scale alongside direct
+          Forest and Capytorio skip buttons cleanly across mobile & desktop.
          ===================================================================== */}
       {universeScale.active &&
         !isFirstRunSetupOpen &&
         !webglError &&
         !isJsonEditorOpen &&
         !isSettingsOpen &&
-        (isAdvancedMode ||
-          isCapytorioOrbitalFlight ||
-          universeScale.bandId === 'leaf_fur_micro') &&
-        (isAdvancedMode || universeScale.ufoFlightPhase !== 'orbital_descent') && (
-        <div
-          data-testid="chrono-vessel-flight-strip"
-          className={`fixed bottom-2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-1.5 sm:px-2 py-1.5 text-zinc-100 overflow-x-auto ${
-            isAdvancedMode
-              ? 'left-2 w-[calc(100vw-16px)] sm:w-[calc(100vw-152px)] max-w-[700px] xl:left-1/2 xl:-translate-x-1/2'
-              : 'left-2 sm:left-1/2 sm:-translate-x-1/2 w-auto max-w-[calc(100vw-152px)]'
-          }`}
-        >
-          {!isAdvancedMode ? (
-            <div className="flex flex-nowrap items-center justify-start sm:justify-center gap-1 sm:gap-1.5 whitespace-nowrap">
-              {isCapytorioOrbitalFlight && (
-                <button
-                  type="button"
-                  data-testid="chrono-land-capytorio-btn"
-                  onClick={() => managerRef.current?.engageCapytorioLanding()}
-                  className="min-h-10 sm:min-h-11 px-2.5 sm:px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[10px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  Land in Capytorio
-                </button>
-              )}
-              {!isCapytorioOrbitalFlight && universeScale.bandId === 'leaf_fur_micro' && (
-                <button
-                  type="button"
-                  data-testid="shuffle-forest-specimen-btn"
-                  onClick={() => {
-                    AudioService.playCoin();
-                    managerRef.current?.rerollForestSpecimen();
-                  }}
-                  title="Pick a random Forest Glade specimen"
-                  className="min-h-11 px-2.5 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 border border-amber-400/45 text-xs font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
-                >
-                  <Shuffle className="w-3.5 h-3.5 shrink-0" />
-                  <span>{universeScale.forestSpecimenLabel || 'Glade'}</span>
-                </button>
-              )}
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
+        (isAdvancedMode || universeScale.ufoFlightPhase !== 'orbital_descent') && (() => {
+          const currentBand = UNIVERSE_SCALE_BANDS[universeScale.bandIndex];
+          const shortZoomName =
+            universeScale.bandId === 'leaf_fur_micro' && universeScale.forestSpecimenLabel
+              ? `Leaf & Fur · ${universeScale.forestSpecimenLabel}`
+              : currentBand?.shortLabel || universeScale.bandTitle || 'Infinite Zoom';
+          const fullZoomName =
+            universeScale.bandId === 'leaf_fur_micro' && universeScale.forestSpecimenLabel
+              ? `Leaf & Fur · ${universeScale.forestSpecimenLabel}`
+              : universeScale.bandTitle || currentBand?.shortLabel || 'Infinite Zoom';
+          const mobileZoomLabel = isCapytorioOrbitalFlight
+            ? `Capytorio UFO · ${shortZoomName}`
+            : shortZoomName;
+          const desktopZoomLabel = isCapytorioOrbitalFlight
+            ? `Capytorio UFO · ${fullZoomName}`
+            : fullZoomName;
+
+          return (
+            <div
+              data-testid="chrono-vessel-flight-strip"
+              className="fixed bottom-2 left-2 right-2 sm:right-auto sm:w-auto sm:max-w-[calc(100vw-152px)] xl:left-1/2 xl:-translate-x-1/2 xl:max-w-[min(760px,calc(100vw-304px))] z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2 sm:px-2.5 py-1.5 text-zinc-100"
+            >
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                   <Rocket className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                  <span className="text-[11px] font-semibold text-zinc-100 truncate">
-                    {isCapytorioOrbitalFlight ? 'Capytorio UFO' : 'Infinite Zoom'}
-                  </span>
-                  <span
-                    data-testid="flight-strip-epoch"
-                    className="text-[10px] font-mono tabular-nums text-cyan-300 shrink-0"
-                  >
-                    T+{universeScale.cosmicAgeGyr.toFixed(2)} Gyr
-                  </span>
-                  <span className="text-zinc-600 text-[10px] hidden sm:inline">·</span>
-                  <span className="hidden sm:inline text-[10px] font-mono tabular-nums text-amber-300 shrink-0">
-                    {universeScale.scientificLabel} ({universeScale.scaleFormatted})
-                  </span>
+                  <div className="min-w-0 flex flex-col leading-tight">
+                    <span
+                      data-testid="flight-strip-band-name"
+                      className="text-xs font-semibold text-zinc-100 truncate"
+                      title={desktopZoomLabel}
+                    >
+                      <span className="sm:hidden">{mobileZoomLabel}</span>
+                      <span className="hidden sm:inline">{desktopZoomLabel}</span>
+                    </span>
+                    <div className="flex items-center gap-1.5 text-[10px] font-mono tabular-nums text-zinc-400 truncate">
+                      <span className="text-amber-300/95 shrink-0">
+                        {universeScale.scientificLabel}
+                      </span>
+                      <span className="hidden md:inline text-zinc-500 truncate">
+                        ({universeScale.scaleFormatted})
+                      </span>
+                      {isAdvancedMode && (
+                        <>
+                          <span className="text-zinc-600 shrink-0">·</span>
+                          <span
+                            data-testid="flight-strip-epoch"
+                            className="text-cyan-300 shrink-0"
+                          >
+                            T+{universeScale.cosmicAgeGyr.toFixed(2)} Gyr
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {!isCapytorioOrbitalFlight && universeScale.bandId === 'leaf_fur_micro' && (
                     <button
                       type="button"
@@ -10439,66 +10594,57 @@ export const CapyGameView: React.FC = () => {
                         AudioService.playCoin();
                         managerRef.current?.rerollForestSpecimen();
                       }}
-                      title="Randomly switch spotlight among all 11 Forest Glade specimens"
-                      className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/45 text-[10px] font-mono font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                      title="Pick a random Forest Glade specimen"
+                      aria-label="Shuffle Forest Glade Specimen"
+                      className="h-8 px-2 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 border border-amber-400/45 text-[11px] font-medium cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
                     >
-                      <Shuffle className="w-3 h-3 shrink-0" />
-                      <span>{universeScale.forestSpecimenLabel || 'Specimen'}</span>
+                      <Shuffle className="w-3.5 h-3.5 shrink-0" />
+                      <span className="hidden sm:inline">
+                        {universeScale.forestSpecimenLabel || 'Specimen'}
+                      </span>
                     </button>
                   )}
-                  {isCapytorioOrbitalFlight && (
+
+                  {isCapytorioOrbitalFlight ? (
                     <button
                       type="button"
                       data-testid="chrono-land-capytorio-btn"
                       onClick={() => managerRef.current?.engageCapytorioLanding()}
-                      className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/45 text-[10px] font-mono font-semibold cursor-pointer whitespace-nowrap"
+                      className="h-8 px-2.5 sm:px-3 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[11px] font-semibold cursor-pointer whitespace-nowrap shrink-0"
                     >
                       Land in Capytorio
                     </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        data-testid="flight-strip-go-forest-btn"
+                        onClick={() => handleSwitchTopLevelGame('forest_games')}
+                        title="Skip straight to Forest Games"
+                        aria-label="Go to Forest Games"
+                        className="h-8 px-2 sm:px-2.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 active:bg-emerald-500/40 text-emerald-100 border border-emerald-400/50 text-[11px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
+                      >
+                        <Trees className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                        <span>Forest</span>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="flight-strip-go-capytorio-btn"
+                        onClick={() => handleSwitchTopLevelGame('capytorio')}
+                        title="Skip straight to Capytorio"
+                        aria-label="Go to Capytorio"
+                        className="h-8 px-2 sm:px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 active:bg-amber-500/40 text-amber-100 border border-amber-400/50 text-[11px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
+                      >
+                        <Factory className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                        <span>Capytorio</span>
+                      </button>
+                    </>
                   )}
-                  <button
-                    type="button"
-                    data-testid="toggle-flight-strip-collapse"
-                    onClick={() => setIsFlightStripCollapsed((prev) => !prev)}
-                    aria-label={isFlightStripCollapsed ? 'Expand Chrono Controls' : 'Collapse Chrono Controls'}
-                    className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
-                  >
-                    {isFlightStripCollapsed ? (
-                      <ChevronUp className="w-3.5 h-3.5" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    )}
-                  </button>
                 </div>
               </div>
-
-              {!isFlightStripCollapsed && (
-                <div className="mt-1.5 pt-1.5 border-t border-white/10 flex flex-wrap items-center justify-end gap-1.5">
-                  <button
-                    type="button"
-                    data-testid="toggle-vessel-view-btn"
-                    onClick={() => {
-                      const nextView: ChronoVesselViewMode =
-                        universeScale.vesselMode === 'telescope_first_person'
-                          ? 'chase_pod'
-                          : 'telescope_first_person';
-                      managerRef.current?.setVesselMode(nextView);
-                    }}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-900 hover:bg-zinc-800 text-sky-300 border border-sky-400/30 cursor-pointer shrink-0"
-                  >
-                    <Eye className="w-3 h-3" />
-                    <span>
-                      {universeScale.vesselMode === 'telescope_first_person'
-                        ? 'Telescope 1P'
-                        : 'Chase Pod 3P'}
-                    </span>
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
+            </div>
+          );
+        })()}
 
       {/* =====================================================================
           BUILT-IN LIVE PROCEDURAL JSON CONFIG EDITOR MODAL

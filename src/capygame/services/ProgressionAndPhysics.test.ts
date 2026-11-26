@@ -8,7 +8,7 @@ import { getPresetPatchForGpuQuality } from '../engine/gpu/GpuEngineTypes';
 import { RealisticWorldEnvironment } from '../engine/RealisticWorldEnvironment';
 import { CapyModelGenerator } from '../engine/CapyModelGenerator';
 import { AudioService } from './AudioService';
-import { classifyError } from '../../components/AppErrorBoundary';
+import { classifyError, formatErrorCopyText } from '../../components/AppErrorBoundary';
 import {
   DEFAULT_CAPY_SETTINGS,
   INITIAL_PLAYER_STATS,
@@ -1627,6 +1627,17 @@ test('Phase 4 Hardening: AppErrorBoundary classifyError handles circular objects
 
   const webglInfo = classifyError(new Error('WebGL context lost unexpectedly'));
   assert.ok(webglInfo.title.includes('WebGL'));
+  const copyPayload = formatErrorCopyText(webglInfo.title, 'TypeError: test stack');
+  assert.equal(copyPayload, `${webglInfo.title}\n\nTypeError: test stack`);
+
+  const psmSource = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/engine/PlayStyleManager.ts'),
+    'utf8'
+  );
+  assert.ok(
+    psmSource.includes('if (mutGroup?.children)'),
+    'updateBioluminescentNightGlow must guard lazy heroCapy placeholder before accessing mutationGroup.children'
+  );
 
   // 2. AudioService pause/mute lifecycle never throws in headless Node and respects mute toggle
   AudioService.suspendForPause();

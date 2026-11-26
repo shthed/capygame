@@ -32,6 +32,11 @@ import {
   type CapytorioPediaEntry,
 } from '../engine/CapytorioPedia';
 import {
+  canRequestProgrammaticFocus,
+  readDocumentFocusState,
+  shouldRunDeferredSearchFocus,
+} from '../engine/FocusGuard';
+import {
   CapytorioItemIcon,
   CapytorioMachineIcon,
   CapytorioWorldIcon,
@@ -146,16 +151,41 @@ export const CapytorioPediaView: React.FC<CapytorioPediaViewProps> = React.memo(
     setMobileShowIndex(false);
   }, [entryId]);
 
+  const lastHandledSearchFocusNonceRef = useRef<number>(searchFocusNonce);
+
   useEffect(() => {
-    if (searchFocusNonce > 0) {
-      setMobileShowIndex(true);
+    const docFocus = readDocumentFocusState();
+    if (
+      !shouldRunDeferredSearchFocus(searchFocusNonce, lastHandledSearchFocusNonceRef.current, {
+        hasWindowFocus: docFocus.documentHasFocus,
+        documentHasFocus: docFocus.documentHasFocus,
+        visibilityState: docFocus.visibilityState,
+      })
+    ) {
+      lastHandledSearchFocusNonceRef.current = searchFocusNonce;
+      return;
+    }
+    lastHandledSearchFocusNonceRef.current = searchFocusNonce;
+    setMobileShowIndex(true);
+    searchInputRef.current?.focus();
+    searchInputRef.current?.select();
+    const rafId = requestAnimationFrame(() => {
+      const latestFocus = readDocumentFocusState();
+      if (
+        !canRequestProgrammaticFocus({
+          hasWindowFocus: latestFocus.documentHasFocus,
+          documentHasFocus: latestFocus.documentHasFocus,
+          visibilityState: latestFocus.visibilityState,
+        })
+      ) {
+        return;
+      }
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
-      requestAnimationFrame(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      });
-    }
+    });
+    return () => {
+      cancelAnimationFrame(rafId);
+    };
   }, [searchFocusNonce]);
 
   const entry = useMemo(

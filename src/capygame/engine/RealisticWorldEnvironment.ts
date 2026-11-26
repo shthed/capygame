@@ -425,9 +425,9 @@ export class RealisticWorldEnvironment {
     if (isSoftwareGl) {
       return new THREE.MeshStandardMaterial({
         color: 0x0369a1,
-        roughness: 0.08,
-        metalness: 0.05,
-        envMapIntensity: 1.25,
+        roughness: 0.16,
+        metalness: 0.04,
+        envMapIntensity: 0.68,
         normalMap: waterNorms.primary,
         normalScale: new THREE.Vector2(0.55, 0.55),
       }) as unknown as THREE.MeshPhysicalMaterial;
@@ -435,17 +435,15 @@ export class RealisticWorldEnvironment {
 
     const oceanMat = new THREE.MeshPhysicalMaterial({
       color: 0x0369a1,
-      roughness: 0.05,
+      roughness: 0.16,
       metalness: 0.0,
       ior: 1.333,
-      reflectivity: 0.9,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.035,
-      envMapIntensity: 1.25,
+      reflectivity: 0.55,
+      specularIntensity: 0.45,
+      clearcoat: 0.0,
+      envMapIntensity: 0.68,
       normalMap: waterNorms.primary,
       normalScale: new THREE.Vector2(0.62, 0.62),
-      clearcoatNormalMap: waterNorms.secondary,
-      clearcoatNormalScale: new THREE.Vector2(0.42, 0.42),
     });
     RealisticWorldEnvironment.installOceanSunGlintShader(oceanMat);
     return oceanMat;
@@ -465,9 +463,9 @@ export class RealisticWorldEnvironment {
     if (sw) {
       return new THREE.MeshStandardMaterial({
         color: options?.colorHex ?? 0x0ea5e9,
-        roughness: 0.08,
+        roughness: 0.16,
         metalness: 0.04,
-        envMapIntensity: 1.2,
+        envMapIntensity: 0.65,
         normalMap: waterNorms.primary,
         normalScale: new THREE.Vector2(0.52, 0.52),
         transparent: true,
@@ -478,17 +476,15 @@ export class RealisticWorldEnvironment {
 
     const mat = new THREE.MeshPhysicalMaterial({
       color: options?.colorHex ?? 0x0ea5e9,
-      roughness: 0.05,
+      roughness: 0.16,
       metalness: 0.0,
       ior: 1.333,
-      reflectivity: 0.9,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.035,
-      envMapIntensity: 1.25,
+      reflectivity: 0.55,
+      specularIntensity: 0.45,
+      clearcoat: 0.0,
+      envMapIntensity: 0.68,
       normalMap: waterNorms.primary,
       normalScale: new THREE.Vector2(0.55, 0.55),
-      clearcoatNormalMap: waterNorms.secondary,
-      clearcoatNormalScale: new THREE.Vector2(0.42, 0.42),
       transparent: true,
       opacity: options?.opacity ?? 0.84,
       depthWrite: false,
@@ -564,7 +560,8 @@ export class RealisticWorldEnvironment {
               float specBroad = pow(max(dot(microN1, halfW), 0.0), 380.0);
               float specPin = pow(max(dot(microN2, halfW), 0.0), 1050.0);
               float fres = 0.35 + 0.65 * pow(1.0 - max(viewW.y, 0.0), 3.0);
-              reflectedLight.directSpecular += uWaterSunColor * (specBroad * 2.1 + specPin * 4.8) * fres * uWaterSunStrength;
+              float glint = min(0.85, (specBroad * 0.45 + specPin * 0.78) * fres * uWaterSunStrength);
+              reflectedLight.directSpecular += uWaterSunColor * glint;
             }
           }`
           );
@@ -619,7 +616,8 @@ export class RealisticWorldEnvironment {
               float specBroad = pow(max(dot(microN1, halfW), 0.0), 420.0);
               float specPin = pow(max(dot(microN2, halfW), 0.0), 1150.0);
               float fres = 0.28 + 0.72 * pow(1.0 - max(viewW.y, 0.0), 3.2);
-              reflectedLight.directSpecular += uWaterSunColor * (specBroad * 2.0 + specPin * 4.6) * fres * distFade * uWaterSunStrength;
+              float glint = min(0.85, (specBroad * 0.42 + specPin * 0.75) * fres * distFade * uWaterSunStrength);
+              reflectedLight.directSpecular += uWaterSunColor * glint;
             }
           }`
         );
@@ -1504,9 +1502,9 @@ export class RealisticWorldEnvironment {
 
     const brassMat = new THREE.MeshStandardMaterial({
       color: 0xd97706,
-      metalness: 0.92,
-      roughness: 0.15,
-      envMapIntensity: 1.35,
+      metalness: 0.86,
+      roughness: 0.28,
+      envMapIntensity: 0.62,
     });
     const horizontalPipe = new THREE.Mesh(
       new THREE.CylinderGeometry(0.075, 0.075, 1.45, 10),
@@ -1534,17 +1532,19 @@ export class RealisticWorldEnvironment {
     const streamMat = this.isSoftwareGl
       ? new THREE.MeshStandardMaterial({
           color: 0xe0f2fe,
-          roughness: 0.08,
+          roughness: 0.18,
           metalness: 0.0,
           transparent: true,
           opacity: 0.78,
         })
       : new THREE.MeshPhysicalMaterial({
           color: 0xe0f2fe,
-          roughness: 0.04,
+          roughness: 0.18,
           metalness: 0.0,
           ior: 1.333,
-          clearcoat: 1.0,
+          specularIntensity: 0.4,
+          clearcoat: 0.0,
+          envMapIntensity: 0.62,
           transparent: true,
           opacity: 0.78,
         });
@@ -1602,11 +1602,12 @@ export class RealisticWorldEnvironment {
         })
       : new THREE.MeshPhysicalMaterial({
           color: 0x0369a1,
-          roughness: 0.04,
+          roughness: 0.18,
           metalness: 0.0,
           ior: 1.333,
-          clearcoat: 1.0,
-          clearcoatRoughness: 0.03,
+          specularIntensity: 0.4,
+          clearcoat: 0.0,
+          envMapIntensity: 0.62,
           transparent: true,
           opacity: 0.85,
           polygonOffset: true,

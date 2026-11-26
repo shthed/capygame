@@ -691,7 +691,23 @@ export class PbrTextureSynthesizer {
       pmremGenerator = new THREE.PMREMGenerator(renderer);
       envScene = new RoomEnvironment();
 
-      // Add a warm solar specular softbox dome + cool sky hemisphere + botanical ground bounce
+      // Attenuate RoomEnvironment's 17-100 nit studio light panels so shiny metals, glass,
+      // and water reflect soft studio fill rather than exploding into artificial specular bloom.
+      envScene.traverse((obj) => {
+        if ((obj as THREE.PointLight).isPointLight) {
+          const pl = obj as THREE.PointLight;
+          pl.intensity = Math.min(pl.intensity, 140);
+        }
+        if ((obj as THREE.Mesh).isMesh) {
+          const mesh = obj as THREE.Mesh;
+          const mat = mesh.material as THREE.MeshLambertMaterial | THREE.MeshStandardMaterial;
+          if (mat && typeof mat.emissiveIntensity === 'number' && mat.emissiveIntensity > 1.0) {
+            mat.emissiveIntensity = Math.min(1.1, 0.45 + mat.emissiveIntensity * 0.0065);
+          }
+        }
+      });
+
+      // Add a soft outdoor sky hemisphere + gentle solar gradient (bounded <= 1.15, no HDR glare spike)
       const skyDomeGeo = new THREE.SphereGeometry(14, 24, 16);
       const skyDomeMat: THREE.Material = new THREE.ShaderMaterial({
         side: THREE.BackSide,
@@ -707,12 +723,12 @@ export class PbrTextureSynthesizer {
           varying vec3 vDir;
           void main() {
             float y = vDir.y;
-            vec3 sky = mix(vec3(0.46, 0.60, 0.76), vec3(0.10, 0.28, 0.58), clamp(y, 0.0, 1.0));
+            vec3 sky = mix(vec3(0.44, 0.56, 0.70), vec3(0.12, 0.28, 0.54), clamp(y, 0.0, 1.0));
             vec3 ground = vec3(0.10, 0.14, 0.09);
-            vec3 col = y >= 0.0 ? sky : mix(vec3(0.24, 0.29, 0.32), ground, clamp(-y * 2.4, 0.0, 1.0));
+            vec3 col = y >= 0.0 ? sky : mix(vec3(0.22, 0.27, 0.30), ground, clamp(-y * 2.4, 0.0, 1.0));
             float sunDot = max(0.0, dot(normalize(vDir), normalize(vec3(0.48, 0.74, 0.42))));
-            col += vec3(1.15, 0.92, 0.64) * pow(sunDot, 24.0);
-            col += vec3(3.4, 2.9, 2.2) * pow(sunDot, 160.0);
+            col += vec3(0.36, 0.30, 0.22) * pow(sunDot, 16.0);
+            col = min(col, vec3(1.12));
             gl_FragColor = vec4(col, 1.0);
           }
         `,
@@ -721,7 +737,7 @@ export class PbrTextureSynthesizer {
       disposableMats.push(skyDomeMat);
       envScene.add(new THREE.Mesh(skyDomeGeo, skyDomeMat));
 
-      const rt = pmremGenerator.fromScene(envScene, 0.052);
+      const rt = pmremGenerator.fromScene(envScene, 0.06);
       return rt.texture;
     } catch {
       return null;

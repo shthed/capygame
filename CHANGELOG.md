@@ -2,6 +2,24 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.2.7] - 2026-11-26
+
+- Removed unrealistic bright glowing bloom halos caused by specular highlight reflections off shiny glass, metal, and water surfaces.
+- Replaced the unclamped bloom high-pass filter with a specular-safe threshold and firefly clamp, attenuated extreme HDR studio lightboxes in the environment reflection map, and removed artificial mirror-clearcoat spikes from the UFO canopy, metallic trim, and water surfaces.
+
+## [1.2.6] - 2026-11-26
+
+- Updated the Infinite Zoom bottom status bar to display the active zoom level name and scale cleanly in both Basic and Advanced modes.
+- Removed the unneeded Chase Pod 3P toggle row from the bottom status bar.
+- Restored direct Forest and Capytorio quick-skip buttons in the bottom bar so players can jump straight into either game in one tap without overlapping the flight controls.
+
+## [1.2.5] - 2026-11-26
+
+- Fixed a crash when toggling the Spiral / Straight flight button or changing settings during Infinite Zoom startup before entering Forest Games (`updateBioluminescentNightGlow` now safely guards the lazily constructed Capybara mesh).
+- Made all runtime, startup, and WebGL error recovery screens text-selectable and added one-tap Copy Error buttons with iframe-safe clipboard fallbacks.
+- Prevented CapyGame from stealing input focus, intercepting keystrokes, or keeping heavy background 3D loops active when unfocused or running in an embedded preview pane alongside another window or chat input.
+- Hardened keyboard, pointer capture, pointer lock, and Capytorio search-input focus handlers to strictly verify active window focus and visibility before running, and to release focus cleanly when blurred.
+
 ## [1.2.4] - 2026-11-26
 
 - Renamed "CapyGame 3D" to "CapyGame" across the boot screen, browser title, web app manifest, About and Privacy Policy pages, error fallback, and performance reports.

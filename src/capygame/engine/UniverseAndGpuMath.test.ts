@@ -6,6 +6,12 @@ import { ProgressionService } from '../services/ProgressionService';
 import { ShallowWaterFluidSolver } from './physics/ContiguousWorldTopology';
 import { PhysicsWorldBridge } from './physics/PhysicsWorldBridge';
 import { GamePauseController } from './GamePauseController';
+import { ChronoVesselRig } from './ChronoVesselRig';
+import {
+  SPECULAR_SAFE_BLOOM_MAX_RADIANCE,
+  SPECULAR_SAFE_BLOOM_THRESHOLD,
+  evaluateSpecularSafeBloomGain,
+} from './gpu/WebGl2PostProcessing';
 import {
   CAPYTORIO_OBLIQUE_BASE_RADIUS_M,
   CAPYTORIO_ORBIT_HANDOFF_DIST,
@@ -1447,6 +1453,45 @@ test('Infinite Zoom transition polish: zero visibility gaps, <=2 terrain/cloud o
     const m = computeAdaptiveCruiseSpeedMultiplier(log);
     assert.ok(m >= 1.0 && m <= 1.85, `Adaptive cruise multiplier out of [1.0, 1.85] at log=${log}: ${m}`);
   }
+});
+
+test('Specular-Safe Bloom & Realistic Glossy Finishes: rejects white/warm specular reflection spikes and removes Chrono-Vessel clearcoat glare', () => {
+  assert.ok(
+    SPECULAR_SAFE_BLOOM_THRESHOLD >= 1.8,
+    `Expected high bloom threshold (>=1.8) to prevent PBR specular bloom, got ${SPECULAR_SAFE_BLOOM_THRESHOLD}`
+  );
+
+  // Normal bright surfaces and bright white/warm sunlight specular reflections must produce ZERO bloom
+  assert.equal(evaluateSpecularSafeBloomGain(1.5, 1.5, 1.5), 0);
+  assert.equal(evaluateSpecularSafeBloomGain(12.0, 12.0, 12.0), 0, 'Pure white specular highlight must not bloom');
+  assert.equal(evaluateSpecularSafeBloomGain(24.0, 23.2, 21.5), 0, 'Warm sunlight specular highlight must not bloom');
+  assert.equal(evaluateSpecularSafeBloomGain(Number.NaN, 10, 10), 0, 'NaN specular channel safely yields 0');
+
+  // Vibrant colored HDR emissives (e.g. cyan plasma / nebula core) still get subtle bounded bloom
+  const cyanGain = evaluateSpecularSafeBloomGain(0.4, 3.6, 4.8);
+  assert.ok(cyanGain > 0, 'Vibrant HDR emissives retain subtle bloom');
+  const outLuma = (0.4 * 0.2126 + 3.6 * 0.7152 + 4.8 * 0.0722) * cyanGain;
+  assert.ok(
+    outLuma <= SPECULAR_SAFE_BLOOM_MAX_RADIANCE + 1e-6,
+    `Expected bounded bloom output <= ${SPECULAR_SAFE_BLOOM_MAX_RADIANCE}, got ${outLuma}`
+  );
+
+  // ChronoVesselRig hull/canopy/brass must not use mirror clearcoat spikes or inflated envMapIntensity
+  const rig = new ChronoVesselRig();
+  rig.root.traverse((obj) => {
+    if ((obj as THREE.Mesh).isMesh) {
+      const mat = (obj as THREE.Mesh).material;
+      const mats = Array.isArray(mat) ? mat : [mat];
+      for (const m of mats) {
+        if (m instanceof THREE.MeshPhysicalMaterial) {
+          assert.equal(m.clearcoat, 0, 'ChronoVesselRig must not use mirror clearcoat specular spikes');
+          assert.ok(m.roughness >= 0.2, `ChronoVesselRig physical roughness too mirror-like: ${m.roughness}`);
+          assert.ok(m.envMapIntensity <= 0.7, `ChronoVesselRig envMapIntensity too high: ${m.envMapIntensity}`);
+        }
+      }
+    }
+  });
+  rig.dispose();
 });
 
 

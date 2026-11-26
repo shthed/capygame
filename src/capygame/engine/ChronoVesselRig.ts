@@ -65,11 +65,10 @@ export class ChronoVesselRig {
     // 1. Classic Flying Saucer Base Dish (compact ~0.46m radius lathe silhouette)
     const titaniumMat = new THREE.MeshPhysicalMaterial({
       color: 0xcbd5e1,
-      metalness: 0.92,
-      roughness: 0.15,
-      clearcoat: 0.6,
-      clearcoatRoughness: 0.12,
-      envMapIntensity: 1.35,
+      metalness: 0.86,
+      roughness: 0.30,
+      clearcoat: 0.0,
+      envMapIntensity: 0.58,
     });
     const saucerPoints: THREE.Vector2[] = [
       new THREE.Vector2(0.0, -0.14),
@@ -92,9 +91,10 @@ export class ChronoVesselRig {
     // 2. Grogu Hover-Pram Hooded Back Cradle & Cushion Interior
     const pramShellMat = new THREE.MeshPhysicalMaterial({
       color: 0x334155,
-      metalness: 0.55,
-      roughness: 0.36,
-      clearcoat: 0.4,
+      metalness: 0.45,
+      roughness: 0.44,
+      clearcoat: 0.0,
+      envMapIntensity: 0.48,
       side: THREE.DoubleSide,
     });
     // Rear wraparound Grogu-pram cradle (phi in [0.12*PI, 0.88*PI] puts shell on +Z rear/sides, open toward -Z front)
@@ -126,10 +126,10 @@ export class ChronoVesselRig {
     // 3. Sleek Brass / Alloy Equatorial Saucer Trim & Pram Collar Arch
     this.brassMat = new THREE.MeshPhysicalMaterial({
       color: 0xeab308,
-      metalness: 0.9,
-      roughness: 0.14,
-      clearcoat: 0.45,
-      envMapIntensity: 1.35,
+      metalness: 0.85,
+      roughness: 0.28,
+      clearcoat: 0.0,
+      envMapIntensity: 0.62,
     });
     const astrolabeGeo = new THREE.TorusGeometry(0.495, 0.018, 10, 40);
     this.brassAstrolabe = new THREE.Mesh(astrolabeGeo, this.brassMat);
@@ -145,12 +145,13 @@ export class ChronoVesselRig {
     // 4. Translucent Open-Top Forward Windscreen Shield (phi in [1.15*PI, 1.85*PI] -> -Z front arc)
     this.canopyMat = new THREE.MeshPhysicalMaterial({
       color: 0x38bdf8,
-      metalness: 0.12,
-      roughness: 0.08,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
+      metalness: 0.05,
+      roughness: 0.24,
+      clearcoat: 0.0,
+      specularIntensity: 0.32,
+      envMapIntensity: 0.50,
       transparent: true,
-      opacity: 0.36,
+      opacity: 0.34,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -279,9 +280,9 @@ export class ChronoVesselRig {
     const pilotCrownGeo = new THREE.CylinderGeometry(0.068, 0.058, 0.042, 8, 1, true);
     const pilotCrownMat = new THREE.MeshStandardMaterial({
       color: 0xffd700,
-      metalness: 0.92,
-      roughness: 0.14,
-      envMapIntensity: 1.35,
+      metalness: 0.86,
+      roughness: 0.28,
+      envMapIntensity: 0.62,
       side: THREE.DoubleSide,
     });
     const pilotCrownMesh = new THREE.Mesh(pilotCrownGeo, pilotCrownMat);
@@ -682,9 +683,9 @@ export function createSanctuaryChronoPad(
   const brassRimGeo = new THREE.TorusGeometry(2.2, 0.07, 10, 36);
   const brassRimMat = new THREE.MeshStandardMaterial({
     color: 0xd97706,
-    metalness: 0.92,
-    roughness: 0.15,
-    envMapIntensity: 1.35,
+    metalness: 0.86,
+    roughness: 0.28,
+    envMapIntensity: 0.62,
   });
   const brassRim = new THREE.Mesh(brassRimGeo, brassRimMat);
   brassRim.rotation.x = Math.PI * 0.5;

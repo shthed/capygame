@@ -52,6 +52,11 @@ import {
 } from '../engine/CapytorioFactoryEngine';
 import type { FactorioBlueprintImportResult } from '../engine/FactorioBlueprintCodec';
 import {
+  canRequestProgrammaticFocus,
+  readDocumentFocusState,
+  shouldRunDeferredSearchFocus,
+} from '../engine/FocusGuard';
+import {
   CapytorioItemIcon,
   CapytorioMachineIcon,
   CapytorioSlotTile,
@@ -312,9 +317,34 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
     setHoverTooltip(null);
   };
 
+  const lastHandledSearchFocusNonceRef = useRef<number>(searchFocusNonce);
+
   useEffect(() => {
-    if (searchFocusNonce <= 0) return;
+    const docFocus = readDocumentFocusState();
+    if (
+      !shouldRunDeferredSearchFocus(searchFocusNonce, lastHandledSearchFocusNonceRef.current, {
+        hasWindowFocus: docFocus.documentHasFocus,
+        documentHasFocus: docFocus.documentHasFocus,
+        visibilityState: docFocus.visibilityState,
+      })
+    ) {
+      lastHandledSearchFocusNonceRef.current = searchFocusNonce;
+      return;
+    }
+    lastHandledSearchFocusNonceRef.current = searchFocusNonce;
+
+    let rafId = 0;
     const focusSearch = () => {
+      const latestFocus = readDocumentFocusState();
+      if (
+        !canRequestProgrammaticFocus({
+          hasWindowFocus: latestFocus.documentHasFocus,
+          documentHasFocus: latestFocus.documentHasFocus,
+          visibilityState: latestFocus.visibilityState,
+        })
+      ) {
+        return true;
+      }
       const target =
         drawerTab === 'craft'
           ? craftSearchInputRef.current
@@ -335,10 +365,16 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
       return false;
     };
     if (!focusSearch()) {
-      requestAnimationFrame(() => {
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
         focusSearch();
       });
     }
+    return () => {
+      if (rafId !== 0) {
+        cancelAnimationFrame(rafId);
+      }
+    };
   }, [searchFocusNonce, drawerTab]);
 
   const effPct = Math.round(snap.powerEfficiency * 100);
