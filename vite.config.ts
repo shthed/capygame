@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.1.0';
+      : '1.1.2';
   } catch {
-    return '1.1.0';
+    return '1.1.2';
   }
 })();
 
@@ -97,6 +97,9 @@ export default defineConfig({
             norm.includes('/node_modules/three/addons/tsl/')
           ) {
             return 'vendor-three-webgpu';
+          }
+          if (norm.includes('/src/capygame/engine/gpu/GpuEngineTypes.ts')) {
+            return 'capy-gpu-types';
           }
           if (norm.includes('/node_modules/three/')) {
             return 'vendor-three';

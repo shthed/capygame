@@ -683,7 +683,8 @@ export class RealisticWorldEnvironment {
 
   public readonly skyMesh: THREE.Mesh;
   public readonly skyMaterial: THREE.Material;
-  public readonly mountainMesh: THREE.Mesh;
+  public readonly mountainMesh: THREE.Group = new THREE.Group();
+  private alpineMountainsBuilt: boolean = false;
   public readonly cloudGroup = new THREE.Group();
   public readonly weatherMesh: THREE.InstancedMesh;
   public readonly isWebGpu: boolean;
@@ -891,8 +892,9 @@ export class RealisticWorldEnvironment {
     this.skyMesh = new THREE.Mesh(new THREE.SphereGeometry(720, 32, 20), this.skyMaterial);
     this.skyMesh.frustumCulled = false;
 
-    // 2. Sculpted 360-Degree Photorealistic Alpine Mountain Range
-    this.mountainMesh = this.buildAlpineMountainRange(isSoftwareGl ? 72 : 128);
+    // 2. Sculpted 360-Degree Photorealistic Alpine Mountain Range (lazy-built off the cold-boot path)
+    this.mountainMesh.name = 'BackgroundAlpineMountains';
+    this.mountainMesh.userData.ignoreCameraFade = true;
 
     // 3. Volumetric Low-Altitude Drifting Cloud Clusters
     const cloudMat = new THREE.MeshStandardMaterial({
@@ -3008,12 +3010,25 @@ export class RealisticWorldEnvironment {
     this.weatherMesh.instanceMatrix.needsUpdate = true;
   }
 
+  public isAlpineMountainsBuilt(): boolean {
+    return this.alpineMountainsBuilt;
+  }
+
+  public ensureAlpineMountainsBuilt(): void {
+    if (this.alpineMountainsBuilt) return;
+    this.alpineMountainsBuilt = true;
+    const mesh = this.buildAlpineMountainRange(this.isSoftwareGl ? 72 : 128);
+    mesh.userData.ignoreCameraFade = true;
+    this.mountainMesh.add(mesh);
+  }
+
   public dispose(): void {
     this.wettableMaterials.length = 0;
     RealisticWorldEnvironment.trackedTslWaterMaterials.length = 0;
     PbrTextureSynthesizer.pruneNonSharedManagedTextures();
     disposeObject3DTree(this.skyMesh);
     disposeObject3DTree(this.mountainMesh);
+    this.alpineMountainsBuilt = false;
     disposeObject3DTree(this.cloudGroup);
     disposeObject3DTree(this.weatherMesh);
     this.moonLight?.dispose();

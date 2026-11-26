@@ -104,6 +104,14 @@ self.addEventListener('activate', (event) => {
         })
       );
 
+      if (self.registration.navigationPreload) {
+        try {
+          await self.registration.navigationPreload.enable();
+        } catch (preloadErr) {
+          console.warn('[ServiceWorker] navigationPreload enable skipped:', preloadErr);
+        }
+      }
+
       await self.clients.claim();
     })()
   );
@@ -131,12 +139,25 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 1. Navigation requests (HTML document): Network-first with cache fallback
+  // 1. Navigation requests (HTML document): Navigation Preload -> Network-first with cache fallback
   if (request.mode === 'navigate') {
     event.respondWith(
       (async () => {
         try {
-          const networkResponse = await fetch(request);
+          let networkResponse = null;
+          if (event.preloadResponse) {
+            try {
+              const preloaded = await event.preloadResponse;
+              if (preloaded) {
+                networkResponse = preloaded;
+              }
+            } catch {
+              // Ignore preload rejection and fall through to standard network/offline handling
+            }
+          }
+          if (!networkResponse) {
+            networkResponse = await fetch(request);
+          }
           if (
             networkResponse &&
             networkResponse.status === 200 &&

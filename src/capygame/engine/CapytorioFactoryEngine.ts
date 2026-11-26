@@ -2646,6 +2646,83 @@ export class CapytorioFactoryEngine {
     this.pasteAnchor = null;
   }
 
+  /**
+   * Returns true if grid tile (gx, gz) falls on or within `paddingTiles` of any entity
+   * in the currently active paste blueprint ghost. Used so dragging ON the ghost repositions it
+   * while dragging OUTSIDE the ghost moves the Capybara & camera across the factory.
+   */
+  public isTileInsideActiveBlueprint(
+    gx: number,
+    gz: number,
+    paddingTiles: number = 0
+  ): boolean {
+    if (
+      this.clipboardToolState !== 'paste' ||
+      !this.clipboard ||
+      this.clipboard.entries.length === 0
+    ) {
+      return false;
+    }
+    const anchorGx = this.pasteAnchor ? this.pasteAnchor.gx : this.hoveredGx;
+    const anchorGz = this.pasteAnchor ? this.pasteAnchor.gz : this.hoveredGz;
+    const pad = Math.max(0, Math.floor(paddingTiles));
+    const entries = this.clipboard.entries;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const fp = getCapytorioToolFootprint(e.toolId, e.dir);
+      const minX = anchorGx + e.dx - pad;
+      const maxX = anchorGx + e.dx + fp.width - 1 + pad;
+      const minZ = anchorGz + e.dz - pad;
+      const maxZ = anchorGz + e.dz + fp.height - 1 + pad;
+      if (gx >= minX && gx <= maxX && gz >= minZ && gz <= maxZ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Keeps the blueprint ghost traveling smoothly with the player as they walk/pan in Paste mode.
+   * - If pasteAnchor is locked and the player walks > `maxLockedDistTiles` away, unlocks pasteAnchor
+   *   so the ghost never stays stranded offscreen.
+   * - When pasteAnchor is unlocked, updates hoveredGx/hoveredGz to the re-projected pointer tile
+   *   (or hero tile when no mouse pointer is hovering).
+   */
+  public syncPasteGhostForHeroMovement(
+    heroGx: number,
+    heroGz: number,
+    pointerTargetGx: number | null,
+    pointerTargetGz: number | null,
+    maxLockedDistTiles: number = 10
+  ): boolean {
+    if (
+      this.clipboardToolState !== 'paste' ||
+      !this.clipboard ||
+      this.clipboard.entries.length === 0
+    ) {
+      return false;
+    }
+    let changed = false;
+    if (this.pasteAnchor) {
+      const dx = heroGx - this.pasteAnchor.gx;
+      const dz = heroGz - this.pasteAnchor.gz;
+      if (dx * dx + dz * dz > maxLockedDistTiles * maxLockedDistTiles) {
+        this.pasteAnchor = null;
+        changed = true;
+      }
+    }
+    if (!this.pasteAnchor) {
+      const nextGx = pointerTargetGx !== null ? pointerTargetGx : heroGx;
+      const nextGz = pointerTargetGz !== null ? pointerTargetGz : heroGz;
+      if (nextGx !== this.hoveredGx || nextGz !== this.hoveredGz) {
+        this.hoveredGx = nextGx;
+        this.hoveredGz = nextGz;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   public setClipboardToolMode(
     state: CapytorioClipboardToolState,
     shape?: CapytorioSelectionShape

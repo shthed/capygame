@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
+import { resolveCapytorioClipboardPointerAction } from './capytorio/CapytorioStateGuard';
 import {
   computeCapytorioAmbientMix,
   selectCapytorioPlacementProfile,
@@ -3469,5 +3470,156 @@ test('Capytorio3DRenderer.dispose() disposes every InstancedMesh GPU buffer and 
     'Repair button tooltip matches 30s overclock duration in useRepairPackAt()'
   );
 });
+
+test('Capytorio Copy/Cut/Paste movement: pointer routing, blueprint footprint hit-testing, and ghost tracking while moving', () => {
+  // 1. Pure pointer gesture router allows moving without cancelling copy/cut/paste
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'paste',
+      selectionShape: 'box',
+      button: 0,
+      clipboardMoveMode: false,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: false,
+    }),
+    'paste_tap_or_move',
+    'Dragging outside the blueprint ghost in Paste mode allows moving while quick tap snaps ghost'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'paste',
+      selectionShape: 'box',
+      button: 0,
+      clipboardMoveMode: false,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: true,
+      pointerType: 'mouse',
+      hasLockedPasteAnchor: true,
+    }),
+    'position_blueprint',
+    'Dragging directly on a locked blueprint ghost repositions the ghost'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'paste',
+      selectionShape: 'box',
+      button: 0,
+      clipboardMoveMode: false,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: true,
+      pointerType: 'mouse',
+      hasLockedPasteAnchor: false,
+    }),
+    'paste_tap_or_move',
+    'Desktop mouse press with an unlocked hover-following ghost allows tap-to-lock or drag-to-move'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'paste',
+      selectionShape: 'box',
+      button: 0,
+      clipboardMoveMode: false,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: true,
+      pointerType: 'touch',
+      hasLockedPasteAnchor: false,
+    }),
+    'position_blueprint',
+    'Touch drag directly on an unlocked ghost still slides the ghost'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'paste',
+      selectionShape: 'box',
+      button: 0,
+      clipboardMoveMode: true,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: true,
+    }),
+    'clipboard_move',
+    'Explicit Move toggle always routes pointer drags to movement even over the ghost'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'select_copy',
+      selectionShape: 'box',
+      button: 0,
+      clipboardMoveMode: true,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: false,
+    }),
+    'clipboard_move',
+    'Move toggle also lets players walk before box-selecting in Copy mode'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'paste',
+      selectionShape: 'box',
+      button: 2,
+      clipboardMoveMode: false,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: true,
+    }),
+    'clipboard_move',
+    'Right-click drag moves during Paste mode'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'select_cut',
+      selectionShape: 'lasso',
+      button: 0,
+      clipboardMoveMode: false,
+      isSpaceHeld: true,
+      hitInsideBlueprintGhost: false,
+    }),
+    'clipboard_move',
+    'Space + Left-drag moves during Cut lasso mode'
+  );
+  assert.equal(
+    resolveCapytorioClipboardPointerAction({
+      clipState: 'select_copy',
+      selectionShape: 'lasso',
+      button: 0,
+      clipboardMoveMode: false,
+      isSpaceHeld: false,
+      hitInsideBlueprintGhost: false,
+    }),
+    'select_lasso',
+    'Normal drag in Copy lasso mode still performs lasso selection'
+  );
+
+  // 2. Blueprint footprint hit-test & ghost tracking during hero movement
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+  assert.equal(engine.placeMachine('belt', 0, 0, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', 1, 0, 1).ok, true);
+  const copied = engine.selectMachinesInBox(0, 0, 1, 0);
+  engine.captureBlueprint(copied, 'copy');
+  assert.equal(engine.clipboardToolState, 'paste');
+  assert.equal(engine.pasteAnchor, null);
+
+  // Position ghost at (2, 2)
+  engine.setBlueprintAnchor(2, 2);
+  assert.equal(engine.isTileInsideActiveBlueprint(2, 2, 0), true, 'Origin tile hits ghost footprint');
+  assert.equal(engine.isTileInsideActiveBlueprint(10, 10, 0), false, 'Distant ground is outside ghost footprint');
+  assert.equal(engine.isTileInsideActiveBlueprint(2, 3, 1), true, 'Padding=1 expands touch hit region by 1 tile');
+
+  // Stepping slightly aside (< 10 tiles) keeps locked pasteAnchor intact
+  engine.syncPasteGhostForHeroMovement(5, 5, 5, 5, 10);
+  assert.deepEqual(engine.pasteAnchor, { gx: 2, gz: 2 }, 'Short step preserves locked anchor');
+
+  // Walking far across the factory (> 10 tiles) auto-unlocks stale pasteAnchor & brings ghost along
+  const moved = engine.syncPasteGhostForHeroMovement(20, 18, 22, 19, 10);
+  assert.equal(moved, true);
+  assert.equal(engine.pasteAnchor, null, 'Walking far unlocks stale pasteAnchor');
+  assert.equal(engine.hoveredGx, 22, 'Ghost tracks re-projected pointer tile as player moves');
+  assert.equal(engine.hoveredGz, 19);
+
+  // When no mouse pointer is hovering (touch/keyboard-only), ghost follows hero tile
+  engine.syncPasteGhostForHeroMovement(26, 24, null, null, 10);
+  assert.equal(engine.hoveredGx, 26);
+  assert.equal(engine.hoveredGz, 24);
+});
+
 
 

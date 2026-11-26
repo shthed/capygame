@@ -11,6 +11,7 @@ import {
   FlipVertical2,
   HelpCircle,
   Menu,
+  Move,
   Pause,
   Play,
   Redo2,
@@ -154,6 +155,8 @@ export interface CapytorioHudProps {
   onSetClipboardMode: (mode: CapytorioClipboardToolState, shape?: CapytorioSelectionShape) => void;
   onClearClipboard: () => void;
   onPlaceBlueprint: () => void;
+  clipboardMoveMode?: boolean;
+  onToggleClipboardMoveMode?: () => void;
   onUndoCut: () => void;
   onUndoAction: () => void;
   onRedoAction: () => void;
@@ -238,6 +241,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
   onSetClipboardMode,
   onClearClipboard,
   onPlaceBlueprint,
+  clipboardMoveMode = false,
+  onToggleClipboardMoveMode,
   onUndoCut,
   onUndoAction,
   onRedoAction,
@@ -1750,7 +1755,10 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                   <button
                     type="button"
                     data-testid="capytorio-clip-place-btn"
-                    onClick={onPlaceBlueprint}
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      onPlaceBlueprint();
+                    }}
                     title={
                       clip.pasteAnchor
                         ? `Place ${clip.count} building${clip.count === 1 ? '' : 's'} at (${clip.pasteAnchor.gx}, ${clip.pasteAnchor.gz}) [Enter]`
@@ -1761,6 +1769,27 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                     <Check className="w-3.5 h-3.5 shrink-0" />
                     <span>Place ({clip.count})</span>
                   </button>
+
+                  {onToggleClipboardMoveMode && (
+                    <button
+                      type="button"
+                      data-testid="capytorio-clip-move-btn"
+                      aria-pressed={clipboardMoveMode}
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onToggleClipboardMoveMode();
+                      }}
+                      title="Move across factory while keeping blueprint ready [WASD / Right-Drag / Drag outside ghost]"
+                      className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                        clipboardMoveMode
+                          ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
+                          : FACTORIO_BTN_IDLE
+                      }`}
+                    >
+                      <Move className="w-3 h-3 shrink-0" />
+                      <span>Move</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -1915,6 +1944,27 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                     </svg>
                     <span>Lasso</span>
                   </button>
+
+                  {onToggleClipboardMoveMode && (
+                    <button
+                      type="button"
+                      data-testid="capytorio-clip-move-btn"
+                      aria-pressed={clipboardMoveMode}
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onToggleClipboardMoveMode();
+                      }}
+                      title="Move across factory before selecting [WASD / Right-Drag]"
+                      className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+                        clipboardMoveMode
+                          ? 'bg-[#2a3b4d] border border-[#38bdf8] text-[#bae6fd]'
+                          : FACTORIO_BTN_IDLE
+                      }`}
+                    >
+                      <Move className="w-3 h-3 shrink-0" />
+                      <span>Move</span>
+                    </button>
+                  )}
 
                   {/* Paste remembered selection when not currently pasting */}
                   {clip.hasRememberedSelection && (

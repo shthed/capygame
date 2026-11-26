@@ -379,6 +379,11 @@ export class HardwareGpuEngine {
     }
   ) {
     this.renderer = renderer;
+    if (this.renderer instanceof THREE.WebGLRenderer) {
+      this.renderer.debug.checkShaderErrors = Boolean(
+        (import.meta as { env?: { DEV?: boolean } }).env?.DEV
+      );
+    }
     this.scene = scene;
     this.camera = camera;
     this.sunLight = sunLight;

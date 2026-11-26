@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as THREE from 'three';
 import { PbrTextureSynthesizer } from '../engine/gpu/PbrTextureSynthesizer';
+import { getPresetPatchForGpuQuality } from '../engine/gpu/GpuEngineTypes';
+import { RealisticWorldEnvironment } from '../engine/RealisticWorldEnvironment';
 import { CapyModelGenerator } from '../engine/CapyModelGenerator';
 import { AudioService } from './AudioService';
 import { classifyError } from '../../components/AppErrorBoundary';
@@ -1770,6 +1772,168 @@ test('Phase 5 Build, Security Headers, Manifest & CI Invariants', () => {
   assert.ok(privacyHtml.includes('capy_game_yuzu_ghost_v1'));
   assert.ok(privacyHtml.includes('https://github.com/capyboop/capygame/issues'));
 });
+
+test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains, dynamic engine split, shader checks, and SW navigationPreload', () => {
+  const root = process.cwd();
+
+  // 1. getPresetPatchForGpuQuality works cleanly from GpuEngineTypes with zero runtime three import
+  const gpuTypesSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/engine/gpu/GpuEngineTypes.ts'),
+    'utf8'
+  );
+  assert.equal(
+    /^\s*import\s+(?!type\b).*['"]three(?:\/[^'"]*)?['"]/m.test(gpuTypesSrc),
+    false,
+    'GpuEngineTypes.ts must not have any runtime three import'
+  );
+  const perfPatch = getPresetPatchForGpuQuality('performance');
+  const balPatch = getPresetPatchForGpuQuality('balanced');
+  const highPatch = getPresetPatchForGpuQuality('high');
+  const ultraPatch = getPresetPatchForGpuQuality('ultra');
+  assert.equal(perfPatch.gpuQualityPreset, 'performance');
+  assert.equal(perfPatch.gpuPostProcessing, false);
+  assert.equal(balPatch.gpuQualityPreset, 'balanced');
+  assert.equal(highPatch.gpuQualityPreset, 'high');
+  assert.equal(ultraPatch.gpuQualityPreset, 'ultra');
+  assert.equal(ultraPatch.gpuAnisotropy, 16);
+
+  // 2. RealisticWorldEnvironment defers Alpine mountain heightfield PBR synthesis until ensureAlpineMountainsBuilt()
+  const stubRenderer = {
+    capabilities: { getMaxAnisotropy: () => 4 },
+  } as unknown as THREE.WebGLRenderer;
+  let canvasCreations = 0;
+  const g = globalThis as unknown as { document?: unknown };
+  const prevDocument = g.document;
+  const mockCtx = {
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    fillRect() {},
+    strokeRect() {},
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    arc() {},
+    ellipse() {},
+    fill() {},
+    stroke() {},
+    save() {},
+    restore() {},
+    translate() {},
+    rotate() {},
+    createLinearGradient() {
+      return { addColorStop() {} };
+    },
+    createRadialGradient() {
+      return { addColorStop() {} };
+    },
+    getImageData(_x: number, _y: number, w: number, h: number) {
+      return { data: new Uint8ClampedArray(w * h * 4), width: w, height: h };
+    },
+    putImageData() {},
+  };
+  g.document = {
+    createElement(tag: string) {
+      if (tag === 'canvas') canvasCreations += 1;
+      return {
+        width: 256,
+        height: 256,
+        getContext() {
+          return mockCtx;
+        },
+      };
+    },
+  };
+  const env = new RealisticWorldEnvironment(
+    stubRenderer,
+    true,
+    new THREE.AmbientLight(),
+    new THREE.HemisphereLight(),
+    new THREE.DirectionalLight(),
+    false,
+    true
+  );
+  try {
+    assert.equal(canvasCreations, 0, 'Constructor must not synthesize mountain PBR canvases eagerly');
+    assert.equal(env.isAlpineMountainsBuilt(), false, 'Alpine mountains must not build eagerly in constructor');
+    assert.equal(env.mountainMesh.isGroup, true, 'mountainMesh must be a lightweight THREE.Group container');
+    assert.equal(env.mountainMesh.children.length, 0, 'mountainMesh container must start empty');
+
+    env.ensureAlpineMountainsBuilt();
+    assert.equal(env.isAlpineMountainsBuilt(), true, 'ensureAlpineMountainsBuilt() must mark mountains built');
+    assert.equal(env.mountainMesh.children.length, 1, 'ensureAlpineMountainsBuilt() must attach 1 mountain mesh');
+    assert.ok(canvasCreations > 0, 'ensureAlpineMountainsBuilt() must lazily synthesize mountain textures');
+
+    // Idempotent second call must not duplicate mountain meshes
+    const countAfterFirst = canvasCreations;
+    env.ensureAlpineMountainsBuilt();
+    assert.equal(env.mountainMesh.children.length, 1, 'ensureAlpineMountainsBuilt() must be idempotent');
+    assert.equal(canvasCreations, countAfterFirst, 'Second call must not re-synthesize mountain textures');
+  } finally {
+    env.dispose();
+    if (prevDocument === undefined) {
+      delete g.document;
+    } else {
+      g.document = prevDocument;
+    }
+  }
+  assert.equal(env.isAlpineMountainsBuilt(), false, 'dispose() must reset alpineMountainsBuilt flag');
+
+  // 3. HardwareGpuEngine disables checkShaderErrors outside DEV
+  const hwGpuSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/engine/gpu/HardwareGpuEngine.ts'),
+    'utf8'
+  );
+  assert.ok(
+    hwGpuSrc.includes('checkShaderErrors'),
+    'HardwareGpuEngine.ts must configure renderer.debug.checkShaderErrors'
+  );
+
+  // 4. CapyGameView uses type-only PlayStyleManager import, dynamic engine import, and zero runtime three imports
+  const viewSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/components/CapyGameView.tsx'),
+    'utf8'
+  );
+  assert.ok(
+    /import\s+type\s*\{[\s\S]*?PlayStyleManager[\s\S]*?\}\s*from\s*'\.\.\/engine\/PlayStyleManager'/.test(viewSrc),
+    'CapyGameView.tsx must use import type for PlayStyleManager'
+  );
+  assert.ok(
+    viewSrc.includes("import('../engine/PlayStyleManager')"),
+    'CapyGameView.tsx must dynamically import PlayStyleManager after first paint'
+  );
+  assert.equal(
+    /^\s*import\s+(?!type\b).*['"]three(?:\/[^'"]*)?['"]/m.test(viewSrc),
+    false,
+    'CapyGameView.tsx must have zero eager runtime three imports'
+  );
+
+  // 5. PlayStyleManager avoids synchronous glRenderer.compile() and per-frame DOM layout reads
+  const managerSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/engine/PlayStyleManager.ts'),
+    'utf8'
+  );
+  assert.equal(
+    managerSrc.includes('glRenderer.compile('),
+    false,
+    'PlayStyleManager.ts must not call synchronous glRenderer.compile()'
+  );
+  assert.ok(
+    managerSrc.includes('cachedViewportWidth') && managerSrc.includes('cachedViewportHeight'),
+    'PlayStyleManager.ts must cache viewport dimensions across frames'
+  );
+
+  // 6. index.html contains inline static LCP shell and keeps renderBootError
+  const indexHtml = fs.readFileSync(path.resolve(root, 'index.html'), 'utf8');
+  assert.ok(indexHtml.includes('data-testid="static-boot-shell"'), 'index.html must include instant static LCP shell');
+  assert.ok(indexHtml.includes('function renderBootError'), 'index.html must keep renderBootError fallback');
+
+  // 7. public/sw.js enables navigationPreload and checks event.preloadResponse safely
+  const swSrc = fs.readFileSync(path.resolve(root, 'public/sw.js'), 'utf8');
+  assert.ok(swSrc.includes('navigationPreload.enable()'), 'public/sw.js must enable navigationPreload');
+  assert.ok(swSrc.includes('event.preloadResponse'), 'public/sw.js must check event.preloadResponse');
+});
+
 
 
 

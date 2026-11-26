@@ -1,5 +1,7 @@
 export const CAPY_CRISP_OVERLAY_LAYER = 2;
 
+import type { CapyGameSettings } from '../../types';
+
 export type GpuQualityPreset = 'performance' | 'balanced' | 'high' | 'ultra';
 
 export type GpuToneMappingMode = 'agx' | 'aces' | 'neutral' | 'reinhard';
@@ -303,4 +305,76 @@ export interface PerformanceAnalysisSnapshot {
   modules: ProfilerModuleMetric[];
   recentEvents: ProfilerActionEvent[];
 }
+
+export function getPresetPatchForGpuQuality(
+  preset: GpuQualityPreset
+): Partial<CapyGameSettings> {
+  if (preset === 'performance') {
+    return {
+      gpuQualityPreset: 'performance',
+      gpuPostProcessing: false,
+      gpuShadowQuality: 'off',
+      gpuTextureFilter: 'bilinear',
+      gpuAnisotropy: 1,
+      gpuAntiAliasing: 'none',
+      gpuResolutionScale: 0.7,
+      gpuBloomEnabled: false,
+      gpuSsaoEnabled: false,
+      gpuSharpenAmount: 0,
+      drawDistance: 135,
+      autoCapyLod: false,
+      manualCapyLodTier: 0,
+    };
+  }
+  if (preset === 'balanced') {
+    return {
+      gpuQualityPreset: 'balanced',
+      gpuPostProcessing: true,
+      gpuShadowQuality: 'pcf',
+      gpuTextureFilter: 'trilinear_aniso',
+      gpuAnisotropy: 4,
+      gpuAntiAliasing: 'fxaa',
+      gpuResolutionScale: 1.0,
+      gpuBloomEnabled: true,
+      gpuBloomStrength: 0.22,
+      gpuSsaoEnabled: false,
+      gpuSharpenAmount: 0.18,
+      drawDistance: 280,
+      autoCapyLod: true,
+    };
+  }
+  if (preset === 'ultra') {
+    return {
+      gpuQualityPreset: 'ultra',
+      gpuPostProcessing: true,
+      gpuShadowQuality: 'pcf_soft',
+      gpuTextureFilter: 'trilinear_aniso',
+      gpuAnisotropy: 16,
+      gpuAntiAliasing: 'msaa_fxaa',
+      gpuResolutionScale: 1.0,
+      gpuBloomEnabled: true,
+      gpuBloomStrength: 0.34,
+      gpuSsaoEnabled: true,
+      gpuSharpenAmount: 0.32,
+      drawDistance: 1350,
+      autoCapyLod: true,
+    };
+  }
+  return {
+    gpuQualityPreset: 'high',
+    gpuPostProcessing: true,
+    gpuShadowQuality: 'pcf_soft',
+    gpuTextureFilter: 'trilinear_aniso',
+    gpuAnisotropy: 8,
+    gpuAntiAliasing: 'msaa_fxaa',
+    gpuResolutionScale: 1.0,
+    gpuBloomEnabled: true,
+    gpuBloomStrength: 0.24,
+    gpuSsaoEnabled: true,
+    gpuSharpenAmount: 0.26,
+    drawDistance: 650,
+    autoCapyLod: true,
+  };
+}
+
 

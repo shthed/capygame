@@ -2,6 +2,18 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.1.2] - 2026-11-25
+
+- Enabled moving freely across the Capytorio factory while Copy, Cut, or Paste blueprint mode is active via dragging anywhere outside the ghost footprint, right/middle-click dragging, holding Space while dragging, using WASD/Arrow keys, or toggling the new Move button in the clipboard bar.
+- Updated Capytorio blueprint ghost tracking so the ready-to-paste ghost travels smoothly with your cursor or Capybara as you walk to a new location and automatically unlocks distant anchors when moving across the factory.
+
+## [1.1.1] - 2026-11-25
+
+- Added an instant inline-styled boot shell in `index.html` with a matching non-blocking overlay that clears on Frame 1, giving immediate Largest Contentful Paint without layout shift.
+- Split `PlayStyleManager` and `three` out of the initial entry bundle by extracting `getPresetPatchForGpuQuality` into `GpuEngineTypes.ts` and dynamically loading the 3D engine after first paint.
+- Eliminated synchronous cold-boot stalls by lazily building the Alpine mountain heightfield PBR mesh on demand or during idle time, disabling WebGL shader error checks outside development, and replacing constructor `compile()` calls with post-paint `compileAsync()`.
+- Cached viewport dimensions inside `PlayStyleManager` to remove per-frame `clientWidth`/`clientHeight` layout reads, enabled Service Worker `navigationPreload` in `public/sw.js`, and moved tutorial completion toast dispatch out of the React state updater.
+
 ## [1.1.0] - 2026-11-25
 
 - Renamed the overview modal to "About CapyGame" with the live application version (`v1.1.0`) shown in the header and removed "System Architecture" and "Surface Sectors" (`4536578`).

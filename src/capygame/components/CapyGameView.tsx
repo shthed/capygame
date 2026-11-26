@@ -47,12 +47,13 @@ import {
   createDefaultBounties,
 } from '../types';
 import { ProgressionService } from '../services/ProgressionService';
-import {
+import type {
   PlacementGhostStatus,
   PlayStyleManager,
 } from '../engine/PlayStyleManager';
 import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
-import { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
+import type { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
+import { getPresetPatchForGpuQuality } from '../engine/gpu/GpuEngineTypes';
 import {
   clearGpuBackendBenchmarkCache,
   type WebGpuProbeResult,
@@ -91,6 +92,7 @@ import {
   getLoadedCapytorioRuntime,
   loadCapytorioRuntime,
 } from '../engine/capytorio/CapytorioModuleLoader';
+import { resolveCapytorioClipboardPointerAction } from '../engine/capytorio/CapytorioStateGuard';
 import type { CapytorioDrawerTab, CapytorioHudProps } from './CapytorioHud';
 import { createLiveTelemetryStore, TelemetryReadout } from './TelemetryReadout';
 
@@ -383,6 +385,11 @@ export const CapyGameView: React.FC = () => {
   const [selectedCraftRecipeId, setSelectedCraftRecipeId] =
     useState<CapytorioRecipeId>('iron_gear');
   const [capytorioPointerHoverActive, setCapytorioPointerHoverActive] = useState<boolean>(false);
+  const [capytorioClipboardMoveMode, setCapytorioClipboardMoveMode] = useState<boolean>(false);
+  const capytorioClipboardMoveModeRef = useRef<boolean>(false);
+  capytorioClipboardMoveModeRef.current = capytorioClipboardMoveMode;
+  const isSpaceHeldRef = useRef<boolean>(false);
+  const syncMoveInputRef = useRef<(() => void) | null>(null);
   const [isTopBarVisible, setIsTopBarVisible] = useState<boolean>(false);
   const pauseControllerRef = useRef<GamePauseController>(new GamePauseController());
   const [isGamePaused, setIsGamePaused] = useState<boolean>(false);
@@ -425,6 +432,7 @@ export const CapyGameView: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [activeTutorial, setActiveTutorial] = useState<ActiveTutorialState | null>(null);
+  const [engineReady, setEngineReady] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
   const [isBountiesOpen, setIsBountiesOpen] = useState<boolean>(false);
@@ -774,6 +782,8 @@ export const CapyGameView: React.FC = () => {
       | 'select_box'
       | 'select_lasso'
       | 'position_blueprint'
+      | 'paste_tap_or_move'
+      | 'clipboard_move'
       | 'open_pedia'
       | 'copy_settings'
       | 'paste_settings'
@@ -1124,13 +1134,16 @@ export const CapyGameView: React.FC = () => {
         return mgr.exportCapytorioBlueprintBookToFactorioString();
       },
       onSetClipboardMode: (mode, shape) => {
+        setCapytorioClipboardMoveMode(false);
         managerRef.current?.setCapytorioClipboardMode(mode, shape);
       },
       onClearClipboard: () => {
+        setCapytorioClipboardMoveMode(false);
         managerRef.current?.clearCapytorioClipboard();
         setCapytorioSelectionOverlay(null);
       },
       onPlaceBlueprint: () => {
+        setCapytorioClipboardMoveMode(false);
         const res = managerRef.current?.placeCapytorioBlueprintAtPositionedGhost();
         if (res?.message) {
           showToast(res.message);
@@ -1567,9 +1580,25 @@ export const CapyGameView: React.FC = () => {
 
       if (cancelled || !mountRef.current) return;
 
+      let PlayStyleManagerCtor: typeof import('../engine/PlayStyleManager').PlayStyleManager;
+      try {
+        const mod = await import('../engine/PlayStyleManager');
+        if (cancelled || !mountRef.current) return;
+        PlayStyleManagerCtor = mod.PlayStyleManager;
+      } catch (err) {
+        if (!cancelled) {
+          const message =
+            err instanceof Error
+              ? err.message
+              : 'Unable to load the 3D engine module.';
+          setWebglError(message);
+        }
+        return;
+      }
+
       let manager: PlayStyleManager;
       try {
-        manager = new PlayStyleManager(
+        manager = new PlayStyleManagerCtor(
           mountRef.current,
           initialStats,
           initialSettings,
@@ -1838,6 +1867,8 @@ export const CapyGameView: React.FC = () => {
         }, delayMs);
       };
 
+      let firstFrameRendered = false;
+
       const animate = (now: number) => {
         animFrameId = 0;
         if (cancelled || isGamePausedRef.current) return;
@@ -1877,6 +1908,11 @@ export const CapyGameView: React.FC = () => {
 
         manager.tick(dt, rawDtSec);
 
+        if (!firstFrameRendered) {
+          firstFrameRendered = true;
+          setEngineReady(true);
+        }
+
         if (uiSyncAccum >= 0.35) {
           uiSyncAccum = 0;
           if (manager.cosmicStage !== 'playing') {
@@ -1906,6 +1942,9 @@ export const CapyGameView: React.FC = () => {
       if (!isGamePausedRef.current) {
         animFrameId = window.requestAnimationFrame(animate);
       } else {
+        manager.gpuEngine?.render();
+        firstFrameRendered = true;
+        setEngineReady(true);
         manager.setPaused(true);
       }
 
@@ -1927,8 +1966,10 @@ export const CapyGameView: React.FC = () => {
         managerRef.current.moveInput.z = (down ? 1 : 0) - (up ? 1 : 0);
         managerRef.current.moveInput.x = (right ? 1 : 0) - (left ? 1 : 0);
       };
+      syncMoveInputRef.current = syncMoveInput;
       const clearHeldInputs = () => {
         heldMoveKeys.clear();
+        isSpaceHeldRef.current = false;
         if (managerRef.current) {
           managerRef.current.moveInput.x = 0;
           managerRef.current.moveInput.z = 0;
@@ -1991,6 +2032,12 @@ export const CapyGameView: React.FC = () => {
         }
         const overlayBlockingMovement =
           modalOpenRef.current || menuOpenRef.current || firstRunSetupOpenRef.current;
+        const inCapytorioActive =
+          managerRef.current.currentMode === 'capytorio' &&
+          managerRef.current.cosmicStage === 'playing' &&
+          !modalOpenRef.current &&
+          !menuOpenRef.current &&
+          !firstRunSetupOpenRef.current;
         if (!overlayBlockingMovement) {
           if (
             key === 'w' ||
@@ -2002,17 +2049,24 @@ export const CapyGameView: React.FC = () => {
             key === 'd' ||
             key === 'arrowright'
           ) {
+            if (key.startsWith('arrow')) {
+              e.preventDefault();
+            }
             heldMoveKeys.add(key);
             syncMoveInput();
           }
-          if (key === ' ') managerRef.current.isJumping = true;
+          if (key === ' ') {
+            isSpaceHeldRef.current = true;
+            const clipActiveNow =
+              inCapytorioActive &&
+              managerRef.current.getCapytorioSnapshot()?.clipboard.toolState !== 'off';
+            if (clipActiveNow) {
+              e.preventDefault();
+            } else {
+              managerRef.current.isJumping = true;
+            }
+          }
         }
-        const inCapytorioActive =
-          managerRef.current.currentMode === 'capytorio' &&
-          managerRef.current.cosmicStage === 'playing' &&
-          !modalOpenRef.current &&
-          !menuOpenRef.current &&
-          !firstRunSetupOpenRef.current;
 
         if (e.key === 'Alt') {
           if (inCapytorioActive && !e.repeat && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
@@ -2226,6 +2280,7 @@ export const CapyGameView: React.FC = () => {
             managerRef.current.getCapytorioSnapshot() &&
             managerRef.current.getCapytorioSnapshot()!.clipboard.toolState !== 'off'
           ) {
+            setCapytorioClipboardMoveMode(false);
             managerRef.current.clearCapytorioClipboard();
             setCapytorioSelectionOverlay(null);
           }
@@ -2269,6 +2324,7 @@ export const CapyGameView: React.FC = () => {
           syncMoveInput();
         }
         if (key === ' ') {
+          isSpaceHeldRef.current = false;
           managerRef.current.isJumping = false;
         }
       };
@@ -2390,6 +2446,7 @@ export const CapyGameView: React.FC = () => {
       cleanupFn = () => {
         clearHeldInputs();
         clearHeldInputsRef.current = null;
+        syncMoveInputRef.current = null;
         suspendAnimLoopRef.current = null;
         resumeAnimLoopRef.current = null;
         cancelScheduledFrame();
@@ -2414,10 +2471,36 @@ export const CapyGameView: React.FC = () => {
       };
     };
 
-    void bootEngine();
+    let bootRaf1 = 0;
+    let bootRaf2 = 0;
+    bootRaf1 = window.requestAnimationFrame(() => {
+      bootRaf1 = 0;
+      if (cancelled) return;
+      bootRaf2 = window.requestAnimationFrame(() => {
+        bootRaf2 = 0;
+        if (!cancelled) {
+          void bootEngine().catch((err) => {
+            if (cancelled) return;
+            const message =
+              err instanceof Error
+                ? err.message
+                : 'Unable to initialize the 3D engine.';
+            setWebglError(message);
+          });
+        }
+      });
+    });
 
     return () => {
       cancelled = true;
+      if (bootRaf1 !== 0) {
+        window.cancelAnimationFrame(bootRaf1);
+        bootRaf1 = 0;
+      }
+      if (bootRaf2 !== 0) {
+        window.cancelAnimationFrame(bootRaf2);
+        bootRaf2 = 0;
+      }
       cleanupFn?.();
     };
   }, []);
@@ -2429,6 +2512,12 @@ export const CapyGameView: React.FC = () => {
   useEffect(() => {
     managerRef.current?.setAllFeaturesUnlocked(allFeaturesUnlocked);
   }, [allFeaturesUnlocked]);
+
+  useEffect(() => {
+    if (capytorioSnap?.clipboard.toolState === 'off' && capytorioClipboardMoveMode) {
+      setCapytorioClipboardMoveMode(false);
+    }
+  }, [capytorioSnap?.clipboard.toolState, capytorioClipboardMoveMode]);
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!managerRef.current) return;
@@ -2503,34 +2592,81 @@ export const CapyGameView: React.FC = () => {
         }
       }
 
-      // Paste mode: tap or drag on canvas positions & locks the transparent 3D blueprint ghost (BOTH mouse & touch)
-      if (clipState === 'paste' && e.button === 0) {
-        capytorioDragRef.current.active = true;
-        capytorioDragRef.current.mode = 'position_blueprint';
-        capytorioDragRef.current.originNdcX = ndcX;
-        capytorioDragRef.current.originNdcY = ndcY;
-        managerRef.current.setCapytorioBlueprintAnchorFromNdc(ndcX, ndcY);
-        return;
-      }
+      // Clipboard Copy/Cut/Paste gesture routing (allows moving via Move mode, Right/Middle drag,
+      // Space+drag, or dragging outside the blueprint ghost footprint in Paste mode)
+      if (clipState !== 'off') {
+        const hasLockedPasteAnchor = cSnap.clipboard.pasteAnchor !== null;
+        const hitPad = pointerType === 'mouse' ? 0 : 1;
+        const canDragGhostDirectly = pointerType !== 'mouse' || hasLockedPasteAnchor;
+        const hitInsideGhost =
+          clipState === 'paste' && e.button === 0 && canDragGhostDirectly
+            ? managerRef.current.isNdcInsideCapytorioBlueprint(ndcX, ndcY, hitPad)
+            : false;
+        const clipAction = resolveCapytorioClipboardPointerAction({
+          clipState,
+          selectionShape: cSnap.clipboard.selectionShape,
+          button: e.button,
+          clipboardMoveMode: capytorioClipboardMoveModeRef.current,
+          isSpaceHeld: isSpaceHeldRef.current,
+          hitInsideBlueprintGhost: hitInsideGhost,
+          pointerType,
+          hasLockedPasteAnchor,
+        });
 
-      // Cut/Copy Box & Freeform Lasso selection works on BOTH mouse AND touch
-      if ((clipState === 'select_copy' || clipState === 'select_cut') && e.button === 0) {
-        const hit = managerRef.current.raycastCapytorioGridFloat(ndcX, ndcY);
-        if (hit) {
-          const shape = cSnap.clipboard.selectionShape;
-          const clipMode: 'copy' | 'cut' = clipState === 'select_cut' ? 'cut' : 'copy';
+        if (clipAction === 'clipboard_move') {
+          if (e.button === 1 || e.button === 2) {
+            e.preventDefault();
+          }
           capytorioDragRef.current.active = true;
-          capytorioDragRef.current.mode = shape === 'lasso' ? 'select_lasso' : 'select_box';
-          capytorioDragRef.current.clipMode = clipMode;
+          capytorioDragRef.current.mode = 'clipboard_move';
           capytorioDragRef.current.originNdcX = ndcX;
           capytorioDragRef.current.originNdcY = ndcY;
-          capytorioDragRef.current.startGx = hit.gx;
-          capytorioDragRef.current.startGz = hit.gz;
-          capytorioDragRef.current.lastGx = hit.gx;
-          capytorioDragRef.current.lastGz = hit.gz;
-          capytorioDragRef.current.lassoGridPoints = [{ gx: hit.fGx, gz: hit.fGz }];
-          capytorioDragRef.current.lassoScreenPoints = [{ x: e.clientX, y: e.clientY }];
+          if (pointerType !== 'mouse' || capytorioClipboardMoveModeRef.current) {
+            setTouchVisual({
+              active: true,
+              originX: e.clientX,
+              originY: e.clientY,
+              currentX: e.clientX,
+              currentY: e.clientY,
+            });
+          }
           return;
+        }
+
+        if (clipAction === 'position_blueprint') {
+          capytorioDragRef.current.active = true;
+          capytorioDragRef.current.mode = 'position_blueprint';
+          capytorioDragRef.current.originNdcX = ndcX;
+          capytorioDragRef.current.originNdcY = ndcY;
+          managerRef.current.setCapytorioBlueprintAnchorFromNdc(ndcX, ndcY);
+          return;
+        }
+
+        if (clipAction === 'paste_tap_or_move') {
+          capytorioDragRef.current.active = true;
+          capytorioDragRef.current.mode = 'paste_tap_or_move';
+          capytorioDragRef.current.originNdcX = ndcX;
+          capytorioDragRef.current.originNdcY = ndcY;
+          return;
+        }
+
+        if (clipAction === 'select_box' || clipAction === 'select_lasso') {
+          const hit = managerRef.current.raycastCapytorioGridFloat(ndcX, ndcY);
+          if (hit) {
+            const clipMode: 'copy' | 'cut' = clipState === 'select_cut' ? 'cut' : 'copy';
+            capytorioDragRef.current.active = true;
+            capytorioDragRef.current.mode = clipAction;
+            capytorioDragRef.current.clipMode = clipMode;
+            capytorioDragRef.current.originNdcX = ndcX;
+            capytorioDragRef.current.originNdcY = ndcY;
+            capytorioDragRef.current.startGx = hit.gx;
+            capytorioDragRef.current.startGz = hit.gz;
+            capytorioDragRef.current.lastGx = hit.gx;
+            capytorioDragRef.current.lastGz = hit.gz;
+            capytorioDragRef.current.lassoGridPoints = [{ gx: hit.fGx, gz: hit.fGz }];
+            capytorioDragRef.current.lassoScreenPoints = [{ x: e.clientX, y: e.clientY }];
+            return;
+          }
         }
       }
 
@@ -2615,6 +2751,31 @@ export const CapyGameView: React.FC = () => {
         if (cDrag.active && g.pointerId === e.pointerId) {
           const dist = Math.hypot(e.clientX - g.originX, e.clientY - g.originY);
           if (dist > g.maxDist) g.maxDist = dist;
+
+          if (cDrag.mode === 'clipboard_move' || cDrag.mode === 'paste_tap_or_move') {
+            const dxMove = e.clientX - g.originX;
+            const dyMove = e.clientY - g.originY;
+            const moveThreshold = cDrag.mode === 'paste_tap_or_move' ? 10 : 6;
+            if (dist >= moveThreshold) {
+              managerRef.current.unlockCapytorioBlueprintAnchor();
+              const maxJoystickRadius = 56;
+              const clampedX = Math.max(-1, Math.min(1, dxMove / maxJoystickRadius));
+              const clampedZ = Math.max(-1, Math.min(1, dyMove / maxJoystickRadius));
+              managerRef.current.moveInput.x = clampedX;
+              managerRef.current.moveInput.z = clampedZ;
+
+              const clampedVisDist = Math.min(dist, maxJoystickRadius);
+              const angle = Math.atan2(dyMove, dxMove);
+              setTouchVisual({
+                active: true,
+                originX: g.originX,
+                originY: g.originY,
+                currentX: g.originX + Math.cos(angle) * clampedVisDist,
+                currentY: g.originY + Math.sin(angle) * clampedVisDist,
+              });
+            }
+            return;
+          }
 
           if (cDrag.mode === 'position_blueprint') {
             managerRef.current.setCapytorioBlueprintAnchorFromNdc(ndcX, ndcY);
@@ -2859,6 +3020,29 @@ export const CapyGameView: React.FC = () => {
           : res.reason ?? 'No matching copied settings to paste'
       );
       setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+      return;
+    }
+
+    if (
+      wasCapytorioPress &&
+      (dragMode === 'clipboard_move' || dragMode === 'paste_tap_or_move') &&
+      managerRef.current
+    ) {
+      const wasQuickTap = g.maxDist < 10;
+      g.pointerId = null;
+      if (syncMoveInputRef.current) {
+        syncMoveInputRef.current();
+      } else {
+        managerRef.current.moveInput.x = 0;
+        managerRef.current.moveInput.z = 0;
+      }
+      setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
+      if (dragMode === 'paste_tap_or_move' && wasQuickTap) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const ndcX = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * 2 - 1 : 0;
+        const ndcY = rect.height > 0 ? -((e.clientY - rect.top) / rect.height) * 2 + 1 : 0;
+        managerRef.current.setCapytorioBlueprintAnchorFromNdc(ndcX, ndcY);
+      }
       return;
     }
 
@@ -3793,11 +3977,38 @@ export const CapyGameView: React.FC = () => {
         onPointerMove={handleCanvasPointerMove}
         onPointerUp={handleCanvasPointerUpOrCancel}
         onPointerCancel={handleCanvasPointerUpOrCancel}
-        onPointerLeave={() => setCapytorioPointerHoverActive(false)}
+        onPointerLeave={() => {
+          setCapytorioPointerHoverActive(false);
+          managerRef.current?.clearCapytorioPointerHover();
+        }}
         onContextMenu={(e) => e.preventDefault()}
         style={{ touchAction: 'none' }}
         className="absolute inset-0 w-full h-full cursor-crosshair active:cursor-grabbing"
       />
+
+      {/* Lightweight Non-Blocking Boot Shell Matching index.html Static Shell (Zero CLS, Unmounts on Frame 1) */}
+      {!engineReady && !webglError && (
+        <div
+          data-testid="engine-boot-shell"
+          className="fixed inset-0 z-40 pointer-events-none flex flex-col items-center justify-center bg-[#020617] text-slate-50 text-center p-6"
+        >
+          <div className="text-[11px] font-bold tracking-[0.22em] uppercase text-sky-400 mb-2.5">
+            Interactive 3D Universe
+          </div>
+          <h1 className="m-0 text-[clamp(28px,5vw,44px)] font-extrabold tracking-[-0.02em] text-slate-50 leading-[1.1]">
+            CapyGame 3D
+          </h1>
+          <p className="mt-2.5 mb-[22px] max-w-[420px] text-sm leading-relaxed text-slate-400">
+            Cosmic Universe Simulator &amp; Capybara Sanctuary Archipelago
+          </p>
+          <div
+            aria-hidden="true"
+            className="w-[200px] h-[3px] rounded-full bg-slate-400/20 overflow-hidden"
+          >
+            <div className="w-[72%] h-full rounded-full bg-gradient-to-r from-sky-400 to-amber-400" />
+          </div>
+        </div>
+      )}
 
       {/* WebGL Error Fallback Card */}
       {webglError && (
@@ -7401,6 +7612,17 @@ export const CapyGameView: React.FC = () => {
               isPaused={isGamePaused}
               onTogglePause={toggleGamePause}
               pointerHoverActive={capytorioPointerHoverActive}
+              clipboardMoveMode={capytorioClipboardMoveMode}
+              onToggleClipboardMoveMode={() => {
+                setCapytorioClipboardMoveMode((prev) => {
+                  const next = !prev;
+                  if (next) {
+                    managerRef.current?.unlockCapytorioBlueprintAnchor();
+                    showToast('Move mode — drag anywhere or use WASD to move while keeping blueprint');
+                  }
+                  return next;
+                });
+              }}
               drawerTab={capytorioDrawerTab}
               setDrawerTab={setCapytorioDrawerTab}
               craftGroup={capytorioCraftGroup}
@@ -8446,7 +8668,7 @@ export const CapyGameView: React.FC = () => {
                           data-testid={`settings-gpu-quality-${preset}`}
                           onClick={() =>
                             updateGameSettings(
-                              PlayStyleManager.getPresetPatchForGpuQuality(preset)
+                              getPresetPatchForGpuQuality(preset)
                             )
                           }
                           className={`px-2 py-1 rounded text-[10px] font-mono uppercase cursor-pointer border ${
@@ -10579,13 +10801,11 @@ export const CapyGameView: React.FC = () => {
                     data-testid="tutorial-next-btn"
                     onClick={() => {
                       AudioService.playCoin();
-                      setActiveTutorial((prev) => {
-                        const next = stepTutorialState(prev, 1);
-                        if (!next) {
-                          showToast(`Finished: ${tutorial.title}`);
-                        }
-                        return next;
-                      });
+                      const next = stepTutorialState(activeTutorial, 1);
+                      setActiveTutorial(next);
+                      if (!next) {
+                        showToast(`Finished: ${tutorial.title}`);
+                      }
                     }}
                     className="px-2.5 py-1 rounded text-[11px] font-semibold bg-amber-400 hover:bg-amber-300 text-zinc-950 inline-flex items-center gap-0.5 cursor-pointer"
                   >

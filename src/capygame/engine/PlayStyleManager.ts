@@ -93,6 +93,7 @@ import { HardwareGpuEngine } from './gpu/HardwareGpuEngine';
 import { PbrTextureSynthesizer } from './gpu/PbrTextureSynthesizer';
 import type { WebGpuPostAndComputePipeline } from './gpu/WebGpuPipeline';
 import { getWebGpuRuntime, type WebGpuProbeResult } from './gpu/WebGpuRuntime';
+import { getPresetPatchForGpuQuality } from './gpu/GpuEngineTypes';
 import { PhysicsWorldBridge } from './physics/PhysicsWorldBridge';
 import {
   CONTIGUOUS_BRIDGES,
@@ -600,6 +601,11 @@ export class PlayStyleManager {
   private prevHeroWorldX: number = 0;
   private prevHeroWorldZ: number = 4;
   private prevHeroPosInitialized: boolean = false;
+  private cachedViewportWidth: number = 1280;
+  private cachedViewportHeight: number = 720;
+  private lastCapytorioPointerNdcX: number = 0;
+  private lastCapytorioPointerNdcY: number = 0;
+  private hasCapytorioPointerNdc: boolean = false;
   private selectableCapyGroup = new THREE.Group();
   private selectableCapyRings: THREE.Mesh[] = [];
   private selectableCapyHitMeshes: THREE.Object3D[] = [];
@@ -987,6 +993,8 @@ export class PlayStyleManager {
 
     const width = Math.max(1, container.clientWidth || window.innerWidth || 360);
     const height = Math.max(1, container.clientHeight || window.innerHeight || 640);
+    this.cachedViewportWidth = width;
+    this.cachedViewportHeight = height;
     this.camera = new THREE.PerspectiveCamera(
       this.settings.fov || 58,
       width / height,
@@ -1014,6 +1022,11 @@ export class PlayStyleManager {
           powerPreference: 'default',
           preserveDrawingBuffer: false,
         });
+      }
+      if (this.renderer instanceof THREE.WebGLRenderer) {
+        this.renderer.debug.checkShaderErrors = Boolean(
+          (import.meta as { env?: { DEV?: boolean } }).env?.DEV
+        );
       }
     }
     this.renderer.setPixelRatio(
@@ -1265,11 +1278,12 @@ export class PlayStyleManager {
       if (this.isWebGpu) {
         getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.scene);
       } else {
-        const glRenderer = this.renderer as THREE.WebGLRenderer;
         if (!this.isSoftwareGl) {
-          glRenderer.compile(this.chronoVessel.root, this.camera, this.scene);
-          glRenderer.compile(this.heroCapy, this.camera, this.scene);
-          glRenderer.compile(this.seamlessUniverse.celestialBackdropGroup, this.camera, this.scene);
+          this.schedulePostPaintAsyncCompile([
+            this.chronoVessel.root,
+            this.heroCapy,
+            this.seamlessUniverse.celestialBackdropGroup,
+          ]);
         }
         this.scheduleIdlePipelineWarmup();
       }
@@ -1297,14 +1311,46 @@ export class PlayStyleManager {
       if (this.isWebGpu) {
         getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.chronoVessel.root);
       } else if (!this.isSoftwareGl) {
-        const glRenderer = this.renderer as THREE.WebGLRenderer;
-        glRenderer.compile(this.chronoVessel.root, this.camera, this.scene);
-        glRenderer.compile(this.seamlessUniverse.celestialBackdropGroup, this.camera, this.scene);
+        this.schedulePostPaintAsyncCompile([
+          this.chronoVessel.root,
+          this.seamlessUniverse.celestialBackdropGroup,
+        ]);
       }
       this.emitCosmicState();
       this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
       this.scheduleDeferredBootWork();
     }
+  }
+
+  private schedulePostPaintAsyncCompile(targets: THREE.Object3D[]): void {
+    if (
+      typeof window === 'undefined' ||
+      this.isWebGpu ||
+      this.isSoftwareGl ||
+      this.disposed ||
+      targets.length === 0
+    ) {
+      return;
+    }
+    const glRenderer = this.renderer as THREE.WebGLRenderer;
+    if (typeof glRenderer.compileAsync !== 'function') {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      if (this.disposed) return;
+      let chain = Promise.resolve();
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        if (!target) continue;
+        chain = chain.then(() => {
+          if (this.disposed) return;
+          return glRenderer
+            .compileAsync(target, this.camera, this.scene)
+            .then(() => undefined)
+            .catch(() => undefined);
+        });
+      }
+    });
   }
 
   public ensureHeroCapyBuilt(): void {
@@ -1345,12 +1391,7 @@ export class PlayStyleManager {
     if (this.isWebGpu) {
       getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.heroCapy);
     } else if (!this.isSoftwareGl) {
-      try {
-        const glRenderer = this.renderer as THREE.WebGLRenderer;
-        glRenderer.compile(this.heroCapy, this.camera, this.scene);
-      } catch {
-        // Ignore shader precompile issues in headless contexts
-      }
+      this.schedulePostPaintAsyncCompile([this.heroCapy]);
     }
   }
 
@@ -1396,6 +1437,7 @@ export class PlayStyleManager {
       case 0:
         this.ensureHeroCapyBuilt();
         this.worldEnv.ensureCoreTexturesReady();
+        this.worldEnv.ensureAlpineMountainsBuilt();
         this.buildSharedArchipelagoBase();
         if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.worldBaseGroup);
         break;
@@ -1509,6 +1551,15 @@ export class PlayStyleManager {
         scheduleNext(this.isSoftwareGl ? 90 : 35);
         return;
       }
+      // Phase 2: Lazily build distant Alpine mountain heightfield PBR mesh during idle time
+      if (!this.worldEnv.isAlpineMountainsBuilt()) {
+        this.worldEnv.ensureAlpineMountainsBuilt();
+        if (this.isWebGpu) {
+          getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.worldEnv.mountainMesh);
+        }
+        scheduleNext(this.isSoftwareGl ? 90 : 45);
+        return;
+      }
       // Do NOT build playable Capybara Forest / Capytorio districts until the user selects "Play in Forest" or "Play Capytorio".
       this.deferredBootComplete = true;
       if (!this.isWebGpu) {
@@ -1609,6 +1660,8 @@ export class PlayStyleManager {
       });
     };
 
+    enqueueUniqueFrom(this.chronoVessel?.root);
+    enqueueUniqueFrom(this.seamlessUniverse.celestialBackdropGroup);
     enqueueUniqueFrom(this.heroCapy);
     enqueueUniqueFrom(this.sanctuaryGroup);
     enqueueUniqueFrom(this.worldBaseGroup);
@@ -2481,72 +2534,7 @@ export class PlayStyleManager {
   }
 
   public static getPresetPatchForGpuQuality(preset: GpuQualityPreset): Partial<CapyGameSettings> {
-    if (preset === 'performance') {
-      return {
-        gpuQualityPreset: 'performance',
-        gpuPostProcessing: false,
-        gpuShadowQuality: 'off',
-        gpuTextureFilter: 'bilinear',
-        gpuAnisotropy: 1,
-        gpuAntiAliasing: 'none',
-        gpuResolutionScale: 0.7,
-        gpuBloomEnabled: false,
-        gpuSsaoEnabled: false,
-        gpuSharpenAmount: 0,
-        drawDistance: 135,
-        autoCapyLod: false,
-        manualCapyLodTier: 0,
-      };
-    }
-    if (preset === 'balanced') {
-      return {
-        gpuQualityPreset: 'balanced',
-        gpuPostProcessing: true,
-        gpuShadowQuality: 'pcf',
-        gpuTextureFilter: 'trilinear_aniso',
-        gpuAnisotropy: 4,
-        gpuAntiAliasing: 'fxaa',
-        gpuResolutionScale: 1.0,
-        gpuBloomEnabled: true,
-        gpuBloomStrength: 0.22,
-        gpuSsaoEnabled: false,
-        gpuSharpenAmount: 0.18,
-        drawDistance: 280,
-        autoCapyLod: true,
-      };
-    }
-    if (preset === 'ultra') {
-      return {
-        gpuQualityPreset: 'ultra',
-        gpuPostProcessing: true,
-        gpuShadowQuality: 'pcf_soft',
-        gpuTextureFilter: 'trilinear_aniso',
-        gpuAnisotropy: 16,
-        gpuAntiAliasing: 'msaa_fxaa',
-        gpuResolutionScale: 1.0,
-        gpuBloomEnabled: true,
-        gpuBloomStrength: 0.34,
-        gpuSsaoEnabled: true,
-        gpuSharpenAmount: 0.32,
-        drawDistance: 1350,
-        autoCapyLod: true,
-      };
-    }
-    return {
-      gpuQualityPreset: 'high',
-      gpuPostProcessing: true,
-      gpuShadowQuality: 'pcf_soft',
-      gpuTextureFilter: 'trilinear_aniso',
-      gpuAnisotropy: 8,
-      gpuAntiAliasing: 'msaa_fxaa',
-      gpuResolutionScale: 1.0,
-      gpuBloomEnabled: true,
-      gpuBloomStrength: 0.24,
-      gpuSsaoEnabled: true,
-      gpuSharpenAmount: 0.26,
-      drawDistance: 650,
-      autoCapyLod: true,
-    };
+    return getPresetPatchForGpuQuality(preset);
   }
 
   public updateSettings(newSettings: CapyGameSettings) {
@@ -5678,6 +5666,9 @@ export class PlayStyleManager {
   }
 
   public updateCapytorioHoverFromNdc(ndcX: number, ndcY: number): void {
+    this.lastCapytorioPointerNdcX = ndcX;
+    this.lastCapytorioPointerNdcY = ndcY;
+    this.hasCapytorioPointerNdc = true;
     if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') return;
     _capyPointerNdc.set(ndcX, ndcY);
     _raycaster.setFromCamera(_capyPointerNdc, this.camera);
@@ -5693,6 +5684,33 @@ export class PlayStyleManager {
       this.capytorioEngine.hoveredGz = nextGz;
       this.emitCapytorioSnapshot();
     }
+  }
+
+  public clearCapytorioPointerHover(): void {
+    this.hasCapytorioPointerNdc = false;
+  }
+
+  public isNdcInsideCapytorioBlueprint(
+    ndcX: number,
+    ndcY: number,
+    paddingTiles: number = 0
+  ): boolean {
+    if (!this.capytorioEngine || this.currentMode !== 'capytorio' || this.cosmicStage !== 'playing') {
+      return false;
+    }
+    _capyPointerNdc.set(ndcX, ndcY);
+    _raycaster.setFromCamera(_capyPointerNdc, this.camera);
+    const hit = _raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit);
+    if (!hit) return false;
+    const gx = worldToCapytorioGridX(_capyGroundHit.x);
+    const gz = worldToCapytorioGridZ(_capyGroundHit.z);
+    return this.capytorioEngine.isTileInsideActiveBlueprint(gx, gz, paddingTiles);
+  }
+
+  public unlockCapytorioBlueprintAnchor(): void {
+    if (!this.capytorioEngine || !this.capytorioEngine.pasteAnchor) return;
+    this.capytorioEngine.clearBlueprintAnchor();
+    this.emitCapytorioSnapshot();
   }
 
   public inspectCapytorioTile(gx: number, gz: number): void {
@@ -8806,12 +8824,12 @@ export class PlayStyleManager {
         _rendererSizeVec2.x,
         _rendererSizeVec2.y
       );
-    } else {
-      const dom = this.renderer.domElement;
-      if (dom && dom.clientWidth > 10 && dom.clientHeight > 10) {
-        const pr = this.renderer.getPixelRatio() || 1;
-        SHARED_OCCLUDER_VIEWPORT.set(dom.clientWidth * pr, dom.clientHeight * pr);
-      }
+    } else if (this.cachedViewportWidth > 10 && this.cachedViewportHeight > 10) {
+      const pr = this.renderer.getPixelRatio() || 1;
+      SHARED_OCCLUDER_VIEWPORT.set(
+        this.cachedViewportWidth * pr,
+        this.cachedViewportHeight * pr
+      );
     }
 
     const skipCapytorioObliqueFade =
@@ -12196,6 +12214,28 @@ export class PlayStyleManager {
 
     if (!this.capytorioEngine) return;
 
+    // Keep paste blueprint ghost traveling smoothly with the player as they walk/pan
+    const heroMoveDx = this.heroLocalPos.x - prevLx;
+    const heroMoveDz = this.heroLocalPos.z - prevLz;
+    if (
+      this.capytorioEngine.clipboardToolState === 'paste' &&
+      heroMoveDx * heroMoveDx + heroMoveDz * heroMoveDz > 0.0001
+    ) {
+      const heroGx = worldToCapytorioGridX(zone.x + this.heroLocalPos.x);
+      const heroGz = worldToCapytorioGridZ(zone.z + this.heroLocalPos.z);
+      let ptrGx: number | null = null;
+      let ptrGz: number | null = null;
+      if (this.hasCapytorioPointerNdc) {
+        _capyPointerNdc.set(this.lastCapytorioPointerNdcX, this.lastCapytorioPointerNdcY);
+        _raycaster.setFromCamera(_capyPointerNdc, this.camera);
+        if (_raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit)) {
+          ptrGx = worldToCapytorioGridX(_capyGroundHit.x);
+          ptrGz = worldToCapytorioGridZ(_capyGroundHit.z);
+        }
+      }
+      this.capytorioEngine.syncPasteGhostForHeroMovement(heroGx, heroGz, ptrGx, ptrGz);
+    }
+
     // Friendly auto-pickup from adjacent chests, furnaces & assemblers
     const pickedUp = this.capytorioEngine.collectFromNearbyChestsAndOutputs(
       this.heroLocalPos.x,
@@ -13544,8 +13584,8 @@ export class PlayStyleManager {
 
     let markersSnapshot: ProjectedObjectMarker[] = EMPTY_PROJECTED_MARKERS;
     if (effectiveMarkers) {
-      const vw = this.renderer.domElement.clientWidth || 1280;
-      const vh = this.renderer.domElement.clientHeight || 800;
+      const vw = this.cachedViewportWidth || 1280;
+      const vh = this.cachedViewportHeight || 800;
       const raw = this.seamlessUniverse.projectVisibleMarkers(
         this.camera,
         vw,
@@ -14042,6 +14082,8 @@ export class PlayStyleManager {
     if (this.disposed || width < 16 || height < 16) return;
     const safeW = Math.max(16, Math.floor(width));
     const safeH = Math.max(16, Math.floor(height));
+    this.cachedViewportWidth = safeW;
+    this.cachedViewportHeight = safeH;
     const curSize = this.renderer.getSize(_rendererSizeVec2);
     if (Math.floor(curSize.x) === safeW && Math.floor(curSize.y) === safeH) {
       return;
