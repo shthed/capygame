@@ -12,15 +12,25 @@ import {
   CAPYTORIO_ORBIT_HANDOFF_LOG_METERS,
   CAPYTORIO_ZOOM_MIN_DIST,
   FLIGHT_SPEED_GEARS,
+  FOREST_GAMES_ZOOM_MAX_DIST,
+  SURFACE_ZOOM_MIN_DIST,
   SURFACE_ZOOM_ORBIT_THRESHOLD,
+  CHROMATIN_BRIDGE_LOG_METERS,
   clampForwardFlightSpeed,
+  computeAdaptiveCruiseSpeedMultiplier,
   computeCapytorioZoomStep,
+  computeInfiniteZoomHorizonMinPitch,
   computeOrbitalZoomThrottleStep,
   computeSpiralOrbitAngleRadians,
   computeSurfaceZoomStep,
+  evaluateActiveSimulationSubsystems,
+  evaluateCellNucleusOpacity,
+  evaluateChromatinBridgeAlpha,
+  evaluateInfiniteZoomBandAlpha,
   formatFlightSpeedReadout,
   formatRealisticScaleMeters,
   mergeDiscoveredSpecimen,
+  resolveTopLevelGameMode,
   sanitizeDiscoveredSpecimens,
   stepFlightSpeedGear,
   stepMediaSpeedControl,
@@ -1267,6 +1277,179 @@ test('Phase 3: AaaWorldVfxEngine preserves disabled motes visibility and guards 
   disposeObject3DTree(group);
   assert.equal(srcGeoDisposed, 1, 'disposeObject3DTree disposes unshared __sourceGeometry');
 });
+
+test('Standalone 3-game separation: clean simulation pausing, Capytorio UFO orbital flight preservation, and Forest zoom clamp', () => {
+  // 1. Mode resolution cleanly separates Infinite Zoom, Forest Games, and Capytorio
+  assert.equal(resolveTopLevelGameMode(true, 'sanctuary', false), 'infinite_zoom');
+  assert.equal(resolveTopLevelGameMode(false, 'sanctuary', false), 'forest_games');
+  assert.equal(resolveTopLevelGameMode(false, 'spore', false), 'forest_games');
+  assert.equal(resolveTopLevelGameMode(false, 'runner', false), 'forest_games');
+  assert.equal(resolveTopLevelGameMode(false, 'fallguys', false), 'forest_games');
+  assert.equal(resolveTopLevelGameMode(false, 'capytorio', false), 'capytorio');
+  assert.equal(resolveTopLevelGameMode(true, 'capytorio', true), 'capytorio');
+
+  // 2. Simulation pausing masks guarantee zero cross-game ticking and zero per-frame allocations
+  const izMask = evaluateActiveSimulationSubsystems('infinite_zoom', false);
+  assert.equal(izMask.runInfiniteZoom, true);
+  assert.equal(izMask.runForestGames, false);
+  assert.equal(izMask.runForestWeatherAndWater, false);
+  assert.equal(izMask.runCapytorioFactory, false);
+  assert.strictEqual(izMask, evaluateActiveSimulationSubsystems('infinite_zoom', false));
+
+  const fgMask = evaluateActiveSimulationSubsystems('forest_games', false);
+  assert.equal(fgMask.runInfiniteZoom, false);
+  assert.equal(fgMask.runForestGames, true);
+  assert.equal(fgMask.runForestWeatherAndWater, true);
+  assert.equal(fgMask.runCapytorioFactory, false);
+
+  const capSurfaceMask = evaluateActiveSimulationSubsystems('capytorio', false);
+  assert.equal(capSurfaceMask.runInfiniteZoom, false);
+  assert.equal(capSurfaceMask.runForestGames, false);
+  assert.equal(capSurfaceMask.runForestWeatherAndWater, false);
+  assert.equal(capSurfaceMask.runCapytorioFactory, true);
+
+  // Capytorio UFO orbital flight runs orbital flight visuals while pausing factory & Forest loops
+  const capOrbitalMask = evaluateActiveSimulationSubsystems('capytorio', true);
+  assert.equal(capOrbitalMask.runInfiniteZoom, true);
+  assert.equal(capOrbitalMask.runForestGames, false);
+  assert.equal(capOrbitalMask.runForestWeatherAndWater, false);
+  assert.equal(capOrbitalMask.runCapytorioFactory, false);
+
+  // 3. Forest Games zoom-out clamps comfortably and NEVER accidentally launches into Infinite Zoom
+  let dist = 1.0;
+  for (let i = 0; i < 30; i++) {
+    const out = computeSurfaceZoomStep(dist, -0.45, true, false);
+    assert.equal(out.launchToOrbit, false, 'Forest Games zoom-out must never launch Infinite Zoom');
+    assert.ok(out.nextDistance >= SURFACE_ZOOM_MIN_DIST && out.nextDistance <= FOREST_GAMES_ZOOM_MAX_DIST);
+    dist = out.nextDistance;
+  }
+  assert.equal(dist, FOREST_GAMES_ZOOM_MAX_DIST);
+
+  // 4. Capytorio oblique zoom-out still hands off cleanly into orbital UFO flight
+  let capDist = 1.0;
+  let capLaunched = false;
+  for (let i = 0; i < 120; i++) {
+    const out = computeCapytorioZoomStep(capDist, -0.2);
+    capDist = out.nextDistance;
+    if (out.launchToOrbit) {
+      capLaunched = true;
+      break;
+    }
+  }
+  assert.equal(capLaunched, true, 'Capytorio zoom-out must still support orbital UFO handoff');
+});
+
+test('Infinite Zoom transition polish: zero visibility gaps, <=2 terrain/cloud overlap, nucleus dissolve, Chromatin bridge, continuous pitch, adaptive pacing', () => {
+  const fullChainBands = [
+    'planet',
+    'atmosphere',
+    'land_masses',
+    'ecosystems',
+    'capybara_forest',
+    'leaf_fur_micro',
+    'biological_cells',
+    'dna_molecules',
+  ] as const;
+  const terrainCloudBands = ['planet', 'atmosphere', 'land_masses', 'ecosystems'] as const;
+
+  // 1. Dense 0.05-dex sweep from Planet (7.10) down to DNA (-8.60): zero blank gaps & <=2 terrain/cloud layers at once
+  for (let i = 0; i <= 314; i++) {
+    const log = Number((7.1 - i * 0.05).toFixed(4));
+    let maxAlpha = evaluateChromatinBridgeAlpha(log, 1.0);
+    for (const bandId of fullChainBands) {
+      const a = evaluateInfiniteZoomBandAlpha(bandId, log, 1.0, false, false);
+      if (a > maxAlpha) maxAlpha = a;
+    }
+    assert.ok(
+      maxAlpha >= 0.45,
+      `Expected zero visibility gap at log=${log}, got maxAlpha=${maxAlpha.toFixed(3)}`
+    );
+
+    let activeTerrainLayers = 0;
+    for (const bandId of terrainCloudBands) {
+      const a = evaluateInfiniteZoomBandAlpha(bandId, log, 1.0, false, false);
+      if (a > 0.01) activeTerrainLayers++;
+    }
+    assert.ok(
+      activeTerrainLayers <= 2,
+      `Expected <=2 overlapping terrain/cloud layers at log=${log}, got ${activeTerrainLayers}`
+    );
+  }
+
+  // 2. Capytorio orbital descent preserves full planet visibility while suppressing woodland surface bands
+  assert.ok(
+    evaluateInfiniteZoomBandAlpha('planet', 3.0, 1.0, true, true) > 0.9,
+    'Capytorio orbital descent must retain planet mesh down to log 3.0'
+  );
+  for (const woodlandId of ['land_masses', 'ecosystems', 'capybara_forest', 'leaf_fur_micro']) {
+    assert.equal(
+      evaluateInfiniteZoomBandAlpha(woodlandId, 1.5, 1.0, true, true),
+      0,
+      `Woodland band ${woodlandId} must be suppressed during Capytorio orbital flight`
+    );
+  }
+
+  // 3. Cell nucleus sphere (r=2.2 at -4.3) dissolves completely BEFORE camera reaches wall at -5.537
+  assert.equal(evaluateCellNucleusOpacity(-4.3), 1);
+  const midNucleus = evaluateCellNucleusOpacity(-5.1);
+  assert.ok(midNucleus > 0 && midNucleus < 1, `Expected smooth fade at -5.1, got ${midNucleus}`);
+  assert.equal(
+    evaluateCellNucleusOpacity(-5.35),
+    0,
+    'Cell nucleus must finish dissolving before camera shell intersection at -5.537'
+  );
+
+  // 4. Chromatin fiber bridge peaks cleanly at -6.40 and overlaps both Biological Cells and DNA Helix
+  assert.equal(evaluateChromatinBridgeAlpha(CHROMATIN_BRIDGE_LOG_METERS, 1.0), 1);
+  assert.ok(
+    evaluateChromatinBridgeAlpha(-5.4, 1.0) > 0.4 &&
+      evaluateInfiniteZoomBandAlpha('biological_cells', -5.4, 1.0, false, false) > 0.4,
+    'Chromatin bridge must smoothly overlap Biological Cells'
+  );
+  assert.ok(
+    evaluateChromatinBridgeAlpha(-7.4, 1.0) > 0.4 &&
+      evaluateInfiniteZoomBandAlpha('dna_molecules', -7.4, 1.0, false, false) > 0.4,
+    'Chromatin bridge must smoothly overlap DNA Helix'
+  );
+
+  // 5. Continuous C1-smooth horizonMinPitch floor with zero snap discontinuity across [-10, 10]
+  assert.equal(computeInfiniteZoomHorizonMinPitch(0.8, false), 0.14);
+  assert.equal(computeInfiniteZoomHorizonMinPitch(7.1, false), -0.68);
+  assert.equal(computeInfiniteZoomHorizonMinPitch(-5.0, false), -0.68);
+  assert.equal(computeInfiniteZoomHorizonMinPitch(7.1, true), 0.14);
+
+  let maxPitchStep = 0;
+  let prevPitch = computeInfiniteZoomHorizonMinPitch(-10.0, false);
+  for (let i = 1; i <= 400; i++) {
+    const log = -10.0 + i * 0.05;
+    const nextPitch = computeInfiniteZoomHorizonMinPitch(log, false);
+    const delta = Math.abs(nextPitch - prevPitch);
+    if (delta > maxPitchStep) maxPitchStep = delta;
+    prevPitch = nextPitch;
+  }
+  assert.ok(
+    maxPitchStep < 0.06,
+    `Expected smooth horizonMinPitch transitions (<0.06 rad per 0.05 dex), got ${maxPitchStep.toFixed(4)}`
+  );
+
+  // 6. Adaptive cruise pacing holds 1.0x at landmarks and accelerates smoothly (>1.4x) across wide gaps
+  for (const landmark of [7.1, 0.8, -4.3, -8.47, -14.27]) {
+    assert.equal(
+      computeAdaptiveCruiseSpeedMultiplier(landmark),
+      1.0,
+      `Cruise pace must settle to 1.0x at landmark log=${landmark}`
+    );
+  }
+  const chromatinPace = computeAdaptiveCruiseSpeedMultiplier(-6.4);
+  const subatomicPace = computeAdaptiveCruiseSpeedMultiplier(-11.8);
+  assert.ok(chromatinPace > 1.4 && chromatinPace <= 1.85, `Expected wide-gap boost at -6.4, got ${chromatinPace}`);
+  assert.ok(subatomicPace > 1.4 && subatomicPace <= 1.85, `Expected wide-gap boost at -11.8, got ${subatomicPace}`);
+  for (let log = -35; log <= 30; log += 0.25) {
+    const m = computeAdaptiveCruiseSpeedMultiplier(log);
+    assert.ok(m >= 1.0 && m <= 1.85, `Adaptive cruise multiplier out of [1.0, 1.85] at log=${log}: ${m}`);
+  }
+});
+
 
 
 

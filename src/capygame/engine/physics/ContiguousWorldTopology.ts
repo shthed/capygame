@@ -22,54 +22,23 @@ export interface PromenadeBridgeSpec {
   halfWidth: number;
 }
 
-export const PROMENADE_HALF_WIDTH = 4.8; // 9.6m wide walkable grand causeways
-
-function makeBridge(
-  targetMode: PlayStyle,
-  sx: number,
-  sz: number,
-  ex: number,
-  ez: number
-): PromenadeBridgeSpec {
-  const dx = ex - sx;
-  const dz = ez - sz;
-  const len = Math.hypot(dx, dz);
-  const dirX = dx / len;
-  const dirZ = dz / len;
-  return {
-    targetMode,
-    startX: sx,
-    startZ: sz,
-    endX: ex,
-    endZ: ez,
-    dirX,
-    dirZ,
-    perpX: -dirZ,
-    perpZ: dirX,
-    length: len,
-    halfWidth: PROMENADE_HALF_WIDTH,
-  };
-}
+export const PROMENADE_HALF_WIDTH = 4.8; // Retained constant for legacy physics schema compatibility
 
 /**
- * 3 Wide Stone-and-Turf Grand Promenade Causeways directly joining Sanctuary (0, 0)
- * to the 3 Archipelago minigame islands across wide open ocean channels:
- * - NW Causeway: Sanctuary (-20.5, -20.5) -> Spore Lagoon Beach (-79.0, -79.0)
- * - SW Causeway: Sanctuary (-20.5, +20.5) -> Number Stampede North Plaza (-110.0, +141.5)
- * - SE Causeway: Sanctuary (+20.5, +20.5) -> Yuzu Mountain Base Plaza (+110.0, +142.0)
- * Capytorio Frontier sits independently on the far hemisphere (wx >= 500, infinite plain).
+ * Forest Games sits on ONE unified contiguous island encompassing Sanctuary (0, 0),
+ * Spore Lagoon (-110, -110), Number Stampede (-110, +135), and Yuzu Mountain (+110, +135)
+ * with zero ocean channels or stone bridges between them.
  */
-export const CONTIGUOUS_BRIDGES: readonly PromenadeBridgeSpec[] = [
-  makeBridge('spore', -20.5, -20.5, ZONE_LOCATIONS.spore.x + 31.0, ZONE_LOCATIONS.spore.z + 31.0),
-  makeBridge('runner', -20.5, 20.5, ZONE_LOCATIONS.runner.x, ZONE_LOCATIONS.runner.z + 6.5),
-  makeBridge(
-    'fallguys',
-    20.5,
-    20.5,
-    ZONE_LOCATIONS.fallguys.x,
-    ZONE_LOCATIONS.fallguys.z + 7.0
-  ),
-];
+export const FOREST_UNIFIED_ISLAND_CENTER_X = -20.0;
+export const FOREST_UNIFIED_ISLAND_CENTER_Z = 25.0;
+export const FOREST_UNIFIED_ISLAND_RADIUS = 212.0;
+export const FOREST_UNIFIED_ISLAND_BEACH_OUTER_RADIUS = 228.0;
+
+/**
+ * Legacy bridge list retained as an empty array after unifying the 4 Forest mini-games
+ * onto separate areas of one seamless island.
+ */
+export const CONTIGUOUS_BRIDGES: readonly PromenadeBridgeSpec[] = [];
 
 export const OPEN_OCEAN_SEABED_Y = -1.65;
 export const OPEN_OCEAN_SURFACE_Y = -0.95;
@@ -213,43 +182,18 @@ export const _walkableClampScratch = {
 };
 
 /**
- * Signed distance (negative = over built landmass/causeways, positive = open ocean)
- * across the union of all 5 islands and 4 Grand Promenade Causeways.
- * Used strictly as a terrain/biome query — player exploration is completely unrestricted!
+ * Signed distance (negative = over built landmass, positive = open ocean)
+ * across the unified Forest Games island and far-hemisphere Capytorio plain.
  */
 export function evaluateContiguousWalkableSdf(wx: number, wz: number): number {
-  const dSanctuary = Math.hypot(wx, wz) - 34.5;
-  let minSdf = dSanctuary;
-
-  const dSpore =
-    Math.hypot(wx - ZONE_LOCATIONS.spore.x, wz - ZONE_LOCATIONS.spore.z) - 41.5;
-  if (dSpore < minSdf) minSdf = dSpore;
+  const dUnifiedIsland =
+    Math.hypot(wx - FOREST_UNIFIED_ISLAND_CENTER_X, wz - FOREST_UNIFIED_ISLAND_CENTER_Z) -
+    FOREST_UNIFIED_ISLAND_RADIUS;
+  let minSdf = dUnifiedIsland;
 
   // Far-hemisphere Capytorio continental shelf starts at wx >= 500
   const dCapytorio = 500.0 - wx;
   if (dCapytorio < minSdf) minSdf = dCapytorio;
-
-  const rx = Math.abs(wx - ZONE_LOCATIONS.runner.x) - 8.4;
-  const rz = Math.abs(wz - (ZONE_LOCATIONS.runner.z - 42.25)) - 55.75;
-  const dRunner = Math.max(rx, rz);
-  if (dRunner < minSdf) minSdf = dRunner;
-
-  const fgx = Math.abs(wx - ZONE_LOCATIONS.fallguys.x) - 8.4;
-  const fgz = Math.abs(wz - (ZONE_LOCATIONS.fallguys.z - 27.25)) - 39.75;
-  const dFallGuys = Math.max(fgx, fgz);
-  if (dFallGuys < minSdf) minSdf = dFallGuys;
-
-  for (let i = 0; i < CONTIGUOUS_BRIDGES.length; i++) {
-    const b = CONTIGUOUS_BRIDGES[i];
-    const relX = wx - b.startX;
-    const relZ = wz - b.startZ;
-    const along = relX * b.dirX + relZ * b.dirZ;
-    const clampedAlong = along < 0 ? 0 : along > b.length ? b.length : along;
-    const nearX = b.startX + b.dirX * clampedAlong;
-    const nearZ = b.startZ + b.dirZ * clampedAlong;
-    const dist = Math.hypot(wx - nearX, wz - nearZ) - b.halfWidth;
-    if (dist < minSdf) minSdf = dist;
-  }
 
   return minSdf;
 }
@@ -317,8 +261,9 @@ export function classifyDistrictAtWorldPos(
 }
 
 /**
- * Evaluates continuous ground elevation across all 5 islands, sandy shore ramps,
- * Grand Promenade Causeways, elevated platforms, see-saws, basins, and open ocean seabed.
+ * Evaluates continuous ground elevation across the unified Forest Games island,
+ * sandy outer shoreline, elevated Yuzu Mountain platforms, basins, Capytorio plain,
+ * and surrounding open ocean seabed.
  */
 export function sampleContiguousGroundY(
   wx: number,
@@ -334,38 +279,9 @@ export function sampleContiguousGroundY(
     }
   }
 
-  // 2. Check Grand Promenade Causeways (smooth deck arch & slightly extended aprons at ends)
-  for (let i = 0; i < CONTIGUOUS_BRIDGES.length; i++) {
-    const b = CONTIGUOUS_BRIDGES[i];
-    const relX = wx - b.startX;
-    const relZ = wz - b.startZ;
-    const along = relX * b.dirX + relZ * b.dirZ;
-    if (along >= -1.2 && along <= b.length + 1.2) {
-      const lateral = Math.abs(relX * b.perpX + relZ * b.perpZ);
-      if (lateral <= b.halfWidth) {
-        const u = Math.max(0, Math.min(1, along / b.length));
-        return Math.sin(u * Math.PI) * 0.14;
-      }
-    }
-  }
-
-  // 3. Sanctuary Island grass (r <= 34.5) and sloping sandy beach skirt (34.5..41.5 -> seabed -1.65)
-  const dSanctuary = Math.hypot(wx, wz);
-  if (dSanctuary <= 34.5) {
-    return 0.0;
-  }
-  if (dSanctuary <= 41.5) {
-    const beachT = (dSanctuary - 34.5) / 7.0;
-    return OPEN_OCEAN_SEABED_Y * beachT;
-  }
-
-  // 4. Spore Lagoon Basin -> gentle sandy beach rim & outer slope into open ocean
+  // 2. Spore Lagoon Basin recessed seamlessly into the NW sector of the unified island
   const dSpore = Math.hypot(wx - ZONE_LOCATIONS.spore.x, wz - ZONE_LOCATIONS.spore.z);
-  if (dSpore <= 45.0) {
-    if (dSpore > 39.5) {
-      const rimT = (dSpore - 39.5) / 5.5;
-      return OPEN_OCEAN_SEABED_Y * rimT;
-    }
+  if (dSpore <= 39.5) {
     if (dSpore > 33.5) {
       const t = (39.5 - dSpore) / 6.0;
       return -0.18 * t;
@@ -373,23 +289,7 @@ export function sampleContiguousGroundY(
     return -0.18;
   }
 
-  // 5. Capytorio Far-Hemisphere Infinite Continental Terrain (wx >= 500 flat at y = 0, sandy shoreline 490..500)
-  if (wx >= 500.0) {
-    return 0.0;
-  }
-  if (wx >= 490.0) {
-    const shoreT = (500.0 - wx) / 10.0;
-    return OPEN_OCEAN_SEABED_Y * shoreT;
-  }
-
-  // 6. Number Stampede Track, Forecourt, Boardwalks & Turnaround
-  const rx = wx - ZONE_LOCATIONS.runner.x;
-  const rz = wz - ZONE_LOCATIONS.runner.z;
-  if (Math.abs(rx) <= 8.4 && rz >= -98.0 && rz <= 13.5) {
-    return 0.0;
-  }
-
-  // 7. Yuzu Mountain Elevated Platforms & Torque-Balanced See-Saw
+  // 3. Yuzu Mountain Elevated Platforms & Torque-Balanced See-Saw (SE sector of the unified island)
   const fx = wx - ZONE_LOCATIONS.fallguys.x;
   const fz = wz - ZONE_LOCATIONS.fallguys.z;
   if (Math.abs(fx) <= 8.4 && fz <= 12.5 && fz >= -67.0) {
@@ -403,7 +303,31 @@ export function sampleContiguousGroundY(
     return 0.5;
   }
 
-  // 8. Open Ocean Seabed everywhere else in the world!
+  // 4. Unified Forest Games Island lush meadow (r <= 212m) & sandy outer beach (212..228m -> ocean seabed)
+  const dUnifiedIsland = Math.hypot(
+    wx - FOREST_UNIFIED_ISLAND_CENTER_X,
+    wz - FOREST_UNIFIED_ISLAND_CENTER_Z
+  );
+  if (dUnifiedIsland <= FOREST_UNIFIED_ISLAND_RADIUS) {
+    return 0.0;
+  }
+  if (dUnifiedIsland <= FOREST_UNIFIED_ISLAND_BEACH_OUTER_RADIUS) {
+    const beachT =
+      (dUnifiedIsland - FOREST_UNIFIED_ISLAND_RADIUS) /
+      (FOREST_UNIFIED_ISLAND_BEACH_OUTER_RADIUS - FOREST_UNIFIED_ISLAND_RADIUS);
+    return OPEN_OCEAN_SEABED_Y * beachT;
+  }
+
+  // 5. Capytorio Standalone Far-Hemisphere Infinite Continental Terrain (wx >= 500 flat at y = 0)
+  if (wx >= 500.0) {
+    return 0.0;
+  }
+  if (wx >= 490.0) {
+    const shoreT = (500.0 - wx) / 10.0;
+    return OPEN_OCEAN_SEABED_Y * shoreT;
+  }
+
+  // 6. Open Ocean Seabed outside the unified island shoreline
   return OPEN_OCEAN_SEABED_Y;
 }
 

@@ -1308,53 +1308,45 @@ test('Basic vs Advanced Mode: defaults to kid-friendly Basic Mode (advancedMode=
   }
 });
 
-test('Open-World Non-Overlapping Archipelago: zero island intersections and unrestricted ocean exploration anywhere', () => {
-  // 1. All 5 island footprints must have zero intersections and generous open-water channel clearance
+test('Open-World Unified Forest Island: zero overlapping areas, zero bridges, seamless walking & open ocean outside beach rim', () => {
+  // 1. All 5 mode footprints have zero intersections and generous separation
   const clearance = evaluateDistrictClearances();
   assert.equal(
     clearance.overlappingPairs.length,
     0,
-    `Expected zero overlapping island pairs, found: ${JSON.stringify(clearance.overlappingPairs)}`
+    `Expected zero overlapping district pairs, found: ${JSON.stringify(clearance.overlappingPairs)}`
   );
   assert.ok(
     clearance.minClearanceMeters >= 50,
-    `Expected >=50m open-water channel between all islands, got ${clearance.minClearanceMeters.toFixed(2)}m`
+    `Expected >=50m spacing between all game footprints, got ${clearance.minClearanceMeters.toFixed(2)}m`
   );
 
-  // 2. Verify each causeway bridge reaches near its target district without intersecting any unrelated district
-  const footprints = getArchipelagoDistrictFootprints();
-  for (const bridge of CONTIGUOUS_BRIDGES) {
-    for (let u = 0.2; u <= 0.8; u += 0.1) {
-      const px = bridge.startX + (bridge.endX - bridge.startX) * u;
-      const pz = bridge.startZ + (bridge.endZ - bridge.startZ) * u;
-      for (const fp of footprints) {
-        if (fp.mode === 'sanctuary' || fp.mode === bridge.targetMode) continue;
-        if (fp.shape === 'circle') {
-          const d = Math.hypot(px - fp.cx, pz - fp.cz);
-          assert.ok(
-            d > (fp.radius ?? 0) + 15,
-            `Bridge ${bridge.targetMode} passes too close to ${fp.mode} (${d.toFixed(1)}m)`
-          );
-        } else {
-          const outsideBox =
-            px < fp.minX - 15 || px > fp.maxX + 15 || pz < fp.minZ - 15 || pz > fp.maxZ + 15;
-          assert.ok(
-            outsideBox,
-            `Bridge ${bridge.targetMode} encroaches on unrelated island ${fp.mode}`
-          );
-        }
-      }
-    }
-  }
+  // 2. Bridges have been removed in favor of one seamless unified Forest island
+  assert.equal(CONTIGUOUS_BRIDGES.length, 0, 'Unified Forest island should have zero stone bridges');
+  assert.equal(
+    sampleContiguousGroundY(-55, -55, null, 0),
+    0.0,
+    'Meadow path between Sanctuary and Spore Lagoon is solid unified island ground'
+  );
+  assert.equal(
+    sampleContiguousGroundY(-55, 68, null, 0),
+    0.0,
+    'Meadow path between Sanctuary and Number Stampede is solid unified island ground'
+  );
+  assert.equal(
+    sampleContiguousGroundY(55, 68, null, 0),
+    0.0,
+    'Meadow path between Sanctuary and Yuzu Mountain is solid unified island ground'
+  );
 
-  // 3. Unrestricted open-world coordinates: walking past Sanctuary shore (e.g. 60m, 400m) never hits an invisible wall
+  // 3. Unrestricted open-world coordinates: walking past shore never hits an invisible wall
   const farCheck = clampToContiguousWalkableWorld(420, -315, 0.68);
   assert.equal(farCheck.clamped, false);
   assert.equal(farCheck.wx, 420);
   assert.equal(farCheck.wz, -315);
 
-  // 4. Open ocean seabed + Archimedes buoyancy work smoothly everywhere outside the islands
-  const openGroundY = sampleContiguousGroundY(65, 0, null, 0);
+  // 4. Open ocean seabed + Archimedes buoyancy work smoothly everywhere outside the unified island beach rim (r > 228m from (-20, 25))
+  const openGroundY = sampleContiguousGroundY(280, 0, null, 0);
   assert.equal(openGroundY, OPEN_OCEAN_SEABED_Y);
 
   // 5. Far-hemisphere Capytorio endless continental terrain (wx >= 500) is flat at y = 0.0 with no bounds
@@ -1362,7 +1354,7 @@ test('Open-World Non-Overlapping Archipelago: zero island intersections and unre
   assert.equal(sampleContiguousGroundY(4200, -1850, null, 0), 0.0);
 
   const fluid = new ShallowWaterFluidSolver();
-  const sample = fluid.sampleFluid(65, OPEN_OCEAN_SURFACE_Y - 0.1, 0, 0.68, null);
+  const sample = fluid.sampleFluid(280, OPEN_OCEAN_SURFACE_Y - 0.1, 0, 0.68, null);
   assert.equal(sample.inFluid, true);
   assert.ok(sample.buoyancyAccelY > 15, 'Open ocean supplies upward Archimedes buoyancy');
 });

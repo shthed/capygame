@@ -53,6 +53,12 @@ import {
   getForestSpecimenSpec,
   pickRandomForestSpecimen,
 } from './forestMicroSpecimens';
+import {
+  CHROMATIN_BRIDGE_LOG_METERS,
+  evaluateCellNucleusOpacity,
+  evaluateChromatinBridgeAlpha,
+  evaluateInfiniteZoomBandAlpha,
+} from './UniverseScaleMath';
 
 interface TrackedMaterialEntry {
   mat: THREE.Material;
@@ -290,6 +296,14 @@ export class SeamlessUniverseSimulator {
   private atmosphereCloudMats: THREE.ShaderMaterial[] = [];
   private ecosystemMeadowMat: THREE.MeshStandardMaterial | null = null;
   private ecosystemRiverMat: THREE.MeshStandardMaterial | null = null;
+  private cellNucleusMesh: THREE.Mesh | null = null;
+  private cellNucleusMat: THREE.MeshStandardMaterial | null = null;
+  private chromatinBridgeGroup: THREE.Group | null = null;
+  private chromatinBridgeMats: Array<{
+    mat: THREE.Material;
+    baseOpacity: number;
+    defaultDepthWrite: boolean;
+  }> = [];
   private galaxyMorphology: GalaxyMorphology = 'spiral';
   private spiralGalaxyDiscMat: THREE.ShaderMaterial | null = null;
   private forestDiorama: ForestMicroDioramaHandle | null = null;
@@ -3470,6 +3484,31 @@ export class SeamlessUniverseSimulator {
     gladeRoot.position.y = -0.82;
     group.add(gladeRoot);
 
+    // Sunlit mossy woodland clearing floor grounding Forest Glade (0.8) smoothly into Leaf & Fur (-2.0)
+    const clearingDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(21.5, 36),
+      new THREE.MeshStandardMaterial({
+        color: 0x3b7a42,
+        roughness: 0.92,
+        metalness: 0.0,
+      })
+    );
+    clearingDisc.rotation.x = -Math.PI / 2;
+    clearingDisc.position.y = -0.02;
+    gladeRoot.add(clearingDisc);
+
+    const outerFloorRing = new THREE.Mesh(
+      new THREE.RingGeometry(18.5, 46.0, 40),
+      new THREE.MeshStandardMaterial({
+        color: 0x245d32,
+        roughness: 0.95,
+        metalness: 0.0,
+      })
+    );
+    outerFloorRing.rotation.x = -Math.PI / 2;
+    outerFloorRing.position.y = -0.05;
+    gladeRoot.add(outerFloorRing);
+
     const trunkGeo = new THREE.CylinderGeometry(0.42, 0.72, 1.0, 7);
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4226, roughness: 0.94 });
     const oakCrownGeo = new THREE.DodecahedronGeometry(2.35, 1);
@@ -3621,15 +3660,16 @@ export class SeamlessUniverseSimulator {
     }
 
     // 10 µm Chromatin Nucleus at cell center (1/5 of 50 µm palisade cell!)
-    const nucleus = new THREE.Mesh(
-      new THREE.SphereGeometry(2.2, 24, 24),
-      new THREE.MeshStandardMaterial({
-        color: 0x818cf8,
-        emissive: 0x4338ca,
-        emissiveIntensity: 0.55,
-        roughness: 0.28,
-      })
-    );
+    const nucleusMat = new THREE.MeshStandardMaterial({
+      color: 0x818cf8,
+      emissive: 0x4338ca,
+      emissiveIntensity: 0.55,
+      roughness: 0.28,
+      transparent: true,
+    });
+    const nucleus = new THREE.Mesh(new THREE.SphereGeometry(2.2, 24, 24), nucleusMat);
+    this.cellNucleusMesh = nucleus;
+    this.cellNucleusMat = nucleusMat;
     group.add(nucleus);
 
     // 5 µm Discoid Chloroplasts (~1/10 of 50 µm cell!) streaming around vacuole
@@ -3667,6 +3707,118 @@ export class SeamlessUniverseSimulator {
     return (dt) => {
       chloroGroup.rotation.y += dt * 0.3;
     };
+  }
+
+  /**
+   * Builds the luminous 30 nm Chromatin Solenoid Fiber & Histone Nucleosome bridge
+   * (centered at log -6.40) linking Biological Cells (-4.3) smoothly into B-DNA (-8.47)
+   * with zero per-frame heap allocations.
+   */
+  private ensureChromatinBridgeBuilt(): void {
+    if (this.chromatinBridgeGroup) return;
+    const bridge = new THREE.Group();
+    bridge.name = 'scale_bridge_chromatin_nucleosome';
+    bridge.visible = false;
+    bridge.matrixWorldAutoUpdate = false;
+    bridge.rotation.z = 0.24;
+    installFastMatrixCull(bridge);
+    this.rootGroup.add(bridge);
+    this.chromatinBridgeGroup = bridge;
+    this.chromatinBridgeMats.length = 0;
+
+    if (!this.glowCoolTex) {
+      this.glowCoolTex = this.createSoftRadialTexture(
+        'rgba(235,248,255,1)',
+        'rgba(56,189,248,0.38)'
+      );
+      this.glowCoolTex.userData.sharedAsset = true;
+    }
+    const glowCool = this.glowCoolTex;
+    const coreGlowMat = new THREE.SpriteMaterial({
+      map: glowCool,
+      color: 0x38bdf8,
+      opacity: 0.42,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const coreGlow = new THREE.Sprite(coreGlowMat);
+    coreGlow.scale.setScalar(24.0);
+    bridge.add(coreGlow);
+    this.chromatinBridgeMats.push({
+      mat: coreGlowMat,
+      baseOpacity: 0.42,
+      defaultDepthWrite: false,
+    });
+
+    const beadCount = this.isSoftwareGl ? 28 : 44;
+    const heightSpan = 26.0;
+    const solenoidRadius = 5.4;
+    const turns = 4.5;
+
+    const histoneGeo = new THREE.CylinderGeometry(0.72, 0.72, 0.48, 12);
+    const histoneMat = new THREE.MeshStandardMaterial({
+      color: 0x6366f1,
+      emissive: 0x3730a3,
+      emissiveIntensity: 0.52,
+      roughness: 0.28,
+      transparent: true,
+      opacity: 0.96,
+    });
+    const histoneInst = new THREE.InstancedMesh(histoneGeo, histoneMat, beadCount);
+    const curvePts: THREE.Vector3[] = [];
+
+    for (let i = 0; i < beadCount; i++) {
+      const u = i / (beadCount - 1);
+      const ang = u * Math.PI * 2 * turns;
+      const y = (u - 0.5) * heightSpan;
+      const rMod = solenoidRadius * (0.88 + 0.14 * Math.sin(u * Math.PI * 3));
+      const px = Math.cos(ang) * rMod;
+      const pz = Math.sin(ang) * rMod;
+      curvePts.push(new THREE.Vector3(px, y, pz));
+
+      _dummyObj.position.set(px, y, pz);
+      _dummyObj.rotation.set(0.35, -ang, Math.PI * 0.5 + 0.22);
+      _dummyObj.scale.setScalar(0.92 + 0.16 * Math.sin(i * 1.7));
+      _dummyObj.updateMatrix();
+      histoneInst.setMatrixAt(i, _dummyObj.matrix);
+
+      _scratchColorA.setHex(i % 3 === 0 ? 0x818cf8 : i % 2 === 0 ? 0x38bdf8 : 0x2dd4bf);
+      histoneInst.setColorAt(i, _scratchColorA);
+    }
+    histoneInst.instanceMatrix.needsUpdate = true;
+    if (histoneInst.instanceColor) histoneInst.instanceColor.needsUpdate = true;
+    histoneInst.computeBoundingSphere();
+    bridge.add(histoneInst);
+    this.chromatinBridgeMats.push({
+      mat: histoneMat,
+      baseOpacity: 0.96,
+      defaultDepthWrite: true,
+    });
+
+    const linkerCurve = new THREE.CatmullRomCurve3(curvePts);
+    const linkerGeo = new THREE.TubeGeometry(
+      linkerCurve,
+      this.isSoftwareGl ? 64 : 112,
+      0.2,
+      8,
+      false
+    );
+    const linkerMat = new THREE.MeshStandardMaterial({
+      color: 0x2dd4bf,
+      emissive: 0x0d9488,
+      emissiveIntensity: 0.62,
+      roughness: 0.24,
+      transparent: true,
+      opacity: 0.92,
+    });
+    const linkerMesh = new THREE.Mesh(linkerGeo, linkerMat);
+    bridge.add(linkerMesh);
+    this.chromatinBridgeMats.push({
+      mat: linkerMat,
+      baseOpacity: 0.92,
+      defaultDepthWrite: true,
+    });
   }
 
   // --- 19. B-DNA DOUBLE HELIX & MOLECULES (-8.47 · 3.4 nm PITCH, 2.0 nm DIAMETER) ---
@@ -4538,9 +4690,10 @@ export class SeamlessUniverseSimulator {
       const loSpec = this.layers[lowerIdx].spec;
       const span = Math.max(0.001, hiSpec.logMeters - loSpec.logMeters);
       const frac = THREE.MathUtils.clamp((hiSpec.logMeters - logScaleMeters) / span, 0, 1);
+      const smoothFrac = frac * frac * (3 - 2 * frac);
       _scratchColorA.setHex(hiSpec.skyHex);
       _scratchColorB.setHex(loSpec.skyHex);
-      outSkyColor.copy(_scratchColorA).lerp(_scratchColorB, frac);
+      outSkyColor.copy(_scratchColorA).lerp(_scratchColorB, smoothFrac);
     }
 
     // 3. Evaluate True Physical 10^(gamma * deltaLog) Scale & Smooth Radiative Cross-Fade per Layer
@@ -4649,22 +4802,22 @@ export class SeamlessUniverseSimulator {
       } else if (isPlanetarySystem) {
         maxExpandDex = 1.65;
       } else if (isPlanet) {
-        maxExpandDex = 6.50;
+        maxExpandDex = suppressWoodlandSurfaceLayers ? 6.5 : 3.35;
       } else if (isAtmosphere) {
-        maxExpandDex = 1.35;
+        maxExpandDex = suppressWoodlandSurfaceLayers ? 1.45 : 0.65;
       } else if (isLandMasses) {
-        maxExpandDex = 1.55;
+        maxExpandDex = 1.15;
       } else if (isEcosystems) {
-        maxExpandDex = 1.55;
+        maxExpandDex = 1.25;
       } else if (isForestGlade) {
-        maxExpandDex = 1.35;
+        maxExpandDex = 2.0;
       } else if (isLeafGlade) {
-        maxExpandDex = 2.15;
+        maxExpandDex = 2.0;
       } else if (isBiologicalCells) {
-        maxExpandDex = 4.2;
+        maxExpandDex = 2.0;
       } else if (isDna) {
         // Bridge DNA double-helix smoothly into Carbon-12 electron orbitals (-9.47)
-        maxExpandDex = 1.45;
+        maxExpandDex = 1.6;
       } else if (isAtomicOrbitals) {
         maxExpandDex = 3.8;
       } else if (isAtomicNucleus) {
@@ -4689,19 +4842,19 @@ export class SeamlessUniverseSimulator {
       } else if (isPlanet) {
         maxShrinkDex = -3.45;
       } else if (isAtmosphere) {
-        maxShrinkDex = -1.15;
+        maxShrinkDex = suppressWoodlandSurfaceLayers ? -1.25 : -0.75;
       } else if (isLandMasses) {
-        maxShrinkDex = -1.55;
+        maxShrinkDex = -0.95;
       } else if (isEcosystems) {
-        maxShrinkDex = -1.55;
+        maxShrinkDex = -1.05;
       } else if (isForestGlade) {
-        maxShrinkDex = -1.45;
+        maxShrinkDex = -1.0;
       } else if (isLeafGlade) {
-        maxShrinkDex = -1.45;
+        maxShrinkDex = -2.85;
       } else if (isBiologicalCells) {
-        maxShrinkDex = -3.2;
+        maxShrinkDex = -1.65;
       } else if (isDna) {
-        maxShrinkDex = -4.2;
+        maxShrinkDex = -1.75;
       } else if (isAtomicOrbitals) {
         maxShrinkDex = -2.8;
       } else if (isAtomicNucleus) {
@@ -4725,47 +4878,20 @@ export class SeamlessUniverseSimulator {
       }
 
       let alpha = 1.0;
-      if (isPlanet) {
-        // Unified Single Planet remains continuous through stratosphere clouds & lod3 (2.15..2.75) into Land Masses
-        if (scaledDelta < 0) {
-          alpha = smoothstep01(maxShrinkDex, -2.05, scaledDelta);
-        } else {
-          alpha = smoothstep01(2.10, 2.75, logScaleMeters);
-        }
+      const polishedAlpha = evaluateInfiniteZoomBandAlpha(
+        layerId,
+        logScaleMeters,
+        gamma,
+        suppressWoodlandSurfaceLayers,
+        suppressGladeForSurfaceLanding
+      );
+      if (polishedAlpha >= 0) {
+        alpha = polishedAlpha;
       } else if (isGalaxy) {
         if (scaledDelta < 0) {
           alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
         } else {
           alpha = 1.0 - smoothstep01(3.15, maxExpandDex, scaledDelta);
-        }
-      } else if (isAtmosphere) {
-        if (scaledDelta < 0) {
-          alpha = smoothstep01(maxShrinkDex, -0.25, scaledDelta);
-        } else {
-          alpha = 1.0 - smoothstep01(0.35, maxExpandDex, scaledDelta);
-        }
-      } else if (isLandMasses || isEcosystems || isForestGlade) {
-        // Coherent single-world crossfade from clouds -> valley -> canopy -> sunlit glade -> leaf
-        if (scaledDelta < 0) {
-          alpha = smoothstep01(maxShrinkDex, -0.25, scaledDelta);
-        } else {
-          const fadeStart = isForestGlade ? 0.35 : 0.45;
-          alpha = 1.0 - smoothstep01(fadeStart, maxExpandDex, scaledDelta);
-        }
-        // When user clicks "Play in Forest" or "Play Capytorio", yield cleanly to the live playable surface world
-        if (suppressGladeForSurfaceLanding) {
-          alpha *= smoothstep01(2.2, 3.4, logScaleMeters);
-        }
-      } else if (isLeafGlade) {
-        if (scaledDelta < -0.18) {
-          alpha = smoothstep01(maxShrinkDex, -0.42, scaledDelta);
-        } else if (scaledDelta <= 0.0) {
-          alpha = 1.0;
-        } else {
-          alpha = 1.0 - smoothstep01(0.35, maxExpandDex, scaledDelta);
-        }
-        if (suppressGladeForSurfaceLanding) {
-          alpha *= smoothstep01(-1.4, -2.0, logScaleMeters);
         }
       } else if (scaledDelta < 0) {
         alpha = smoothstep01(maxShrinkDex, -0.32, scaledDelta);
@@ -4780,10 +4906,6 @@ export class SeamlessUniverseSimulator {
         alpha = 1.0 - smoothstep01(expandFadeStart, maxExpandDex, scaledDelta);
       }
       alpha *= focusBoost;
-
-      if (layer.spec.id === 'atmosphere' && logScaleMeters < 2.4) {
-        alpha *= smoothstep01(1.4, 2.4, logScaleMeters);
-      }
 
       if (alpha <= 0.008) {
         layer.group.visible = false;
@@ -4835,8 +4957,16 @@ export class SeamlessUniverseSimulator {
         if (entry.shaderHubbleUniform) {
           entry.shaderHubbleUniform.value = hubbleMix;
         }
-        // Preserve crisp 3D depth-sorting for opaque meshes at EVERY scale (including Forest Glade & Glade-Leaf!)
-        entry.mat.depthWrite = alpha > 0.72 ? entry.defaultDepthWrite : false;
+        // Preserve crisp 3D depth-sorting down to low fade alpha so opaque dioramas never pop/X-ray mid-fade
+        entry.mat.depthWrite = alpha > 0.14 ? entry.defaultDepthWrite : false;
+      }
+
+      if (isBiologicalCells && this.cellNucleusMesh && this.cellNucleusMat) {
+        // Dissolve the r=2.2 cell nucleus cleanly across -4.85 .. -5.32 BEFORE camera intersects wall at -5.537
+        const nucFade = alpha * evaluateCellNucleusOpacity(logScaleMeters);
+        this.cellNucleusMesh.visible = nucFade > 0.01;
+        this.cellNucleusMat.opacity = nucFade;
+        this.cellNucleusMat.depthWrite = nucFade > 0.14;
       }
 
       if (isMultiverse && this.multiverseHomeBubbleMesh && this.multiverseHomeBubbleMat) {
@@ -4990,7 +5120,7 @@ export class SeamlessUniverseSimulator {
           if (this.planetGlobeMat.uniforms?.uDetailScale) {
             this.planetGlobeMat.uniforms.uDetailScale.value = this.isSoftwareGl ? 0.0 : detailScale;
           }
-          this.planetGlobeMat.depthWrite = globeOpacity > 0.82 && logScaleMeters > 1.85;
+          this.planetGlobeMat.depthWrite = globeOpacity > 0.18 && logScaleMeters > 1.85;
         }
 
         // 2. Full globe cloud sphere (hands off cleanly before camera passes cloud-top altitude)
@@ -5041,43 +5171,50 @@ export class SeamlessUniverseSimulator {
           }
         }
 
-        // 6. Nested Float32-safe curved surface LOD patches (skip multi-pass full-screen FBM in software WebGL)
+        // 6. Nested Float32-safe curved surface LOD patches (in pure Infinite Zoom, hand off cleanly after lod1 -> Land Masses;
+        //    keep full lod1/lod2/lod3 cascade during Capytorio orbital flight when suppressWoodlandSurfaceLayers is true)
         const lod1Op = this.isSoftwareGl
           ? 0
-          : alpha *
-            smoothstep01(5.25, 4.75, logScaleMeters) *
-            smoothstep01(3.85, 4.25, logScaleMeters);
-        const lod2Op = this.isSoftwareGl
-          ? 0
-          : alpha *
-            smoothstep01(4.25, 3.85, logScaleMeters) *
-            smoothstep01(3.05, 3.40, logScaleMeters);
-        const lod3Op = this.isSoftwareGl
-          ? 0
-          : alpha *
-            smoothstep01(3.50, 3.05, logScaleMeters) *
-            smoothstep01(2.15, 2.75, logScaleMeters);
+          : suppressWoodlandSurfaceLayers
+            ? alpha *
+              smoothstep01(5.25, 4.75, logScaleMeters) *
+              smoothstep01(3.85, 4.25, logScaleMeters)
+            : alpha *
+              smoothstep01(5.2, 4.65, logScaleMeters) *
+              smoothstep01(3.85, 4.4, logScaleMeters);
+        const lod2Op =
+          this.isSoftwareGl || !suppressWoodlandSurfaceLayers
+            ? 0
+            : alpha *
+              smoothstep01(4.25, 3.85, logScaleMeters) *
+              smoothstep01(3.05, 3.4, logScaleMeters);
+        const lod3Op =
+          this.isSoftwareGl || !suppressWoodlandSurfaceLayers
+            ? 0
+            : alpha *
+              smoothstep01(3.5, 3.05, logScaleMeters) *
+              smoothstep01(2.15, 2.75, logScaleMeters);
 
         const lodMat0 = this.planetLodMats[0];
         if (this.planetLod1Mesh && lodMat0) {
           this.planetLod1Mesh.visible = lod1Op > 0.01;
           if (lodMat0.uniforms?.uOpacity) lodMat0.uniforms.uOpacity.value = lod1Op;
           if (lodMat0.uniforms?.uDetailScale) lodMat0.uniforms.uDetailScale.value = detailScale;
-          lodMat0.depthWrite = lod1Op > 0.82 && logScaleMeters > 2.85;
+          lodMat0.depthWrite = lod1Op > 0.18 && logScaleMeters > 2.85;
         }
         const lodMat1 = this.planetLodMats[1];
         if (this.planetLod2Mesh && lodMat1) {
           this.planetLod2Mesh.visible = lod2Op > 0.01;
           if (lodMat1.uniforms?.uOpacity) lodMat1.uniforms.uOpacity.value = lod2Op;
           if (lodMat1.uniforms?.uDetailScale) lodMat1.uniforms.uDetailScale.value = detailScale;
-          lodMat1.depthWrite = lod2Op > 0.82 && logScaleMeters > 2.85;
+          lodMat1.depthWrite = lod2Op > 0.18 && logScaleMeters > 2.85;
         }
         const lodMat2 = this.planetLodMats[2];
         if (this.planetLod3Mesh && lodMat2) {
           this.planetLod3Mesh.visible = lod3Op > 0.01;
           if (lodMat2.uniforms?.uOpacity) lodMat2.uniforms.uOpacity.value = lod3Op;
           if (lodMat2.uniforms?.uDetailScale) lodMat2.uniforms.uDetailScale.value = detailScale;
-          lodMat2.depthWrite = lod3Op > 0.82 && logScaleMeters > 2.85;
+          lodMat2.depthWrite = lod3Op > 0.18 && logScaleMeters > 2.85;
         }
 
         // 7. Curved Troposphere / Stratosphere Cloud Deck Patches (skip in software WebGL; clear cleanly before UFO approach)
@@ -5106,6 +5243,27 @@ export class SeamlessUniverseSimulator {
           }
         }
       }
+    }
+
+    // 4. Update luminous Chromatin Fiber / Nucleosome transition bridge (-4.85 .. -8.05)
+    const chromatinAlpha = evaluateChromatinBridgeAlpha(logScaleMeters, gamma);
+    if (chromatinAlpha > 0.008) {
+      this.ensureChromatinBridgeBuilt();
+      if (this.chromatinBridgeGroup) {
+        const bridgeScaledDelta = (CHROMATIN_BRIDGE_LOG_METERS - logScaleMeters) * gamma;
+        this.chromatinBridgeGroup.visible = true;
+        this.chromatinBridgeGroup.matrixWorldAutoUpdate = true;
+        this.chromatinBridgeGroup.scale.setScalar(Math.pow(10, bridgeScaledDelta));
+        this.chromatinBridgeGroup.rotation.y += dt * 0.24;
+        for (let b = 0; b < this.chromatinBridgeMats.length; b++) {
+          const entry = this.chromatinBridgeMats[b];
+          entry.mat.opacity = Math.min(1.0, entry.baseOpacity * chromatinAlpha);
+          entry.mat.depthWrite = chromatinAlpha > 0.14 ? entry.defaultDepthWrite : false;
+        }
+      }
+    } else if (this.chromatinBridgeGroup && this.chromatinBridgeGroup.visible) {
+      this.chromatinBridgeGroup.visible = false;
+      this.chromatinBridgeGroup.matrixWorldAutoUpdate = false;
     }
 
     return primaryLayer.spec;
@@ -5276,6 +5434,10 @@ export class SeamlessUniverseSimulator {
     this.planetCloudPatchMeshes.length = 0;
     this.planetCloudPatchMats.length = 0;
     this.celestialBackdropMats.length = 0;
+    this.chromatinBridgeMats.length = 0;
+    this.chromatinBridgeGroup = null;
+    this.cellNucleusMesh = null;
+    this.cellNucleusMat = null;
     this.layers.length = 0;
     disposeObject3DTree(this.forestGroveGroup);
     disposeObject3DTree(this.celestialBackdropGroup);

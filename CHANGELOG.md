@@ -2,6 +2,21 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.2.1] - 2026-11-26
+
+- Polished Infinite Zoom transitions from Planet down to DNA by grounding the Forest Glade clearing and overlapping it smoothly into Leaf & Fur with zero empty gaps.
+- Dissolved the cell nucleus sphere smoothly before the camera reaches its shell and added a luminous Chromatin Fiber and Nucleosome transition layer bridging Biological Cells into the DNA Helix.
+- Tightened Planet, Atmosphere, Land Masses, and Ecosystems crossfades so at most two terrain or cloud layers overlap at once in Infinite Zoom while preserving Capytorio's full orbital planet descent.
+- Lowered material depth-write fade cutoffs, harmonized sky transitions with smoothstep easing, replaced the sudden camera pitch floor snap with a continuous smoothstep ramp, and added adaptive auto-zoom pacing across wide inter-band spans.
+
+## [1.2.0] - 2026-11-26
+
+- Separated CapyGame into three standalone modes with a top-bar switcher (**Infinite Zoom**, **Forest Games**, and **Capytorio**) so only the active game's 3D world, sky, lighting, and HUD are shown at once.
+- Made Infinite Zoom a pure, continuous zoom experience from Multiverse down to Planck scale with no playable Forest landing detour and no Forest islands, ocean, weather, or surface UI bleeding into the view.
+- Unified the four Forest mini-games (Sanctuary, Spore Lagoon, Number Stampede, and Yuzu Mountain) onto one bridge-free island connected by meadow footpaths, with camera zoom clamped to comfortable playable distances so scrolling out never accidentally launches Infinite Zoom.
+- Isolated Capytorio as a standalone factory mode while preserving its parked UFO, boarding, liftoff, and orbital landing sequence, pausing the factory simulation, flushing pending factory autosaves, and muting factory ambient audio whenever switching to Infinite Zoom or Forest Games.
+- Updated interactive tutorials to launch cleanly into their matching standalone game and moved Capytorio clipboard move-mode side effects out of the React state updater.
+
 ## [1.1.2] - 2026-11-25
 
 - Enabled moving freely across the Capytorio factory while Copy, Cut, or Paste blueprint mode is active via dragging anywhere outside the ghost footprint, right/middle-click dragging, holding Space while dragging, using WASD/Arrow keys, or toggling the new Move button in the clipboard bar.

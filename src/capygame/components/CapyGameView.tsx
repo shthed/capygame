@@ -43,6 +43,9 @@ import {
   OrbitTelemetry,
   OrbitTimeScaleId,
   ORBIT_TIME_SCALES,
+  ForestSubMode,
+  TopLevelGameMode,
+  isForestGameMode,
   BountyEventType,
   createDefaultBounties,
 } from '../types';
@@ -78,7 +81,10 @@ import {
   cloneProceduralConfig,
 } from '../config/ProceduralGameConfig';
 import { FOREST_MICRO_SPECIMENS } from '../engine/forestMicroSpecimens';
-import { formatFlightSpeedReadout } from '../engine/UniverseScaleMath';
+import {
+  formatFlightSpeedReadout,
+  resolveTopLevelGameMode,
+} from '../engine/UniverseScaleMath';
 import type {
   CapytorioLuaCatalogInfo,
   CapytorioRecipeGroup,
@@ -3265,36 +3271,7 @@ export const CapyGameView: React.FC = () => {
     showToast('All World Sectors & Optical Instruments Unlocked');
   };
 
-  const handleSelectMode = (mode: PlayStyle) => {
-    if (!isZoneUnlocked(mode)) {
-      setAllFeaturesUnlocked(true);
-    }
-    const wasSeamlessActive = Boolean(
-      managerRef.current?.getUniverseScaleTelemetry().active
-    );
-    if (
-      managerRef.current &&
-      (managerRef.current.cosmicStage !== 'playing' || wasSeamlessActive)
-    ) {
-      managerRef.current.resumeSurfacePlayFromForest(true);
-    }
-    AudioService.playJump();
-    setActiveMode(mode);
-    setStats((prev: PlayerStats) => {
-      const updated = { ...prev, selectedPlayStyle: mode };
-      ProgressionService.saveStats(updated);
-      return updated;
-    });
-    managerRef.current?.switchMode(
-      mode,
-      wasSeamlessActive ||
-        Boolean(managerRef.current?.isSoftwareGl && isMenuOpen)
-    );
-    const zone = ZONE_LOCATIONS[mode];
-    showToast(`Transiting to ${zone.title}`);
-  };
-
-  const handleStartTutorial = (tutorial: CapyTutorial) => {
+  const closeAllTopBarDrawers = () => {
     setIsAboutOpen(false);
     setIsMenuOpen(false);
     setIsSettingsOpen(false);
@@ -3302,18 +3279,109 @@ export const CapyGameView: React.FC = () => {
     setIsOpticsOpen(false);
     setIsInfographicExpanded(false);
     setIsPerfLogOpen(false);
+  };
+
+  const handleSwitchTopLevelGame = (game: TopLevelGameMode) => {
+    closeAllTopBarDrawers();
+    setCapytorioClipboardMoveMode(false);
+    const mgr = managerRef.current;
+    if (!mgr) return;
+
+    if (game === 'infinite_zoom') {
+      mgr.enterInfiniteZoom(undefined, true);
+      setUniverseScale(mgr.getUniverseScaleTelemetry());
+      AudioService.playCosmicWarp(1.06);
+      return;
+    }
+
+    if (game === 'forest_games') {
+      const targetSub: ForestSubMode = isForestGameMode(activeMode) ? activeMode : 'sanctuary';
+      if (!isZoneUnlocked(targetSub)) {
+        setAllFeaturesUnlocked(true);
+      }
+      AudioService.playJump();
+      setActiveMode(targetSub);
+      setStats((prev: PlayerStats) => {
+        const updated = { ...prev, selectedPlayStyle: targetSub };
+        ProgressionService.saveStats(updated);
+        return updated;
+      });
+      mgr.enterForestGames(targetSub, true);
+      setUniverseScale(mgr.getUniverseScaleTelemetry());
+      return;
+    }
+
+    if (!isZoneUnlocked('capytorio')) {
+      setAllFeaturesUnlocked(true);
+    }
+    AudioService.playJump();
+    setActiveMode('capytorio');
+    setStats((prev: PlayerStats) => {
+      const updated = { ...prev, selectedPlayStyle: 'capytorio' as PlayStyle };
+      ProgressionService.saveStats(updated);
+      return updated;
+    });
+    mgr.enterCapytorio(true);
+    setUniverseScale(mgr.getUniverseScaleTelemetry());
+  };
+
+  const handleSelectMode = (mode: PlayStyle) => {
+    if (!isZoneUnlocked(mode)) {
+      setAllFeaturesUnlocked(true);
+    }
+    if (mode === 'capytorio') {
+      handleSwitchTopLevelGame('capytorio');
+      showToast(`Transiting to ${ZONE_LOCATIONS.capytorio.title}`);
+      return;
+    }
+    const wasSeamlessActive = Boolean(
+      managerRef.current?.getUniverseScaleTelemetry().active
+    );
+    AudioService.playJump();
+    setActiveMode(mode);
+    setStats((prev: PlayerStats) => {
+      const updated = { ...prev, selectedPlayStyle: mode };
+      ProgressionService.saveStats(updated);
+      return updated;
+    });
+    if (wasSeamlessActive || managerRef.current?.cosmicStage !== 'playing') {
+      managerRef.current?.enterForestGames(mode, true);
+    } else {
+      managerRef.current?.switchMode(
+        mode,
+        Boolean(managerRef.current?.isSoftwareGl && isMenuOpen)
+      );
+    }
+    if (managerRef.current) {
+      setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
+    }
+    const zone = ZONE_LOCATIONS[mode];
+    showToast(`Transiting to ${zone.title}`);
+  };
+
+  const handleStartTutorial = (tutorial: CapyTutorial) => {
+    closeAllTopBarDrawers();
 
     if (tutorial.launchTarget === 'cosmos') {
       if (managerRef.current) {
-        managerRef.current.launchIntoCosmos(24.0);
-        managerRef.current.setSeamlessLogScale(24.0, true);
+        managerRef.current.enterInfiniteZoom(24.0, true);
         setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
       }
       AudioService.playCosmicWarp(1.08);
     } else if (tutorial.launchTarget === 'sanctuary') {
-      handleSelectMode('sanctuary');
+      setActiveMode('sanctuary');
+      setStats((prev: PlayerStats) => {
+        const updated = { ...prev, selectedPlayStyle: 'sanctuary' as PlayStyle };
+        ProgressionService.saveStats(updated);
+        return updated;
+      });
+      if (managerRef.current) {
+        managerRef.current.enterForestGames('sanctuary', true);
+        setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
+      }
+      AudioService.playJump();
     } else if (tutorial.launchTarget === 'capytorio') {
-      handleSelectMode('capytorio');
+      handleSwitchTopLevelGame('capytorio');
     } else if (tutorial.launchTarget === 'genesis_setup') {
       handleOpenFirstRunSetup();
     }
@@ -3896,6 +3964,17 @@ export const CapyGameView: React.FC = () => {
   const currentModeInfo =
     PLAY_STYLE_LIST.find((m) => m.id === activeMode) ?? PLAY_STYLE_LIST[0];
   const currentZone = ZONE_LOCATIONS[activeMode];
+  const activeGame: TopLevelGameMode =
+    universeScale.activeGame ??
+    resolveTopLevelGameMode(
+      universeScale.active,
+      activeMode,
+      Boolean(universeScale.isCapytorioOrbitalFlight)
+    );
+  const isPureInfiniteZoom = activeGame === 'infinite_zoom';
+  const isForestGames = activeGame === 'forest_games';
+  const isCapytorioGame = activeGame === 'capytorio';
+  const isCapytorioOrbitalFlight = Boolean(universeScale.isCapytorioOrbitalFlight);
 
   const unlockedCount = PROGRESSIVE_UNLOCKS.filter(
     (u) => allFeaturesUnlocked || stats.dna >= u.requiredDna
@@ -4193,21 +4272,73 @@ export const CapyGameView: React.FC = () => {
       <nav
         data-testid="unified-top-bar"
         data-ui-mode={isAdvancedMode ? 'advanced' : 'basic'}
-        aria-label="Universe Simulator Controls and Status"
-        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-0.5 sm:gap-2 pointer-events-auto whitespace-nowrap"
+        data-active-game={activeGame}
+        aria-label="CapyGame Mode Switcher and Controls"
+        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
       >
-        {/* LEFT CLUSTER: Zoom Controls */}
-        <div
-          data-testid="universe-scale-hud"
-          data-scale-band={universeScale.bandId}
-          data-seamless-active={universeScale.active ? 'true' : 'false'}
-          className="flex items-center gap-0.5 sm:gap-1 min-w-0 shrink"
-        >
-          {isAdvancedMode && (
+        {/* LEFT CLUSTER: 3-Game Standalone Switcher + Mode-Specific Zoom Controls */}
+        <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 shrink">
+          <div
+            role="group"
+            data-testid="game-mode-switcher"
+            aria-label="Select Game Mode"
+            className="flex items-center rounded-md bg-zinc-900 border border-white/12 p-0.5 shrink-0"
+          >
             <button
               type="button"
-              data-testid="scale-zoom-out-btn"
-              onClick={() => managerRef.current?.stepScaleBand(1)}
+              data-testid="game-switcher-infinite-zoom"
+              aria-pressed={isPureInfiniteZoom}
+              onClick={() => handleSwitchTopLevelGame('infinite_zoom')}
+              className={`h-6 px-1.5 sm:px-2.5 rounded text-[10px] sm:text-[11px] font-semibold transition-colors cursor-pointer ${
+                isPureInfiniteZoom
+                  ? 'bg-sky-500/25 text-sky-200 border border-sky-400/55'
+                  : 'text-zinc-400 hover:text-zinc-100 border border-transparent'
+              }`}
+            >
+              <span className="sm:hidden">Zoom</span>
+              <span className="hidden sm:inline">Infinite Zoom</span>
+            </button>
+            <button
+              type="button"
+              data-testid="game-switcher-forest-games"
+              aria-pressed={isForestGames}
+              onClick={() => handleSwitchTopLevelGame('forest_games')}
+              className={`h-6 px-1.5 sm:px-2.5 rounded text-[10px] sm:text-[11px] font-semibold transition-colors cursor-pointer ${
+                isForestGames
+                  ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/55'
+                  : 'text-zinc-400 hover:text-zinc-100 border border-transparent'
+              }`}
+            >
+              <span className="sm:hidden">Forest</span>
+              <span className="hidden sm:inline">Forest Games</span>
+            </button>
+            <button
+              type="button"
+              data-testid="game-switcher-capytorio"
+              aria-pressed={isCapytorioGame}
+              onClick={() => handleSwitchTopLevelGame('capytorio')}
+              className={`h-6 px-1.5 sm:px-2.5 rounded text-[10px] sm:text-[11px] font-semibold transition-colors cursor-pointer ${
+                isCapytorioGame
+                  ? 'bg-amber-500/25 text-amber-200 border border-amber-400/55'
+                  : 'text-zinc-400 hover:text-zinc-100 border border-transparent'
+              }`}
+            >
+              Capytorio
+            </button>
+          </div>
+
+          {universeScale.active && (
+          <div
+            data-testid="universe-scale-hud"
+            data-scale-band={universeScale.bandId}
+            data-seamless-active={universeScale.active ? 'true' : 'false'}
+            className="flex items-center gap-0.5 sm:gap-1 min-w-0 shrink"
+          >
+            {isAdvancedMode && (
+              <button
+                type="button"
+                data-testid="scale-zoom-out-btn"
+                onClick={() => managerRef.current?.stepScaleBand(1)}
               title="Zoom Out 1 Scale Band (Toward Big Bang 10^+30m)"
               aria-label="Zoom Out Scale"
               className="hidden sm:flex w-6 h-7 items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 cursor-pointer shrink-0"
@@ -4338,6 +4469,8 @@ export const CapyGameView: React.FC = () => {
               </span>
             </button>
           )}
+        </div>
+        )}
         </div>
 
         {/* CENTER CLUSTER: Live Status & Inspector Trigger */}
@@ -4545,6 +4678,7 @@ export const CapyGameView: React.FC = () => {
             </button>
           )}
 
+          {isForestGames && (
           <button
             type="button"
             data-testid="toggle-menu-btn"
@@ -4561,7 +4695,7 @@ export const CapyGameView: React.FC = () => {
               });
             }}
             aria-expanded={isMenuOpen}
-            aria-label={isMenuOpen ? 'Close World Menu' : 'Open World Menu'}
+            aria-label={isMenuOpen ? 'Close Island Menu' : 'Open Island Menu'}
             className={`${isAdvancedMode ? 'h-6 sm:h-7 w-6 sm:w-auto px-0 sm:px-2' : 'h-7 px-2'} rounded border flex items-center justify-center gap-1 text-xs font-medium transition-colors cursor-pointer shrink-0 ${
               isMenuOpen
                 ? 'bg-sky-500/20 border-sky-400/60 text-zinc-100'
@@ -4574,9 +4708,10 @@ export const CapyGameView: React.FC = () => {
               <Menu className="w-3.5 h-3.5 text-sky-400" />
             )}
             <span className="hidden sm:inline">
-              {isAdvancedMode ? 'World' : 'Worlds'}
+              {isAdvancedMode ? 'Island' : 'Island'}
             </span>
           </button>
+          )}
 
           <button
             type="button"
@@ -5140,7 +5275,7 @@ export const CapyGameView: React.FC = () => {
       {/* =====================================================================
           TOP-ANCHORED DROPDOWN 1: 63-ORDER UNIVERSE SCALE ATLAS (left-aligned under top bar)
          ===================================================================== */}
-      {isScaleAtlasOpen && (
+      {isScaleAtlasOpen && universeScale.active && (
         <div
           data-testid="universe-scale-atlas-panel"
           className="fixed top-11 left-2 z-40 pointer-events-auto w-[calc(100vw-16px)] max-w-[390px] bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5"
@@ -5480,7 +5615,7 @@ export const CapyGameView: React.FC = () => {
       {/* =====================================================================
           TOP-ANCHORED DROPDOWN 1B: COSMIC OPTICS (1:1 Scale, Markers & Reality Rescaler)
          ===================================================================== */}
-      {isOpticsOpen && (
+      {isOpticsOpen && universeScale.active && (
         <div
           data-testid="cosmic-optics-panel"
           className="fixed top-11 left-2 sm:left-32 z-40 pointer-events-auto w-[calc(100vw-16px)] max-w-[360px] bg-zinc-950/96 border border-white/15 rounded-xl p-3 text-zinc-100 shadow-2xl space-y-2.5"
@@ -5853,11 +5988,11 @@ export const CapyGameView: React.FC = () => {
                 </button>
               </div>
 
-              {cosmicStage === 'playing' && !universeScale.active ? (
+              {isForestGames ? (
                 <div className="space-y-2">
                   <p className="text-xs text-zinc-300 leading-relaxed">
                     {activeMode === 'sanctuary'
-                      ? 'Bump fruit trees matching the orange on your head to grow longer! Visit the four glowing portals around the island to play more games.'
+                      ? 'Bump fruit trees matching the orange on your head to grow longer! Walk along the meadow paths across the unified island to visit Spore Lagoon, Number Stampede, and Yuzu Mountain.'
                       : currentZone.subtitle}
                   </p>
                   <div className="grid grid-cols-2 gap-1.5">
@@ -5865,12 +6000,12 @@ export const CapyGameView: React.FC = () => {
                       type="button"
                       onClick={() => {
                         setIsInfographicExpanded(false);
-                        setIsScaleAtlasOpen(true);
-                        managerRef.current?.requestCurrentBandThumbnail();
+                        setActiveTab('modes');
+                        setIsMenuOpen(true);
                       }}
-                      className="py-2 px-2.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 font-semibold text-xs border border-sky-400/40 cursor-pointer"
+                      className="py-2 px-2.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 font-semibold text-xs border border-emerald-400/40 cursor-pointer"
                     >
-                      Zoom Explorer
+                      Island Games
                     </button>
                     <button
                       type="button"
@@ -5897,24 +6032,56 @@ export const CapyGameView: React.FC = () => {
                     <span>About CapyGame &amp; Tutorials</span>
                   </button>
                 </div>
+              ) : isCapytorioGame && !isCapytorioOrbitalFlight ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    {currentZone.subtitle}
+                  </p>
+                  <button
+                    type="button"
+                    data-testid="infographic-open-about-btn"
+                    onClick={() => {
+                      setIsInfographicExpanded(false);
+                      setIsAboutOpen(true);
+                    }}
+                    className="w-full py-2 px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 font-medium text-xs border border-white/12 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
+                    <span>About CapyGame &amp; Tutorials</span>
+                  </button>
+                </div>
               ) : (
                 <div className="space-y-2">
                   <p className="text-xs text-zinc-300 leading-relaxed">
                     {KID_FRIENDLY_BAND_DESCRIPTIONS[universeScale.bandId] ||
-                      'Tap Play in Forest to meet your Capybara right away, or watch the Big Bang create stars!'}
+                      'Scroll or use the Scale Atlas to zoom continuously from Multiverse down to Planck length.'}
                   </p>
                   <div className="flex flex-col gap-1.5">
-                    <button
-                      type="button"
-                      data-testid="skip-cosmic-to-world-btn"
-                      onClick={() => {
-                        managerRef.current?.resumeSurfacePlayFromForest();
-                        setIsInfographicExpanded(false);
-                      }}
-                      className="w-full py-2 px-3 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 font-semibold text-xs transition-colors cursor-pointer"
-                    >
-                      Play on Capybara Island!
-                    </button>
+                    {isCapytorioOrbitalFlight ? (
+                      <button
+                        type="button"
+                        data-testid="skip-cosmic-to-world-btn"
+                        onClick={() => {
+                          managerRef.current?.engageCapytorioLanding();
+                          setIsInfographicExpanded(false);
+                        }}
+                        className="w-full py-2 px-3 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 font-semibold text-xs transition-colors cursor-pointer"
+                      >
+                        Land in Capytorio
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsInfographicExpanded(false);
+                          setIsScaleAtlasOpen(true);
+                          managerRef.current?.requestCurrentBandThumbnail();
+                        }}
+                        className="w-full py-2 px-3 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 font-semibold text-xs border border-sky-400/40 transition-colors cursor-pointer"
+                      >
+                        Open Scale Atlas
+                      </button>
+                    )}
                     {cosmicStage === 'singularity' && (
                       <button
                         type="button"
@@ -6781,7 +6948,7 @@ export const CapyGameView: React.FC = () => {
       {/* =====================================================================
           TOP-ANCHORED DROPDOWN 4: WORLD SECTORS, STRUCTURES, BIO-TRAITS & LOADOUT
          ===================================================================== */}
-      {isMenuOpen && (
+      {isMenuOpen && isForestGames && (
         <header
           data-testid="capygame-top-header"
           className="fixed top-11 right-2 left-2 sm:left-auto sm:w-[720px] z-40 pointer-events-auto bg-zinc-950/96 border border-white/15 rounded-xl shadow-2xl p-2.5 flex flex-col gap-2"
@@ -6837,33 +7004,6 @@ export const CapyGameView: React.FC = () => {
                 <>
                   <button
                     type="button"
-                    data-testid="launch-chrono-vessel-btn"
-                    onClick={() => {
-                      managerRef.current?.launchIntoCosmos(22.0);
-                      setIsMenuOpen(false);
-                    }}
-                    className="flex items-center gap-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 font-medium text-[11px] px-2 py-1 rounded-md border border-cyan-400/40 transition-colors cursor-pointer"
-                  >
-                    <Rocket className="w-3 h-3 text-cyan-300" />
-                    <span>Chrono-Flight</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="open-cosmic-map-btn"
-                    onClick={() => {
-                      AudioService.playCosmicWarp(1.0);
-                      managerRef.current?.setCosmicStage('universe_flight');
-                      setIsMenuOpen(false);
-                    }}
-                    className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-sky-300 font-medium text-[11px] px-2 py-1 rounded-md border border-sky-500/30 transition-colors cursor-pointer"
-                  >
-                    <Sparkles className="w-3 h-3 text-sky-400" />
-                    <span>Cosmic Map</span>
-                  </button>
-
-                  <button
-                    type="button"
                     data-testid="open-capy-select-btn"
                     onClick={() => {
                       AudioService.playCoin();
@@ -6874,16 +7014,6 @@ export const CapyGameView: React.FC = () => {
                   >
                     <Crown className="w-3 h-3 text-amber-400" />
                     <span>Select Unit</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="open-first-run-setup-btn"
-                    onClick={handleOpenFirstRunSetup}
-                    className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 text-amber-300 font-medium text-[11px] px-2 py-1 rounded-md border border-amber-400/30 transition-colors cursor-pointer"
-                  >
-                    <Sparkles className="w-3 h-3 text-amber-400" />
-                    <span>Genesis Setup</span>
                   </button>
                 </>
               )}
@@ -6926,7 +7056,7 @@ export const CapyGameView: React.FC = () => {
                   }`}
                 >
                   <Compass className="w-3.5 h-3.5" />
-                  <span>{isAdvancedMode ? 'Sectors (5)' : 'Places'}</span>
+                  <span>{isAdvancedMode ? 'Island Games (4)' : 'Island Areas'}</span>
                 </button>
 
                 <button
@@ -7033,8 +7163,8 @@ export const CapyGameView: React.FC = () => {
             {!isDockCollapsed && (
               <div className="pt-2 max-h-[54vh] sm:max-h-[62vh] overflow-y-auto">
                 {activeTab === 'modes' && (
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {PLAY_STYLE_LIST.map((mode) => {
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {PLAY_STYLE_LIST.filter((mode) => isForestGameMode(mode.id)).map((mode) => {
                       const isSelected = mode.id === activeMode;
                       const unlocked = isZoneUnlocked(mode.id);
                       const best = getHighScoreForMode(mode.id);
@@ -7327,14 +7457,15 @@ export const CapyGameView: React.FC = () => {
         </header>
       )}
 
-      {/* Compact Arcade Combo Multiplier HUD (Right Below Top Bar During Active Chains) */}
-      {cosmicStage === 'playing' &&
+      {/* Compact Arcade Combo Multiplier HUD (Forest Games Only) */}
+      {isForestGames &&
+        cosmicStage === 'playing' &&
         !universeScale.active &&
-        activeMode !== 'capytorio' &&
         !webglError && <TelemetryReadout variant="combo" store={telemetryStore} />}
 
-      {/* Collapsible 3-Slot Archipelago Bounties Drawer (Bottom-Left During Surface Play) */}
-      {cosmicStage === 'playing' &&
+      {/* Collapsible 3-Slot Island Bounties Drawer (Forest Games Only) */}
+      {isForestGames &&
+        cosmicStage === 'playing' &&
         !universeScale.active &&
         !webglError &&
         !isMenuOpen &&
@@ -7432,8 +7563,9 @@ export const CapyGameView: React.FC = () => {
           );
         })()}
 
-      {/* Kinetic Surface Ability Buttons (Dash + Dive / Belly-Flop Slam) */}
-      {cosmicStage === 'playing' &&
+      {/* Kinetic Surface Ability Buttons (Forest Games Only) */}
+      {isForestGames &&
+        cosmicStage === 'playing' &&
         !universeScale.active &&
         !webglError &&
         gameSettings.touchControlsMode !== 'hidden' &&
@@ -7452,8 +7584,9 @@ export const CapyGameView: React.FC = () => {
           />
         )}
 
-      {/* Contextual Board Parked UFO Prompt when standing near the grounded saucer */}
-      {cosmicStage === 'playing' &&
+      {/* Contextual Board Parked UFO Prompt (Capytorio Only) */}
+      {isCapytorioGame &&
+        cosmicStage === 'playing' &&
         !universeScale.active &&
         !isFirstRunSetupOpen &&
         !webglError &&
@@ -7614,14 +7747,12 @@ export const CapyGameView: React.FC = () => {
               pointerHoverActive={capytorioPointerHoverActive}
               clipboardMoveMode={capytorioClipboardMoveMode}
               onToggleClipboardMoveMode={() => {
-                setCapytorioClipboardMoveMode((prev) => {
-                  const next = !prev;
-                  if (next) {
-                    managerRef.current?.unlockCapytorioBlueprintAnchor();
-                    showToast('Move mode — drag anywhere or use WASD to move while keeping blueprint');
-                  }
-                  return next;
-                });
+                const next = !capytorioClipboardMoveMode;
+                setCapytorioClipboardMoveMode(next);
+                if (next) {
+                  managerRef.current?.unlockCapytorioBlueprintAnchor();
+                  showToast('Move mode — drag anywhere or use WASD to move while keeping blueprint');
+                }
               }}
               drawerTab={capytorioDrawerTab}
               setDrawerTab={setCapytorioDrawerTab}
@@ -10348,6 +10479,9 @@ export const CapyGameView: React.FC = () => {
         !webglError &&
         !isJsonEditorOpen &&
         !isSettingsOpen &&
+        (isAdvancedMode ||
+          isCapytorioOrbitalFlight ||
+          universeScale.bandId === 'leaf_fur_micro') &&
         (isAdvancedMode || universeScale.ufoFlightPhase !== 'orbital_descent') && (
         <div
           data-testid="chrono-vessel-flight-strip"
@@ -10359,33 +10493,17 @@ export const CapyGameView: React.FC = () => {
         >
           {!isAdvancedMode ? (
             <div className="flex flex-nowrap items-center justify-start sm:justify-center gap-1 sm:gap-1.5 whitespace-nowrap">
-              <button
-                type="button"
-                data-testid="chrono-land-pad-btn"
-                onClick={() => managerRef.current?.engageAutoLanding()}
-                className="min-h-10 sm:min-h-11 px-2 sm:px-3.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-zinc-950 text-[10px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
-              >
-                Play in Forest
-              </button>
-              <button
-                type="button"
-                data-testid="chrono-land-capytorio-btn"
-                onClick={() => managerRef.current?.engageCapytorioLanding()}
-                className="min-h-10 sm:min-h-11 px-2 sm:px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[10px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
-              >
-                Play Capytorio
-              </button>
-              {(universeScale.descentRingsTotal ?? 0) > 0 &&
-                universeScale.logScaleMeters <= 5.4 &&
-                universeScale.logScaleMeters >= 0.9 && (
-                <span
-                  data-testid="descent-rings-hud"
-                  className="px-1.5 sm:px-2 py-1 sm:py-1.5 rounded-lg bg-sky-500/20 border border-sky-400/45 text-[10px] sm:text-[11px] font-mono tabular-nums text-sky-200 shrink-0"
+              {isCapytorioOrbitalFlight && (
+                <button
+                  type="button"
+                  data-testid="chrono-land-capytorio-btn"
+                  onClick={() => managerRef.current?.engageCapytorioLanding()}
+                  className="min-h-10 sm:min-h-11 px-2.5 sm:px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[10px] sm:text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  Rings {universeScale.descentRingsHit ?? 0}/{universeScale.descentRingsTotal ?? 6}
-                </span>
+                  Land in Capytorio
+                </button>
               )}
-              {universeScale.bandId === 'leaf_fur_micro' && (
+              {!isCapytorioOrbitalFlight && universeScale.bandId === 'leaf_fur_micro' && (
                 <button
                   type="button"
                   data-testid="shuffle-forest-specimen-btn"
@@ -10407,7 +10525,7 @@ export const CapyGameView: React.FC = () => {
                 <div className="flex items-center gap-2 min-w-0">
                   <Rocket className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                   <span className="text-[11px] font-semibold text-zinc-100 truncate">
-                    Chrono-Vessel
+                    {isCapytorioOrbitalFlight ? 'Capytorio UFO' : 'Infinite Zoom'}
                   </span>
                   <span
                     data-testid="flight-strip-epoch"
@@ -10422,17 +10540,7 @@ export const CapyGameView: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
-                  {(universeScale.descentRingsTotal ?? 0) > 0 &&
-                    universeScale.logScaleMeters <= 5.4 &&
-                    universeScale.logScaleMeters >= 0.9 && (
-                    <span
-                      data-testid="descent-rings-hud"
-                      className="px-2 py-1 rounded bg-sky-500/20 border border-sky-400/45 text-[10px] font-mono tabular-nums text-sky-200 whitespace-nowrap"
-                    >
-                      Rings {universeScale.descentRingsHit ?? 0}/{universeScale.descentRingsTotal ?? 6}
-                    </span>
-                  )}
-                  {universeScale.bandId === 'leaf_fur_micro' && (
+                  {!isCapytorioOrbitalFlight && universeScale.bandId === 'leaf_fur_micro' && (
                     <button
                       type="button"
                       data-testid="shuffle-forest-specimen-btn"
@@ -10447,22 +10555,16 @@ export const CapyGameView: React.FC = () => {
                       <span>{universeScale.forestSpecimenLabel || 'Specimen'}</span>
                     </button>
                   )}
-                  <button
-                    type="button"
-                    data-testid="chrono-land-pad-btn"
-                    onClick={() => managerRef.current?.engageAutoLanding()}
-                    className="px-2 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/45 text-[10px] font-mono font-semibold cursor-pointer whitespace-nowrap"
-                  >
-                    Play in Forest
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="chrono-land-capytorio-btn"
-                    onClick={() => managerRef.current?.engageCapytorioLanding()}
-                    className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/45 text-[10px] font-mono font-semibold cursor-pointer whitespace-nowrap"
-                  >
-                    Play Capytorio
-                  </button>
+                  {isCapytorioOrbitalFlight && (
+                    <button
+                      type="button"
+                      data-testid="chrono-land-capytorio-btn"
+                      onClick={() => managerRef.current?.engageCapytorioLanding()}
+                      className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/45 text-[10px] font-mono font-semibold cursor-pointer whitespace-nowrap"
+                    >
+                      Land in Capytorio
+                    </button>
+                  )}
                   <button
                     type="button"
                     data-testid="toggle-flight-strip-collapse"

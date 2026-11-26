@@ -21,6 +21,12 @@ export {
 
 import type { CapytorioSerializedState } from './engine/CapytorioFactoryEngine';
 export type PlayStyle = 'sanctuary' | 'spore' | 'capytorio' | 'runner' | 'fallguys';
+export type TopLevelGameMode = 'infinite_zoom' | 'forest_games' | 'capytorio';
+export type ForestSubMode = 'sanctuary' | 'spore' | 'runner' | 'fallguys';
+
+export function isForestGameMode(mode: PlayStyle): mode is ForestSubMode {
+  return mode === 'sanctuary' || mode === 'spore' || mode === 'runner' || mode === 'fallguys';
+}
 
 export type MutationId = 'flippers' | 'wings' | 'tusks' | 'horn' | 'shell' | 'glow_tail';
 
@@ -436,31 +442,31 @@ export const ZONE_LOCATIONS: Record<
     x: 0,
     z: 0,
     title: 'Capy Sanctuary',
-    subtitle: 'Central Archipelago Hub & Sandbox Builder',
+    subtitle: 'Central Island Hub & Sandbox Builder',
   },
   spore: {
     x: -110,
     z: -110,
     title: 'Spore Lagoon',
-    subtitle: 'North-West Evolution Atoll (-110, -110)',
+    subtitle: 'North-West Island Lagoon (-110, -110)',
   },
   capytorio: {
     x: 1200,
     z: 0,
     title: 'Capytorio Frontier',
-    subtitle: 'Far-Hemisphere Endless Ore Plain (+1200, 0)',
+    subtitle: 'Standalone Endless Ore Plain (+1200, 0)',
   },
   runner: {
     x: -110,
     z: 135,
     title: 'Number Stampede',
-    subtitle: 'South-West Math Causeway (-110, +135)',
+    subtitle: 'South-West Meadow Track (-110, +135)',
   },
   fallguys: {
     x: 110,
     z: 135,
     title: 'Yuzu Mountain',
-    subtitle: 'South-East Parkour Gauntlet (+110, +135)',
+    subtitle: 'South-East Parkour Ridge (+110, +135)',
   },
 };
 
@@ -1672,7 +1678,7 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     logMeters: 2.2,
     typicalSizeLabel: '1.6×10^2 m · 160 m',
     domain: 'terrestrial',
-    skyHex: 0x38bdf8,
+    skyHex: 0x2b9ed8,
     accentHex: 0x22c55e,
   },
   {
@@ -1683,7 +1689,7 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     logMeters: 0.8,
     typicalSizeLabel: '6.3 m · Woodland Glade',
     domain: 'terrestrial',
-    skyHex: 0x225634,
+    skyHex: 0x226846,
     accentHex: 0xfbbf24,
   },
   {
@@ -1694,7 +1700,7 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     logMeters: -2.0,
     typicalSizeLabel: '1.0 cm · 10^-2 m',
     domain: 'microscopic',
-    skyHex: 0x1b4328,
+    skyHex: 0x164a34,
     accentHex: 0x84cc16,
   },
   {
@@ -1705,7 +1711,7 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     logMeters: -4.3,
     typicalSizeLabel: '50 µm · 5.0×10^-5 m',
     domain: 'microscopic',
-    skyHex: 0x032221,
+    skyHex: 0x062926,
     accentHex: 0x10b981,
   },
   {
@@ -1716,7 +1722,7 @@ export const UNIVERSE_SCALE_BANDS: UniverseScaleBandSpec[] = [
     logMeters: -8.47,
     typicalSizeLabel: '3.4 nm · 3.4×10^-9 m',
     domain: 'microscopic',
-    skyHex: 0x051322,
+    skyHex: 0x051526,
     accentHex: 0x2dd4bf,
   },
   {
@@ -1831,6 +1837,8 @@ export interface UniverseScaleTelemetry {
   dockedOnChronoPad?: boolean;
   ufoFlightPhase?: UfoFlightPhase;
   nearParkedUfo?: boolean;
+  activeGame?: TopLevelGameMode;
+  isCapytorioOrbitalFlight?: boolean;
 }
 
 export function findNearestScaleBandIndex(logMeters: number): number {

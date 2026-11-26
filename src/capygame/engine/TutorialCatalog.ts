@@ -61,19 +61,19 @@ export const CAPYGAME_TUTORIALS: CapyTutorial[] = [
       },
       {
         id: 'cosmic_land',
-        title: 'Jump to Any Scale or Land',
+        title: 'Jump to Any Scale or Switch Games',
         instruction:
-          'Open Menu -> Scale Scrubber to jump straight to any scale (even the 10^-2m Forest Glade), or click Play in Forest / Play Capytorio at the bottom.',
-        controlHint: 'Play in Forest · Play Capytorio',
+          'Open the Scale Scrubber in the top bar to jump straight to any scale (from Multiverse down to Planck), or use the top-bar switcher to jump into Forest Games or Capytorio.',
+        controlHint: 'Top Bar: Infinite Zoom · Forest Games · Capytorio',
       },
     ],
   },
   {
     id: 'sanctuary_basics',
-    title: 'Capy Island & Capy-Snake Tutorial',
-    badge: 'Island',
+    title: 'Forest Games & Capy-Snake Tutorial',
+    badge: 'Forest',
     summary:
-      'Walk around the sunny central island, match oranges to grow longer, and cross bridges into mini-games.',
+      'Roam one unified sunny island, match oranges to grow longer, and walk seamlessly into Lagoon, Stampede, and Yuzu Mountain.',
     durationLabel: '3 steps · ~1 min',
     launchTarget: 'sanctuary',
     steps: [
@@ -93,9 +93,9 @@ export const CAPYGAME_TUTORIALS: CapyTutorial[] = [
       },
       {
         id: 'sanctuary_bridges',
-        title: 'Dash, Belly-Flop & Cross Bridges',
+        title: 'Dash, Belly-Flop & Roam the Island',
         instruction:
-          'Press Shift or Q to Dash, Ctrl or C mid-air for a Belly-Flop splash, or walk across the four stone bridges to reach Lagoon, Stampede, and Yuzu Mountain.',
+          'Press Shift or Q to Dash, Ctrl or C mid-air for a Belly-Flop splash, or roam straight across the unified island meadow to reach Lagoon, Stampede, and Yuzu Mountain.',
         controlHint: 'Shift/Q Dash · Ctrl/C Dive · Explore',
       },
     ],

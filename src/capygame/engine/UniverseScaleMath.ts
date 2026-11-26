@@ -170,6 +170,7 @@ export function stepMediaSpeedControl(
 
 export const SURFACE_ZOOM_MIN_DIST = 0.45;
 export const SURFACE_ZOOM_ORBIT_THRESHOLD = 2.2;
+export const FOREST_GAMES_ZOOM_MAX_DIST = 2.35;
 export const CAPYBARA_FOREST_LAUNCH_BASE_LOG = 0.8;
 export const CAPYTORIO_OBLIQUE_BASE_RADIUS_M = 26.0;
 export const CAPYTORIO_ZOOM_MIN_DIST = 0.45;
@@ -184,19 +185,92 @@ export interface SurfaceZoomStepResult {
   launchTargetLogMeters: number;
 }
 
+export type StandaloneGameMode = 'infinite_zoom' | 'forest_games' | 'capytorio';
+
+export interface ActiveSimulationMask {
+  runInfiniteZoom: boolean;
+  runForestGames: boolean;
+  runForestWeatherAndWater: boolean;
+  runCapytorioFactory: boolean;
+}
+
 /**
- * Computes surface camera zoom distance step across Sanctuary and Capytorio.
- * Zooming out past SURFACE_ZOOM_ORBIT_THRESHOLD (or with a strong zoom-out gesture)
- * lifts smoothly into Chrono-Vessel orbit with zero hard max zoom limit.
+ * Resolves the active standalone top-level game from engine flags.
+ * Capytorio UFO orbital flight remains part of the Capytorio standalone mode
+ * rather than mixing back into Forest Games.
+ */
+export function resolveTopLevelGameMode(
+  seamlessZoomActive: boolean,
+  activeSurfaceMode: string,
+  isCapytorioOrbitalFlight: boolean = false
+): StandaloneGameMode {
+  if (isCapytorioOrbitalFlight) return 'capytorio';
+  if (seamlessZoomActive) return 'infinite_zoom';
+  return activeSurfaceMode === 'capytorio' ? 'capytorio' : 'forest_games';
+}
+
+/**
+ * Determines which simulation subsystems are allowed to tick in the active standalone game.
+ * Guarantees strict isolation: Capytorio pauses outside Capytorio, Forest pauses outside
+ * Forest Games, and Infinite Zoom pauses outside Infinite Zoom (except Capytorio's UFO flight).
+ */
+const SIM_MASK_INFINITE_ZOOM: Readonly<ActiveSimulationMask> = Object.freeze({
+  runInfiniteZoom: true,
+  runForestGames: false,
+  runForestWeatherAndWater: false,
+  runCapytorioFactory: false,
+});
+
+const SIM_MASK_FOREST_GAMES: Readonly<ActiveSimulationMask> = Object.freeze({
+  runInfiniteZoom: false,
+  runForestGames: true,
+  runForestWeatherAndWater: true,
+  runCapytorioFactory: false,
+});
+
+const SIM_MASK_CAPYTORIO_SURFACE: Readonly<ActiveSimulationMask> = Object.freeze({
+  runInfiniteZoom: false,
+  runForestGames: false,
+  runForestWeatherAndWater: false,
+  runCapytorioFactory: true,
+});
+
+const SIM_MASK_CAPYTORIO_ORBITAL: Readonly<ActiveSimulationMask> = Object.freeze({
+  runInfiniteZoom: true,
+  runForestGames: false,
+  runForestWeatherAndWater: false,
+  runCapytorioFactory: false,
+});
+
+export function evaluateActiveSimulationSubsystems(
+  activeGame: StandaloneGameMode,
+  isCapytorioOrbitalFlight: boolean = false
+): ActiveSimulationMask {
+  if (activeGame === 'infinite_zoom') {
+    return SIM_MASK_INFINITE_ZOOM;
+  }
+  if (activeGame === 'forest_games') {
+    return SIM_MASK_FOREST_GAMES;
+  }
+  return isCapytorioOrbitalFlight ? SIM_MASK_CAPYTORIO_ORBITAL : SIM_MASK_CAPYTORIO_SURFACE;
+}
+
+/**
+ * Computes surface camera zoom distance step across Forest Games and surface views.
+ * When `allowOrbitLaunch` is false (standalone Forest Games), distance clamps cleanly
+ * to comfortable playable distances `[SURFACE_ZOOM_MIN_DIST, FOREST_GAMES_ZOOM_MAX_DIST]`
+ * so scrolling out never accidentally launches into Infinite Zoom.
  */
 export function computeSurfaceZoomStep(
   currentDist: number,
   delta: number,
-  inPlayingStage: boolean
+  inPlayingStage: boolean,
+  allowOrbitLaunch: boolean = true
 ): SurfaceZoomStepResult {
   const safeCur = Number.isFinite(currentDist) ? currentDist : 1.0;
   const rawDist = safeCur - delta * 1.15;
   if (
+    allowOrbitLaunch &&
     delta < 0 &&
     (rawDist >= SURFACE_ZOOM_ORBIT_THRESHOLD || (delta <= -0.3 && inPlayingStage))
   ) {
@@ -207,10 +281,8 @@ export function computeSurfaceZoomStep(
         CAPYBARA_FOREST_LAUNCH_BASE_LOG + Math.max(0.55, Math.abs(delta) * 1.45),
     };
   }
-  const clamped = Math.max(
-    SURFACE_ZOOM_MIN_DIST,
-    Math.min(SURFACE_ZOOM_ORBIT_THRESHOLD, rawDist)
-  );
+  const maxDist = allowOrbitLaunch ? SURFACE_ZOOM_ORBIT_THRESHOLD : FOREST_GAMES_ZOOM_MAX_DIST;
+  const clamped = Math.max(SURFACE_ZOOM_MIN_DIST, Math.min(maxDist, rawDist));
   return {
     nextDistance: Math.round(clamped * 100) / 100,
     launchToOrbit: false,
@@ -412,4 +484,182 @@ export function formatRealisticScaleMeters(logMeters: number): string {
   const adjMant = mant >= 9.95 ? 1.0 : mant;
   const adjExp = mant >= 9.95 ? exp + 1 : exp;
   return `${adjMant.toFixed(1)}×10^${adjExp} m`;
+}
+
+// ============================================================================
+// INFINITE ZOOM TRANSITION POLISH MATH (ZERO ALLOCATION, SHARED BY RUNTIME & TESTS)
+// ============================================================================
+
+export const CHROMATIN_BRIDGE_LOG_METERS = -6.4;
+
+function smoothstepUnit(edge0: number, edge1: number, x: number): number {
+  const denom = edge1 - edge0;
+  if (Math.abs(denom) < 1e-9) return x >= edge1 ? 1 : 0;
+  const raw = (x - edge0) / denom;
+  const t = raw <= 0 ? 0 : raw >= 1 ? 1 : raw;
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Canonical descending log10(m) landmark centers matching `UNIVERSE_SCALE_BANDS`,
+ * pre-allocated at module scope for zero per-frame allocation in cruise pacing.
+ */
+const CANONICAL_UNIVERSE_BAND_LOGS_DESC: readonly number[] = [
+  30.0, 27.6, 26.8, 25.4, 24.0, 22.9, 21.0, 16.0, 14.2, 12.6, 8.85, 7.1, 4.9, 3.6,
+  2.2, 0.8, -2.0, -4.3, -8.47, -9.47, -14.27, -18.0, -23.0, -29.0, -35.0,
+];
+
+/**
+ * Continuous, C1-smooth camera minimum pitch floor across all 65 orders of magnitude.
+ * Smoothly lifts from -0.68 rad in deep space to +0.14 rad through terrestrial layers
+ * (Atmosphere -> Land Masses -> Ecosystems -> Forest Glade -> Leaf & Fur) and gently
+ * relaxes back to -0.68 rad entering Biological Cells & Quantum scales with zero snap.
+ */
+export function computeInfiniteZoomHorizonMinPitch(
+  logScaleMeters: number,
+  showPlayableSurface: boolean = false
+): number {
+  if (showPlayableSurface) return 0.14;
+  const upperRamp = smoothstepUnit(5.8, 4.4, logScaleMeters);
+  const lowerRamp = smoothstepUnit(-3.6, -2.2, logScaleMeters);
+  const terrestrialWeight = upperRamp * lowerRamp;
+  return -0.68 + (0.14 - -0.68) * terrestrialWeight;
+}
+
+/**
+ * Adaptive auto-zoom / glide speed multiplier: holds a calm 1.0x pace near every
+ * scale landmark and smoothly accelerates up to 1.85x across wide inter-band spans
+ * (such as Cells -4.3 -> DNA -8.47 or Atom -9.47 -> Nucleus -14.27).
+ */
+export function computeAdaptiveCruiseSpeedMultiplier(
+  logScaleMeters: number,
+  bandLogMetersDescending: readonly number[] = CANONICAL_UNIVERSE_BAND_LOGS_DESC
+): number {
+  const count = bandLogMetersDescending.length;
+  if (count < 2 || !Number.isFinite(logScaleMeters)) return 1.0;
+  if (logScaleMeters >= bandLogMetersDescending[0] || logScaleMeters <= bandLogMetersDescending[count - 1]) {
+    return 1.0;
+  }
+  for (let i = 0; i < count - 1; i++) {
+    const hi = bandLogMetersDescending[i];
+    const lo = bandLogMetersDescending[i + 1];
+    if (logScaleMeters <= hi && logScaleMeters >= lo) {
+      const gapDex = Math.max(0.01, hi - lo);
+      if (gapDex <= 1.8) return 1.0;
+      const frac = (hi - logScaleMeters) / gapDex;
+      const bell = Math.sin(Math.PI * frac);
+      const extra = Math.min(0.85, (gapDex - 1.8) * 0.24);
+      return 1.0 + extra * bell;
+    }
+  }
+  return 1.0;
+}
+
+/**
+ * Smoothly dissolves the 10 µm cell nucleus sphere (r=2.2 at log -4.3) across
+ * -4.85 .. -5.32 BEFORE the camera reaches its spherical shell at log ≈ -5.537,
+ * preventing sudden backface-culling pops.
+ */
+export function evaluateCellNucleusOpacity(logScaleMeters: number): number {
+  return smoothstepUnit(-5.32, -4.85, logScaleMeters);
+}
+
+/**
+ * Evaluates opacity of the luminous Chromatin Fiber / Nucleosome transition sub-group
+ * centered at -6.40, bridging Biological Cells (-4.3) and B-DNA (-8.47) with zero void.
+ */
+export function evaluateChromatinBridgeAlpha(
+  logScaleMeters: number,
+  gamma: number = 1.0
+): number {
+  const effLog = CHROMATIN_BRIDGE_LOG_METERS - (CHROMATIN_BRIDGE_LOG_METERS - logScaleMeters) * gamma;
+  return smoothstepUnit(-4.85, -5.65, effLog) * smoothstepUnit(-8.05, -7.15, effLog);
+}
+
+/**
+ * Unified Infinite Zoom visibility curves for Planet -> Atmosphere -> Land Masses ->
+ * Ecosystems -> Forest Glade -> Leaf & Fur -> Biological Cells -> DNA Helix.
+ * Guarantees zero visibility gaps and at most 2 overlapping terrain/cloud layers at once
+ * in pure Infinite Zoom, while preserving Capytorio's full planet descent when
+ * `suppressWoodlandSurfaceLayers` is true.
+ * Returns -1 for outer cosmic / deep quantum bands handled by the general scale curve.
+ */
+export function evaluateInfiniteZoomBandAlpha(
+  bandId: string,
+  logScaleMeters: number,
+  gamma: number = 1.0,
+  suppressWoodlandSurfaceLayers: boolean = false,
+  suppressGladeForSurfaceLanding: boolean = false
+): number {
+  if (bandId === 'planet') {
+    const scaledDelta = (7.1 - logScaleMeters) * gamma;
+    if (scaledDelta < 0) {
+      return smoothstepUnit(-3.45, -2.05, scaledDelta);
+    }
+    if (suppressWoodlandSurfaceLayers) {
+      return smoothstepUnit(2.1, 2.75, logScaleMeters);
+    }
+    const effLog = 7.1 - scaledDelta;
+    return smoothstepUnit(3.85, 4.4, effLog);
+  }
+
+  if (bandId === 'atmosphere') {
+    const effLog = 4.9 - (4.9 - logScaleMeters) * gamma;
+    if (suppressWoodlandSurfaceLayers) {
+      return smoothstepUnit(6.05, 5.15, effLog) * smoothstepUnit(3.55, 4.55, effLog);
+    }
+    return smoothstepUnit(5.5, 5.0, effLog) * smoothstepUnit(4.45, 4.8, effLog);
+  }
+
+  if (bandId === 'land_masses') {
+    if (suppressWoodlandSurfaceLayers) return 0;
+    const effLog = 3.6 - (3.6 - logScaleMeters) * gamma;
+    let alpha = smoothstepUnit(4.4, 3.85, effLog) * smoothstepUnit(2.6, 3.1, effLog);
+    if (suppressGladeForSurfaceLanding) {
+      alpha *= smoothstepUnit(2.2, 3.4, logScaleMeters);
+    }
+    return alpha;
+  }
+
+  if (bandId === 'ecosystems') {
+    if (suppressWoodlandSurfaceLayers) return 0;
+    const effLog = 2.2 - (2.2 - logScaleMeters) * gamma;
+    let alpha = smoothstepUnit(3.1, 2.6, effLog) * smoothstepUnit(1.1, 1.65, effLog);
+    if (suppressGladeForSurfaceLanding) {
+      alpha *= smoothstepUnit(2.2, 3.4, logScaleMeters);
+    }
+    return alpha;
+  }
+
+  if (bandId === 'capybara_forest') {
+    if (suppressWoodlandSurfaceLayers) return 0;
+    const effLog = 0.8 - (0.8 - logScaleMeters) * gamma;
+    let alpha = smoothstepUnit(1.65, 1.1, effLog) * smoothstepUnit(-1.05, -0.25, effLog);
+    if (suppressGladeForSurfaceLanding) {
+      alpha *= smoothstepUnit(2.2, 3.4, logScaleMeters);
+    }
+    return alpha;
+  }
+
+  if (bandId === 'leaf_fur_micro') {
+    if (suppressWoodlandSurfaceLayers) return 0;
+    const effLog = -2.0 - (-2.0 - logScaleMeters) * gamma;
+    let alpha = smoothstepUnit(0.75, -0.25, effLog) * smoothstepUnit(-3.85, -2.75, effLog);
+    if (suppressGladeForSurfaceLanding) {
+      alpha *= smoothstepUnit(-1.4, -2.0, logScaleMeters);
+    }
+    return alpha;
+  }
+
+  if (bandId === 'biological_cells') {
+    const effLog = -4.3 - (-4.3 - logScaleMeters) * gamma;
+    return smoothstepUnit(-2.85, -3.75, effLog) * smoothstepUnit(-6.1, -5.1, effLog);
+  }
+
+  if (bandId === 'dna_molecules') {
+    const effLog = -8.47 - (-8.47 - logScaleMeters) * gamma;
+    return smoothstepUnit(-6.85, -7.85, effLog) * smoothstepUnit(-9.92, -8.85, effLog);
+  }
+
+  return -1;
 }
