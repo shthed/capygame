@@ -13,7 +13,7 @@ const PRECACHE_RELATIVE_URLS = [
   './privacy.html',
   './data/capytorio/recipe.lua',
   './data/capytorio/technology.lua',
-  './assets/capybara.webp',
+  './assets/favicon.svg',
   './assets/icon-192.png',
   './assets/icon-512.png',
   './assets/icon-maskable-512.png',

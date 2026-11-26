@@ -1893,15 +1893,109 @@ test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains
     'PlayStyleManager.ts must cache viewport dimensions across frames'
   );
 
-  // 6. index.html contains inline static LCP shell and keeps renderBootError
+  // 6. index.html uses tiny SVG favicon, places #static-boot-shell outside #root, and keeps renderBootError
   const indexHtml = fs.readFileSync(path.resolve(root, 'index.html'), 'utf8');
+  assert.ok(indexHtml.includes('id="static-boot-shell"'), 'index.html must include id="static-boot-shell"');
   assert.ok(indexHtml.includes('data-testid="static-boot-shell"'), 'index.html must include instant static LCP shell');
+  assert.ok(
+    indexHtml.includes('<div id="root"></div>'),
+    '#static-boot-shell must sit outside <div id="root"></div> so React mount never destroys LCP'
+  );
+  assert.ok(
+    indexHtml.includes('href="assets/favicon.svg"'),
+    'index.html must use lightweight assets/favicon.svg'
+  );
+  assert.equal(
+    indexHtml.includes('capybara.webp'),
+    false,
+    'index.html must not reference 551 KB capybara.webp'
+  );
   assert.ok(indexHtml.includes('function renderBootError'), 'index.html must keep renderBootError fallback');
 
-  // 7. public/sw.js enables navigationPreload and checks event.preloadResponse safely
+  const faviconPath = path.resolve(root, 'public/assets/favicon.svg');
+  assert.ok(fs.existsSync(faviconPath), 'public/assets/favicon.svg must exist');
+  assert.ok(
+    fs.statSync(faviconPath).size < 2048,
+    'public/assets/favicon.svg must stay under 2 KB'
+  );
+
+  // 7. public/sw.js enables navigationPreload, checks event.preloadResponse, and drops capybara.webp
   const swSrc = fs.readFileSync(path.resolve(root, 'public/sw.js'), 'utf8');
   assert.ok(swSrc.includes('navigationPreload.enable()'), 'public/sw.js must enable navigationPreload');
   assert.ok(swSrc.includes('event.preloadResponse'), 'public/sw.js must check event.preloadResponse');
+  assert.equal(
+    swSrc.includes('capybara.webp'),
+    false,
+    'public/sw.js must not precache 551 KB capybara.webp'
+  );
+  assert.ok(swSrc.includes('./assets/favicon.svg'), 'public/sw.js should precache tiny ./assets/favicon.svg');
+
+  // 8. Cold-boot regressions: FocusGuard chunk split, zero throwaway WebGL probes, zero duplicate engine-boot-shell
+  const viteConfigSrc = fs.readFileSync(path.resolve(root, 'vite.config.ts'), 'utf8');
+  assert.ok(
+    viteConfigSrc.includes('/src/capygame/engine/FocusGuard.ts'),
+    'vite.config.ts manualChunks must isolate FocusGuard.ts from feature-capytorio'
+  );
+  assert.equal(
+    viewSrc.includes('WEBGL_lose_context'),
+    false,
+    'CapyGameView.tsx must not run a throwaway WebGL2 probe with loseContext()'
+  );
+  assert.equal(
+    managerSrc.includes('WEBGL_lose_context'),
+    false,
+    'PlayStyleManager.ts must detect software WebGL from its single THREE.WebGLRenderer without a throwaway probe'
+  );
+  assert.equal(
+    viewSrc.includes('data-testid="engine-boot-shell"'),
+    false,
+    'CapyGameView.tsx must not mount a duplicate React engine-boot-shell overlay'
+  );
+  assert.ok(
+    viewSrc.includes("document.getElementById('static-boot-shell')"),
+    'CapyGameView.tsx must tuck #static-boot-shell behind the canvas instead of unmounting it'
+  );
+
+  // 9. Cloudflare Pages _headers detaches inherited /assets/* Cache-Control before setting immutable rules
+  const headersSrc = fs.readFileSync(path.resolve(root, 'public/_headers'), 'utf8');
+  assert.ok(
+    headersSrc.includes('/assets/*.js\n  ! Cache-Control\n  Cache-Control: public, max-age=31536000, immutable'),
+    'public/_headers must detach Cache-Control before immutable rule for /assets/*.js'
+  );
+  assert.ok(
+    headersSrc.includes('/assets/*.css\n  ! Cache-Control\n  Cache-Control: public, max-age=31536000, immutable'),
+    'public/_headers must detach Cache-Control before immutable rule for /assets/*.css'
+  );
+  assert.ok(
+    headersSrc.includes('/assets/*.wasm\n  ! Cache-Control\n  Cache-Control: public, max-age=31536000, immutable'),
+    'public/_headers must detach Cache-Control before immutable rule for /assets/*.wasm'
+  );
+
+  // 10. Capytorio secondary top-right bar removes duplicate Pause/Help/Settings/Menu buttons
+  const capytorioHudSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/components/CapytorioHud.tsx'),
+    'utf8'
+  );
+  assert.equal(
+    capytorioHudSrc.includes('data-testid="capytorio-pause-btn"'),
+    false,
+    'CapytorioHud must not duplicate Pause in its secondary top-right bar'
+  );
+  assert.equal(
+    capytorioHudSrc.includes('data-testid="capytorio-open-about-btn"'),
+    false,
+    'CapytorioHud must not duplicate Help in its secondary top-right bar'
+  );
+  assert.equal(
+    capytorioHudSrc.includes('data-testid="capytorio-open-settings-btn"'),
+    false,
+    'CapytorioHud must not duplicate Settings in its secondary top-right bar'
+  );
+  assert.equal(
+    capytorioHudSrc.includes('data-testid="capytorio-toggle-topbar-btn"'),
+    false,
+    'CapytorioHud must not duplicate Menu in its secondary top-right bar'
+  );
 });
 
 

@@ -445,7 +445,6 @@ export const CapyGameView: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [activeTutorial, setActiveTutorial] = useState<ActiveTutorialState | null>(null);
-  const [engineReady, setEngineReady] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
   const [isBountiesOpen, setIsBountiesOpen] = useState<boolean>(false);
@@ -1512,9 +1511,19 @@ export const CapyGameView: React.FC = () => {
     const containerEl = mountRef.current;
     if (!containerEl) return;
 
+    const tuckStaticBootShell = () => {
+      const staticShell = document.getElementById('static-boot-shell');
+      if (!staticShell) return;
+      staticShell.style.opacity = '0';
+      staticShell.style.pointerEvents = 'none';
+      staticShell.style.zIndex = '-1';
+      staticShell.setAttribute('aria-hidden', 'true');
+    };
+
     try {
       const params = new URLSearchParams(window.location.search);
       if (params.get('simulate_webgl_error') === '1') {
+        tuckStaticBootShell();
         setWebglError('Simulated WebGL 3D context initialization failure.');
         return;
       }
@@ -1530,24 +1539,6 @@ export const CapyGameView: React.FC = () => {
     let cleanupFn: (() => void) | null = null;
 
     const bootEngine = async () => {
-      let swGl = false;
-      try {
-        const probeGl =
-          document.createElement('canvas').getContext('webgl2') ||
-          document.createElement('canvas').getContext('webgl');
-        if (!probeGl) {
-          swGl = true;
-        } else {
-          const ext = probeGl.getExtension('WEBGL_debug_renderer_info');
-          const param = ext ? ext.UNMASKED_RENDERER_WEBGL : probeGl.RENDERER;
-          const gpuStr = String(probeGl.getParameter(param));
-          probeGl.getExtension('WEBGL_lose_context')?.loseContext();
-          swGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuStr);
-        }
-      } catch {
-        swGl = true;
-      }
-
       if (cancelled || !mountRef.current) return;
 
       let PlayStyleManagerCtor: typeof import('../engine/PlayStyleManager').PlayStyleManager;
@@ -1557,6 +1548,7 @@ export const CapyGameView: React.FC = () => {
         PlayStyleManagerCtor = mod.PlayStyleManager;
       } catch (err) {
         if (!cancelled) {
+          tuckStaticBootShell();
           const message =
             err instanceof Error
               ? err.message
@@ -1713,10 +1705,10 @@ export const CapyGameView: React.FC = () => {
             return next;
           });
         },
-      },
-      { isSoftwareGl: swGl }
+      }
     );
       } catch (err) {
+        tuckStaticBootShell();
         const message =
           err instanceof Error ? err.message : 'Unable to initialize 3D graphics context.';
         setWebglError(message);
@@ -1909,7 +1901,7 @@ export const CapyGameView: React.FC = () => {
 
         if (!firstFrameRendered) {
           firstFrameRendered = true;
-          setEngineReady(true);
+          tuckStaticBootShell();
           syncBackgroundSuspension();
           if (isBackgroundSuspendedRef.current) {
             return;
@@ -1947,7 +1939,7 @@ export const CapyGameView: React.FC = () => {
       } else {
         manager.gpuEngine?.render();
         firstFrameRendered = true;
-        setEngineReady(true);
+        tuckStaticBootShell();
         manager.setPaused(true);
       }
 
@@ -2546,35 +2538,27 @@ export const CapyGameView: React.FC = () => {
       };
     };
 
-    let bootRaf1 = 0;
-    let bootRaf2 = 0;
-    bootRaf1 = window.requestAnimationFrame(() => {
-      bootRaf1 = 0;
-      if (cancelled) return;
-      bootRaf2 = window.requestAnimationFrame(() => {
-        bootRaf2 = 0;
-        if (!cancelled) {
-          void bootEngine().catch((err) => {
-            if (cancelled) return;
-            const message =
-              err instanceof Error
-                ? err.message
-                : 'Unable to initialize the 3D engine.';
-            setWebglError(message);
-          });
-        }
-      });
+    let bootRaf = 0;
+    bootRaf = window.requestAnimationFrame(() => {
+      bootRaf = 0;
+      if (!cancelled) {
+        void bootEngine().catch((err) => {
+          if (cancelled) return;
+          tuckStaticBootShell();
+          const message =
+            err instanceof Error
+              ? err.message
+              : 'Unable to initialize the 3D engine.';
+          setWebglError(message);
+        });
+      }
     });
 
     return () => {
       cancelled = true;
-      if (bootRaf1 !== 0) {
-        window.cancelAnimationFrame(bootRaf1);
-        bootRaf1 = 0;
-      }
-      if (bootRaf2 !== 0) {
-        window.cancelAnimationFrame(bootRaf2);
-        bootRaf2 = 0;
+      if (bootRaf !== 0) {
+        window.cancelAnimationFrame(bootRaf);
+        bootRaf = 0;
       }
       cleanupFn?.();
     };
@@ -4155,30 +4139,6 @@ export const CapyGameView: React.FC = () => {
         className="absolute inset-0 w-full h-full cursor-crosshair active:cursor-grabbing"
       />
 
-      {/* Lightweight Non-Blocking Boot Shell Matching index.html Static Shell (Zero CLS, Unmounts on Frame 1) */}
-      {!engineReady && !webglError && (
-        <div
-          data-testid="engine-boot-shell"
-          className="fixed inset-0 z-40 pointer-events-none flex flex-col items-center justify-center bg-[#020617] text-slate-50 text-center p-6"
-        >
-          <div className="text-[11px] font-bold tracking-[0.22em] uppercase text-sky-400 mb-2.5">
-            Interactive 3D Universe
-          </div>
-          <h1 className="m-0 text-[clamp(28px,5vw,44px)] font-extrabold tracking-[-0.02em] text-slate-50 leading-[1.1]">
-            CapyGame
-          </h1>
-          <p className="mt-2.5 mb-[22px] max-w-[420px] text-sm leading-relaxed text-slate-400">
-            Cosmic Universe Simulator &amp; Capybara Sanctuary Archipelago
-          </p>
-          <div
-            aria-hidden="true"
-            className="w-[200px] h-[3px] rounded-full bg-slate-400/20 overflow-hidden"
-          >
-            <div className="w-[72%] h-full rounded-full bg-gradient-to-r from-sky-400 to-amber-400" />
-          </div>
-        </div>
-      )}
-
       {/* WebGL Error Fallback Card */}
       {webglError && (
         <div
@@ -4326,14 +4286,7 @@ export const CapyGameView: React.FC = () => {
           SINGLE COMPACT TOP CONTROL, SCALE, STATUS & DROPDOWN BAR (h-10 / 40px)
           Hidden by default for a clean viewport; revealed from top-right Menu.
          ===================================================================== */}
-      {!isTopBarVisible &&
-        !(
-          cosmicStage === 'playing' &&
-          !universeScale.active &&
-          activeMode === 'capytorio' &&
-          !webglError &&
-          capytorioSnap
-        ) && (
+      {!isTopBarVisible && (
           <div className="fixed top-2 right-2 z-30 flex items-center gap-1.5 pointer-events-auto">
             <button
               type="button"
@@ -4484,7 +4437,7 @@ export const CapyGameView: React.FC = () => {
                 </span>
               </>
             ) : (
-              <span className="flex items-center gap-1 min-w-0 max-w-[96px] sm:max-w-[230px]">
+              <span className="flex items-center gap-1 min-w-0 max-w-[116px] sm:max-w-[230px]">
                 <span className="text-[11px] font-medium text-zinc-100 truncate">
                   {universeScale.bandId === 'leaf_fur_micro' && universeScale.forestSpecimenLabel
                     ? `Glade · ${universeScale.forestSpecimenLabel}`
@@ -4611,7 +4564,11 @@ export const CapyGameView: React.FC = () => {
               data-testid="cosmic-hud"
               data-cosmic-stage={cosmicStage}
               data-expanded={isInfographicExpanded ? 'true' : 'false'}
-              className="min-w-0 max-w-full sm:max-w-[360px] lg:max-w-[450px] overflow-hidden flex items-center justify-center"
+              className={`min-w-0 max-w-full sm:max-w-[360px] lg:max-w-[450px] overflow-hidden items-center justify-center ${
+                !toastText && (universeScale.active || isForestGames || isCapytorioGame)
+                  ? 'hidden md:flex'
+                  : 'flex'
+              }`}
             >
               <button
                 type="button"
@@ -4805,8 +4762,8 @@ export const CapyGameView: React.FC = () => {
             ) : (
               <Menu className="w-3.5 h-3.5 text-sky-400" />
             )}
-            <span className="hidden sm:inline">
-              {isAdvancedMode ? 'Island' : 'Island'}
+            <span className={isAdvancedMode ? 'hidden sm:inline' : 'inline truncate max-w-[74px] sm:max-w-none'}>
+              {activeMode === 'sanctuary' ? 'Island' : currentZone.title}
             </span>
           </button>
           )}
@@ -4836,7 +4793,7 @@ export const CapyGameView: React.FC = () => {
             onClick={handleToggleMute}
             title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
             aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
-            className={`${isAdvancedMode ? 'hidden sm:flex w-7 h-7' : 'flex w-7 h-7'} items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0`}
+            className="hidden md:flex w-7 h-7 items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 transition-colors cursor-pointer shrink-0"
           >
             {isMuted ? (
               <VolumeX className="w-3.5 h-3.5 text-rose-400" />
@@ -4927,7 +4884,7 @@ export const CapyGameView: React.FC = () => {
             aria-pressed={isFullscreen}
             title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
             aria-label={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-            className={`${isAdvancedMode ? 'w-5 h-6 sm:w-7 sm:h-7' : 'w-7 h-7'} flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 transition-colors cursor-pointer shrink-0`}
+            className="hidden md:flex w-7 h-7 items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/10 transition-colors cursor-pointer shrink-0"
           >
             {isFullscreen ? (
               <Minimize2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-sky-300" />

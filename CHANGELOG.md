@@ -2,6 +2,13 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.2.8] - 2026-11-26
+
+- Restored lazy loading of the Three.js renderer and Capytorio chunks by isolating `FocusGuard.ts` into its own lightweight shared chunk so initial page load no longer eagerly preloads 1.37 MB of 3D and factory bundles.
+- Removed the obsolete throwaway WebGL2 probe canvas at startup and switched to single-context software WebGL detection directly on `PlayStyleManager`'s `THREE.WebGLRenderer`.
+- Replaced the 551 KB WebP favicon with a tiny SVG favicon (`assets/favicon.svg`), removed `capybara.webp` from Service Worker precaching, moved `#static-boot-shell` outside `#root` and tucked it behind the canvas on Frame 1 to lock LCP, and fixed Cloudflare Pages `_headers` immutable cache overrides with `! Cache-Control`.
+- Fixed mobile top-bar overlap and crowding across Infinite Zoom, Forest Games, and Capytorio: removed the colliding secondary `"Stopped"`/scale pill and squished duplicate `Capy Island` button on phones, hid `Mute` and `Fullscreen` below `md` widths, and removed duplicate `Pause`, `Help`, `Settings`, and `Menu` buttons from Capytorio's secondary top-right bar.
+
 ## [1.2.7] - 2026-11-26
 
 - Removed unrealistic bright glowing bloom halos caused by specular highlight reflections off shiny glass, metal, and water surfaces.

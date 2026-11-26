@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/webp" href="assets/capybara.webp" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
     <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="assets/icon-512.png" />
     <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
@@ -19,26 +19,26 @@
     <meta property="og:description" content="Hardware-accelerated 3D multi-scale universe simulator, contiguous Capybara world builder, and multiphysics mini-game archipelago." />
   </head>
   <body class="bg-black text-slate-100 overflow-hidden select-none">
-    <div id="root">
+    <div id="root"></div>
+    <div
+      id="static-boot-shell"
+      data-testid="static-boot-shell"
+      style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#020617;color:#f8fafc;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;text-align:center;padding:24px;z-index:40;transition:opacity 220ms ease-out;"
+    >
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#38bdf8;margin-bottom:10px;">
+        Interactive 3D Universe
+      </div>
+      <h1 style="margin:0;font-size:clamp(28px,5vw,44px);font-weight:800;letter-spacing:-0.02em;color:#f8fafc;line-height:1.1;">
+        CapyGame
+      </h1>
+      <p style="margin:10px 0 22px 0;max-width:420px;font-size:14px;line-height:1.5;color:#94a3b8;">
+        Cosmic Universe Simulator &amp; Capybara Sanctuary Archipelago
+      </p>
       <div
-        data-testid="static-boot-shell"
-        style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#020617;color:#f8fafc;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;text-align:center;padding:24px;z-index:40;"
+        aria-hidden="true"
+        style="width:200px;height:3px;border-radius:999px;background:rgba(148,163,184,0.18);overflow:hidden;"
       >
-        <div style="font-size:11px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#38bdf8;margin-bottom:10px;">
-          Interactive 3D Universe
-        </div>
-        <h1 style="margin:0;font-size:clamp(28px,5vw,44px);font-weight:800;letter-spacing:-0.02em;color:#f8fafc;line-height:1.1;">
-          CapyGame
-        </h1>
-        <p style="margin:10px 0 22px 0;max-width:420px;font-size:14px;line-height:1.5;color:#94a3b8;">
-          Cosmic Universe Simulator &amp; Capybara Sanctuary Archipelago
-        </p>
-        <div
-          aria-hidden="true"
-          style="width:200px;height:3px;border-radius:999px;background:rgba(148,163,184,0.18);overflow:hidden;"
-        >
-          <div style="width:42%;height:100%;border-radius:999px;background:linear-gradient(90deg,#38bdf8,#fbbf24);"></div>
-        </div>
+        <div style="width:42%;height:100%;border-radius:999px;background:linear-gradient(90deg,#38bdf8,#fbbf24);"></div>
       </div>
     </div>
     <script>
@@ -50,6 +50,12 @@
         } catch (err) {}
         function renderBootError(title, detail) {
           if (window.__capyBooted) return;
+          var staticShell = document.getElementById('static-boot-shell');
+          if (staticShell) {
+            staticShell.style.opacity = '0';
+            staticShell.style.pointerEvents = 'none';
+            staticShell.style.zIndex = '-1';
+          }
           var root = document.getElementById('root');
           if (!root) return;
           while (root.firstChild) {

@@ -13,8 +13,8 @@
 5. **Zero per-frame allocations in hot paths**: Never instantiate `THREE.Vector3`, `THREE.Matrix4`, `THREE.Color`, objects, or arrays inside `requestAnimationFrame` loops, `PlayStyleManager.tick()`, or GPU particle/physics substeps. Reuse module-scoped scratch structs and typed arrays (`Float32Array`).
 6. **Never leave completed items in `TODO.md`**: Remove completed tasks from [`TODO.md`](./TODO.md) immediately rather than checking them off with `[x]`.
 7. **Always display working thoughts & structured status updates**: Explain what file or subsystem is being inspected or modified, why, priority (`P0`, `P1`, `P2`), complexity (`Low`, `Medium`, `High`), estimated step duration, and overall ETA.
-8. **Verify builds before finishing**: Always run `npm run lint` and `npm run build` cleanly before completing code changes.
-9. **SemVer & `CHANGELOG.md` synchronization**: For every non-doc code change, bump `package.json` and matching `package-lock.json` version fields using SemVer (`patch` for fixes/perf/CI, `minor` for new features, `major` only when explicitly requested) and add a plain-English `## [X.Y.Z] - YYYY-MM-DD` entry at the top of `CHANGELOG.md` before running `npm run lint && npm run test:unit && npm run build`.
+8. **Verify builds and unit tests before finishing**: Add or update unit tests for code changes and always run `npm run lint`, `npm run test:unit`, and `npm run build` cleanly before completing code changes.
+9. **SemVer & `CHANGELOG.md` synchronization**: For every non-doc code change, bump `package.json`, `package-lock.json`, `src/capygame/config/appVersion.ts`, and `vite.config.ts` version fields using SemVer (`patch` for fixes/perf/CI, `minor` for new features, `major` only when explicitly requested) and add a plain-English `## [X.Y.Z] - YYYY-MM-DD` entry at the top of `CHANGELOG.md` before running `npm run lint && npm run test:unit && npm run build`.
 
 ---
 

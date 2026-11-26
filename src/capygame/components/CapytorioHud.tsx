@@ -9,16 +9,11 @@ import {
   Flame,
   FlipHorizontal2,
   FlipVertical2,
-  HelpCircle,
-  Menu,
   Move,
-  Pause,
-  Play,
   Redo2,
   RotateCcw,
   Scissors,
   Search,
-  Settings,
   Undo2,
   Wrench,
   X,
@@ -208,11 +203,6 @@ export interface CapytorioHudProps {
 export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
   snap,
   isTopBarVisible,
-  onToggleTopBar,
-  onOpenSettings,
-  isPaused = false,
-  onTogglePause,
-  onOpenAbout,
   pointerHoverActive,
   drawerTab,
   setDrawerTab,
@@ -520,12 +510,12 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
         </div>
       </div>
 
-      {/* TOP-RIGHT COMPACT FACTORIO MENU STRIP (Tech, Settings, Menu to reveal top bar) */}
+      {/* TOP-RIGHT COMPACT FACTORIO MENU STRIP (Capytorio-specific Tech & Pedia only) */}
       <div
         data-testid="capytorio-top-right-menu"
         aria-label="Factorio Top-Right Menu"
         className={`fixed right-2 z-30 pointer-events-auto transition-[top] duration-150 ${
-          isTopBarVisible ? 'top-[48px]' : 'top-2'
+          isTopBarVisible ? 'top-[48px]' : 'top-[42px]'
         }`}
       >
         <div className={`${FACTORIO_PANEL_FRAME} p-0.5 flex items-center gap-1 text-[#e6e8ec]`}>
@@ -559,60 +549,6 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
             }`}
           >
             <BookOpen className="w-3.5 h-3.5" />
-          </button>
-
-          {onTogglePause && (
-            <button
-              type="button"
-              data-testid="capytorio-pause-btn"
-              title={isPaused ? 'Resume Simulation [P]' : 'Pause Simulation & Save CPU/RAM [P]'}
-              aria-label={isPaused ? 'Resume Game' : 'Pause Game'}
-              onClick={onTogglePause}
-              className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${
-                isPaused ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-              }`}
-            >
-              {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-            </button>
-          )}
-
-          {onOpenAbout && (
-            <button
-              type="button"
-              data-testid="capytorio-open-about-btn"
-              title="About CapyGame & Tutorials"
-              aria-label="Open About CapyGame and Help"
-              onClick={onOpenAbout}
-              className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-            </button>
-          )}
-
-          <button
-            type="button"
-            data-testid="capytorio-open-settings-btn"
-            title="Factory & World Settings"
-            aria-label="Open Settings"
-            onClick={onOpenSettings}
-            className={`h-6 w-6 rounded-[2px] flex items-center justify-center cursor-pointer ${FACTORIO_BTN_IDLE}`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            type="button"
-            data-testid="capytorio-toggle-topbar-btn"
-            title={isTopBarVisible ? 'Hide Top Bar' : 'Show World & Scale Top Bar'}
-            aria-label={isTopBarVisible ? 'Hide Top Bar' : 'Show Top Bar'}
-            aria-expanded={isTopBarVisible}
-            onClick={onToggleTopBar}
-            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
-              isTopBarVisible ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
-            }`}
-          >
-            <Menu className="w-3 h-3 shrink-0" />
-            <span>Menu</span>
           </button>
         </div>
       </div>
