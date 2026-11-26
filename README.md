@@ -1,15 +1,16 @@
-# CapyGame: Multi-Scale Universe Simulator & Contiguous Capybara World
+# CapyGame: Multi-Scale Universe Simulator, Forest Archipelago & Capytorio
 
-[![Web App](https://img.shields.io/badge/Web_App-Play_Online-blue?style=for-the-badge&logo=googlechrome&logoColor=white)](https://shthed.github.io/capygame/)
+[![Web App](https://img.shields.io/badge/Web_App-Play_Online-blue?style=for-the-badge&logo=googlechrome&logoColor=white)](https://capyboop.com/)
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC_BY--NC--SA_4.0-orange?style=for-the-badge)](./LICENSE.md)
 
-**CapyGame** is a hardware-accelerated 3D multi-scale universe simulator, sandbox island builder, and multiphysics mini-game archipelago built with React 19, TypeScript, Three.js, Vite 6, Tailwind CSS 4, and `@dimforge/rapier3d-compat` WebAssembly physics.
+**CapyGame** is a hardware-accelerated 3D web game combining three cleanly separated standalone modes—**Infinite Zoom**, **Forest Games**, and **Capytorio**—built with React 19, TypeScript, Three.js (WebGL2), Vite 6, Tailwind CSS 4, and `@dimforge/rapier3d-compat` WebAssembly physics.
 
-- **65-Orders-of-Magnitude `1:1` Chrono-Vessel Continuum**: Pilot a time-traveling Future Capybara Chrono-Vessel continuously across 27 astrophysical bands from the `10^+30 m` Multiverse through Big Bang cosmic inflation, spacetime manifold, observable horizon (`93.0 Gly`), cosmic web filaments, superclusters, clusters, selectable galaxy morphologies (grand-design spiral, barred spiral, elliptical, irregular) aiming early onto **CapySol System** (`Orion-Cygnus Spur`) and **CapyWorld Planet**, emission nebulae & dust pillars, Keplerian stellar systems (`59.6 AU`), planetary touchdown onto the Sanctuary Chrono-Pad (`10^+0.8 m`), a randomized 11-specimen **Storybook Forest Micro-Glade** (`10^-2 m`: `Fur`, `Butterfly`, `Flower`, `Leaf`, `Wood`, `Mushroom`, `Amoeba`, `Bacterial`, `Virus`, `Clay`, `Rock`) with persistent **Discovery Sticker Book**, and down to `10^-35 m` (`0.62 l_P`) Planck Quantum Foam. Control flight via compact bottom-right **Rewind / Play-Pause / Fast Forward** buttons plus a **Straight / Spiral** toggle (curving `360°` around each zoom level), a top-right **Fullscreen** control, spoken scale cards, Basic Mode camera comfort guardrails, `Chase Pod 3P` / `Telescope 1P` optics, unlockable **Object Finder Markers**, and a **Logarithmic/Exponential Reality Rescaler**.
-- **First-Time Chrono-Genesis Setup & Fine-Structure Constant ($\alpha$)**: On initial launch (and anytime via **Genesis Setup**), players customize their Capybara pilot archetype/fur/headgear, `ChronoVesselRig` Cherenkov/brass/canopy finish & scale, and the universe's Fine-Structure Constant ($\alpha^{-1} \in [60, 220]$, default CODATA `137.036`), dynamically scaling atomic Bohr orbitals, Dirac electron spinor velocity, QED photon wave-packets, and solar photosphere fusion tint in real time.
-- **Built-In Live Procedural JSON Engine**: Customize and hot-reload universe gravity, star/galaxy density, planetary biomes, terrain elevation, weather, Chrono-Vessel colors, economy multipliers, and all 5 districts via deterministic `mulberry32` seeds and 5 one-click presets stored in `capy_game_procedural_config_v1` (`capy_game_onboarding_v1` tracks initial setup completion).
-- **Contiguous Archipelago & Far-Hemisphere Capytorio**: Walk seamlessly overland between **Capy Sanctuary**, **Spore Lagoon**, **Number Stampede**, and **Yuzu Mountain Parkour**, or launch directly into **Capytorio Frontier (`+1200, 0`)** via the **`Play Capytorio`** button beside **`Play on Island!`**. Features a lush green meadow with orange-bearing tropical citrus trees (yielding Fresh Oranges when mined `[E]`), a steep **68° Factorio Overhead (`[V]`) / 3D Chase** camera with scroll zoom, **78 canonical Factorio recipes & 25 technologies** parsed from `recipe.lua` and `technology.lua` (supporting 44 craftable/placeable Factorio machines), a **10-Slot Recent-Items Quickbar (`[1]`–`[0]`)** with a floating **Factorio Crafting & Character Inventory (`[I]`)** toggle, L-corner drag-paint belt laying, **Smart Pipette (`[Q]`)**, **Beacon Recall (`[H]`)**, direct generator/machine feeding (`[F]`), 6-step guided milestones, and Orbital Yuzu Rocket launches.
-- **Hardware-Accelerated WebGL2 3D GPU + Multiphysics Engine**: Standardized across desktop and mobile on WebGL2 `HalfFloatType` `EffectComposer` (HDR bloom + linearized Depth-SSAO + CAS sharpening + volumetric sun shafts + FXAA), native GLSL astrophysical & cosmic shaders, Sobel tangent-space PBR textures, PMREM IBL, texel-snapped solar/lunar shadow cascades, idle async shader warmup, zero-allocation GPU `InstancedMesh` VFX, studio Web Audio synthesizer, and off-thread Rapier3D Wasm + XPBD soft-body physics.
+- **3 Standalone Modes & Clean Simulation Pausing**: Switch instantly via the compact `40px` top bar between **Infinite Zoom**, **Forest Games**, and **Capytorio**. Only the active game's 3D world, lighting, HUD, and simulation loop run at any time; inactive modes pause automatically and flush pending saves.
+- **Infinite Zoom (`10^+30 m` to `10^-35 m` `1:1` Continuum)**: Pilot a time-traveling Chrono-Vessel continuously across 27 astrophysical and subatomic bands from the Multiverse through Big Bang inflation, spacetime manifold, observable horizon (`93.0 Gly`), cosmic web filaments, superclusters, clusters, selectable galaxy morphologies aiming onto **CapySol System** (`Orion-Cygnus Spur`) and **CapyWorld Planet**, emission nebulae & dust pillars, Keplerian stellar systems (`59.6 AU`), planetary clouds & surface biomes, a grounded **Forest Glade** and 11-specimen **Leaf & Fur Micro-Glade** (`10^-2 m`) with persistent **Discovery Sticker Book**, **Biological Cells**, a luminous **Chromatin & Nucleosome** transition into the **DNA Helix**, and down to `10^-35 m` (`0.62 l_P`) Planck Quantum Foam. Control flight via bottom-right **Rewind / Play-Pause / Fast Forward** buttons, a **Straight / Spiral** toggle (`360°` per band), `Chase Pod 3P` / `Telescope 1P` optics, unlockable **Object Finder Markers**, and a **Reality Rescaler**.
+- **Forest Games (Unified Bridgeless Island)**: Roam one seamless, open-world tropical island combining four classic capybara mini-games—**Capy Sanctuary**, **Spore Lagoon**, **Number Stampede**, and **Yuzu Mountain Parkour**—with no bridges or forced transitions. Grow your articulated Dachshund Capy-Snake trail, place Sanctuary buildings, swim into bioluminescent waters to splice 3D DNA mutations, steer a capybara herd through arithmetic gates, and climb rigid-body parkour obstacles.
+- **Capytorio (3D Factorio-Style Factory Automation)**: Build belt-fed automation across an endless lush meadow and citrus grove (`78` canonical Factorio recipes & `25` technologies parsed from `recipe.lua` and `technology.lua`, `44` placeable machines). Features brushed satin PBR metals, a steep **68° Overhead (`[V]`) / 3D Chase** camera, **Alt-Mode** item/machine/alert icons above buildings, compact arrow-only **Undo/Redo**, move-while-pasting **Blueprints**, a **10-Slot Recent-Items Quickbar (`[1]`–`[0]`)**, L-corner drag-paint belts, **Smart Pipette (`[Q]`)**, **Beacon Recall (`[H]`)**, and **Orbital Yuzu Rocket / UFO** launches.
+- **First-Time Chrono-Genesis Setup & Procedural JSON Engine**: Customize your Capybara pilot, `ChronoVesselRig` finish, and the universe's Fine-Structure Constant ($\alpha^{-1} \in [60, 220]$, default CODATA `137.036`), or hot-reload deterministic `mulberry32` simulation seeds and presets (`capy_game_procedural_config_v1`).
+- **Fast Cold-Load & Standardized WebGL2 GPU + Multiphysics Engine**: Instant static boot shell with post-paint lazy loading of Three.js and the 3D engine, lazy alpine mountain PBR baking, async idle shader warmup, unified desktop/mobile WebGL2 `HalfFloatType` `EffectComposer` (HDR bloom, linearized Depth-SSAO, CAS sharpening, FXAA), Sobel tangent-space PBR textures, PMREM IBL, texel-snapped shadows, zero-allocation GPU `InstancedMesh` VFX, studio Web Audio synthesizer, and off-thread Rapier3D Wasm + XPBD soft-body physics.
 
 ---
 
@@ -22,9 +23,9 @@
 </p>
 
 <p align="center">
-  <img src="./docs/gallery/capygame_contiguous_promenade.png" alt="Grand Promenade Causeway Overland Walk" width="92%" />
+  <img src="./docs/gallery/capygame_contiguous_promenade.png" alt="Unified Forest Island Overland Walk" width="92%" />
   <br>
-  <em>Contiguous Single-World Archipelago: Seamless overland traversal across the paved Grand Promenade Causeways with live multi-threaded Rapier3D Wasm physics telemetry.</em>
+  <em>Forest Games Unified Island: Seamless overland traversal across Sanctuary, Spore Lagoon, Number Stampede, and Yuzu Mountain with live multi-threaded Rapier3D Wasm physics.</em>
 </p>
 
 | **Spore Lagoon Evolution (`spore`)** | **Spore DNA Mutation Lab (`dna`)** |
@@ -51,14 +52,15 @@
 graph TD
   subgraph ReactShell["React 19 Shell (src/)"]
     App["App.tsx"]
-    View["CapyGameView.tsx (40px Unified Top Bar, Scale Atlas, Optics & Settings)"]
+    View["CapyGameView.tsx (40px Top Bar, 3-Mode Switcher, Lazy 3D Loader & HUD)"]
   end
 
   subgraph EngineCore["CapyGame Engine (src/capygame/engine/)"]
-    PSM["PlayStyleManager.ts (Contiguous 5-District World & Articulated Spine)"]
-    SUS["SeamlessUniverseSimulator.ts & UniverseShaders.ts (10^+28m to 10^-35m)"]
+    PSM["PlayStyleManager.ts (3 Standalone Modes, Forest Island & Articulated Spine)"]
+    SUS["SeamlessUniverseSimulator.ts & UniverseShaders.ts (10^+30m to 10^-35m)"]
+    CAP["CapytorioFactoryEngine.ts & CapytorioMeshBuilder.ts (Lua Factory Automation)"]
     CMG["CapyModelGenerator.ts (4-Tier 60 FPS LOD Anatomy & Structures)"]
-    RWE["RealisticWorldEnvironment.ts (Sky Dome, Day/Night, Weather & Botany)"]
+    RWE["RealisticWorldEnvironment.ts (Sky Dome, Day/Night, Weather & Lazy Alpine PBR)"]
   end
 
   subgraph GpuAndPhysics["Hardware GPU & Multiphysics Subsystems"]
@@ -69,8 +71,9 @@ graph TD
   end
 
   App --> View
-  View --> PSM
+  View -. "lazy import()" .-> PSM
   PSM --> SUS
+  PSM --> CAP
   PSM --> CMG
   PSM --> RWE
   PSM --> GPU
@@ -81,15 +84,16 @@ graph TD
 
 ---
 
-## Five Contiguous World Districts
+## Three Standalone Modes & Playable Areas
 
-| District Key | World Coordinates | Core Mechanics | Progression & Unlocks |
+| Mode / Area | Key | Core Mechanics | Progression & Unlocks |
 | :--- | :--- | :--- | :--- |
-| `sanctuary` | **Capy Sanctuary (`0, 0`)** | Place and upgrade Onsen Hot Springs, Yuzu Orchards, Sacred Pagodas, and Bouncy Pads; bump matching trees to grow your Dachshund Capy-Snake trail. | Sandbox island customization, CapyCoins, and Spore DNA milestones. |
-| `spore` | **Spore Lagoon (`-110, -110`)** | Walk down the NW Promenade beach into bioluminescent waters or swim across open sea channels to harvest plankton and splice 3D body mutations. | Spore DNA points and Lagoon mass high scores. |
-| `capytorio` | **Capytorio Frontier (`+1200, 0`)** | Endless far-hemisphere lush grass meadow and tropical citrus trees with infinite build room to harvest oranges/ore and deploy 44 Factorio machines & belts (`78` Lua recipes). | `25` Factorio Space Age technologies, Spore DNA milestones, Orbital Rocket launches, and Factory scores. |
-| `runner` | **Number Stampede (`-110, +135`)** | Guide your 3D Capybara herd down the SW Causeway through additive and multiplicative math gates with side return boardwalks. | Herd size records, DNA bonuses, and Stampede high scores. |
-| `fallguys` | **Yuzu Mountain (`+110, +135`)** | Climb the SE Gauntlet past rotating hammers, dynamic see-saws, and XPBD launch pads to claim the Golden Crown. | Crown completion DNA bonuses and Yuzu Mountain high scores. |
+| **Infinite Zoom** | `cosmos` | Continuous `10^+30 m` to `10^-35 m` Chrono-Vessel flight across 27 bands including Multiverse, galaxies, Forest Glade, Leaf/Fur Micro-Glade, Cells, Chromatin, DNA, and Planck Foam. | Micro-Glade Discovery Sticker Book, Object Finder Markers, Reality Rescaler, and Spore DNA. |
+| **Forest Games: Sanctuary** | `sanctuary` | Central area of the unified bridgeless island; place and upgrade Onsen Hot Springs, Yuzu Orchards, Sacred Pagodas, and Bouncy Pads; bump matching trees to grow your Capy-Snake trail. | Sandbox island customization, CapyCoins, and Spore DNA milestones. |
+| **Forest Games: Spore Lagoon** | `spore` | Walk straight into the NW sandy lagoon rim to swim through bioluminescent waters, harvest plankton, and splice 3D body mutations. | Spore DNA points and Lagoon mass high scores. |
+| **Forest Games: Number Stampede** | `runner` | Guide your 3D Capybara herd along the SW island track through additive and multiplicative math gates. | Herd size records, DNA bonuses, and Stampede high scores. |
+| **Forest Games: Yuzu Mountain** | `fallguys` | Climb the SE island gauntlet past rotating hammers, torque see-saws, and XPBD soft-body launch pads to claim the Golden Crown. | Crown completion DNA bonuses, ghost replays, and Yuzu Mountain high scores. |
+| **Capytorio** | `capytorio` | Standalone endless lush meadow & citrus grove factory mode; harvest oranges/ore and automate `44` Factorio machines & belts (`78` Lua recipes, blueprint copy/paste, Alt-Mode icons). | `25` Factorio technologies, Spore DNA milestones, Orbital UFO/Rocket launches, and Factory scores. |
 
 ---
 

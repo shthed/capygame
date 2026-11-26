@@ -8,7 +8,7 @@ Thank you for your interest in contributing to **CapyGame** ([`https://github.co
 
 ## Ways to Contribute
 
-- **Report Bugs**: Open a [Bug Report](https://github.com/capyboop/capygame/issues/new/choose) with your browser/device, GPU backend (WebGPU or WebGL2), and reproduction steps.
+- **Report Bugs**: Open a [Bug Report](https://github.com/capyboop/capygame/issues/new/choose) with your browser/device, GPU adapter (WebGL2), and reproduction steps.
 - **Suggest Features or Factory / World Ideas**: Use the [Feature Request form](https://github.com/capyboop/capygame/issues/new/choose).
 - **Submit Pull Requests**: Fork `https://github.com/capyboop/capygame`, create a focused branch from `main`, and open a Pull Request using [`.github/PULL_REQUEST_TEMPLATE.md`](./.github/PULL_REQUEST_TEMPLATE.md).
 
@@ -34,7 +34,7 @@ npm run lint && npm run test:unit && npm run build
 ```
 
 - `npm run lint`: Runs strict TypeScript type-checking (`tsc -p tsconfig.json --noEmit`).
-- `npm run test:unit`: Runs the fast deterministic `node:test` unit suite (`ProgressionAndPhysics.test.ts`, `UniverseAndGpuMath.test.ts`, `CapytorioFactoryEngine.test.ts`).
+- `npm run test:unit`: Runs the fast deterministic `node:test` unit suite across all 6 test files (`ProgressionAndPhysics.test.ts`, `UniverseAndGpuMath.test.ts`, `CapytorioFactoryEngine.test.ts`, `forestMicroSpecimens.test.ts`, `UfoFlightSequence.test.ts`, and `TutorialCatalog.test.ts`).
 - `npm run build`: Builds the production Vite bundle into `dist/` with relative (`./`) asset paths.
 - `npm run test:game` / `npm run test:pwa`: Optional Playwright E2E and offline Service Worker checks when changing rendering, controls, factory gameplay, or PWA caching.
 

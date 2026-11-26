@@ -25,7 +25,7 @@ Please include:
 
 - A clear description of the vulnerability and potential impact.
 - Steps to reproduce or a minimal proof of concept.
-- Affected subsystem (React HUD, Three.js / WebGPU renderer, Rapier3D physics worker, Capytorio Lua parser, or PWA Service Worker).
+- Affected subsystem (React HUD, Three.js / WebGL2 renderer, Rapier3D physics worker, Capytorio Lua parser, or PWA Service Worker).
 
 We will acknowledge receipt, investigate, and coordinate a fix before public disclosure.
 

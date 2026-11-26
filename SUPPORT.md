@@ -16,7 +16,7 @@ Welcome to **CapyGame** support! Here is where to play the latest release, check
 
 ## Getting Help or Reporting an Issue
 
-- **Bugs, Crashes, or Rendering Glitches**: Open a [Bug Report](https://github.com/capyboop/capygame/issues/new/choose) with your browser/device model, GPU backend (WebGPU or WebGL2), and reproduction steps.
+- **Bugs, Crashes, or Rendering Glitches**: Open a [Bug Report](https://github.com/capyboop/capygame/issues/new/choose) with your browser/device model, GPU adapter (WebGL2), and reproduction steps.
 - **Feature Requests or World / Factory Ideas**: Submit a [Feature Request](https://github.com/capyboop/capygame/issues/new/choose).
 - **Existing Issues**: Browse or search [open issues](https://github.com/capyboop/capygame/issues) before creating a duplicate report.
 

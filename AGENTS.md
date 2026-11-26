@@ -22,10 +22,10 @@
 
 | Subsystem | Location | Scope |
 | :--- | :--- | :--- |
-| **React Shell & HUD** | `src/App.tsx`, `src/capygame/components/CapyGameView.tsx` | Single `40px` (`h-10`) top bar, 65-order Scale Atlas, Cosmic Optics, Live Inspector, World Dock, Settings |
-| **3D World & Universe Engine** | `src/capygame/engine/*.ts` | Contiguous 5-district world, 4-tier 60 FPS Capybara LOD, `10^+30 m` to `10^-35 m` `1:1` Universe Simulator, astrophysical shaders |
-| **Hardware GPU & VFX Pipeline** | `src/capygame/engine/gpu/*.ts` | Sobel tangent-space PBR synthesizer, PMREM IBL, texel-snapped shadow cascade, `EffectComposer` Bloom/SSAO/DoF/CAS, SoA `InstancedMesh` VFX |
-| **Multiphysics Engine** | `src/capygame/engine/physics/*.ts` | `@dimforge/rapier3d-compat` Wasm worker, `ContiguousWorldTopology` Grand Promenade Causeways, XPBD soft-body pads, shallow-water buoyancy |
+| **React Shell & HUD** | `src/App.tsx`, `src/capygame/components/CapyGameView.tsx` | Single `40px` (`h-10`) top bar, 3-mode switcher (`Infinite Zoom`, `Forest Games`, `Capytorio`), lazy engine loader, Scale Atlas, Cosmic Optics, Settings |
+| **3D World & Universe Engine** | `src/capygame/engine/*.ts` | 3 standalone modes (pure `10^+30 m` to `10^-35 m` Infinite Zoom, unified bridgeless Forest island, Capytorio factory), 4-tier 60 FPS Capybara LOD, GLSL shaders |
+| **Hardware WebGL2 GPU & VFX** | `src/capygame/engine/gpu/*.ts` | Standardized WebGL2 renderer, Sobel tangent-space PBR synthesizer, PMREM IBL, texel-snapped shadow cascade, `EffectComposer` Bloom/SSAO/DoF/CAS, SoA `InstancedMesh` VFX |
+| **Multiphysics Engine** | `src/capygame/engine/physics/*.ts` | `@dimforge/rapier3d-compat` Wasm worker, `ContiguousWorldTopology` unified Forest island & Capytorio terrain, XPBD soft-body pads, shallow-water buoyancy |
 | **Audio & Progression** | `src/capygame/services/*.ts`, `src/services/*.ts` | Web Audio compressor/reverb synthesizer, persistent `capy_game_save_v3` & `capy_game_settings_v1`, offline PWA service worker |
 | **E2E & Showcase Automation** | `scripts/*.mjs` | Headless Playwright 3D E2E verification (`test-capygame.mjs`), PWA offline test (`test-pwa-offline.mjs`), and gallery screenshot capture |
 
