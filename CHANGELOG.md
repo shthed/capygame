@@ -2,6 +2,14 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.2.9] - 2026-11-26
+
+- Replaced the monolithic synchronous surface world builder with mode-scoped lazy building and incremental background hydration so entering Forest Games builds only the active district immediately and entering Capytorio never builds Forest districts or downloads the 4.24 MB Rapier3D physics worker.
+- Switched Forest Games NPC crowds (Sanctuary buddies, Spore critters, Runner mini-capybaras, Fall Guys rivals, and the hero selection circle) to lean NPC LOD tiers while keeping the player Hero Capybara at full LOD, and hid distant inactive district NPC herds while keeping unified island landmarks visible.
+- Eliminated Infinite Zoom band-jump and mode-return click-handler freezes by avoiding synchronous double-rendering while the animation loop is active, warming one universe scale layer per idle slice, and replacing synchronous occluder `renderer.compile()` with async compilation.
+- Guarded Capytorio's automatic live `.lua` HTTP fetches behind development mode and enforced `NODE_ENV=production` during `vite build` so production bundles always ship optimized production React and skip redundant `.lua` network requests.
+- Code-split the About/Tutorials and Procedural JSON Config Editor modals out of `CapyGameView` using `React.lazy()` to reduce the initial boot bundle.
+
 ## [1.2.8] - 2026-11-26
 
 - Restored lazy loading of the Three.js renderer and Capytorio chunks by isolating `FocusGuard.ts` into its own lightweight shared chunk so initial page load no longer eagerly preloads 1.37 MB of 3D and factory bundles.

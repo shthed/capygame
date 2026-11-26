@@ -902,8 +902,16 @@ export class PlayStyleManager {
   private fallGuysGhostMat: THREE.MeshStandardMaterial | null = null;
 
   private surfaceWorldsBuilt: boolean = false;
-  private surfaceBuildStep: number = 0;
+  private archipelagoBaseBuilt: boolean = false;
+  private sanctuaryBuilt: boolean = false;
+  private sporeBuilt: boolean = false;
+  private runnerBuilt: boolean = false;
+  private fallGuysBuilt: boolean = false;
+  private physicsInitialized: boolean = false;
+  private selectableHeroCircleBuilt: boolean = false;
+  private occludersPrewarmed: boolean = false;
   private deferredBootCancel: (() => void) | null = null;
+  private forestHydrationCancel: (() => void) | null = null;
   private pendingProceduralConfigSync: boolean = false;
 
   constructor(
@@ -1376,6 +1384,8 @@ export class PlayStyleManager {
       this.autoZoomDirection = 0;
       this.deferredBootCancel?.();
       this.deferredBootCancel = null;
+      this.forestHydrationCancel?.();
+      this.forestHydrationCancel = null;
       this.idleWarmupCancel?.();
       this.idleWarmupCancel = null;
       ProgressionService.flushPendingSave();
@@ -1386,6 +1396,14 @@ export class PlayStyleManager {
       this.physicsBridge?.resumeFromPause();
       this.gpuEngine?.resumeFromPause();
       AudioService.resumeFromPause();
+      if (
+        !this.surfaceWorldsBuilt &&
+        this.cosmicStage === 'playing' &&
+        !this.seamlessZoomActive &&
+        this.currentMode !== 'capytorio'
+      ) {
+        this.scheduleForestBackgroundHydration();
+      }
       if (!this.deferredBootComplete) {
         this.scheduleDeferredBootWork();
       } else if (!this.idleWarmupComplete) {
@@ -1398,51 +1416,213 @@ export class PlayStyleManager {
     return this.isPausedState;
   }
 
-  private buildNextSurfaceStep(): boolean {
-    if (this.surfaceWorldsBuilt) return false;
-    switch (this.surfaceBuildStep) {
-      case 0:
-        this.ensureHeroCapyBuilt();
-        this.worldEnv.ensureCoreTexturesReady();
-        this.worldEnv.ensureAlpineMountainsBuilt();
-        this.buildSharedArchipelagoBase();
-        break;
-      case 1:
-        this.buildSanctuary();
-        break;
-      case 2:
-        this.buildSporeWorld();
-        break;
-      case 3:
-        this.buildCapytorioWorld();
-        break;
-      case 4:
-        this.buildRunner();
-        break;
-      case 5:
-        this.buildFallGuys();
-        break;
-      case 6:
-        this.physicsBridge.ensureWorkerInitialized();
-        this.syncWorldPhysicsColliders();
-        break;
-      case 7:
-        this.buildSelectableCapyHeroCircle();
-        break;
-      case 8:
-        this.prewarmOccluderShaderPrograms();
-        this.surfaceWorldsBuilt = true;
-        if (this.pendingProceduralConfigSync) {
-          this.pendingProceduralConfigSync = false;
-          this.applyProceduralConfig(this.proceduralConfig, true);
-        }
-        break;
-      default:
-        this.surfaceWorldsBuilt = true;
-        return false;
+  private getNpcCapyLodTier(): CapyLodTier {
+    return this.isSoftwareGl ? 0 : (Math.min(1, this.currentCapyLodTier) as CapyLodTier);
+  }
+
+  private ensureArchipelagoBaseBuilt(): void {
+    if (this.archipelagoBaseBuilt) return;
+    this.ensureHeroCapyBuilt();
+    this.worldEnv.ensureCoreTexturesReady();
+    this.buildSharedArchipelagoBase();
+    this.archipelagoBaseBuilt = true;
+  }
+
+  private ensureSanctuaryBuilt(): void {
+    if (this.sanctuaryBuilt) return;
+    this.ensureArchipelagoBaseBuilt();
+    this.buildSanctuary();
+    this.sanctuaryBuilt = true;
+    this.syncDistrictNpcVisibility();
+  }
+
+  private ensureSporeBuilt(): void {
+    if (this.sporeBuilt) return;
+    this.ensureArchipelagoBaseBuilt();
+    this.buildSporeWorld();
+    this.sporeBuilt = true;
+    this.syncDistrictNpcVisibility();
+  }
+
+  private ensureRunnerBuilt(): void {
+    if (this.runnerBuilt) return;
+    this.ensureArchipelagoBaseBuilt();
+    this.buildRunner();
+    this.runnerBuilt = true;
+    this.syncDistrictNpcVisibility();
+  }
+
+  private ensureFallGuysBuilt(): void {
+    if (this.fallGuysBuilt) return;
+    this.ensureArchipelagoBaseBuilt();
+    this.buildFallGuys();
+    this.fallGuysBuilt = true;
+    this.syncDistrictNpcVisibility();
+  }
+
+  private ensurePhysicsInitialized(): void {
+    if (this.physicsInitialized) return;
+    this.physicsBridge.ensureWorkerInitialized();
+    this.syncWorldPhysicsColliders();
+    this.physicsInitialized = true;
+  }
+
+  private ensureSelectableHeroCircleBuilt(): void {
+    if (this.selectableHeroCircleBuilt) return;
+    this.ensureSanctuaryBuilt();
+    this.buildSelectableCapyHeroCircle();
+    this.selectableHeroCircleBuilt = true;
+  }
+
+  private ensureOccludersPrewarmed(): void {
+    if (this.occludersPrewarmed) return;
+    this.occludersPrewarmed = true;
+    this.prewarmOccluderShaderPrograms();
+  }
+
+  private checkAndMarkSurfaceWorldsBuilt(): void {
+    if (
+      this.archipelagoBaseBuilt &&
+      this.sanctuaryBuilt &&
+      this.sporeBuilt &&
+      this.runnerBuilt &&
+      this.fallGuysBuilt &&
+      this.physicsInitialized &&
+      this.occludersPrewarmed
+    ) {
+      this.surfaceWorldsBuilt = true;
+      if (this.pendingProceduralConfigSync) {
+        this.pendingProceduralConfigSync = false;
+        this.applyProceduralConfig(this.proceduralConfig, true);
+      }
     }
-    this.surfaceBuildStep += 1;
-    // Keep surface groups hidden while still high in cosmic space
+  }
+
+  private buildNextPendingForestHydrationStep(): boolean {
+    if (!this.worldEnv.isAlpineMountainsBuilt()) {
+      this.worldEnv.ensureAlpineMountainsBuilt();
+      if (this.worldEnv && this.cosmicStage === 'playing' && !this.seamlessZoomActive) {
+        const showForest = this.currentMode !== 'capytorio';
+        const farInfo = computeEffectiveCameraFar(
+          this.settings.drawDistance ?? 650,
+          this.settings.gpuQualityPreset ?? 'high',
+          true,
+          this.currentLogScaleMeters
+        );
+        this.worldEnv.mountainMesh.visible = showForest && farInfo.showMountains;
+      }
+      return true;
+    }
+    if (!this.sanctuaryBuilt) {
+      this.ensureSanctuaryBuilt();
+      return true;
+    }
+    if (!this.sporeBuilt) {
+      this.ensureSporeBuilt();
+      return true;
+    }
+    if (!this.runnerBuilt) {
+      this.ensureRunnerBuilt();
+      return true;
+    }
+    if (!this.fallGuysBuilt) {
+      this.ensureFallGuysBuilt();
+      return true;
+    }
+    if (!this.physicsInitialized) {
+      this.ensurePhysicsInitialized();
+      return true;
+    }
+    if (!this.occludersPrewarmed) {
+      this.ensureOccludersPrewarmed();
+      return true;
+    }
+    if (!this.isSoftwareGl && this.seamlessUniverse) {
+      this.seamlessUniverse.ensureWoodlandGroveBuilt();
+    }
+    this.checkAndMarkSurfaceWorldsBuilt();
+    return false;
+  }
+
+  private scheduleForestBackgroundHydration(): void {
+    if (typeof window === 'undefined' || this.disposed || this.surfaceWorldsBuilt) return;
+    if (this.forestHydrationCancel) return;
+    let cancelled = false;
+    let timerId: number | null = null;
+    const step = () => {
+      timerId = null;
+      if (cancelled || this.disposed || this.isPausedState) {
+        this.forestHydrationCancel = null;
+        return;
+      }
+      // Pause Forest background hydration if user switched to standalone Capytorio or Infinite Zoom
+      if (this.seamlessZoomActive || this.currentMode === 'capytorio') {
+        this.forestHydrationCancel = null;
+        return;
+      }
+      const hasMore = this.buildNextPendingForestHydrationStep();
+      if (this.physicsInitialized) {
+        this.syncWorldPhysicsColliders();
+      }
+      if (hasMore) {
+        timerId = window.setTimeout(step, this.isSoftwareGl ? 65 : 24);
+      } else {
+        this.forestHydrationCancel = null;
+      }
+    };
+    timerId = window.setTimeout(step, this.isSoftwareGl ? 55 : 20);
+    this.forestHydrationCancel = () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+        timerId = null;
+      }
+    };
+  }
+
+  private ensureSurfaceReadyForMode(mode: PlayStyle, stage?: CosmicStage): void {
+    this.ensureHeroCapyBuilt();
+    this.worldEnv.ensureCoreTexturesReady();
+    if (stage === 'capy_selection') {
+      this.ensureSelectableHeroCircleBuilt();
+      this.scheduleForestBackgroundHydration();
+      return;
+    }
+    if (mode === 'capytorio') {
+      // Standalone Capytorio never builds Forest districts or downloads the 4.24 MB Rapier3D worker
+      this.buildCapytorioWorld();
+      return;
+    }
+    this.ensureArchipelagoBaseBuilt();
+    if (mode === 'sanctuary') {
+      this.ensureSanctuaryBuilt();
+    } else if (mode === 'spore') {
+      this.ensureSporeBuilt();
+    } else if (mode === 'runner') {
+      this.ensureRunnerBuilt();
+    } else if (mode === 'fallguys') {
+      this.ensureFallGuysBuilt();
+    }
+    this.scheduleForestBackgroundHydration();
+  }
+
+  public ensureSurfaceWorldsBuilt(): void {
+    this.ensureHeroCapyBuilt();
+    this.worldEnv.ensureCoreTexturesReady();
+    this.worldEnv.ensureAlpineMountainsBuilt();
+    this.ensureArchipelagoBaseBuilt();
+    this.ensureSanctuaryBuilt();
+    this.ensureSporeBuilt();
+    this.buildCapytorioWorld();
+    this.ensureRunnerBuilt();
+    this.ensureFallGuysBuilt();
+    this.ensurePhysicsInitialized();
+    this.ensureSelectableHeroCircleBuilt();
+    this.ensureOccludersPrewarmed();
+    if (!this.isSoftwareGl) {
+      this.seamlessUniverse?.ensureWoodlandGroveBuilt();
+    }
+    this.checkAndMarkSurfaceWorldsBuilt();
     if (this.seamlessZoomActive && this.currentLogScaleMeters > 4.5) {
       this.worldBaseGroup.visible = false;
       this.worldBaseGroup.matrixWorldAutoUpdate = false;
@@ -1459,18 +1639,42 @@ export class PlayStyleManager {
       this.selectableCapyGroup.visible = false;
       this.selectableCapyGroup.matrixWorldAutoUpdate = false;
     }
-    return !this.surfaceWorldsBuilt;
   }
 
-  public ensureSurfaceWorldsBuilt(): void {
-    this.ensureHeroCapyBuilt();
-    if (!this.surfaceWorldsBuilt) {
-      while (this.buildNextSurfaceStep()) {
-        // Complete all remaining surface districts synchronously on demand
-      }
+  private syncDistrictNpcVisibility(): void {
+    const mode = this.currentMode;
+    const isForestPlaying =
+      this.cosmicStage === 'playing' && !this.seamlessZoomActive && mode !== 'capytorio';
+
+    const showSanctuaryBuddies = isForestPlaying && mode === 'sanctuary';
+    const desiredBuddies = showSanctuaryBuddies ? this.getDesiredBuddyCount() : 0;
+    for (let i = 0; i < this.sanctuaryCapys.length; i++) {
+      this.sanctuaryCapys[i].capy.visible = i < desiredBuddies;
     }
-    if (!this.isSoftwareGl) {
-      this.seamlessUniverse?.ensureWoodlandGroveBuilt();
+
+    const showSporeCritters = isForestPlaying && mode === 'spore';
+    for (let i = 0; i < this.sporeCritters.length; i++) {
+      const c = this.sporeCritters[i];
+      c.mesh.visible = showSporeCritters && c.active;
+    }
+
+    const showRunnerHerd = isForestPlaying && mode === 'runner';
+    const desiredRunnerHerd = showRunnerHerd
+      ? Math.min(MAX_RUNNER_HERD, Math.max(0, this.runnerCapyCount - 1))
+      : 0;
+    for (let i = 0; i < this.runnerHerdMeshes.length; i++) {
+      this.runnerHerdMeshes[i].visible = i < desiredRunnerHerd;
+    }
+
+    const showFallGuysRivals = isForestPlaying && mode === 'fallguys';
+    const rivalCount = showFallGuysRivals
+      ? this.proceduralConfig.districts.fallguys.rivalCount
+      : 0;
+    for (let i = 0; i < this.fallGuysRivals.length; i++) {
+      this.fallGuysRivals[i].capy.visible = i < rivalCount;
+    }
+    if (this.fallGuysGhostCapy && !showFallGuysRivals) {
+      this.fallGuysGhostCapy.visible = false;
     }
   }
 
@@ -1501,23 +1705,13 @@ export class PlayStyleManager {
         scheduleNext(45);
         return;
       }
-      // Phase 1: progressively warm remaining universe scale layers (2 per slice)
-      let moreLayers = false;
-      for (let k = 0; k < 2; k++) {
-        moreLayers = this.seamlessUniverse.warmNextPendingLayer();
-        if (!moreLayers) break;
-      }
+      // Phase 1: progressively warm remaining universe scale layers (1 per idle slice for zero Long Tasks)
+      const moreLayers = this.seamlessUniverse.warmNextPendingLayer();
       if (moreLayers) {
-        scheduleNext(this.isSoftwareGl ? 90 : 35);
+        scheduleNext(this.isSoftwareGl ? 75 : 35);
         return;
       }
-      // Phase 2: Lazily build distant Alpine mountain heightfield PBR mesh during idle time
-      if (!this.worldEnv.isAlpineMountainsBuilt()) {
-        this.worldEnv.ensureAlpineMountainsBuilt();
-        scheduleNext(this.isSoftwareGl ? 90 : 45);
-        return;
-      }
-      // Do NOT build playable Capybara Forest / Capytorio districts until the user selects "Play in Forest" or "Play Capytorio".
+      // Do NOT build Forest districts, Alpine mountains, or Capytorio until the user enters those modes.
       this.deferredBootComplete = true;
       this.scheduleIdlePipelineWarmup();
     };
@@ -2045,7 +2239,7 @@ export class PlayStyleManager {
   }
 
   private beginSurfaceTouchdownFromDescent(targetMode: 'sanctuary' | 'capytorio'): void {
-    this.ensureSurfaceWorldsBuilt();
+    this.ensureSurfaceReadyForMode(targetMode, 'playing');
     const site = this.getActiveLandingSite(targetMode);
     const curVesselX = this.chronoVessel ? this.chronoVessel.root.position.x : site.padX;
     const curVesselY = this.chronoVessel
@@ -3223,7 +3417,7 @@ export class PlayStyleManager {
 
   public switchMode(mode: PlayStyle, instant: boolean = false) {
     if (this.disposed) return;
-    this.ensureSurfaceWorldsBuilt();
+    this.ensureSurfaceReadyForMode(mode, this.cosmicStage);
     if (mode !== 'sanctuary' && this.placementGhost.active) {
       this.cancelBuildingPlacementGhost();
     }
@@ -3378,6 +3572,11 @@ export class PlayStyleManager {
       this.zoneTransition.active = false;
       this.heroCapy.position.copy(targetWorldPos);
       this.snapCameraToCurrentZone();
+    }
+
+    this.syncDistrictNpcVisibility();
+    if (this.cosmicStage === 'playing') {
+      this.applySurfaceDrawDistanceAndCulling(true);
     }
 
     this.emitTelemetry();
@@ -3741,7 +3940,8 @@ export class PlayStyleManager {
         hero.hat,
         1.05,
         hero.skin,
-        hero.mutations
+        hero.mutations,
+        this.getNpcCapyLodTier()
       );
       node.add(capyMesh);
 
@@ -3794,7 +3994,7 @@ export class PlayStyleManager {
       }
     }
     if (stage === 'playing' || stage === 'capy_selection') {
-      this.ensureSurfaceWorldsBuilt();
+      this.ensureSurfaceReadyForMode(this.currentMode, stage);
     }
     this.cosmicStage = stage;
     this.seamlessZoomActive = false;
@@ -4296,9 +4496,7 @@ export class PlayStyleManager {
   }
 
   private engageForestLandingDescent(): void {
-    if (!this.surfaceWorldsBuilt) {
-      this.ensureSurfaceWorldsBuilt();
-    }
+    this.ensureSurfaceReadyForMode(this.autoLandTargetMode, 'playing');
     const site = this.getActiveLandingSite(this.autoLandTargetMode);
     this.seamlessZoomActive = true;
     this.autoLandAtForestPending = true;
@@ -4569,7 +4767,7 @@ export class PlayStyleManager {
   }
 
   public selectCapyHero(index: number, confirmAndPlay: boolean = false) {
-    this.ensureSurfaceWorldsBuilt();
+    this.ensureSurfaceReadyForMode('sanctuary', 'capy_selection');
     this.selectedCapyHeroIndex = THREE.MathUtils.clamp(
       index,
       0,
@@ -5060,7 +5258,7 @@ export class PlayStyleManager {
         0.84,
         skins[i % skins.length],
         [],
-        this.currentCapyLodTier
+        this.getNpcCapyLodTier()
       );
       const [bx, bz] = buddySpawns[i % buddySpawns.length];
       buddy.position.set(bx, 0, bz);
@@ -5617,7 +5815,8 @@ export class PlayStyleManager {
         i % 2 === 0 ? 'flower' : 'yuzu',
         scale,
         skins[i % skins.length],
-        ['flippers']
+        ['flippers'],
+        this.getNpcCapyLodTier()
       );
       critter.visible = false;
       this.sporeGroup.add(critter);
@@ -7351,7 +7550,9 @@ export class PlayStyleManager {
       const mini = CapyModelGenerator.createCapybara(
         idx % 3 === 0 ? 'yuzu' : 'flower',
         0.58,
-        idx % 4 === 0 ? 'golden' : 'classic'
+        idx % 4 === 0 ? 'golden' : 'classic',
+        [],
+        this.getNpcCapyLodTier()
       );
       mini.rotation.y = Math.PI;
       mini.visible = false;
@@ -7570,7 +7771,9 @@ export class PlayStyleManager {
         const rival = CapyModelGenerator.createCapybara(
           rivalHats[i],
           0.92,
-          rivalSkins[i]
+          rivalSkins[i],
+          [],
+          this.getNpcCapyLodTier()
         );
         const laneX = (i - 2) * 1.9;
         rival.position.set(laneX, 0.6, 1.5);
@@ -7585,7 +7788,13 @@ export class PlayStyleManager {
       }
 
       // Translucent Personal-Best Ghost Capybara (zero per-frame allocations)
-      const ghostCapy = CapyModelGenerator.createCapybara('crown', 0.94, 'cosmic');
+      const ghostCapy = CapyModelGenerator.createCapybara(
+        'crown',
+        0.94,
+        'cosmic',
+        [],
+        this.getNpcCapyLodTier()
+      );
       const ghostMat = new THREE.MeshStandardMaterial({
         color: 0x67e8f9,
         emissive: 0x06b6d4,
@@ -7803,22 +8012,23 @@ export class PlayStyleManager {
     for (let i = 0; i < this.dachshundSegments.length; i++) {
       CapyModelGenerator.applySegmentLodTier(this.dachshundSegments[i], tier);
     }
+    const npcTier = this.getNpcCapyLodTier();
     for (let i = 0; i < this.sanctuaryCapys.length; i++) {
-      CapyModelGenerator.applyLodTier(this.sanctuaryCapys[i].capy, tier);
+      CapyModelGenerator.applyLodTier(this.sanctuaryCapys[i].capy, npcTier);
     }
     for (let i = 0; i < this.sporeCritters.length; i++) {
-      CapyModelGenerator.applyLodTier(this.sporeCritters[i].mesh, tier);
+      CapyModelGenerator.applyLodTier(this.sporeCritters[i].mesh, npcTier);
     }
     for (let i = 0; i < this.runnerHerdMeshes.length; i++) {
-      CapyModelGenerator.applyLodTier(this.runnerHerdMeshes[i], tier);
+      CapyModelGenerator.applyLodTier(this.runnerHerdMeshes[i], npcTier);
     }
     for (let i = 0; i < this.fallGuysRivals.length; i++) {
-      CapyModelGenerator.applyLodTier(this.fallGuysRivals[i].capy, tier);
+      CapyModelGenerator.applyLodTier(this.fallGuysRivals[i].capy, npcTier);
     }
     const selChildren = this.selectableCapyGroup.children;
     for (let i = 0; i < selChildren.length; i++) {
       const capy = selChildren[i].children[0] as CapyMeshGroup | undefined;
-      if (capy?.userData) CapyModelGenerator.applyLodTier(capy, tier);
+      if (capy?.userData) CapyModelGenerator.applyLodTier(capy, npcTier);
     }
   }
 
@@ -8743,21 +8953,29 @@ export class PlayStyleManager {
       }
     }
 
-    if (!this.isSoftwareGl && swappedSamples.length > 0) {
-      this.renderer.compile(this.sanctuaryGroup, this.camera);
+    const restoreSamples = () => {
       for (let i = 0; i < swappedSamples.length; i++) {
         const mesh = swappedSamples[i];
         if (mesh.userData.__origMaterial) {
           mesh.material = mesh.userData.__origMaterial;
         }
+      }
+    };
+
+    if (!this.isSoftwareGl && swappedSamples.length > 0) {
+      const asyncRenderer = this.renderer as THREE.WebGLRenderer & {
+        compileAsync?: (scene: THREE.Object3D, camera: THREE.Camera) => Promise<THREE.Object3D>;
+      };
+      if (typeof asyncRenderer.compileAsync === 'function') {
+        void asyncRenderer
+          .compileAsync(this.sanctuaryGroup, this.camera)
+          .catch(() => {})
+          .finally(restoreSamples);
+      } else {
+        restoreSamples();
       }
     } else if (swappedSamples.length > 0) {
-      for (let i = 0; i < swappedSamples.length; i++) {
-        const mesh = swappedSamples[i];
-        if (mesh.userData.__origMaterial) {
-          mesh.material = mesh.userData.__origMaterial;
-        }
-      }
+      restoreSamples();
     }
   }
 
@@ -13025,9 +13243,9 @@ export class PlayStyleManager {
       this.currentMode = 'capytorio';
     }
 
-    // Build surface worlds only for Capytorio orbital flight — pure Infinite Zoom stays 100% isolated from playable islands
-    if (isCapytorioSurfaceFlight && !this.surfaceWorldsBuilt) {
-      this.ensureSurfaceWorldsBuilt();
+    // Build Capytorio surface only for Capytorio orbital flight — never builds Forest districts or downloads physics worker
+    if (isCapytorioSurfaceFlight) {
+      this.ensureSurfaceReadyForMode('capytorio', 'playing');
     }
 
     const orbBlend = computeOrbitalSurfaceBlend(logVal, this.isSoftwareGl);
@@ -13858,7 +14076,11 @@ export class PlayStyleManager {
         this.gpuEngine.setCrispOverlayActive(
           Boolean(this.capytorioGroup.visible && this.capytorioRenderer?.hasVisibleAltOverlay())
         );
-        this.gpuEngine.render();
+        // Only render synchronously when paused; while running, let the active rAF loop render
+        // on the very next frame to avoid blocking click handlers and double-rendering.
+        if (this.isPausedState) {
+          this.gpuEngine.render();
+        }
       }
     }
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
@@ -13921,7 +14143,7 @@ export class PlayStyleManager {
   }
 
   public resumeSurfacePlayFromForest(snapCamera: boolean = true) {
-    this.ensureSurfaceWorldsBuilt();
+    this.ensureSurfaceReadyForMode(this.currentMode, 'playing');
     this.autoZoomDirection = 0;
     this.cruiseVelocityLogPerSec = 0;
     this.targetCruiseVelocityLogPerSec = 0;
@@ -14276,6 +14498,8 @@ export class PlayStyleManager {
     this.unsubscribeCapytorioLua = null;
     this.deferredBootCancel?.();
     this.deferredBootCancel = null;
+    this.forestHydrationCancel?.();
+    this.forestHydrationCancel = null;
     this.idleWarmupCancel?.();
     this.idleWarmupCancel = null;
     this.cancelBuildingPlacementGhost(true);

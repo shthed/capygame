@@ -61,17 +61,21 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.2.8';
+      : '1.2.9';
   } catch {
-    return '1.2.8';
+    return '1.2.9';
   }
 })();
 
-export default defineConfig({
-  base: './',
-  define: {
-    __CAPYGAME_VERSION__: JSON.stringify(PACKAGE_VERSION),
-  },
+export default defineConfig(({ command }) => {
+  if (command === 'build') {
+    process.env.NODE_ENV = 'production';
+  }
+  return {
+    base: './',
+    define: {
+      __CAPYGAME_VERSION__: JSON.stringify(PACKAGE_VERSION),
+    },
   plugins: [react(), tailwindcss(), capytorioLuaSourcesPlugin(), disableViteHmrWebSocketPlugin()],
   worker: {
     format: 'es',
@@ -163,5 +167,6 @@ export default defineConfig({
       ],
     },
   },
+  };
 });
 

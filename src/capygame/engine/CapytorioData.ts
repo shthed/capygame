@@ -811,7 +811,8 @@ export async function reloadCapytorioLuaFromServer(
 export function ensureLiveCapytorioLuaSync(): void {
   if (initialServerFetchStarted) return;
   initialServerFetchStarted = true;
-  if (typeof window !== 'undefined' && typeof fetch === 'function') {
+  const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+  if (isDev && typeof window !== 'undefined' && typeof fetch === 'function') {
     void reloadCapytorioLuaFromServer(false);
   }
 }

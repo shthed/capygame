@@ -98,14 +98,17 @@ test('About CapyGame version and SemVer sync across package.json, package-lock.j
     'AGENTS.md must document the SemVer + CHANGELOG.md invariant'
   );
 
+  const aboutModalSrc = fs.readFileSync(
+    path.join(root, 'src/capygame/components/CapyAboutModal.tsx'),
+    'utf8'
+  );
+
   // Verify System Architecture and Surface Sectors were removed from About CapyGame modal
-  const aboutModalStart = viewSrc.indexOf('data-testid="capygame-about-modal"');
-  const aboutModalEnd = viewSrc.indexOf('SETTINGS MODAL', aboutModalStart);
-  assert.ok(aboutModalStart > 0 && aboutModalEnd > aboutModalStart);
-  const aboutSection = viewSrc.slice(aboutModalStart, aboutModalEnd);
-  assert.ok(aboutSection.includes('CAPYGAME_OVERVIEW_COPY.heading'));
-  assert.ok(!aboutSection.includes('System Architecture'));
-  assert.ok(!aboutSection.includes('Surface Sectors'));
-  assert.ok(aboutSection.includes('formatAppVersionLabel'));
-  assert.ok(aboutSection.includes('CAPYGAME_TUTORIALS'));
+  assert.ok(viewSrc.includes('LazyCapyAboutModal'), 'CapyGameView must lazy-load CapyAboutModal');
+  assert.ok(aboutModalSrc.includes('data-testid="capygame-about-modal"'));
+  assert.ok(aboutModalSrc.includes('CAPYGAME_OVERVIEW_COPY.heading'));
+  assert.ok(!aboutModalSrc.includes('System Architecture'));
+  assert.ok(!aboutModalSrc.includes('Surface Sectors'));
+  assert.ok(aboutModalSrc.includes('formatAppVersionLabel'));
+  assert.ok(aboutModalSrc.includes('CAPYGAME_TUTORIALS'));
 });

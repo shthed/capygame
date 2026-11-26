@@ -1998,6 +1998,75 @@ test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains
   );
 });
 
+test('Phase 6 Runtime Performance Invariants: Mode-Scoped Lazy Surface Build, Lean NPC LOD, Non-Blocking Zoom & Lazy Modals', () => {
+  const root = process.cwd();
+  const managerSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/engine/PlayStyleManager.ts'),
+    'utf8'
+  );
+  const capytorioDataSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/engine/CapytorioData.ts'),
+    'utf8'
+  );
+  const viewSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/components/CapyGameView.tsx'),
+    'utf8'
+  );
 
+  // 1. Mode-scoped lazy surface builder isolates Capytorio from Forest districts and 4.24 MB Rapier3D physics worker
+  assert.ok(
+    managerSrc.includes('private ensureSurfaceReadyForMode(mode: PlayStyle, stage?: CosmicStage)'),
+    'PlayStyleManager must expose mode-scoped ensureSurfaceReadyForMode()'
+  );
+  assert.ok(
+    managerSrc.includes('private scheduleForestBackgroundHydration(): void'),
+    'PlayStyleManager must hydrate non-active Forest districts incrementally off the click handler'
+  );
+  assert.equal(
+    managerSrc.includes('while (this.buildNextSurfaceStep())'),
+    false,
+    'PlayStyleManager must not block mode switches with a monolithic synchronous surface build loop'
+  );
 
+  // 2. NPC herds use lean LOD tiers while Hero Capybara stays full LOD, and distant inactive herds are hidden
+  assert.ok(
+    managerSrc.includes('private getNpcCapyLodTier(): CapyLodTier'),
+    'PlayStyleManager must compute a lean NPC Capybara LOD tier separate from Hero LOD'
+  );
+  assert.ok(
+    managerSrc.includes('private syncDistrictNpcVisibility(): void'),
+    'PlayStyleManager must hide distant inactive district NPC herds while keeping unified island landmarks visible'
+  );
 
+  // 3. No synchronous renderer.compile() stall in occluder shader prewarm, and 1 layer per idle slice
+  assert.equal(
+    managerSrc.includes('this.renderer.compile(this.sanctuaryGroup, this.camera)'),
+    false,
+    'prewarmOccluderShaderPrograms must not call synchronous renderer.compile() on the main thread'
+  );
+  assert.ok(
+    managerSrc.includes('if (this.isPausedState) {\n          this.gpuEngine.render();'),
+    'setSeamlessLogScale must avoid synchronous double-render inside active unpaused click handlers'
+  );
+
+  // 4. Capytorio live .lua server sync only auto-fetches in DEV mode
+  assert.ok(
+    capytorioDataSrc.includes("const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);"),
+    'ensureLiveCapytorioLuaSync must guard automatic network .lua fetches behind DEV mode'
+  );
+
+  // 5. About & JSON Config modals are lazily split out of CapyGameView cold-boot bundle
+  assert.ok(
+    viewSrc.includes("import('./CapyAboutModal')"),
+    'CapyGameView must lazy-load CapyAboutModal'
+  );
+  assert.ok(
+    viewSrc.includes("import('./CapyJsonConfigModal')"),
+    'CapyGameView must lazy-load CapyJsonConfigModal'
+  );
+  assert.equal(
+    viewSrc.includes('PROCEDURAL_CONFIG_PRESETS'),
+    false,
+    'CapyGameView should not eagerly import PROCEDURAL_CONFIG_PRESETS into index.js'
+  );
+});

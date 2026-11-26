@@ -68,7 +68,6 @@ import { NativeBridge } from '../../services/NativeBridge';
 import { PwaService } from '../../services/PwaService';
 import {
   ProceduralGameConfig,
-  PROCEDURAL_CONFIG_PRESETS,
   CODATA_FINE_STRUCTURE_INVERSE,
   FINE_STRUCTURE_MIN_INVERSE,
   FINE_STRUCTURE_MAX_INVERSE,
@@ -106,11 +105,15 @@ import { createLiveTelemetryStore, TelemetryReadout } from './TelemetryReadout';
 const LazyCapytorioHud = React.lazy(() =>
   import('./CapytorioHud').then((m) => ({ default: m.CapytorioHud }))
 );
+const LazyCapyAboutModal = React.lazy(() =>
+  import('./CapyAboutModal').then((m) => ({ default: m.CapyAboutModal }))
+);
+const LazyCapyJsonConfigModal = React.lazy(() =>
+  import('./CapyJsonConfigModal').then((m) => ({ default: m.CapyJsonConfigModal }))
+);
 import { formatAppVersionLabel } from '../config/appVersion';
 import {
   ActiveTutorialState,
-  CAPYGAME_OVERVIEW_COPY,
-  CAPYGAME_TUTORIALS,
   CapyTutorial,
   clampTutorialStepIndex,
   getTutorialById,
@@ -7874,141 +7877,22 @@ export const CapyGameView: React.FC = () => {
         </div>
       )}
 
-      {/* ABOUT CAPYGAME & HELP / TUTORIALS MODAL */}
+      {/* ABOUT CAPYGAME & HELP / TUTORIALS MODAL (LAZY-LOADED) */}
       {isAboutOpen && (
-        <div
-          data-testid="capygame-about-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-zinc-950/85"
-        >
-          <div className="relative w-full max-w-2xl max-h-[88vh] sm:max-h-[85vh] bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100 flex flex-col">
-            <div className="bg-zinc-950 px-4 sm:px-5 py-3.5 border-b border-white/10 flex items-center justify-between gap-3 shrink-0">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-sm sm:text-base font-semibold tracking-wide text-zinc-100">
-                    {CAPYGAME_OVERVIEW_COPY.heading}
-                  </h2>
-                  <span
-                    data-testid="about-version-label"
-                    className="text-[11px] font-mono px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-400/35"
-                  >
-                    {formatAppVersionLabel()}
-                  </span>
-                </div>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  {CAPYGAME_OVERVIEW_COPY.subtitle}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsAboutOpen(false)}
-                className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
-                aria-label="Close About CapyGame Modal"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
-              <div className="p-3.5 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2">
-                <p className="text-xs sm:text-[13px] text-zinc-200 leading-relaxed">
-                  {CAPYGAME_OVERVIEW_COPY.summary}
-                </p>
-                <p className="text-[11px] text-zinc-400 leading-relaxed border-t border-white/8 pt-2">
-                  <span className="text-zinc-300 font-medium">Quick Controls:</span>{' '}
-                  {CAPYGAME_OVERVIEW_COPY.controlsSummary}
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
-                    <BookOpen className="w-3.5 h-3.5" />
-                    <span>Interactive Tutorials</span>
-                  </h3>
-                  <span className="text-[11px] text-zinc-400">Pick a guide to jump right in</span>
-                </div>
-                <div
-                  data-testid="about-tutorials-list"
-                  className="grid grid-cols-1 sm:grid-cols-2 gap-2"
-                >
-                  {CAPYGAME_TUTORIALS.map((tut) => (
-                    <button
-                      key={tut.id}
-                      type="button"
-                      data-testid={`start-tutorial-${tut.id}`}
-                      onClick={() => handleStartTutorial(tut)}
-                      className="flex flex-col justify-between p-3 rounded-lg bg-zinc-950/85 border border-white/10 hover:border-amber-400/50 hover:bg-zinc-950 text-left transition-colors cursor-pointer gap-2"
-                    >
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-zinc-100">
-                            {tut.title}
-                          </span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-400/30 shrink-0">
-                            {tut.badge}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-zinc-400 leading-relaxed">
-                          {tut.summary}
-                        </p>
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-white/8">
-                        <span className="text-zinc-500 font-mono">{tut.durationLabel}</span>
-                        <span className="text-sky-300 font-medium inline-flex items-center gap-0.5">
-                          <span>Start Tutorial</span>
-                          <ChevronRight className="w-3.5 h-3.5" />
-                        </span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-zinc-950 px-4 sm:px-5 py-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  data-testid="about-open-settings-btn"
-                  onClick={() => {
-                    AudioService.playCoin();
-                    setIsAboutOpen(false);
-                    setIsSettingsOpen(true);
-                  }}
-                  className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
-                >
-                  <SettingsIcon className="w-3.5 h-3.5 text-sky-400" />
-                  <span>Settings</span>
-                </button>
-                <button
-                  type="button"
-                  data-testid="open-privacy-policy-btn"
-                  onClick={() => {
-                    AudioService.playCoin();
-                    setIsAboutOpen(false);
-                    setIsPrivacyOpen(true);
-                  }}
-                  className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
-                >
-                  <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Privacy Policy</span>
-                </button>
-              </div>
-              <button
-                type="button"
-                data-testid="close-about-btn"
-                onClick={() => {
-                  AudioService.playCoin();
-                  setIsAboutOpen(false);
-                }}
-                className="flex items-center gap-1.5 bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
-              >
-                <Check className="w-3.5 h-3.5" />
-                <span>Resume Game</span>
-              </button>
-            </div>
-          </div>
-        </div>
+        <React.Suspense fallback={null}>
+          <LazyCapyAboutModal
+            onClose={() => setIsAboutOpen(false)}
+            onStartTutorial={handleStartTutorial}
+            onOpenSettings={() => {
+              setIsAboutOpen(false);
+              setIsSettingsOpen(true);
+            }}
+            onOpenPrivacy={() => {
+              setIsAboutOpen(false);
+              setIsPrivacyOpen(true);
+            }}
+          />
+        </React.Suspense>
       )}
 
       {/* SETTINGS MODAL */}
@@ -10604,173 +10488,26 @@ export const CapyGameView: React.FC = () => {
         })()}
 
       {/* =====================================================================
-          BUILT-IN LIVE PROCEDURAL JSON CONFIG EDITOR MODAL
+          BUILT-IN LIVE PROCEDURAL JSON CONFIG EDITOR MODAL (LAZY-LOADED)
          ===================================================================== */}
       {isJsonEditorOpen && (
-        <div
-          data-testid="json-config-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-zinc-950/90"
-        >
-          <div className="relative w-full max-w-3xl bg-zinc-900 rounded-xl shadow-2xl border border-cyan-400/25 overflow-hidden text-zinc-100 flex flex-col max-h-[92vh]">
-            <div className="bg-zinc-950 px-4 py-3 border-b border-white/10 flex items-center justify-between gap-3 shrink-0">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <Code2 className="w-4 h-4 text-cyan-400 shrink-0" />
-                <div className="min-w-0">
-                  <h2 className="text-sm font-semibold tracking-wider uppercase truncate">
-                    Procedural World &amp; Gameplay JSON Engine
-                  </h2>
-                  <p className="text-[11px] font-mono text-zinc-400 truncate">
-                    Active: {proceduralConfig.meta.configName} · Seed #{proceduralConfig.meta.seed} · Stored locally
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                data-testid="close-json-editor-btn"
-                onClick={() => setIsJsonEditorOpen(false)}
-                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer shrink-0"
-                aria-label="Close JSON Editor"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-3 sm:p-4 space-y-2.5 overflow-y-auto flex-1">
-              {/* 5 Built-in Procedural Presets */}
-              <div className="space-y-1">
-                <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400">
-                  Instant Procedural Archetypes
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-5 gap-1.5">
-                  {PROCEDURAL_CONFIG_PRESETS.map((preset) => {
-                    const isSelected = proceduralConfig.meta.configName === preset.config.meta.configName;
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        data-testid={`json-preset-${preset.id}`}
-                        title={preset.subtitle}
-                        onClick={() => handleSelectProceduralPreset(preset.config)}
-                        className={`p-2 rounded-lg text-left border transition-colors cursor-pointer ${
-                          isSelected
-                            ? 'bg-cyan-500/20 border-cyan-400/60 text-zinc-100'
-                            : 'bg-zinc-950/90 hover:bg-zinc-800 border-white/10 text-zinc-300'
-                        }`}
-                      >
-                        <div className="text-[11px] font-semibold truncate">{preset.label}</div>
-                        <div className="text-[9px] font-mono text-zinc-400 truncate mt-0.5">
-                          Seed #{preset.config.meta.seed}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Action Utilities */}
-              <div className="flex flex-wrap items-center justify-between gap-1.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    data-testid="json-randomize-seed-btn"
-                    onClick={handleRandomizeProceduralSeed}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-zinc-800 text-amber-300 border border-amber-400/30 cursor-pointer"
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    <span>Randomize Seed</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="json-format-btn"
-                    onClick={handleFormatJsonDraft}
-                    className="px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-white/10 cursor-pointer"
-                  >
-                    Format JSON
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="json-copy-btn"
-                    onClick={handleCopyJsonDraft}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-white/10 cursor-pointer"
-                  >
-                    <Copy className="w-3 h-3" />
-                    <span>{jsonCopyLabel}</span>
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  data-testid="json-reset-default-btn"
-                  onClick={handleResetProceduralDefault}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-zinc-950 hover:bg-rose-950/60 text-rose-300 border border-rose-500/30 cursor-pointer"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>Reset Default</span>
-                </button>
-              </div>
-
-              {/* Validation Status Banner */}
-              {jsonValidationError ? (
-                <div
-                  data-testid="json-validation-error"
-                  className="px-3 py-2 rounded-lg bg-rose-950/80 border border-rose-500/50 text-rose-200 text-xs font-mono"
-                >
-                  {jsonValidationError}
-                </div>
-              ) : jsonValidationWarnings.length > 0 ? (
-                <div
-                  data-testid="json-validation-warnings"
-                  className="px-3 py-2 rounded-lg bg-amber-950/70 border border-amber-400/40 text-amber-200 text-[11px] font-mono"
-                >
-                  Sanitized: {jsonValidationWarnings.slice(0, 3).join(' · ')}
-                  {jsonValidationWarnings.length > 3 ? ` (+${jsonValidationWarnings.length - 3} more)` : ''}
-                </div>
-              ) : (
-                <div className="px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-400/30 text-emerald-300 text-[11px] font-mono flex items-center gap-1.5">
-                  <Check className="w-3.5 h-3.5 shrink-0" />
-                  <span>Schema Valid · Ready to hot-reload live or regenerate world seed</span>
-                </div>
-              )}
-
-              {/* Live Editable JSON Textarea */}
-              <textarea
-                data-testid="json-config-textarea"
-                value={jsonDraftText}
-                onChange={(e) => handleJsonDraftChange(e.target.value)}
-                spellCheck={false}
-                aria-label="Procedural Game Configuration JSON"
-                className="w-full h-72 sm:h-80 p-3 rounded-lg bg-zinc-950 border border-white/15 focus:border-cyan-400/60 focus:outline-none text-[11px] font-mono leading-relaxed text-cyan-100 resize-y"
-              />
-            </div>
-
-            <div className="bg-zinc-950 px-4 py-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <span className="text-[10px] font-mono text-zinc-500">
-                Controls universe physics, biomes, vessel colors, gravity, weather &amp; all 5 districts
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  data-testid="json-apply-live-btn"
-                  disabled={Boolean(jsonValidationError)}
-                  onClick={() => handleApplyJsonConfig(false)}
-                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-100 text-xs font-medium border border-white/15 cursor-pointer"
-                >
-                  Apply Live
-                </button>
-                <button
-                  type="button"
-                  data-testid="json-apply-regen-btn"
-                  disabled={Boolean(jsonValidationError)}
-                  onClick={() => handleApplyJsonConfig(true)}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-zinc-950 text-xs font-semibold cursor-pointer"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Apply &amp; Regenerate</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <React.Suspense fallback={null}>
+          <LazyCapyJsonConfigModal
+            proceduralConfig={proceduralConfig}
+            jsonDraftText={jsonDraftText}
+            jsonValidationError={jsonValidationError}
+            jsonValidationWarnings={jsonValidationWarnings}
+            jsonCopyLabel={jsonCopyLabel}
+            onClose={() => setIsJsonEditorOpen(false)}
+            onSelectPreset={handleSelectProceduralPreset}
+            onRandomizeSeed={handleRandomizeProceduralSeed}
+            onFormatDraft={handleFormatJsonDraft}
+            onCopyDraft={handleCopyJsonDraft}
+            onResetDefault={handleResetProceduralDefault}
+            onDraftChange={handleJsonDraftChange}
+            onApplyConfig={handleApplyJsonConfig}
+          />
+        </React.Suspense>
       )}
 
       {/* Simulation Paused & Hibernated Overlay */}
