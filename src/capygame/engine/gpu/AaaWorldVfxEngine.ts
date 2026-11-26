@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { getWebGpuRuntime } from './WebGpuRuntime';
 
 export type VfxBurstKind = 'turf_dust' | 'cobble_spark' | 'water_splash' | 'citrus_burst' | 'xpbd_launch';
 
@@ -149,21 +148,16 @@ export class AaaWorldVfxEngine {
   private readonly _upVec = new THREE.Vector3(0, 1, 0);
   private readonly _sunDirNorm = new THREE.Vector3(0.4, 0.8, 0.3);
 
-  private readonly motesMat: THREE.ShaderMaterial | null;
-  private readonly godRayMat: THREE.Material;
-  private readonly godRayTslColor: { value: THREE.Color } | null = null;
-  private readonly godRayTslOpacity: { value: number } | null = null;
-  private readonly isWebGpu: boolean;
+  private readonly motesMat: THREE.ShaderMaterial;
+  private readonly godRayMat: THREE.ShaderMaterial;
   private footstepAccumDist: number = 0;
 
   constructor(
     scene: THREE.Scene,
     isSoftwareGl: boolean,
-    pixelRatio: number = 1,
-    isWebGpu: boolean = false
+    pixelRatio: number = 1
   ) {
     this.isSoftwareGl = isSoftwareGl;
-    this.isWebGpu = isWebGpu;
     this.maxParticles = isSoftwareGl ? MAX_BURST_PARTICLES_SW : MAX_BURST_PARTICLES_HW;
 
     this.posX = new Float32Array(this.maxParticles);
@@ -244,54 +238,40 @@ export class AaaWorldVfxEngine {
     motesGeo.setAttribute('aScale', new THREE.BufferAttribute(moteScales, 1));
     motesGeo.setAttribute('aOrbit', new THREE.BufferAttribute(moteOrbits, 3));
 
-    const webGpuRt = this.isWebGpu ? getWebGpuRuntime() : null;
-    if (this.isWebGpu && webGpuRt) {
-      this.motesMat = null;
-      this.motesPoints = new THREE.Points(motesGeo, webGpuRt.createTslVfxMotesMaterial());
-      this.motesPoints.visible = false;
-    } else {
-      this.motesMat = new THREE.ShaderMaterial({
-        uniforms: {
-          uTime: { value: 0 },
-          uNightFactor: { value: 0 },
-          uFocusCenter: { value: new THREE.Vector3(0, 0, 0) },
-          uPixelRatio: { value: Math.max(1, pixelRatio) },
-        },
-        vertexShader: ATMOSPHERIC_MOTES_VERT,
-        fragmentShader: ATMOSPHERIC_MOTES_FRAG,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      this.motesPoints = new THREE.Points(motesGeo, this.motesMat);
-      this.motesPoints.frustumCulled = false;
-      this.motesPoints.visible = false; // Disabled: sparkles only come from physical sun reflections on water/metal
-    }
+    this.motesMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uNightFactor: { value: 0 },
+        uFocusCenter: { value: new THREE.Vector3(0, 0, 0) },
+        uPixelRatio: { value: Math.max(1, pixelRatio) },
+      },
+      vertexShader: ATMOSPHERIC_MOTES_VERT,
+      fragmentShader: ATMOSPHERIC_MOTES_FRAG,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.motesPoints = new THREE.Points(motesGeo, this.motesMat);
+    this.motesPoints.frustumCulled = false;
+    this.motesPoints.visible = false; // Disabled: sparkles only come from physical sun reflections on water/metal
     this.motesPoints.userData.ignoreCameraFade = true;
     this.rootGroup.add(this.motesPoints);
 
     // 3. Crepuscular Solar God-Ray Shafts (Fresnel-softened open-ended cones aligned to Sun)
     this.godRayGroup = new THREE.Group();
     this.godRayGroup.name = 'CrepuscularGodRays';
-    if (this.isWebGpu && webGpuRt) {
-      const handle = webGpuRt.createTslGodRayMaterial(isSoftwareGl ? 0.0 : 0.055);
-      this.godRayMat = handle.material;
-      this.godRayTslColor = handle.colorUniform;
-      this.godRayTslOpacity = handle.opacityUniform;
-    } else {
-      this.godRayMat = new THREE.ShaderMaterial({
-        uniforms: {
-          uRayColor: { value: new THREE.Color(0xfff3c4) },
-          uRayOpacity: { value: isSoftwareGl ? 0.0 : 0.055 },
-        },
-        vertexShader: GOD_RAY_VERT,
-        fragmentShader: GOD_RAY_FRAG,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-    }
+    this.godRayMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uRayColor: { value: new THREE.Color(0xfff3c4) },
+        uRayOpacity: { value: isSoftwareGl ? 0.0 : 0.055 },
+      },
+      vertexShader: GOD_RAY_VERT,
+      fragmentShader: GOD_RAY_FRAG,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
 
     const rayOffsets: ReadonlyArray<[number, number, number, number]> = [
       [-11.5, 4.5, 3.6, 26.0],
@@ -466,16 +446,15 @@ export class AaaWorldVfxEngine {
     this.rootGroup.visible = visible;
     if (!visible) return;
 
-    // Keep legacy WebGL2 atmospheric motes hidden on WebGPU (handled by WGSL compute sprite)
-    // and when explicitly disabled at startup so update() never clobbers their visibility.
-    const showLegacyMotes = !perfMode && !this.isWebGpu && Boolean(this.motesMat) && this.motesPoints.visible;
+    // Keep atmospheric motes hidden when explicitly disabled at startup so update() never clobbers visibility.
+    const showLegacyMotes = !perfMode && this.motesPoints.visible;
     this.motesPoints.visible = showLegacyMotes;
     if (perfMode) {
       this.godRayGroup.visible = false;
     }
 
-    // 1. Update Atmospheric Sun-Motes / Bioluminescent Fireflies Uniforms (WebGL2 only when active)
-    if (showLegacyMotes && this.motesMat) {
+    // 1. Update Atmospheric Sun-Motes / Bioluminescent Fireflies Uniforms (when active)
+    if (showLegacyMotes) {
       this.motesMat.uniforms.uTime.value = elapsedTime;
       this.motesMat.uniforms.uNightFactor.value = nightFactor;
       (this.motesMat.uniforms.uFocusCenter.value as THREE.Vector3).set(
@@ -506,22 +485,12 @@ export class AaaWorldVfxEngine {
         for (let i = 0; i < this.godRayGroup.children.length; i++) {
           this.godRayGroup.children[i].quaternion.copy(this._quat);
         }
-        if (this.godRayTslOpacity && this.godRayTslColor) {
-          this.godRayTslOpacity.value = rayOpacity;
-          this.godRayTslColor.value.setRGB(
-            1.0,
-            0.82 + Math.min(0.15, sunElev * 0.22),
-            0.56 + Math.min(0.32, sunElev * 0.45)
-          );
-        } else if ((this.godRayMat as THREE.ShaderMaterial).uniforms) {
-          const gMat = this.godRayMat as THREE.ShaderMaterial;
-          gMat.uniforms.uRayOpacity.value = rayOpacity;
-          (gMat.uniforms.uRayColor.value as THREE.Color).setRGB(
-            1.0,
-            0.82 + Math.min(0.15, sunElev * 0.22),
-            0.56 + Math.min(0.32, sunElev * 0.45)
-          );
-        }
+        this.godRayMat.uniforms.uRayOpacity.value = rayOpacity;
+        (this.godRayMat.uniforms.uRayColor.value as THREE.Color).setRGB(
+          1.0,
+          0.82 + Math.min(0.15, sunElev * 0.22),
+          0.56 + Math.min(0.32, sunElev * 0.45)
+        );
       }
     }
 

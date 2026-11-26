@@ -1,8 +1,8 @@
 /**
- * Pure, zero-allocation CPU & WebGPU-mirrored math kernels for:
+ * Pure, zero-allocation CPU math kernels for the WebGL2 GPU pipeline:
  * 1. Indirect draw batch descriptor packing & bounding-sphere frustum culling
  * 2. 16x9x24 Clustered Forward+ view-frustum light binning
- * 3. 128x128 Shallow-Water WGSL grid coordinate & step parameters
+ * 3. Shallow-water ripple grid coordinate & step parameters
  * 4. Screen-space volumetric sun/moon crepuscular light-shaft projection
  */
 
@@ -83,7 +83,7 @@ export function extractFrustumPlanesInto(
 }
 
 /**
- * Bounding-sphere frustum & distance-horizon occlusion test matching WGSL indirect culling pass.
+ * Bounding-sphere frustum & distance-horizon occlusion test.
  */
 export function evaluateBoundingSphereVisibility(
   cx: number,
@@ -114,7 +114,7 @@ export function evaluateBoundingSphereVisibility(
 
 /**
  * Packs draw-indexed-indirect command arguments (5 uint32 words per batch)
- * into a pre-allocated Uint32Array for WebGPU `drawIndexedIndirect` or CPU parity checks.
+ * into a pre-allocated Uint32Array for frustum-culled batch tracking.
  */
 export function packIndirectDrawBuffer(
   batches: readonly IndirectDrawBatchSpec[],

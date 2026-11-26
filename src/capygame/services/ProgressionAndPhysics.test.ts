@@ -94,11 +94,9 @@ import {
   computeVesselOneToOneTransform,
   doesSphereBlockPlayerSightline,
   evaluatePlayAreaCutoutSightlineAlpha,
-  extractWebGpuRenderDrawCalls,
   installFastMatrixCull,
   isLowMemoryEnvironment,
   measureSceneMemoryFootprint,
-  selectBestGpuBackend,
   shouldEnableOccluderDepthWrite,
   shouldRenderDistrict,
 } from '../engine/gpu/FramePerformanceGovernor';
@@ -211,8 +209,8 @@ test('60 FPS & Zero-Glitch Governor: occluder depthWrite, bloom scale, HiDPI cap
   assert.equal(computeBloomRenderScale('ultra', false), 0.65);
   assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false), 1.5);
   assert.equal(computeEffectivePixelRatio(3.0, 'high', false, false), 1.5);
-  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false, 1.0, true, false), 1.65);
-  assert.equal(computeEffectivePixelRatio(3.0, 'high', false, false, 1.0, true, false), 2.0);
+  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, false, 1.0, false), 1.5);
+  assert.equal(computeEffectivePixelRatio(3.0, 'balanced', true, false, 1.0, false), 1.35);
   assert.equal(computeEffectivePixelRatio(2.5, 'ultra', true, true), 1.0);
 
   // Background district tick striding
@@ -618,7 +616,9 @@ test('AAA Day/Night & Dual Sun+Moon Shadow Rig: clean handoff between Sun and Mo
   const noon = computeDayNightAtmosphereRig(12.0, 0.0, 1.0, 0.0);
   assert.equal(noon.dayPhaseLabel, 'Daylight');
   assert.equal(noon.activeShadowCaster, 'sun');
-  assert.ok(noon.sunIntensity > 2.5);
+  assert.ok(noon.sunIntensity > 3.0);
+  assert.ok(noon.iblEnvIntensity <= 0.85, 'Midday sky IBL stays balanced so metals do not wash out');
+  assert.ok(noon.ambientIntensity <= 0.12, 'Midday ambient fill stays low to preserve shadow depth');
   assert.equal(noon.moonIntensity, 0);
 
   const dusk = computeDayNightAtmosphereRig(18.2, 0.1, 1.0, 0.0);
@@ -673,7 +673,7 @@ test('PerformanceLogTracker: ignores startup/transition warmup stalls, caps read
   assert.equal(cleared.liveFps, 60);
 });
 
-test('WebGPU Pipeline Guard: LatheGeometry PBR tangents & closed Line orbits', () => {
+test('WebGL2 Pipeline Guard: LatheGeometry PBR tangents & closed Line orbits', () => {
   const saucerPoints = [
     new THREE.Vector2(0.0, -0.14),
     new THREE.Vector2(0.18, -0.125),
@@ -1036,40 +1036,6 @@ test('Scene Matrix Cull & GPU Auto-Bench Regression: O(1) hidden subtree skip, c
   group.matrixWorldAutoUpdate = true;
   scene.updateMatrixWorld();
   assert.equal(childMatrixUpdates, 3);
-
-  // 5. WebGPU telemetry prefers per-frame drawCalls over cumulative lifetime calls
-  assert.equal(extractWebGpuRenderDrawCalls({ calls: 4509, drawCalls: 42 }, true), 42);
-  assert.equal(extractWebGpuRenderDrawCalls({ calls: 61, drawCalls: 0 }, false), 61);
-
-  // 6. Auto-benchmark selects faster backend, rejects driver stalls, and respects 3% WebGPU tie margin
-  assert.equal(
-    selectBestGpuBackend(
-      { supported: true, avgMs: 14.5, maxMs: 28.0, hadError: false },
-      { supported: true, avgMs: 2.1, maxMs: 3.4, hadError: false }
-    ).winner,
-    'webgl2'
-  );
-  assert.equal(
-    selectBestGpuBackend(
-      { supported: true, avgMs: 1.8, maxMs: 2.5, hadError: false },
-      { supported: true, avgMs: 4.5, maxMs: 8.0, hadError: false }
-    ).winner,
-    'webgpu'
-  );
-  assert.equal(
-    selectBestGpuBackend(
-      { supported: true, avgMs: 1.2, maxMs: 2.0, hadError: true },
-      { supported: true, avgMs: 6.0, maxMs: 9.0, hadError: false }
-    ).winner,
-    'webgl2'
-  );
-  assert.equal(
-    selectBestGpuBackend(
-      { supported: true, avgMs: 2.04, maxMs: 3.0, hadError: false },
-      { supported: true, avgMs: 2.0, maxMs: 3.0, hadError: false }
-    ).winner,
-    'webgpu'
-  );
 });
 
 test('RAM & VRAM Footprint Guard: Capybara NPC pooling shares geometries/materials while Hero stays isolated, and FBO estimator zeros disabled targets', () => {
@@ -1576,7 +1542,9 @@ test('Phase 4 Hardening: ProgressionService whitelist sanitization, corrupt save
   const clean = ProgressionService.sanitizeGameSettings(malicious);
   assert.equal(({} as Record<string, unknown>).polluted, undefined);
   assert.equal('evilExtra' in clean, false);
-  assert.equal(clean.gpuBackendPreference, DEFAULT_CAPY_SETTINGS.gpuBackendPreference);
+  assert.equal(clean.gpuBackendPreference, 'webgl2');
+  assert.equal(ProgressionService.sanitizeGameSettings({ gpuBackendPreference: 'webgpu' }).gpuBackendPreference, 'webgl2');
+  assert.equal(ProgressionService.sanitizeGameSettings({ gpuBackendPreference: 'auto' }).gpuBackendPreference, 'webgl2');
   assert.equal(clean.gpuQualityPreset, DEFAULT_CAPY_SETTINGS.gpuQualityPreset);
   assert.equal(clean.gpuVisualFilter, DEFAULT_CAPY_SETTINGS.gpuVisualFilter);
   assert.equal(clean.gpuToneMapping, DEFAULT_CAPY_SETTINGS.gpuToneMapping);
@@ -1842,7 +1810,6 @@ test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains
     new THREE.AmbientLight(),
     new THREE.HemisphereLight(),
     new THREE.DirectionalLight(),
-    false,
     true
   );
   try {

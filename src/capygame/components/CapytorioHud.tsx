@@ -435,14 +435,13 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                 : 'Nothing to undo [Ctrl+Z]'
             }
             aria-label="Undo last building action"
-            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap ${
+            className={`h-6 w-7 rounded-[2px] flex items-center justify-center shrink-0 ${
               snap.history.canUndo
                 ? `${FACTORIO_BTN_IDLE} cursor-pointer`
                 : 'bg-[#202228] border border-[#323640] text-[#5c6270] cursor-not-allowed'
             }`}
           >
-            <Undo2 className="w-3 h-3 shrink-0" />
-            <span>Undo</span>
+            <Undo2 className="w-3.5 h-3.5 shrink-0" />
           </button>
 
           <button
@@ -456,14 +455,13 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
                 : 'Nothing to redo [Ctrl+Y]'
             }
             aria-label="Redo building action"
-            className={`h-6 px-2 rounded-[2px] text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
+            className={`h-6 w-7 rounded-[2px] flex items-center justify-center shrink-0 ${
               snap.history.canRedo
                 ? `${FACTORIO_BTN_IDLE} cursor-pointer`
                 : 'bg-[#202228] border border-[#323640] text-[#5c6270] cursor-not-allowed'
             }`}
           >
-            <Redo2 className="w-3 h-3 shrink-0" />
-            <span>Redo</span>
+            <Redo2 className="w-3.5 h-3.5 shrink-0" />
           </button>
 
           <button

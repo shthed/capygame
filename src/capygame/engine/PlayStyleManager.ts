@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import type * as THREE_WEBGPU from 'three/webgpu';
 import {
   CapyModelGenerator,
   CapyMeshGroup,
@@ -94,8 +93,6 @@ import { NativeBridge } from '../../services/NativeBridge';
 import { AaaWorldVfxEngine } from './gpu/AaaWorldVfxEngine';
 import { HardwareGpuEngine } from './gpu/HardwareGpuEngine';
 import { PbrTextureSynthesizer } from './gpu/PbrTextureSynthesizer';
-import type { WebGpuPostAndComputePipeline } from './gpu/WebGpuPipeline';
-import { getWebGpuRuntime, type WebGpuProbeResult } from './gpu/WebGpuRuntime';
 import { getPresetPatchForGpuQuality } from './gpu/GpuEngineTypes';
 import { PhysicsWorldBridge } from './physics/PhysicsWorldBridge';
 import {
@@ -437,12 +434,10 @@ export interface GameEventCallbacks {
 export class PlayStyleManager {
   public scene: THREE.Scene;
   public camera: THREE.PerspectiveCamera;
-  public renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer;
+  public renderer: THREE.WebGLRenderer;
   public readonly isSoftwareGl: boolean;
-  public readonly isWebGpu: boolean;
   public readonly performanceLog = new PerformanceLogTracker();
   public readonly profiler = new PerformanceProfiler();
-  private webGpuPipeline: WebGpuPostAndComputePipeline | null = null;
 
   public currentMode: PlayStyle = 'sanctuary';
   private stats: PlayerStats;
@@ -916,9 +911,7 @@ export class PlayStyleManager {
     initialStats: PlayerStats,
     initialSettings: CapyGameSettings = DEFAULT_CAPY_SETTINGS,
     callbacks: GameEventCallbacks,
-    webGpuInit?: {
-      renderer?: THREE_WEBGPU.WebGPURenderer | null;
-      probe: WebGpuProbeResult;
+    rendererOptions?: {
       isSoftwareGl?: boolean;
     } | null
   ) {
@@ -972,10 +965,9 @@ export class PlayStyleManager {
       typeof window !== 'undefined' &&
       new URLSearchParams(window.location.search).get('skip_cosmic') === '1';
 
-    this.isSoftwareGl = webGpuInit?.renderer
-      ? webGpuInit.probe.isFallbackAdapter
-      : typeof webGpuInit?.isSoftwareGl === 'boolean'
-        ? webGpuInit.isSoftwareGl
+    this.isSoftwareGl =
+      typeof rendererOptions?.isSoftwareGl === 'boolean'
+        ? rendererOptions.isSoftwareGl
         : (() => {
             try {
               const gl =
@@ -1014,32 +1006,24 @@ export class PlayStyleManager {
     );
     this.camera.position.set(0, 7.5, 14);
 
-    // 2. Renderer (Hardware WebGPURenderer or WebGL2 with mobile/software fallback)
-    if (webGpuInit?.renderer) {
-      this.renderer = webGpuInit.renderer;
-      this.isWebGpu = true;
-    } else {
-      this.isWebGpu = false;
-      try {
-        this.renderer = new THREE.WebGLRenderer({
-          antialias: !this.isSoftwareGl,
-          powerPreference: 'high-performance',
-          preserveDrawingBuffer: false,
-        });
-      } catch {
-        this.isSoftwareGl = true;
-        this.renderer = new THREE.WebGLRenderer({
-          antialias: false,
-          powerPreference: 'default',
-          preserveDrawingBuffer: false,
-        });
-      }
-      if (this.renderer instanceof THREE.WebGLRenderer) {
-        this.renderer.debug.checkShaderErrors = Boolean(
-          (import.meta as { env?: { DEV?: boolean } }).env?.DEV
-        );
-      }
+    // 2. Renderer (Hardware WebGL2 with safe software fallback)
+    try {
+      this.renderer = new THREE.WebGLRenderer({
+        antialias: !this.isSoftwareGl,
+        powerPreference: 'high-performance',
+        preserveDrawingBuffer: false,
+      });
+    } catch {
+      this.isSoftwareGl = true;
+      this.renderer = new THREE.WebGLRenderer({
+        antialias: false,
+        powerPreference: 'default',
+        preserveDrawingBuffer: false,
+      });
     }
+    this.renderer.debug.checkShaderErrors = Boolean(
+      (import.meta as { env?: { DEV?: boolean } }).env?.DEV
+    );
     this.renderer.setPixelRatio(
       computeEffectivePixelRatio(
         window.devicePixelRatio || 1,
@@ -1047,7 +1031,6 @@ export class PlayStyleManager {
         this.settings.gpuPostProcessing !== false,
         this.isSoftwareGl,
         this.settings.gpuResolutionScale ?? 1.0,
-        this.isWebGpu,
         isMobileEnvironment()
       )
     );
@@ -1094,17 +1077,6 @@ export class PlayStyleManager {
     dirLight.shadow.bias = -0.00032;
     dirLight.shadow.normalBias = 0.024;
     this.scene.add(dirLight);
-    if (this.isWebGpu && webGpuInit?.probe) {
-      this.webGpuPipeline =
-        getWebGpuRuntime()?.createWebGpuPostAndComputePipeline(
-          this.renderer,
-          this.scene,
-          this.camera,
-          webGpuInit.probe.adapterName,
-          gpuCfg as GpuPipelineConfig
-        ) ?? null;
-    }
-
     this.gpuEngine = new HardwareGpuEngine(
       this.renderer,
       this.scene,
@@ -1113,19 +1085,12 @@ export class PlayStyleManager {
       this.isSoftwareGl,
       width,
       height,
-      gpuCfg,
-      webGpuInit?.probe || this.webGpuPipeline
-        ? {
-            webGpuPipeline: this.webGpuPipeline ?? undefined,
-            webGpuProbe: webGpuInit?.probe ?? null,
-          }
-        : undefined
+      gpuCfg
     );
     this.vfxEngine = new AaaWorldVfxEngine(
       this.scene,
       this.isSoftwareGl,
-      this.renderer.getPixelRatio(),
-      this.isWebGpu
+      this.renderer.getPixelRatio()
     );
 
     const isLowMem = isLowMemoryEnvironment(
@@ -1144,7 +1109,6 @@ export class PlayStyleManager {
       ambientLight,
       hemiLight,
       dirLight,
-      this.isWebGpu,
       !skipCosmic
     );
     this.scene.add(this.worldEnv.moonLight);
@@ -1239,7 +1203,7 @@ export class PlayStyleManager {
     this.cosmicBuilder = new CosmicUniverseBuilder(this.isSoftwareGl, isLowMem, !skipCosmic);
     this.cosmicBuilder.setSuspended(true);
     this.scene.add(this.cosmicBuilder.rootGroup);
-    this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl, this.isWebGpu);
+    this.seamlessUniverse = new SeamlessUniverseSimulator(this.isSoftwareGl);
     this.scene.add(this.seamlessUniverse.rootGroup);
     this.scene.add(this.seamlessUniverse.celestialBackdropGroup);
     this.sanctuaryGroup.add(this.seamlessUniverse.forestGroveGroup);
@@ -1286,18 +1250,14 @@ export class PlayStyleManager {
 
     if (skipCosmic) {
       this.ensureSurfaceWorldsBuilt();
-      if (this.isWebGpu) {
-        getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.scene);
-      } else {
-        if (!this.isSoftwareGl) {
-          this.schedulePostPaintAsyncCompile([
-            this.chronoVessel.root,
-            this.heroCapy,
-            this.seamlessUniverse.celestialBackdropGroup,
-          ]);
-        }
-        this.scheduleIdlePipelineWarmup();
+      if (!this.isSoftwareGl) {
+        this.schedulePostPaintAsyncCompile([
+          this.chronoVessel.root,
+          this.heroCapy,
+          this.seamlessUniverse.celestialBackdropGroup,
+        ]);
       }
+      this.scheduleIdlePipelineWarmup();
       this.switchMode(this.stats.selectedPlayStyle, true);
       this.vesselMode = 'landed';
       this.chronoVessel.setMode('landed');
@@ -1319,9 +1279,7 @@ export class PlayStyleManager {
       this.setSceneBackgroundHex(0x02040a);
       this.setSkyDomeAlpha(0.0);
       this.tickSeamlessUniverse(0.016);
-      if (this.isWebGpu) {
-        getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.chronoVessel.root);
-      } else if (!this.isSoftwareGl) {
+      if (!this.isSoftwareGl) {
         this.schedulePostPaintAsyncCompile([
           this.chronoVessel.root,
           this.seamlessUniverse.celestialBackdropGroup,
@@ -1336,14 +1294,13 @@ export class PlayStyleManager {
   private schedulePostPaintAsyncCompile(targets: THREE.Object3D[]): void {
     if (
       typeof window === 'undefined' ||
-      this.isWebGpu ||
       this.isSoftwareGl ||
       this.disposed ||
       targets.length === 0
     ) {
       return;
     }
-    const glRenderer = this.renderer as THREE.WebGLRenderer;
+    const glRenderer = this.renderer;
     if (typeof glRenderer.compileAsync !== 'function') {
       return;
     }
@@ -1399,9 +1356,7 @@ export class PlayStyleManager {
     installFastMatrixCull(this.heroCapy);
     this.syncDachshundSkinAndOrange();
 
-    if (this.isWebGpu) {
-      getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.heroCapy);
-    } else if (!this.isSoftwareGl) {
+    if (!this.isSoftwareGl) {
       this.schedulePostPaintAsyncCompile([this.heroCapy]);
     }
   }
@@ -1432,7 +1387,7 @@ export class PlayStyleManager {
       AudioService.resumeFromPause();
       if (!this.deferredBootComplete) {
         this.scheduleDeferredBootWork();
-      } else if (!this.idleWarmupComplete && !this.isWebGpu) {
+      } else if (!this.idleWarmupComplete) {
         this.scheduleIdlePipelineWarmup();
       }
     }
@@ -1450,27 +1405,21 @@ export class PlayStyleManager {
         this.worldEnv.ensureCoreTexturesReady();
         this.worldEnv.ensureAlpineMountainsBuilt();
         this.buildSharedArchipelagoBase();
-        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.worldBaseGroup);
         break;
       case 1:
         this.buildSanctuary();
-        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.sanctuaryGroup);
         break;
       case 2:
         this.buildSporeWorld();
-        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.sporeGroup);
         break;
       case 3:
         this.buildCapytorioWorld();
-        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.capytorioGroup);
         break;
       case 4:
         this.buildRunner();
-        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.runnerGroup);
         break;
       case 5:
         this.buildFallGuys();
-        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.fallGuysGroup);
         break;
       case 6:
         this.physicsBridge.ensureWorkerInitialized();
@@ -1478,7 +1427,6 @@ export class PlayStyleManager {
         break;
       case 7:
         this.buildSelectableCapyHeroCircle();
-        if (this.isWebGpu) getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.selectableCapyGroup);
         break;
       case 8:
         this.prewarmOccluderShaderPrograms();
@@ -1565,17 +1513,12 @@ export class PlayStyleManager {
       // Phase 2: Lazily build distant Alpine mountain heightfield PBR mesh during idle time
       if (!this.worldEnv.isAlpineMountainsBuilt()) {
         this.worldEnv.ensureAlpineMountainsBuilt();
-        if (this.isWebGpu) {
-          getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.worldEnv.mountainMesh);
-        }
         scheduleNext(this.isSoftwareGl ? 90 : 45);
         return;
       }
       // Do NOT build playable Capybara Forest / Capytorio districts until the user selects "Play in Forest" or "Play Capytorio".
       this.deferredBootComplete = true;
-      if (!this.isWebGpu) {
-        this.scheduleIdlePipelineWarmup();
-      }
+      this.scheduleIdlePipelineWarmup();
     };
 
     const scheduleNext = (delayMs: number) => {
@@ -1619,26 +1562,15 @@ export class PlayStyleManager {
       return;
     }
 
-    const webGpuCompileFn = this.isWebGpu
-      ? (this.renderer as unknown as {
-          compileAsync?: (obj: THREE.Object3D, cam: THREE.Camera, scene: THREE.Scene) => Promise<void>;
-        }).compileAsync
-      : undefined;
-    const glRenderer = this.isWebGpu ? null : (this.renderer as THREE.WebGLRenderer);
+    const glRenderer = this.renderer;
     const compileTargetAsync = (obj: THREE.Object3D): Promise<void> => {
-      if (this.isWebGpu) {
-        if (typeof webGpuCompileFn === 'function') {
-          return webGpuCompileFn.call(this.renderer, obj, this.camera, this.scene).then(() => undefined);
-        }
-        return Promise.resolve();
-      }
       if (glRenderer && typeof glRenderer.compileAsync === 'function') {
         return glRenderer.compileAsync(obj, this.camera, this.scene).then(() => undefined);
       }
       return Promise.resolve();
     };
 
-    if (!this.isWebGpu && (!glRenderer || typeof glRenderer.compileAsync !== 'function')) {
+    if (!glRenderer || typeof glRenderer.compileAsync !== 'function') {
       this.gpuEngine?.markIdleWarmupComplete(true);
       return;
     }
@@ -3044,8 +2976,7 @@ export class PlayStyleManager {
       new THREE.CylinderGeometry(1200, 1200, 0.6, 64)
     );
     const oceanMat = RealisticWorldEnvironment.createOceanWaterMaterial(
-      this.isSoftwareGl,
-      this.isWebGpu
+      this.isSoftwareGl
     );
     const ocean = new THREE.Mesh(oceanGeo, oceanMat);
     ocean.position.set(0, -1.25, 0);
@@ -5400,10 +5331,7 @@ export class PlayStyleManager {
       sLines.push(`Live: ${perf.liveFps} | Avg: ${perf.avgFps} | Min: ${perf.minFps} | Drops: ${perf.droppedFramesCount} | Avg ${perf.avgFrameMs}ms / P95 ${perf.p95FrameMs}ms / Spike ${perf.maxFrameMs}ms`);
       sLines.push(`Scene: ${this.currentMode} · ${this.cosmicStage} | Scale: ${this.currentLogScaleMeters.toFixed(1)} log-m (T+${computeCosmicAgeGyr(this.currentLogScaleMeters).toFixed(2)} Gyr)`);
       sLines.push(`Vessel: ${this.vesselMode} | Velocity: ${this.cruiseVelocityLogPerSec.toFixed(1)} log/s`);
-      sLines.push(`GPU: ${gpu.backendLabel} (${gpu.webGpuAdapterName || (gpu.gpuRenderer ? gpu.gpuRenderer.slice(0, 32) : 'Default')}) | Preset: ${gpu.qualityPreset}`);
-      if (gpu.backendBenchmarkSummary) {
-        sLines.push(`Auto-Bench: ${gpu.backendBenchmarkSummary}`);
-      }
+      sLines.push(`GPU: ${gpu.backendLabel} (${gpu.gpuRenderer ? gpu.gpuRenderer.slice(0, 32) : 'Default'}) | Preset: ${gpu.qualityPreset}`);
       sLines.push(`Pipeline: Shadows ${gpu.shadowCasterMode.toUpperCase()} (${gpu.shadowMapSize}px) | Bloom: ${gpu.bloomEnabled ? 'ON' : 'OFF'} | SSAO: ${gpu.ssaoEnabled ? 'ON' : 'OFF'} | AA: ${gpu.antiAliasing} | Scale: ${gpu.resolutionScale}x (DPR ${gpu.effectivePixelRatio})`);
       sLines.push(`Opt Cuts: ${disabledStr}`);
       const heapStr =
@@ -5456,11 +5384,7 @@ export class PlayStyleManager {
     lines.push(`Buildings: ${this.stats.buildings.length} | Capy Heroes: ${PLAYABLE_CAPY_HEROES.length}`);
     lines.push('');
     lines.push('--- GRAPHICS PIPELINE & GPU TELEMETRY ---');
-    lines.push(`Backend: ${gpu.backendLabel} (WebGPU Active: ${gpu.webGpuActive})`);
-    if (gpu.backendBenchmarkSummary) {
-      lines.push(`Auto-Bench: ${gpu.backendBenchmarkSummary}`);
-    }
-    lines.push(`Adapter: ${gpu.webGpuAdapterName || 'Unknown'}`);
+    lines.push(`Backend: ${gpu.backendLabel}`);
     lines.push(`GPU Renderer: ${gpu.gpuRenderer}`);
     lines.push(`Software GL: ${gpu.isSoftwareGl}`);
     lines.push(`Quality Preset: ${gpu.qualityPreset}`);
@@ -5633,7 +5557,6 @@ export class PlayStyleManager {
         colorHex: lagoonWaterHex,
         opacity: 0.78,
         rippleAmp: 0.11,
-        isWebGpu: this.isWebGpu,
         isSoftwareGl: this.isSoftwareGl,
       }
     );
@@ -5809,9 +5732,6 @@ export class PlayStyleManager {
               this.capytorioGroup.visible,
               this.getCapytorioCameraMode() === 'oblique' ? initPose.altitudeRadius : 26
             );
-            if (this.isWebGpu) {
-              getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.capytorioGroup);
-            }
           }
           this.emitCapytorioSnapshot();
           this.emitTelemetry();
@@ -8822,8 +8742,8 @@ export class PlayStyleManager {
       }
     }
 
-    if (!this.isSoftwareGl && !this.isWebGpu && swappedSamples.length > 0) {
-      (this.renderer as THREE.WebGLRenderer).compile(this.sanctuaryGroup, this.camera);
+    if (!this.isSoftwareGl && swappedSamples.length > 0) {
+      this.renderer.compile(this.sanctuaryGroup, this.camera);
       for (let i = 0; i < swappedSamples.length; i++) {
         const mesh = swappedSamples[i];
         if (mesh.userData.__origMaterial) {
@@ -8850,7 +8770,7 @@ export class PlayStyleManager {
         occMat.userData.__origTransparent = m.transparent;
         occMat.userData.__origOpacity = m.opacity;
         occMat.userData.__origDepthWrite = m.depthWrite;
-        installSightlineEdgeFadeShader(occMat, this.isWebGpu);
+        installSightlineEdgeFadeShader(occMat);
         return occMat;
       });
     } else if (mesh.material) {
@@ -8860,7 +8780,7 @@ export class PlayStyleManager {
       occMat.userData.__origTransparent = orig.transparent;
       occMat.userData.__origOpacity = orig.opacity;
       occMat.userData.__origDepthWrite = orig.depthWrite;
-      installSightlineEdgeFadeShader(occMat, this.isWebGpu);
+      installSightlineEdgeFadeShader(occMat);
       mesh.userData.__occMaterial = occMat;
     }
     mesh.userData.__occluderPrepared = true;
@@ -8895,7 +8815,7 @@ export class PlayStyleManager {
         );
       }
 
-      const uniforms = installSightlineEdgeFadeShader(mat, this.isWebGpu);
+      const uniforms = installSightlineEdgeFadeShader(mat);
       const origOpacity =
         (mat.userData.__origOpacity as number | undefined) ?? 1.0;
 

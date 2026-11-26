@@ -609,7 +609,7 @@ test('disposeObject3DTree disposes cloned __occMaterial and __origMaterial, and 
     prevCalled = true;
     shader.fragmentShader = '// PREV_HOOK\n' + shader.fragmentShader;
   };
-  installSightlineEdgeFadeShader(chainedMat, false);
+  installSightlineEdgeFadeShader(chainedMat);
   const mockShader = {
     uniforms: {} as Record<string, unknown>,
     vertexShader: '',
@@ -623,13 +623,12 @@ test('disposeObject3DTree disposes cloned __occMaterial and __origMaterial, and 
 
 test('HardwareGpuEngine enforces mutually exclusive sun/moon shadows, skips RectAreaLight on low/medium presets, and caps WebGL2 DPR to 1.5', () => {
   // 1. DPR cap: WebGL2 & mobile cap at 1.5 on 3x HiDPI displays
-  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, false, 1.0, false, false), 1.5);
-  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false, 1.0, false, false), 1.5);
-  assert.equal(computeEffectivePixelRatio(3.0, 'balanced', true, false, 1.0, false, false), 1.35);
-  assert.equal(computeEffectivePixelRatio(3.0, 'performance', true, false, 1.0, false, false), 1.0);
-  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, false, 1.0, true, true), 1.5);
-  // Desktop WebGPU retains higher cap
-  assert.ok(computeEffectivePixelRatio(2.0, 'ultra', true, false, 1.0, true, false) >= 2.0);
+  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, false, 1.0, false), 1.5);
+  assert.equal(computeEffectivePixelRatio(3.0, 'high', true, false, 1.0, false), 1.5);
+  assert.equal(computeEffectivePixelRatio(3.0, 'balanced', true, false, 1.0, false), 1.35);
+  assert.equal(computeEffectivePixelRatio(3.0, 'performance', true, false, 1.0, false), 1.0);
+  assert.equal(computeEffectivePixelRatio(3.0, 'ultra', true, false, 1.0, true), 1.5);
+  assert.equal(computeEffectivePixelRatio(2.0, 'ultra', true, false, 1.25, false), 1.88);
 
   // 2. Mutually exclusive sunLight.castShadow & moonLight.castShadow + RectAreaLight preset gating
   let pixelRatio = 1;
@@ -1248,7 +1247,7 @@ test('Phase 3: HardwareGpuEngine updates uTexelSize without FXAA, resizes bloom 
 
 test('Phase 3: AaaWorldVfxEngine preserves disabled motes visibility and guards zero sunDirection; shaders and __sourceGeometry dispose safely', () => {
   const vfxScene = new THREE.Scene();
-  const vfx = new AaaWorldVfxEngine(vfxScene, false, 1, false);
+  const vfx = new AaaWorldVfxEngine(vfxScene, false, 1);
   const vfxPriv = vfx as unknown as {
     motesPoints: THREE.Points;
     godRayGroup: THREE.Group;

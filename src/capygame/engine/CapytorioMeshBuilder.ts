@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import {
-  CAPYTORIO_CHEST_SLOTS,
   CAPYTORIO_ITEM_SHAPES,
   CAPYTORIO_MACHINE_SPECS,
+  CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE,
   CAPYTORIO_TILE_SIZE,
   CAPYTORIO_WORLD_ORIGIN_X,
   CAPYTORIO_WORLD_ORIGIN_Z,
@@ -45,6 +45,10 @@ import {
   type CapytorioVariantMaterials,
 } from './capytorio/CapytorioVariantModels';
 import { CAPY_CRISP_OVERLAY_LAYER } from './gpu/GpuEngineTypes';
+import {
+  drawCapytorioAltBadgeToCanvas,
+  type CapytorioAltBadgeSpec,
+} from './CapytorioAltIconRenderer';
 
 const TERRAIN_DECK_SEGS = 64;
 const TERRAIN_DECK_BASE_TILES = 128;
@@ -105,13 +109,233 @@ const _shapeCounts: Record<CapytorioItemShape, number> = {
 };
 
 const _scaleScratch: [number, number, number] = [1, 1, 1];
-const _altBadgeScratch = {
+const _altBadgeScratch: CapytorioAltBadgeSpec = {
   key: '',
-  label: '',
-  sub: '',
-  accent: '#38bdf8',
+  iconKind: 'item',
+  itemShape: 'ore',
+  machineType: '',
+  variantItemId: '',
+  accentCss: '#38bdf8',
   warn: false,
+  blacklist: false,
 };
+
+function populateAltBadgeForItem(
+  itemId: string,
+  keyPrefix: string,
+  blacklist: boolean,
+  out: CapytorioAltBadgeSpec
+): void {
+  const meta = getCapytorioItemMeta(itemId);
+  out.key = `${keyPrefix}:${itemId}${blacklist ? ':blk' : ''}`;
+  out.accentCss = meta.cssColor;
+  out.warn = false;
+  out.blacklist = blacklist;
+  const placeable = CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE[itemId];
+  if (placeable) {
+    out.iconKind = 'machine';
+    out.machineType = placeable.baseType;
+    out.variantItemId = itemId;
+    out.itemShape = meta.shape ?? 'crate';
+  } else {
+    out.iconKind = 'item';
+    out.itemShape = meta.shape ?? resolveCapytorioItemShape(itemId, meta.category);
+    out.machineType = '';
+    out.variantItemId = '';
+  }
+}
+
+export function populateCapytorioAltBadgeSpec(
+  engine: CapytorioFactoryEngine,
+  m: CapytorioMachine,
+  out: CapytorioAltBadgeSpec
+): boolean {
+  out.warn = false;
+  out.blacklist = false;
+  out.machineType = '';
+  out.variantItemId = '';
+
+  // High-priority operational alerts (variant-aware power demand)
+  if (getCapytorioMachineBasePowerDemandMw(m) > 0 && engine.powerEfficiency <= 0.05) {
+    out.key = 'warn:nopwr';
+    out.iconKind = 'warn_power';
+    out.accentCss = '#ef4444';
+    out.warn = true;
+    return true;
+  }
+  if (m.type === 'generator') {
+    if (m.variantItemId === 'solar_panel') {
+      out.key = 'gen:solar';
+      out.iconKind = 'machine';
+      out.machineType = 'generator';
+      out.variantItemId = 'solar_panel';
+      out.accentCss = '#38bdf8';
+      return true;
+    }
+    if (m.variantItemId === 'accumulator') {
+      out.key = 'gen:accum';
+      out.iconKind = 'machine';
+      out.machineType = 'generator';
+      out.variantItemId = 'accumulator';
+      out.accentCss = '#22d3ee';
+      return true;
+    }
+    if (m.variantItemId === 'nuclear_reactor') {
+      out.key = 'gen:nuclear';
+      out.iconKind = 'machine';
+      out.machineType = 'generator';
+      out.variantItemId = 'nuclear_reactor';
+      out.accentCss = '#34d399';
+      return true;
+    }
+    if (m.fuelTimer <= 0) {
+      out.key = 'warn:nofuel';
+      out.iconKind = 'warn_fuel';
+      out.accentCss = '#f59e0b';
+      out.warn = true;
+      return true;
+    }
+  }
+  if (m.type === 'drill') {
+    if (m.variantItemId === 'offshore_pump') {
+      out.key = 'pump:water';
+      out.iconKind = 'water';
+      out.accentCss = '#38bdf8';
+      return true;
+    }
+    const fp = engine.getMachineFootprint(m);
+    const ore = engine.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height);
+    if (!ore) {
+      out.key = 'warn:noore';
+      out.iconKind = 'warn_ore';
+      out.accentCss = '#f59e0b';
+      out.warn = true;
+      return true;
+    }
+    populateAltBadgeForItem(ore.resource, 'drill', false, out);
+    return true;
+  }
+  if (m.type === 'assembler' && m.recipeId) {
+    const rec = RECIPE_BY_ID.get(m.recipeId);
+    if (rec) {
+      populateAltBadgeForItem(rec.result, 'asm', false, out);
+      return true;
+    }
+  }
+  if (m.type === 'furnace') {
+    let outItem: string | null = null;
+    for (const k in m.outputBuffer) {
+      if ((m.outputBuffer[k] ?? 0) > 0) {
+        outItem = k;
+        break;
+      }
+    }
+    if (!outItem) {
+      for (const k in m.inputBuffer) {
+        if ((m.inputBuffer[k] ?? 0) > 0) {
+          const spec = getCapytorioSmeltSpec(k);
+          if (spec) {
+            outItem = spec.result;
+            break;
+          }
+        }
+      }
+    }
+    if (outItem) {
+      populateAltBadgeForItem(outItem, 'furn', false, out);
+      return true;
+    }
+    return false;
+  }
+  if (m.type === 'splitter') {
+    const inP = m.splitterInputPriority ?? 'none';
+    const outP = m.splitterOutputPriority ?? 'none';
+    const filt = m.splitterFilterItem ?? null;
+    if (!filt && inP === 'none' && outP === 'none') return false;
+    if (filt) {
+      populateAltBadgeForItem(filt, 'split', false, out);
+      return true;
+    }
+    out.key = 'split:prio';
+    out.iconKind = 'prio_split';
+    out.accentCss = '#facc15';
+    return true;
+  }
+  if (m.type === 'inserter') {
+    if (!isCapytorioFunctionalInserter(m)) return false;
+    const filters = m.inserterFilters;
+    const hasFilters = Boolean(filters && filters.length > 0);
+    const reach = getCapytorioInserterReach(m.variantItemId);
+    const stackLim = m.inserterStackLimit ?? null;
+    if (!hasFilters && reach < 2 && stackLim === null) return false;
+    if (hasFilters && filters) {
+      populateAltBadgeForItem(
+        filters[0],
+        'ins',
+        m.inserterFilterMode === 'blacklist',
+        out
+      );
+      return true;
+    }
+    out.key = reach === 2 ? 'ins:long' : 'ins:stack';
+    out.iconKind = reach === 2 ? 'long_inserter' : 'stack_cap';
+    out.accentCss = reach === 2 ? '#ef4444' : '#38bdf8';
+    return true;
+  }
+  if (m.type === 'chest') {
+    if (m.variantItemId === 'pump') {
+      out.key = 'pump:fluid';
+      out.iconKind = 'water';
+      out.accentCss = '#38bdf8';
+      return true;
+    }
+    if (m.variantItemId === 'roboport') {
+      out.key = 'roboport';
+      out.iconKind = 'roboport';
+      out.accentCss = '#fb923c';
+      return true;
+    }
+    if (!isCapytorioStorageChest(m)) return false;
+    let topItem: string | null = null;
+    let topCount = 0;
+    for (const k in m.outputBuffer) {
+      const c = m.outputBuffer[k] ?? 0;
+      if (c > topCount) {
+        topCount = c;
+        topItem = k;
+      }
+    }
+    const limit = m.chestSlotLimit ?? null;
+    if (!topItem && limit === null) return false;
+    if (topItem) {
+      populateAltBadgeForItem(topItem, 'chest', false, out);
+      return true;
+    }
+    out.key = 'chest:cap';
+    out.iconKind = 'chest_cap';
+    out.accentCss = '#ef4444';
+    return true;
+  }
+  if (m.type === 'lab') {
+    if (m.variantItemId === 'beacon') {
+      out.key = 'lab:beacon';
+      out.iconKind = 'beacon';
+      out.accentCss = '#22d3ee';
+      return true;
+    }
+    if (m.variantItemId === 'radar') {
+      out.key = 'lab:radar';
+      out.iconKind = 'radar';
+      out.accentCss = '#38bdf8';
+      return true;
+    }
+    out.key = 'lab:sci';
+    out.iconKind = 'lab_science';
+    out.accentCss = '#a855f7';
+    return true;
+  }
+  return false;
+}
 
 function resolveMachineMeshKey(type: CapytorioMachineType, variantItemId?: string): string {
   if (variantItemId && DEDICATED_CAPYTORIO_VARIANT_MODELS.has(variantItemId)) {
@@ -328,21 +552,67 @@ function createBrushedSteelTexture(
   ctx.fillStyle = baseHex;
   ctx.fillRect(0, 0, 256, 256);
 
-  // Directional brushed metal streaks
-  ctx.fillStyle = streakHex;
-  for (let i = 0; i < 420; i++) {
+  // Subtle multi-tone mottled industrial patina across each plate
+  for (let i = 0; i < 64; i++) {
+    const x = (i * 53 + (i % 7) * 19) % 256;
+    const y = (i * 97 + (i % 5) * 23) % 256;
+    const r = 14 + (i % 24);
+    ctx.fillStyle = i % 2 === 0 ? seamHex : streakHex;
+    ctx.globalAlpha = i % 2 === 0 ? 0.06 : 0.04;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Fine directional brushed-metal streaks (both bright grain and dark micro-scratches)
+  for (let i = 0; i < 560; i++) {
     const x = (i * 73) % 256;
     const y = (i * 197 + (i % 7) * 11) % 256;
-    const w = 18 + ((i * 29) % 52);
-    ctx.globalAlpha = 0.08 + ((i % 5) * 0.025);
-    ctx.fillRect(x, y, w, 1.5);
+    const w = 16 + ((i * 29) % 54);
+    ctx.fillStyle = i % 3 === 0 ? seamHex : streakHex;
+    ctx.globalAlpha = i % 3 === 0 ? 0.09 + (i % 4) * 0.02 : 0.06 + (i % 5) * 0.018;
+    ctx.fillRect(x, y, w, i % 5 === 0 ? 1.5 : 1);
   }
   ctx.globalAlpha = 1;
 
-  // Riveted industrial steel plate seam grid (2x2 plates per tile)
+  // 2x2 beveled industrial steel plates with recessed grime halo & highlight lip
+  const panels = [
+    [0, 0],
+    [128, 0],
+    [0, 128],
+    [128, 128],
+  ];
+  for (let p = 0; p < panels.length; p++) {
+    const [px, py] = panels[p];
+    // Soft ambient-occlusion shadow inside each seam edge
+    const edgeGradTop = ctx.createLinearGradient(px, py, px, py + 12);
+    edgeGradTop.addColorStop(0, 'rgba(9, 13, 21, 0.24)');
+    edgeGradTop.addColorStop(1, 'rgba(9, 13, 21, 0)');
+    ctx.fillStyle = edgeGradTop;
+    ctx.fillRect(px + 2, py + 2, 124, 10);
+
+    const edgeGradBot = ctx.createLinearGradient(px, py + 128, px, py + 116);
+    edgeGradBot.addColorStop(0, 'rgba(9, 13, 21, 0.28)');
+    edgeGradBot.addColorStop(1, 'rgba(9, 13, 21, 0)');
+    ctx.fillStyle = edgeGradBot;
+    ctx.fillRect(px + 2, py + 116, 124, 10);
+
+    // Subtle brushed highlight bevel along upper-left edge
+    ctx.strokeStyle = streakHex;
+    ctx.globalAlpha = 0.22;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(px + 3, py + 124);
+    ctx.lineTo(px + 3, py + 3);
+    ctx.lineTo(px + 124, py + 3);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // Deep plate seam grooves
   ctx.strokeStyle = seamHex;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(1, 1, 254, 254);
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(1.25, 1.25, 253.5, 253.5);
   ctx.beginPath();
   ctx.moveTo(128, 0);
   ctx.lineTo(128, 256);
@@ -350,13 +620,7 @@ function createBrushedSteelTexture(
   ctx.lineTo(256, 128);
   ctx.stroke();
 
-  // Subtle corner rivet bolts inside each panel
-  const panels = [
-    [0, 0],
-    [128, 0],
-    [0, 128],
-    [128, 128],
-  ];
+  // Recessed rivet bolts with dark washers and subtle specular crown
   for (let p = 0; p < panels.length; p++) {
     const [px, py] = panels[p];
     const pts = [
@@ -366,16 +630,92 @@ function createBrushedSteelTexture(
       [px + 116, py + 116],
     ];
     for (let r = 0; r < pts.length; r++) {
+      ctx.fillStyle = 'rgba(9, 13, 21, 0.42)';
+      ctx.beginPath();
+      ctx.arc(pts[r][0] + 0.8, pts[r][1] + 0.8, 4.1, 0, Math.PI * 2);
+      ctx.fill();
       ctx.fillStyle = seamHex;
       ctx.beginPath();
-      ctx.arc(pts[r][0], pts[r][1], 3.2, 0, Math.PI * 2);
+      ctx.arc(pts[r][0], pts[r][1], 3.1, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = streakHex;
-      ctx.globalAlpha = 0.45;
+      ctx.globalAlpha = 0.5;
       ctx.beginPath();
-      ctx.arc(pts[r][0] - 0.8, pts[r][1] - 0.8, 1.4, 0, Math.PI * 2);
+      ctx.arc(pts[r][0] - 0.8, pts[r][1] - 0.8, 1.35, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function createPaintedEnamelOverlayTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  // Neutral-bright satin enamel base multiplied cleanly by machine accent colors
+  ctx.fillStyle = '#dde2e8';
+  ctx.fillRect(0, 0, 256, 256);
+
+  // Subtle powder-coat micro-stipple & brushed wear grain
+  for (let i = 0; i < 650; i++) {
+    const x = (i * 83 + (i % 7) * 13) % 256;
+    const y = (i * 157 + (i % 5) * 17) % 256;
+    const v = i % 3 === 0 ? 196 + (i % 18) : 226 + (i % 20);
+    ctx.fillStyle = `rgb(${v},${v},${v + 2})`;
+    ctx.globalAlpha = 0.22;
+    ctx.fillRect(x, y, i % 4 === 0 ? 18 : 3, 2);
+  }
+  ctx.globalAlpha = 1;
+
+  // Soft panel seam shading (2x2 riveted enameled hull plates)
+  const panels = [
+    [0, 0],
+    [128, 0],
+    [0, 128],
+    [128, 128],
+  ];
+  for (let p = 0; p < panels.length; p++) {
+    const [px, py] = panels[p];
+    // Subtle dark recessed edge shadow
+    ctx.strokeStyle = 'rgba(30, 41, 59, 0.24)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(px + 1.5, py + 1.5, 125, 125);
+    // Faint warm-white highlight along upper bevel
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(px + 4, py + 123);
+    ctx.lineTo(px + 4, py + 4);
+    ctx.lineTo(px + 123, py + 4);
+    ctx.stroke();
+
+    // Painted corner fasteners
+    const pts = [
+      [px + 12, py + 12],
+      [px + 116, py + 12],
+      [px + 12, py + 116],
+      [px + 116, py + 116],
+    ];
+    for (let r = 0; r < pts.length; r++) {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.26)';
+      ctx.beginPath();
+      ctx.arc(pts[r][0] + 0.6, pts[r][1] + 0.6, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.26)';
+      ctx.beginPath();
+      ctx.arc(pts[r][0] - 0.6, pts[r][1] - 0.6, 1.5, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -399,17 +739,30 @@ function createIndustrialPlateBumpTexture(): THREE.CanvasTexture | null {
   ctx.fillRect(0, 0, 256, 256);
 
   // Subtle brushed metal micro-grain
-  for (let i = 0; i < 360; i++) {
+  for (let i = 0; i < 480; i++) {
     const x = (i * 89) % 256;
     const y = (i * 151) % 256;
-    const v = 114 + ((i * 23) % 34);
+    const v = 108 + ((i * 23) % 44);
     ctx.fillStyle = `rgb(${v},${v},${v})`;
-    ctx.fillRect(x, y, 22 + (i % 34), 1);
+    ctx.fillRect(x, y, 20 + (i % 36), 1.2);
   }
 
-  // Recessed plate seams
-  ctx.strokeStyle = '#383838';
-  ctx.lineWidth = 3;
+  // Subtle raised plate bevel framing recessed seams
+  const panels = [
+    [0, 0],
+    [128, 0],
+    [0, 128],
+    [128, 128],
+  ];
+  ctx.strokeStyle = '#9c9c9c';
+  ctx.lineWidth = 2;
+  for (let p = 0; p < panels.length; p++) {
+    ctx.strokeRect(panels[p][0] + 4, panels[p][1] + 4, 120, 120);
+  }
+
+  // Deep recessed plate seams
+  ctx.strokeStyle = '#262626';
+  ctx.lineWidth = 3.5;
   ctx.strokeRect(1.5, 1.5, 253, 253);
   ctx.beginPath();
   ctx.moveTo(128, 0);
@@ -418,14 +771,7 @@ function createIndustrialPlateBumpTexture(): THREE.CanvasTexture | null {
   ctx.lineTo(256, 128);
   ctx.stroke();
 
-  // Raised rivet bumps
-  const panels = [
-    [0, 0],
-    [128, 0],
-    [0, 128],
-    [128, 128],
-  ];
-  ctx.fillStyle = '#d4d4d4';
+  // Raised dome rivet bumps with recessed washer moat
   for (let p = 0; p < panels.length; p++) {
     const [px, py] = panels[p];
     const pts = [
@@ -435,8 +781,13 @@ function createIndustrialPlateBumpTexture(): THREE.CanvasTexture | null {
       [px + 116, py + 116],
     ];
     for (let r = 0; r < pts.length; r++) {
+      ctx.fillStyle = '#404040';
       ctx.beginPath();
-      ctx.arc(pts[r][0], pts[r][1], 3.2, 0, Math.PI * 2);
+      ctx.arc(pts[r][0], pts[r][1], 4.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#e2e2e2';
+      ctx.beginPath();
+      ctx.arc(pts[r][0], pts[r][1], 3.0, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -575,34 +926,51 @@ function createFactorioBeltSurfaceTexture(
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  // Medium industrial steel-grey belt slat base (high contrast for dark Coal + bright Plates/Ores)
-  ctx.fillStyle = '#48505c';
+  // Deep vulcanized charcoal-slate rubber conveyor base (high contrast for both Coal and metallic items)
+  ctx.fillStyle = '#353c47';
   ctx.fillRect(0, 0, 512, 512);
 
   // Two distinct parallel belt track lanes (Left Lane 26..236, Right Lane 276..486)
-  ctx.fillStyle = '#3c434e';
+  ctx.fillStyle = '#2b313b';
   ctx.fillRect(26, 0, 210, 512);
   ctx.fillRect(276, 0, 210, 512);
 
+  // Subtle worn center tracks inside each lane
+  ctx.fillStyle = 'rgba(148, 163, 184, 0.06)';
+  ctx.fillRect(72, 0, 118, 512);
+  ctx.fillRect(322, 0, 118, 512);
+
+  // Fine rubber grain speckles across belt lanes
+  for (let i = 0; i < 480; i++) {
+    const lx = i % 2 === 0 ? 30 + ((i * 53) % 200) : 280 + ((i * 53) % 200);
+    const ly = (i * 137) % 512;
+    ctx.fillStyle = i % 3 === 0 ? 'rgba(15, 23, 42, 0.25)' : 'rgba(203, 213, 225, 0.07)';
+    ctx.fillRect(lx, ly, 3, 2);
+  }
+
   // Recessed dark center spine groove & dark steel outer flange channels
-  ctx.fillStyle = '#1e232b';
+  ctx.fillStyle = '#171c24';
   ctx.fillRect(239, 0, 34, 512);
   ctx.fillRect(0, 0, 22, 512);
   ctx.fillRect(490, 0, 22, 512);
 
   // Center brushed-steel divider seam down center
-  ctx.fillStyle = '#64748b';
+  ctx.fillStyle = '#526074';
   ctx.fillRect(252, 0, 8, 512);
 
-  // Fine Factorio conveyor tread cross-slats & compact edge ticks (8 seamless repeats per tile)
+  // Tactile Factorio conveyor tread cross-slats & compact edge ticks (8 seamless repeats per tile)
   for (let row = 0; row < 8; row++) {
     const y = row * 64;
-    ctx.fillStyle = '#2b313a';
-    ctx.fillRect(22, y, 217, 4);
-    ctx.fillRect(273, y, 217, 4);
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    ctx.fillRect(22, y + 4, 217, 2);
-    ctx.fillRect(273, y + 4, 217, 2);
+    ctx.fillStyle = '#1a2029';
+    ctx.fillRect(22, y, 217, 6);
+    ctx.fillRect(273, y, 217, 6);
+    ctx.fillStyle = 'rgba(203, 213, 225, 0.11)';
+    ctx.fillRect(22, y + 6, 217, 2);
+    ctx.fillRect(273, y + 6, 217, 2);
+    // Subtle dark shadow before next slat
+    ctx.fillStyle = 'rgba(9, 13, 21, 0.18)';
+    ctx.fillRect(22, y + 58, 217, 6);
+    ctx.fillRect(273, y + 58, 217, 6);
 
     // Compact Factorio tier-colored edge ticks along outer belt lip
     ctx.fillStyle = chevronHex;
@@ -610,8 +978,19 @@ function createFactorioBeltSurfaceTexture(
     ctx.fillRect(497, y + 18, 11, 20);
   }
 
-  // Smaller, crisp Factorio-style chevrons (8 per tile repeat) pointing forward toward y=0 (-Z / curve tangent)
+  // Crisp Factorio-style chevrons (8 per tile repeat) pointing forward toward y=0 (-Z / curve tangent)
   const drawChevron = (cx: number, cy: number, halfW: number, height: number, thick: number) => {
+    ctx.fillStyle = 'rgba(9, 13, 21, 0.45)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - height * 0.5 + 3);
+    ctx.lineTo(cx + halfW, cy + height * 0.35 + 3);
+    ctx.lineTo(cx + halfW, cy + height * 0.35 + thick + 3);
+    ctx.lineTo(cx, cy - height * 0.5 + thick + 3);
+    ctx.lineTo(cx - halfW, cy + height * 0.35 + thick + 3);
+    ctx.lineTo(cx - halfW, cy + height * 0.35 + 3);
+    ctx.closePath();
+    ctx.fill();
+
     ctx.fillStyle = chevronHex;
     ctx.beginPath();
     ctx.moveTo(cx, cy - height * 0.5);
@@ -639,6 +1018,40 @@ function createFactorioBeltSurfaceTexture(
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.anisotropy = 8;
+  return tex;
+}
+
+function createFactorioBeltBumpTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = '#929292';
+  ctx.fillRect(0, 0, 256, 256);
+
+  // Recessed center divider channel & outer edges
+  ctx.fillStyle = '#2d2d2d';
+  ctx.fillRect(119, 0, 18, 256);
+  ctx.fillRect(0, 0, 11, 256);
+  ctx.fillRect(245, 0, 11, 256);
+
+  // Raised ribbed slats matching the 8x repeat of the belt albedo
+  for (let row = 0; row < 8; row++) {
+    const y = row * 32;
+    ctx.fillStyle = '#2c2c2c';
+    ctx.fillRect(11, y, 108, 4);
+    ctx.fillRect(137, y, 108, 4);
+    ctx.fillStyle = '#bdbdbd';
+    ctx.fillRect(11, y + 4, 108, 3);
+    ctx.fillRect(137, y + 4, 108, 3);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
   return tex;
 }
 
@@ -1076,34 +1489,81 @@ function createLushMeadowGrassTexture(): THREE.CanvasTexture | null {
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  // Neutral-bright organic surface grain multiplied cleanly by per-vertex biome colors
-  // (preserves true emerald meadow, sunlit golden sand, turquoise shallows, and deep ocean hues)
-  ctx.fillStyle = '#e8ece6';
+  // Neutral-warm textured turf base multiplied by per-vertex biome colors
+  // (keeps emerald meadow rich and sunlit sand / turquoise shores vibrant)
+  ctx.fillStyle = '#dde3d5';
   ctx.fillRect(0, 0, 512, 512);
 
-  // Subtle natural turf / sand micro-grain dapples
-  for (let i = 0; i < 3000; i++) {
-    const x = (i * 197 + (i % 7) * 13) % 512;
-    const y = (i * 331 + (i % 5) * 19) % 512;
-    if (i % 9 === 0) {
-      ctx.fillStyle = '#cfd6cc';
-      ctx.fillRect(x, y, 5, 4);
-    } else {
-      const v = 212 + ((i * 37) % 38);
-      ctx.fillStyle = `rgb(${v - 2},${v + 2},${v - 4})`;
-      ctx.fillRect(x, y, 2, 4);
+  // Soft multi-scale organic moss & clover dapples (wrapped seamlessly across edges)
+  for (let i = 0; i < 140; i++) {
+    const x = (i * 139 + (i % 9) * 29) % 512;
+    const y = (i * 251 + (i % 7) * 31) % 512;
+    const rad = 16 + ((i * 19) % 34);
+    const tone = i % 3 === 0 ? 'rgba(154, 174, 138, 0.28)' : i % 3 === 1 ? 'rgba(242, 246, 224, 0.24)' : 'rgba(138, 152, 118, 0.22)';
+    ctx.fillStyle = tone;
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        const px = x + ox * 512;
+        const py = y + oy * 512;
+        if (px + rad >= 0 && px - rad <= 512 && py + rad >= 0 && py - rad <= 512) {
+          ctx.beginPath();
+          ctx.arc(px, py, rad, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
     }
   }
 
-  // Crisp subtle Factorio tile grid alignment border (clean building placement clarity on land)
-  ctx.strokeStyle = 'rgba(20, 32, 18, 0.16)';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, 509, 509);
+  // Earthy micro-soil & stone speckles for natural tactile depth
+  for (let i = 0; i < 1100; i++) {
+    const x = (i * 173 + (i % 11) * 19) % 512;
+    const y = (i * 293 + (i % 13) * 17) % 512;
+    ctx.fillStyle = i % 4 === 0 ? 'rgba(104, 108, 86, 0.28)' : 'rgba(164, 176, 146, 0.26)';
+    ctx.fillRect(x, y, 3 + (i % 3), 2 + (i % 3));
+  }
 
-  // Subtle corner surveyor ticks
-  ctx.fillStyle = 'rgba(20, 36, 18, 0.26)';
-  ctx.fillRect(0, 0, 14, 3);
-  ctx.fillRect(0, 0, 3, 14);
+  // Layered organic grass-blade tufts (directional curved micro-strokes)
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 2400; i++) {
+    const x = (i * 197 + (i % 7) * 13) % 512;
+    const y = (i * 331 + (i % 5) * 19) % 512;
+    const h = 5 + (i % 7);
+    const lean = ((i % 5) - 2) * 1.4;
+    ctx.strokeStyle =
+      i % 5 === 0
+        ? 'rgba(244, 248, 226, 0.42)'
+        : i % 3 === 0
+          ? 'rgba(116, 140, 102, 0.38)'
+          : 'rgba(182, 200, 162, 0.36)';
+    ctx.lineWidth = i % 4 === 0 ? 1.8 : 1.25;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + lean, y - h);
+    ctx.stroke();
+  }
+
+  // Subtle sunlit wildflower & clover pinpoint flecks
+  for (let i = 0; i < 44; i++) {
+    const x = (i * 227 + 41) % 496 + 8;
+    const y = (i * 359 + 73) % 496 + 8;
+    ctx.fillStyle = i % 3 === 0 ? 'rgba(255, 250, 214, 0.55)' : 'rgba(255, 255, 242, 0.42)';
+    ctx.beginPath();
+    ctx.arc(x, y, 2.0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Ultra-subtle tile alignment edge & corner surveyor ticks (keeps placement crisp without graph-paper clutter)
+  ctx.strokeStyle = 'rgba(20, 34, 18, 0.075)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, 510, 510);
+
+  ctx.fillStyle = 'rgba(20, 38, 18, 0.22)';
+  ctx.fillRect(0, 0, 16, 3);
+  ctx.fillRect(0, 0, 3, 16);
+  ctx.fillRect(496, 0, 16, 3);
+  ctx.fillRect(509, 0, 3, 16);
+  ctx.fillRect(0, 509, 16, 3);
+  ctx.fillRect(0, 496, 3, 16);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -1123,18 +1583,59 @@ function createDeckBumpTexture(): THREE.CanvasTexture | null {
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  ctx.fillStyle = '#808080';
+  ctx.fillStyle = '#7e7e7e';
   ctx.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 1200; i++) {
+
+  // Soft mound/clump height undulation
+  for (let i = 0; i < 90; i++) {
+    const x = (i * 71) % 256;
+    const y = (i * 149) % 256;
+    const r = 8 + (i % 16);
+    const v = i % 2 === 0 ? 150 : 104;
+    ctx.fillStyle = `rgba(${v},${v},${v},0.28)`;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Crisp turf blade micro-relief
+  for (let i = 0; i < 2000; i++) {
     const x = (i * 113) % 256;
     const y = (i * 211) % 256;
-    const g = 102 + ((i * 41) % 58);
+    const g = 74 + ((i * 41) % 118);
     ctx.fillStyle = `rgb(${g},${g},${g})`;
-    ctx.fillRect(x, y, 2, 3);
+    ctx.fillRect(x, y, 2, 4);
   }
-  ctx.strokeStyle = '#606060';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#686868';
+  ctx.lineWidth = 1.5;
   ctx.strokeRect(1, 1, 254, 254);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(TERRAIN_DECK_BASE_TILES, TERRAIN_DECK_BASE_TILES);
+  tex.offset.set(0.5, 0.5);
+  return tex;
+}
+
+function createDeckRoughnessTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  // High-matte velvety grass (0.86..0.99 roughness variation so ground never looks plastic)
+  ctx.fillStyle = '#e8e8e8';
+  ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 900; i++) {
+    const x = (i * 97) % 256;
+    const y = (i * 181) % 256;
+    const g = 216 + ((i * 29) % 38);
+    ctx.fillStyle = `rgb(${g},${g},${g})`;
+    ctx.fillRect(x, y, 4 + (i % 6), 4 + (i % 6));
+  }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
@@ -1196,6 +1697,7 @@ export class Capytorio3DRenderer {
   private waterTex: THREE.CanvasTexture | null = null;
   private deckTex: THREE.CanvasTexture | null = null;
   private deckBumpTex: THREE.CanvasTexture | null = null;
+  private deckRoughTex: THREE.CanvasTexture | null = null;
   private lastDeckSnapGx = Number.NaN;
   private lastDeckSnapGz = Number.NaN;
   private lastDeckLodStep = -1;
@@ -1304,6 +1806,7 @@ export class Capytorio3DRenderer {
   private matConcrete: THREE.MeshStandardMaterial;
   private readonly variantMats: CapytorioVariantMaterials;
   private industrialPlateBumpTex: THREE.CanvasTexture | null = null;
+  private paintedEnamelTex: THREE.CanvasTexture | null = null;
   private beaconOrb: THREE.Object3D | null = null;
   private beaconDishRing: THREE.Object3D | null = null;
 
@@ -1326,67 +1829,83 @@ export class Capytorio3DRenderer {
     this.root.userData.ignoreCameraFade = true;
 
     // Procedural industrial PBR canvas maps (SSR/Node-safe)
-    const steelDarkTex = createBrushedSteelTexture('#334155', '#64748b', '#1e293b');
-    const steelLightTex = createBrushedSteelTexture('#94a3b8', '#e2e8f0', '#475569');
+    const steelDarkTex = createBrushedSteelTexture('#2d3746', '#55657c', '#18202c');
+    const steelLightTex = createBrushedSteelTexture('#7b8799', '#bcc7d6', '#3c495c');
+    const paintedEnamelTex = createPaintedEnamelOverlayTexture();
     const plateBumpTex = createIndustrialPlateBumpTexture();
     const hazardTex = createHazardStripeTexture();
     const brickTex = createKilnBrickTexture();
     const brickBumpTex = createKilnBrickBumpTexture();
     this.industrialPlateBumpTex = plateBumpTex;
+    this.paintedEnamelTex = paintedEnamelTex;
     if (steelDarkTex) this.sharedTextures.push(steelDarkTex);
     if (steelLightTex) this.sharedTextures.push(steelLightTex);
+    if (paintedEnamelTex) this.sharedTextures.push(paintedEnamelTex);
     if (plateBumpTex) this.sharedTextures.push(plateBumpTex);
     if (hazardTex) this.sharedTextures.push(hazardTex);
     if (brickTex) this.sharedTextures.push(brickTex);
     if (brickBumpTex) this.sharedTextures.push(brickBumpTex);
 
-    // Shared calibrated PBR materials (roughness/metalness deltas >= 0.25 between parts)
+    // Shared calibrated satin-industrial PBR materials (toned-down IBL glare, tactile brushed micro-relief)
     this.matSteelDark = new THREE.MeshStandardMaterial({
-      color: steelDarkTex ? 0xffffff : 0x334155,
+      color: steelDarkTex ? 0xffffff : 0x2d3746,
       map: steelDarkTex ?? null,
       bumpMap: plateBumpTex ?? null,
-      bumpScale: 0.025,
-      roughness: 0.68,
-      metalness: 0.58,
+      bumpScale: 0.032,
+      roughness: 0.74,
+      metalness: 0.42,
+      envMapIntensity: 0.45,
     });
     this.matSteelLight = new THREE.MeshStandardMaterial({
-      color: steelLightTex ? 0xffffff : 0x94a3b8,
+      color: steelLightTex ? 0xffffff : 0x7b8799,
       map: steelLightTex ?? null,
       bumpMap: plateBumpTex ?? null,
-      bumpScale: 0.02,
-      roughness: 0.32,
-      metalness: 0.82,
+      bumpScale: 0.028,
+      roughness: 0.56,
+      metalness: 0.52,
+      envMapIntensity: 0.48,
     });
     this.matBrass = new THREE.MeshStandardMaterial({
-      color: 0xf59e0b,
-      roughness: 0.24,
-      metalness: 0.86,
+      color: 0xd98a1c,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.02,
+      roughness: 0.48,
+      metalness: 0.6,
+      envMapIntensity: 0.52,
     });
     this.matHazardYellow = new THREE.MeshStandardMaterial({
       color: hazardTex ? 0xffffff : 0xfacc15,
       map: hazardTex ?? null,
-      roughness: 0.48,
-      metalness: 0.16,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.018,
+      roughness: 0.58,
+      metalness: 0.1,
+      envMapIntensity: 0.38,
     });
     this.matBrick = new THREE.MeshStandardMaterial({
       color: brickTex ? 0xffffff : 0x6b5c52,
       map: brickTex ?? null,
       bumpMap: brickBumpTex ?? null,
-      bumpScale: 0.06,
-      roughness: 0.9,
-      metalness: 0.06,
+      bumpScale: 0.075,
+      roughness: 0.92,
+      metalness: 0.04,
+      envMapIntensity: 0.3,
     });
     this.matCopper = new THREE.MeshStandardMaterial({
-      color: 0xea580c,
-      roughness: 0.28,
-      metalness: 0.84,
+      color: 0xc8551d,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.02,
+      roughness: 0.5,
+      metalness: 0.58,
+      envMapIntensity: 0.52,
     });
     this.matLabGlass = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x0284c7,
       emissiveIntensity: 0.36,
-      roughness: 0.1,
-      metalness: 0.16,
+      roughness: 0.16,
+      metalness: 0.14,
+      envMapIntensity: 0.55,
       transparent: true,
       opacity: 0.38,
       depthWrite: false,
@@ -1394,102 +1913,118 @@ export class Capytorio3DRenderer {
     this.matDarkVoid = new THREE.MeshStandardMaterial({
       color: 0x0b0f17,
       roughness: 0.96,
-      metalness: 0.05,
+      metalness: 0.04,
+      envMapIntensity: 0.2,
     });
     this.matStatusLampIdle = new THREE.MeshStandardMaterial({
       color: 0xf59e0b,
       emissive: 0xd97706,
       emissiveIntensity: 0.55,
-      roughness: 0.25,
-      metalness: 0.1,
+      roughness: 0.3,
+      metalness: 0.08,
+      envMapIntensity: 0.4,
     });
     this.matStatusLampOn = new THREE.MeshStandardMaterial({
       color: 0x4ade80,
       emissive: 0x22c55e,
       emissiveIntensity: 1.45,
-      roughness: 0.2,
-      metalness: 0.1,
+      roughness: 0.24,
+      metalness: 0.08,
+      envMapIntensity: 0.4,
     });
     this.matFurnaceHearthIdle = new THREE.MeshStandardMaterial({
       color: 0xf97316,
       emissive: 0xea580c,
       emissiveIntensity: 0.45,
-      roughness: 0.25,
+      roughness: 0.32,
+      envMapIntensity: 0.35,
     });
     this.matFurnaceHearthActive = new THREE.MeshStandardMaterial({
       color: 0xfb923c,
       emissive: 0xea580c,
       emissiveIntensity: 1.65,
-      roughness: 0.2,
+      roughness: 0.25,
+      envMapIntensity: 0.35,
     });
     this.matGeneratorFireboxIdle = new THREE.MeshStandardMaterial({
       color: 0xf97316,
       emissive: 0xf59e0b,
       emissiveIntensity: 0.18,
-      roughness: 0.25,
+      roughness: 0.32,
+      envMapIntensity: 0.35,
     });
     this.matGeneratorFireboxActive = new THREE.MeshStandardMaterial({
       color: 0xfb923c,
       emissive: 0xf59e0b,
       emissiveIntensity: 1.55,
-      roughness: 0.22,
+      roughness: 0.26,
+      envMapIntensity: 0.35,
     });
     this.matLabCoreIdle = new THREE.MeshStandardMaterial({
       color: 0xa855f7,
       emissive: 0x9333ea,
       emissiveIntensity: 0.85,
-      roughness: 0.18,
+      roughness: 0.22,
+      envMapIntensity: 0.45,
     });
     this.matLabCoreActive = new THREE.MeshStandardMaterial({
       color: 0xc084fc,
       emissive: 0x9333ea,
       emissiveIntensity: 1.9,
-      roughness: 0.16,
+      roughness: 0.2,
+      envMapIntensity: 0.45,
     });
     this.matTimber = new THREE.MeshStandardMaterial({
-      color: 0x8b5a2b,
-      roughness: 0.86,
-      metalness: 0.04,
+      color: 0x845326,
+      roughness: 0.88,
+      metalness: 0.03,
+      envMapIntensity: 0.32,
     });
     this.matCeramicWhite = new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
-      roughness: 0.22,
-      metalness: 0.12,
+      color: 0xd4dce6,
+      roughness: 0.42,
+      metalness: 0.08,
+      envMapIntensity: 0.4,
     });
     this.matSolarBlue = new THREE.MeshStandardMaterial({
       color: 0x1d4ed8,
       emissive: 0x0f172a,
       emissiveIntensity: 0.35,
-      roughness: 0.14,
-      metalness: 0.62,
+      roughness: 0.34,
+      metalness: 0.38,
+      envMapIntensity: 0.52,
     });
     this.matCyanGlow = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x06b6d4,
       emissiveIntensity: 1.35,
-      roughness: 0.18,
-      metalness: 0.15,
+      roughness: 0.22,
+      metalness: 0.12,
+      envMapIntensity: 0.45,
     });
     this.matEmeraldGlow = new THREE.MeshStandardMaterial({
       color: 0x34d399,
       emissive: 0x10b981,
       emissiveIntensity: 1.65,
-      roughness: 0.16,
-      metalness: 0.15,
+      roughness: 0.2,
+      metalness: 0.12,
+      envMapIntensity: 0.45,
     });
     this.matRubyGlow = new THREE.MeshStandardMaterial({
       color: 0xfb7185,
       emissive: 0xe11d48,
       emissiveIntensity: 1.6,
-      roughness: 0.16,
-      metalness: 0.2,
+      roughness: 0.2,
+      metalness: 0.14,
+      envMapIntensity: 0.45,
     });
     this.matConcrete = new THREE.MeshStandardMaterial({
-      color: 0x7c8594,
+      color: 0x737d8c,
       bumpMap: plateBumpTex ?? null,
-      bumpScale: 0.03,
-      roughness: 0.9,
-      metalness: 0.06,
+      bumpScale: 0.045,
+      roughness: 0.92,
+      metalness: 0.04,
+      envMapIntensity: 0.32,
     });
     this.variantMats = {
       steelDark: this.matSteelDark,
@@ -1541,12 +2076,15 @@ export class Capytorio3DRenderer {
     // Subdivided 128x128 mesh with pre-allocated vertex colors & elevation updated ONLY on chunk/LOD snap!
     const deckTex = createLushMeadowGrassTexture();
     const bumpTex = createDeckBumpTexture();
+    const roughTex = createDeckRoughnessTexture();
     const waterTex = createWaterRippleTexture();
     this.deckTex = deckTex;
     this.deckBumpTex = bumpTex;
+    this.deckRoughTex = roughTex;
     this.waterTex = waterTex;
     if (deckTex) this.sharedTextures.push(deckTex);
     if (bumpTex) this.sharedTextures.push(bumpTex);
+    if (roughTex) this.sharedTextures.push(roughTex);
     if (waterTex) this.sharedTextures.push(waterTex);
 
     const deckGeo = new THREE.PlaneGeometry(
@@ -1559,9 +2097,9 @@ export class Capytorio3DRenderer {
     const vertCount = deckGeo.attributes.position.count;
     const colorArray = new Float32Array(vertCount * 3);
     for (let i = 0; i < vertCount; i++) {
-      colorArray[i * 3] = 0.28;
-      colorArray[i * 3 + 1] = 0.52;
-      colorArray[i * 3 + 2] = 0.21;
+      colorArray[i * 3] = 0.215;
+      colorArray[i * 3 + 1] = 0.435;
+      colorArray[i * 3 + 2] = 0.145;
     }
     deckGeo.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
     this.groundDeckGeo = deckGeo;
@@ -1571,9 +2109,11 @@ export class Capytorio3DRenderer {
       vertexColors: true,
       map: deckTex ?? null,
       bumpMap: bumpTex ?? null,
-      bumpScale: 0.045,
-      roughness: 0.9,
-      metalness: 0.02,
+      bumpScale: 0.075,
+      roughnessMap: roughTex ?? null,
+      roughness: 0.96,
+      metalness: 0.0,
+      envMapIntensity: 0.38,
       transparent: false,
       opacity: 1.0,
     });
@@ -1658,8 +2198,9 @@ export class Capytorio3DRenderer {
     const orePlateGeo = new THREE.CylinderGeometry(1.06, 1.16, 0.04, 8);
     const orePlateMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.78,
-      metalness: 0.2,
+      roughness: 0.82,
+      metalness: 0.14,
+      envMapIntensity: 0.35,
     });
     this.orePlateInstanced = new THREE.InstancedMesh(orePlateGeo, orePlateMat, MAX_ORE_INSTANCES);
     this.orePlateInstanced.frustumCulled = false;
@@ -1685,8 +2226,9 @@ export class Capytorio3DRenderer {
     );
     const oreCrystalMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.28,
-      metalness: 0.58,
+      roughness: 0.46,
+      metalness: 0.36,
+      envMapIntensity: 0.48,
     });
     this.oreCrystalInstanced = new THREE.InstancedMesh(
       oreCrystalGeo,
@@ -1707,9 +2249,12 @@ export class Capytorio3DRenderer {
     const beltChassisGeo = new THREE.BoxGeometry(beltWidth, 0.125, seamlessBeltLen);
     beltChassisGeo.translate(0, 0.0625, 0); // Flush bottom y = 0, deck top y = 0.125
     const beltChassisMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.72,
-      metalness: 0.58,
+      color: 0x283240,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.022,
+      roughness: 0.78,
+      metalness: 0.34,
+      envMapIntensity: 0.4,
     });
     this.beltChassisInstanced = new THREE.InstancedMesh(
       beltChassisGeo,
@@ -1727,8 +2272,11 @@ export class Capytorio3DRenderer {
     beltSideRailGeo.translate(0, 0.145, 0);
     const beltRailMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.44,
-      metalness: 0.68,
+      bumpMap: plateBumpTex ?? null,
+      bumpScale: 0.02,
+      roughness: 0.62,
+      metalness: 0.44,
+      envMapIntensity: 0.45,
     });
     this.beltRailSideInstanced = new THREE.InstancedMesh(
       beltSideRailGeo,
@@ -1746,9 +2294,10 @@ export class Capytorio3DRenderer {
     const beltSideBridgeGeo = new THREE.BoxGeometry(0.24, 0.136, beltWidth - 0.12);
     beltSideBridgeGeo.translate(0, 0.068, 0);
     const beltSideBridgeMat = new THREE.MeshStandardMaterial({
-      color: 0x3b424e,
-      roughness: 0.6,
-      metalness: 0.35,
+      color: 0x303844,
+      roughness: 0.72,
+      metalness: 0.24,
+      envMapIntensity: 0.38,
     });
     this.beltSideBridgeInstanced = new THREE.InstancedMesh(
       beltSideBridgeGeo,
@@ -1833,15 +2382,21 @@ export class Capytorio3DRenderer {
     this.beltRailCurveRightInstanced.userData.ignoreCameraFade = true;
     this.root.add(this.beltRailCurveRightInstanced);
 
+    const beltBumpTex = createFactorioBeltBumpTexture();
+    if (beltBumpTex) this.sharedTextures.push(beltBumpTex);
+
     for (let t = 0; t < 3; t++) {
       const tex = createFactorioBeltSurfaceTexture(tierStyles[t][0], tierStyles[t][1]);
       this.beltTrackTextures.push(tex);
       if (tex) this.sharedTextures.push(tex);
       const mat = new THREE.MeshStandardMaterial({
-        color: tex ? 0xffffff : 0x48505c,
+        color: tex ? 0xffffff : 0x353c47,
         map: tex ?? null,
-        roughness: 0.56,
-        metalness: 0.25,
+        bumpMap: beltBumpTex ?? null,
+        bumpScale: 0.035,
+        roughness: 0.76,
+        metalness: 0.1,
+        envMapIntensity: 0.32,
       });
       const mesh = new THREE.InstancedMesh(beltDeckGeo, mat, MAX_BELT_INSTANCES);
       mesh.frustumCulled = false;
@@ -1899,22 +2454,22 @@ export class Capytorio3DRenderer {
     const shapeGeos = {} as Record<CapytorioItemShape, THREE.BufferGeometry>;
     const shapePools = {} as Record<CapytorioItemShape, THREE.InstancedMesh>;
     const shapeMaterials: Record<CapytorioItemShape, { roughness: number; metalness: number }> = {
-      ore: { roughness: 0.68, metalness: 0.24 },
-      plate: { roughness: 0.22, metalness: 0.78 },
-      gear: { roughness: 0.24, metalness: 0.82 },
-      circuit: { roughness: 0.3, metalness: 0.28 },
-      science: { roughness: 0.14, metalness: 0.14 },
-      coil: { roughness: 0.22, metalness: 0.82 },
-      fruit: { roughness: 0.46, metalness: 0.05 },
-      crate: { roughness: 0.44, metalness: 0.34 },
-      battery: { roughness: 0.26, metalness: 0.64 },
-      ammo: { roughness: 0.28, metalness: 0.82 },
-      grenade: { roughness: 0.56, metalness: 0.48 },
-      armor: { roughness: 0.34, metalness: 0.72 },
-      engine: { roughness: 0.32, metalness: 0.78 },
-      barrel: { roughness: 0.38, metalness: 0.62 },
-      brick: { roughness: 0.88, metalness: 0.08 },
-      module: { roughness: 0.24, metalness: 0.42 },
+      ore: { roughness: 0.72, metalness: 0.2 },
+      plate: { roughness: 0.44, metalness: 0.56 },
+      gear: { roughness: 0.46, metalness: 0.58 },
+      circuit: { roughness: 0.42, metalness: 0.22 },
+      science: { roughness: 0.24, metalness: 0.12 },
+      coil: { roughness: 0.44, metalness: 0.58 },
+      fruit: { roughness: 0.52, metalness: 0.04 },
+      crate: { roughness: 0.56, metalness: 0.24 },
+      battery: { roughness: 0.44, metalness: 0.46 },
+      ammo: { roughness: 0.46, metalness: 0.56 },
+      grenade: { roughness: 0.62, metalness: 0.36 },
+      armor: { roughness: 0.48, metalness: 0.5 },
+      engine: { roughness: 0.48, metalness: 0.54 },
+      barrel: { roughness: 0.52, metalness: 0.44 },
+      brick: { roughness: 0.9, metalness: 0.05 },
+      module: { roughness: 0.38, metalness: 0.32 },
     };
 
     for (let i = 0; i < CAPYTORIO_ITEM_SHAPES.length; i++) {
@@ -1925,6 +2480,7 @@ export class Capytorio3DRenderer {
         color: 0xffffff,
         roughness: spec.roughness,
         metalness: spec.metalness,
+        envMapIntensity: 0.5,
       });
       const inst = new THREE.InstancedMesh(geo, mat, MAX_SHAPE_ITEM_INSTANCES);
       inst.frustumCulled = false;
@@ -2198,13 +2754,8 @@ export class Capytorio3DRenderer {
     return this.altModeSpritePool[idx];
   }
 
-  private getAltModeMaterial(
-    key: string,
-    label: string,
-    sub: string,
-    accentCss: string,
-    isWarn: boolean
-  ): THREE.SpriteMaterial {
+  private getAltModeMaterial(spec: CapytorioAltBadgeSpec): THREE.SpriteMaterial {
+    const key = spec.key;
     const existing = this.altModeMatCache.get(key);
     if (existing) {
       // Refresh LRU recency on hit
@@ -2238,97 +2789,14 @@ export class Capytorio3DRenderer {
 
     let tex: THREE.CanvasTexture | null = null;
     if (typeof document !== 'undefined') {
-      // 256x256 power-of-two canvas: 4x smaller VRAM footprint while keeping badges crisp
+      // 256x256 power-of-two canvas rendering crisp Factorio-style icon-only Alt-Mode medallion
       const S = 256;
       const canvas = document.createElement('canvas');
       canvas.width = S;
       canvas.height = S;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.clearRect(0, 0, S, S);
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-
-        // Crisp high-contrast dark industrial plate
-        const pad = 8;
-        const w = S - pad * 2;
-        const h = S - pad * 2;
-        const r = 28;
-        ctx.beginPath();
-        ctx.moveTo(pad + r, pad);
-        ctx.lineTo(pad + w - r, pad);
-        ctx.quadraticCurveTo(pad + w, pad, pad + w, pad + r);
-        ctx.lineTo(pad + w, pad + h - r);
-        ctx.quadraticCurveTo(pad + w, pad + h, pad + w - r, pad + h);
-        ctx.lineTo(pad + r, pad + h);
-        ctx.quadraticCurveTo(pad, pad + h, pad, pad + h - r);
-        ctx.lineTo(pad, pad + r);
-        ctx.quadraticCurveTo(pad, pad, pad + r, pad);
-        ctx.closePath();
-
-        ctx.fillStyle = isWarn ? 'rgba(69, 10, 10, 0.94)' : 'rgba(9, 14, 26, 0.93)';
-        ctx.fill();
-        ctx.lineWidth = 9;
-        ctx.strokeStyle = accentCss;
-        ctx.stroke();
-
-        // Crisp dark inner hairline framing the accent border
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = 'rgba(2, 6, 23, 0.72)';
-        ctx.stroke();
-
-        // Compact high-contrast top emblem
-        ctx.fillStyle = accentCss;
-        if (isWarn) {
-          ctx.beginPath();
-          ctx.moveTo(128, 28);
-          ctx.lineTo(171, 100);
-          ctx.lineTo(85, 100);
-          ctx.closePath();
-          ctx.fill();
-          ctx.lineWidth = 3;
-          ctx.lineJoin = 'round';
-          ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-          ctx.stroke();
-          ctx.fillStyle = '#090e1a';
-          ctx.font = '900 52px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText('!', 128, 76);
-        } else {
-          ctx.beginPath();
-          ctx.arc(128, 64, 31, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-          ctx.lineWidth = 4;
-          ctx.stroke();
-        }
-
-        // Bold high-contrast primary label with dark outline for sharp readability at any zoom
-        const primaryText = label.slice(0, 7);
-        const primaryY = sub ? 146 : 167;
-        ctx.font = '900 56px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.lineJoin = 'round';
-        ctx.miterLimit = 2;
-        ctx.lineWidth = 7;
-        ctx.strokeStyle = '#020617';
-        ctx.strokeText(primaryText, 128, primaryY, 212);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(primaryText, 128, primaryY, 212);
-
-        // Optional subline (priority/reach/cap/filter mode/count)
-        if (sub) {
-          const subText = sub.slice(0, 9);
-          ctx.font = '800 43px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-          ctx.lineWidth = 6;
-          ctx.strokeStyle = '#020617';
-          ctx.strokeText(subText, 128, 204, 212);
-          ctx.fillStyle = accentCss;
-          ctx.fillText(subText, 128, 204, 212);
-        }
-
+        drawCapytorioAltBadgeToCanvas(ctx, S, spec);
         tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.generateMipmaps = true;
@@ -2354,242 +2822,7 @@ export class Capytorio3DRenderer {
   }
 
   private fillAltModeBadge(engine: CapytorioFactoryEngine, m: CapytorioMachine): boolean {
-    // High-priority operational alerts (variant-aware power demand)
-    if (getCapytorioMachineBasePowerDemandMw(m) > 0 && engine.powerEfficiency <= 0.05) {
-      _altBadgeScratch.key = 'warn:nopwr';
-      _altBadgeScratch.label = 'NO PWR';
-      _altBadgeScratch.sub = '0%';
-      _altBadgeScratch.accent = '#ef4444';
-      _altBadgeScratch.warn = true;
-      return true;
-    }
-    if (m.type === 'generator') {
-      if (m.variantItemId === 'solar_panel') {
-        _altBadgeScratch.key = 'gen:solar';
-        _altBadgeScratch.label = 'SOLAR';
-        _altBadgeScratch.sub = 'PV';
-        _altBadgeScratch.accent = '#38bdf8';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      if (m.variantItemId === 'accumulator') {
-        _altBadgeScratch.key = 'gen:accum';
-        _altBadgeScratch.label = 'BATT';
-        _altBadgeScratch.sub = 'CAP';
-        _altBadgeScratch.accent = '#22d3ee';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      if (m.variantItemId === 'nuclear_reactor') {
-        _altBadgeScratch.key = 'gen:nuclear';
-        _altBadgeScratch.label = 'NUKE';
-        _altBadgeScratch.sub = 'CORE';
-        _altBadgeScratch.accent = '#34d399';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      if (m.fuelTimer <= 0) {
-        _altBadgeScratch.key = 'warn:nofuel';
-        _altBadgeScratch.label = 'NO FUEL';
-        _altBadgeScratch.sub = 'COAL';
-        _altBadgeScratch.accent = '#f59e0b';
-        _altBadgeScratch.warn = true;
-        return true;
-      }
-    }
-    if (m.type === 'drill') {
-      if (m.variantItemId === 'offshore_pump') {
-        _altBadgeScratch.key = 'pump:offshore_pump';
-        _altBadgeScratch.label = 'WATER';
-        _altBadgeScratch.sub = 'PUMP';
-        _altBadgeScratch.accent = '#38bdf8';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      const fp = engine.getMachineFootprint(m);
-      const ore = engine.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height);
-      if (!ore) {
-        _altBadgeScratch.key = 'warn:noore';
-        _altBadgeScratch.label = 'NO ORE';
-        _altBadgeScratch.sub = 'EMPTY';
-        _altBadgeScratch.accent = '#f59e0b';
-        _altBadgeScratch.warn = true;
-        return true;
-      }
-      const meta = getCapytorioItemMeta(ore.resource);
-      _altBadgeScratch.key = `drill:${ore.resource}`;
-      _altBadgeScratch.label = meta.shortName.toUpperCase();
-      _altBadgeScratch.sub = 'MINE';
-      _altBadgeScratch.accent = meta.cssColor;
-      _altBadgeScratch.warn = false;
-      return true;
-    }
-    if (m.type === 'assembler' && m.recipeId) {
-      const rec = RECIPE_BY_ID.get(m.recipeId);
-      if (rec) {
-        const meta = getCapytorioItemMeta(rec.result);
-        _altBadgeScratch.key = `asm:${m.recipeId}`;
-        _altBadgeScratch.label = meta.shortName.toUpperCase();
-        _altBadgeScratch.sub = `×${rec.resultCount}`;
-        _altBadgeScratch.accent = meta.cssColor;
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-    }
-    if (m.type === 'furnace') {
-      let outItem: string | null = null;
-      for (const k in m.outputBuffer) {
-        if ((m.outputBuffer[k] ?? 0) > 0) {
-          outItem = k;
-          break;
-        }
-      }
-      if (!outItem) {
-        for (const k in m.inputBuffer) {
-          if ((m.inputBuffer[k] ?? 0) > 0) {
-            const spec = getCapytorioSmeltSpec(k);
-            if (spec) {
-              outItem = spec.result;
-              break;
-            }
-          }
-        }
-      }
-      if (outItem) {
-        const meta = getCapytorioItemMeta(outItem);
-        _altBadgeScratch.key = `furn:${outItem}`;
-        _altBadgeScratch.label = meta.shortName.toUpperCase();
-        _altBadgeScratch.sub = 'SMELT';
-        _altBadgeScratch.accent = meta.cssColor;
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      return false;
-    }
-    if (m.type === 'splitter') {
-      const inP = m.splitterInputPriority ?? 'none';
-      const outP = m.splitterOutputPriority ?? 'none';
-      const filt = m.splitterFilterItem ?? null;
-      if (!filt && inP === 'none' && outP === 'none') return false;
-      const inTag = inP === 'left' ? 'IL' : inP === 'right' ? 'IR' : '';
-      const outTag = outP === 'left' ? 'OL' : outP === 'right' ? 'OR' : filt ? 'OL' : '';
-      const sub = `${inTag}${inTag && outTag ? ' ' : ''}${outTag}`.trim() || 'SPLIT';
-      if (filt) {
-        const meta = getCapytorioItemMeta(filt);
-        _altBadgeScratch.key = `split:${filt}:${sub}`;
-        _altBadgeScratch.label = meta.shortName.toUpperCase();
-        _altBadgeScratch.sub = sub;
-        _altBadgeScratch.accent = meta.cssColor;
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      _altBadgeScratch.key = `split:prio:${sub}`;
-      _altBadgeScratch.label = 'PRIO';
-      _altBadgeScratch.sub = sub;
-      _altBadgeScratch.accent = '#facc15';
-      _altBadgeScratch.warn = false;
-      return true;
-    }
-    if (m.type === 'inserter') {
-      if (!isCapytorioFunctionalInserter(m)) return false;
-      const filters = m.inserterFilters;
-      const hasFilters = Boolean(filters && filters.length > 0);
-      const reach = getCapytorioInserterReach(m.variantItemId);
-      const stackLim = m.inserterStackLimit ?? null;
-      if (!hasFilters && reach < 2 && stackLim === null) return false;
-      if (hasFilters && filters) {
-        const mode = m.inserterFilterMode === 'blacklist' ? 'BLK' : 'FLT';
-        const meta = getCapytorioItemMeta(filters[0]);
-        const extra = filters.length > 1 ? `+${filters.length - 1}` : stackLim ? `×${stackLim}` : '';
-        _altBadgeScratch.key = `ins:${mode}:${filters[0]}:${extra}`;
-        _altBadgeScratch.label = meta.shortName.toUpperCase();
-        _altBadgeScratch.sub = `${mode}${extra ? ` ${extra}` : ''}`;
-        _altBadgeScratch.accent = m.inserterFilterMode === 'blacklist' ? '#f87171' : meta.cssColor;
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      const label = reach === 2 ? 'LONG' : `STK ${stackLim}`;
-      const sub = reach === 2 && stackLim ? `2T ×${stackLim}` : reach === 2 ? '2-TILE' : 'CAP';
-      _altBadgeScratch.key = `ins:${label}:${sub}`;
-      _altBadgeScratch.label = label;
-      _altBadgeScratch.sub = sub;
-      _altBadgeScratch.accent = reach === 2 ? '#ef4444' : '#38bdf8';
-      _altBadgeScratch.warn = false;
-      return true;
-    }
-    if (m.type === 'chest') {
-      if (m.variantItemId === 'pump') {
-        _altBadgeScratch.key = 'pump:pump';
-        _altBadgeScratch.label = 'FLUID';
-        _altBadgeScratch.sub = 'PUMP';
-        _altBadgeScratch.accent = '#38bdf8';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      if (m.variantItemId === 'roboport') {
-        const fleet = engine.getRoboportFleetCount(m);
-        _altBadgeScratch.key = `roboport:${fleet}`;
-        _altBadgeScratch.label = 'PORT';
-        _altBadgeScratch.sub = `${fleet} BOT`;
-        _altBadgeScratch.accent = '#fb923c';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      if (!isCapytorioStorageChest(m)) return false;
-      let topItem: string | null = null;
-      let topCount = 0;
-      for (const k in m.outputBuffer) {
-        const c = m.outputBuffer[k] ?? 0;
-        if (c > topCount) {
-          topCount = c;
-          topItem = k;
-        }
-      }
-      const limit = m.chestSlotLimit ?? null;
-      if (!topItem && limit === null) return false;
-      if (topItem) {
-        const meta = getCapytorioItemMeta(topItem);
-        const capTag = limit !== null ? `${limit}/${CAPYTORIO_CHEST_SLOTS}` : 'BOX';
-        _altBadgeScratch.key = `chest:${topItem}:${capTag}`;
-        _altBadgeScratch.label = meta.shortName.toUpperCase();
-        _altBadgeScratch.sub = capTag;
-        _altBadgeScratch.accent = meta.cssColor;
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      _altBadgeScratch.key = `chest:cap:${limit}`;
-      _altBadgeScratch.label = 'CAP';
-      _altBadgeScratch.sub = `${limit}/${CAPYTORIO_CHEST_SLOTS}`;
-      _altBadgeScratch.accent = '#ef4444';
-      _altBadgeScratch.warn = false;
-      return true;
-    }
-    if (m.type === 'lab') {
-      if (m.variantItemId === 'beacon') {
-        const modCount = m.modules?.length ?? 0;
-        _altBadgeScratch.key = `beacon:${modCount}`;
-        _altBadgeScratch.label = 'BEACON';
-        _altBadgeScratch.sub = modCount > 0 ? `${modCount} MOD` : 'AURA';
-        _altBadgeScratch.accent = '#22d3ee';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      if (m.variantItemId === 'radar') {
-        _altBadgeScratch.key = 'radar:scan';
-        _altBadgeScratch.label = 'RADAR';
-        _altBadgeScratch.sub = 'SCAN';
-        _altBadgeScratch.accent = '#38bdf8';
-        _altBadgeScratch.warn = false;
-        return true;
-      }
-      _altBadgeScratch.key = 'lab:sci';
-      _altBadgeScratch.label = 'LAB';
-      _altBadgeScratch.sub = 'TECH';
-      _altBadgeScratch.accent = '#a855f7';
-      _altBadgeScratch.warn = false;
-      return true;
-    }
-    return false;
+    return populateCapytorioAltBadgeSpec(engine, m, _altBadgeScratch);
   }
 
   private buildLandingBeaconLandmark(): void {
@@ -2705,10 +2938,12 @@ export class Capytorio3DRenderer {
     if (!mat) {
       mat = new THREE.MeshStandardMaterial({
         color: colorHex,
+        map: this.paintedEnamelTex ?? null,
         bumpMap: this.industrialPlateBumpTex ?? null,
-        bumpScale: 0.018,
-        roughness: 0.36,
-        metalness: 0.38,
+        bumpScale: 0.024,
+        roughness: 0.6,
+        metalness: 0.14,
+        envMapIntensity: 0.4,
       });
       this.accentMatCache.set(colorHex, mat);
       this.sharedMaterials.push(mat);
@@ -2721,13 +2956,30 @@ export class Capytorio3DRenderer {
     if (!mat) {
       mat = new THREE.MeshStandardMaterial({
         color: colorHex,
-        roughness: 0.28,
-        metalness: 0.38,
+        roughness: 0.46,
+        metalness: 0.3,
+        envMapIntensity: 0.45,
       });
       this.heldItemMatCache.set(colorHex, mat);
       this.sharedMaterials.push(mat);
     }
     return mat;
+  }
+
+  public getPbrCalibrationSummary(): {
+    steelDarkRoughness: number;
+    steelLightRoughness: number;
+    steelLightEnvMapIntensity: number;
+    brassRoughness: number;
+    copperRoughness: number;
+  } {
+    return {
+      steelDarkRoughness: this.matSteelDark.roughness,
+      steelLightRoughness: this.matSteelLight.roughness,
+      steelLightEnvMapIntensity: this.matSteelLight.envMapIntensity,
+      brassRoughness: this.matBrass.roughness,
+      copperRoughness: this.matCopper.roughness,
+    };
   }
 
   /**
@@ -4769,23 +5021,17 @@ export class Capytorio3DRenderer {
         }
       }
 
-      // 3D Alt-Mode pooled badge sprite (zero per-frame allocations)
+      // 3D Alt-Mode pooled icon-only badge sprite (zero per-frame allocations)
       if (showAltMode && m.type !== 'belt' && altSpriteCount < MAX_ALT_MODE_SPRITES) {
         if (this.fillAltModeBadge(engine, m)) {
           const sprite = this.getOrCreateAltModeSprite(altSpriteCount);
-          const mat = this.getAltModeMaterial(
-            _altBadgeScratch.key,
-            _altBadgeScratch.label,
-            _altBadgeScratch.sub,
-            _altBadgeScratch.accent,
-            _altBadgeScratch.warn
-          );
+          const mat = this.getAltModeMaterial(_altBadgeScratch);
           if (sprite.material !== mat) {
             sprite.material = mat;
           }
           const span = Math.max(fp.width, fp.height);
           const badgeY = span >= 3 ? 3.55 : span === 2 ? 2.85 : m.type === 'splitter' ? 1.85 : 1.75;
-          const badgeSize = (span >= 3 ? 2.22 : span === 2 ? 1.78 : 1.42) * subPixelShrink;
+          const badgeSize = (span >= 3 ? 1.88 : span === 2 ? 1.54 : 1.18) * subPixelShrink;
           sprite.position.set(wx, badgeY, wz);
           sprite.scale.set(badgeSize, badgeSize, 1);
           sprite.visible = true;
@@ -5310,13 +5556,15 @@ export class Capytorio3DRenderer {
             wb = 0.86 * (1 - t) + 0.86 * t;
           }
         } else {
-          // Lush meadow grass with natural organic mottling + smooth warm golden coastal sand beaches
+          // Rich multi-octave organic meadow grass (warm olive/emerald/moss contrast) + golden sandy shores
           const mottling =
-            Math.sin(gx * 0.17 + 0.4) * Math.cos(gz * 0.15 - 0.7) * 0.5 +
-            Math.sin((gx + gz) * 0.07) * 0.5;
-          const grassR = 0.275 + mottling * 0.028;
-          const grassG = 0.525 + mottling * 0.042;
-          const grassB = 0.205 + mottling * 0.018;
+            Math.sin(gx * 0.17 + 0.4) * Math.cos(gz * 0.15 - 0.7) * 0.45 +
+            Math.sin((gx + gz) * 0.07) * 0.35 +
+            Math.cos((gx * 0.29 - gz * 0.23) + 1.1) * 0.2;
+          const warmth = Math.sin(gx * 0.09 - gz * 0.11 + 0.6) * 0.5;
+          const grassR = 0.215 + mottling * 0.042 + warmth * 0.022;
+          const grassG = 0.435 + mottling * 0.052 - warmth * 0.012;
+          const grassB = 0.145 + mottling * 0.024 - warmth * 0.016;
 
           const sb = sample.sandBlend;
           if (sb > 0.001) {
@@ -5385,6 +5633,9 @@ export class Capytorio3DRenderer {
     }
     if (this.deckBumpTex) {
       this.deckBumpTex.repeat.set(tileRepeat, tileRepeat);
+    }
+    if (this.deckRoughTex) {
+      this.deckRoughTex.repeat.set(tileRepeat, tileRepeat);
     }
   }
 

@@ -65,7 +65,7 @@ For subsystem references, see:
 ### Milestone 6: Android Device QA, Ergonomics & Lifecycle Resilience (`P1`)
 
 - **Hardware GPU & Thermal Profiling on Real Android Devices**:
-  - Test WebGL2 and Android WebGPU paths, Rapier3D physics stepping, shallow-water ripples, and 60 FPS LOD governor on representative low-tier, mid-tier, and flagship Android phones/tablets (Adreno, Mali, Tensor).
+  - Test the standardized WebGL2 rendering path, Rapier3D physics stepping, shallow-water ripples, and 60 FPS LOD governor on representative low-tier, mid-tier, and flagship Android phones/tablets (Adreno, Mali, Tensor).
   - Verify automatic quality downgrade presets maintain responsive frame pacing without thermal runaway or WebGL out-of-memory crashes.
 - **Android Hardware Back Button, Display Cutouts & Edge-to-Edge Insets**:
   - Wire Android Back (`popstate` / history sentinel or Capacitor `backButton` listener) so pressing Back dismisses open overlays (`World Menu`, `Settings`, `Zoom Explorer`, `Sticker Book`, `Settings -> Overview`) before prompting or exiting.

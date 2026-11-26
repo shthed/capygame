@@ -371,7 +371,7 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   showObjectMarkers: false,
   realityScaleGamma: 1.0, // Strict 1:1 physical reality by default
   astrophysicsPalette: 'natural',
-  gpuBackendPreference: 'auto',
+  gpuBackendPreference: 'webgl2',
   gpuQualityPreset: 'high',
   gpuPostProcessing: true,
   gpuVisualFilter: 'natural_pbr',

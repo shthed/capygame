@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import type * as THREE_WEBGPU from 'three/webgpu';
 import type { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import type { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import type { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -24,16 +23,12 @@ import {
   computeBloomRenderScale,
   computeEffectivePixelRatio,
   computeTexelSnappedShadowOrigin,
-  extractWebGpuRenderDrawCalls,
   isLowMemoryEnvironment,
   isMobileEnvironment,
   measureSceneMemoryFootprint,
   type SceneMemoryFootprint,
 } from './FramePerformanceGovernor';
 import {
-  CLUSTER_GRID_X,
-  CLUSTER_GRID_Y,
-  CLUSTER_GRID_Z,
   computeVolumetricSunShaftProjection,
   extractFrustumPlanesInto,
   evaluateBoundingSphereVisibility,
@@ -42,8 +37,6 @@ import {
   type IndirectDrawBatchSpec,
   type VolumetricShaftProjection,
 } from './GpuCullingAndClusterMath';
-import type { WebGpuPostAndComputePipeline } from './WebGpuPipeline';
-import type { WebGpuProbeResult } from './WebGpuRuntime';
 
 type WebGl2PostModule = {
   buildWebGl2PostProcessingComposer: (params: WebGl2ComposerBuildParams) => WebGl2ComposerBundle;
@@ -267,13 +260,10 @@ const CapyGpuMasterFilterShader = {
  *   6 Color Grading Filters] + `OutputPass` + `FXAAShader`)
  */
 export class HardwareGpuEngine {
-  public readonly renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer;
+  public readonly renderer: THREE.WebGLRenderer;
   public readonly scene: THREE.Scene;
   public readonly camera: THREE.PerspectiveCamera;
   public readonly isSoftwareGl: boolean;
-  public readonly isWebGpu: boolean;
-  public readonly webGpuPipeline: WebGpuPostAndComputePipeline | null;
-  public readonly webGpuProbe: WebGpuProbeResult | null;
   public readonly gpuRendererString: string;
   public readonly maxHardwareAnisotropy: number;
   public readonly maxTextureSize: number;
@@ -290,7 +280,7 @@ export class HardwareGpuEngine {
   private disposed: boolean = false;
   private pausedSuspended: boolean = false;
 
-  // Multi-Pass Post-Processing Composer & Render Targets (WebGL2 fallback path)
+  // Multi-Pass Post-Processing Composer & Render Targets (WebGL2)
   private composer: EffectComposer | null = null;
   private renderTarget: THREE.WebGLRenderTarget | null = null;
   private sceneCaptureTarget: THREE.WebGLRenderTarget | null = null;
@@ -314,12 +304,7 @@ export class HardwareGpuEngine {
   private lastSnappedShadowX: number = Number.NaN;
   private lastSnappedShadowZ: number = Number.NaN;
 
-  // Cached Day/Night & Compute state for render/telemetry
-  private lastDeltaDt: number = 0.016;
-  private lastHeroX: number = 0;
-  private lastHeroY: number = 0;
-  private lastHeroZ: number = 4;
-  private lastNightFactor: number = 0;
+  // Cached Day/Night state for render/telemetry
   private lastSurfaceVisible: boolean = true;
   private lastShadowCasterMode: 'sun' | 'moon' = 'sun';
   private lastDayPhaseLabel: string = 'Daylight';
@@ -364,7 +349,7 @@ export class HardwareGpuEngine {
   private readonly onContextRestoredHandler: () => void;
 
   constructor(
-    renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
+    renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     sunLight: THREE.DirectionalLight,
@@ -372,9 +357,7 @@ export class HardwareGpuEngine {
     initialWidth: number,
     initialHeight: number,
     initialConfig?: Partial<GpuPipelineConfig>,
-    webGpuOptions?: {
-      webGpuPipeline?: WebGpuPostAndComputePipeline | null;
-      webGpuProbe?: WebGpuProbeResult | null;
+    options?: {
       moonLight?: THREE.DirectionalLight | null;
     }
   ) {
@@ -387,28 +370,15 @@ export class HardwareGpuEngine {
     this.scene = scene;
     this.camera = camera;
     this.sunLight = sunLight;
-    this.moonLight = webGpuOptions?.moonLight ?? null;
+    this.moonLight = options?.moonLight ?? null;
     this.isSoftwareGl = isSoftwareGl;
-    this.webGpuPipeline = webGpuOptions?.webGpuPipeline ?? null;
-    this.webGpuProbe = webGpuOptions?.webGpuProbe ?? null;
-    this.isWebGpu = Boolean(this.webGpuPipeline);
     this.viewportWidth = Math.max(1, initialWidth);
     this.viewportHeight = Math.max(1, initialHeight);
-    if (this.isWebGpu) {
-      const wgpuInternal = renderer as unknown as { samples?: number; _samples?: number };
-      this.activeMsaaSamples = wgpuInternal.samples ?? wgpuInternal._samples ?? 0;
-    }
 
-    // Probe real hardware GPU limits and renderer string safely across WebGPU & WebGL2
-    this.gpuRendererString = this.isWebGpu
-      ? (this.webGpuProbe?.adapterName || 'WebGPU Hardware GPU')
-      : this.queryGpuRendererString();
-    const caps = (renderer as THREE.WebGLRenderer).capabilities;
-    const rendererAny = renderer as unknown as { getMaxAnisotropy?: () => number };
-    const rawAniso =
-      typeof rendererAny.getMaxAnisotropy === 'function'
-        ? rendererAny.getMaxAnisotropy()
-        : caps?.getMaxAnisotropy?.() ?? 8;
+    // Probe real hardware GPU limits and renderer string safely on WebGL2
+    this.gpuRendererString = this.queryGpuRendererString();
+    const caps = renderer.capabilities;
+    const rawAniso = caps?.getMaxAnisotropy?.() ?? 8;
     this.maxHardwareAnisotropy = Math.max(1, Math.min(16, rawAniso || 1));
     this.maxTextureSize = caps?.maxTextureSize || 8192;
 
@@ -467,7 +437,7 @@ export class HardwareGpuEngine {
       this.scene.environment = this.iblEnvironmentTexture;
     }
 
-    // 5. WebGL Context Loss & Restoration Resilience (only on WebGLRenderer)
+    // 5. WebGL Context Loss & Restoration Resilience
     this.onContextLostHandler = (e: Event) => {
       e.preventDefault();
       this.contextLost = true;
@@ -475,25 +445,23 @@ export class HardwareGpuEngine {
     this.onContextRestoredHandler = () => {
       this.contextLost = false;
       this.composerFaulted = false;
-      if (!this.isWebGpu && !this.pausedSuspended && (!this.isSoftwareGl || this.shouldActivateComposer())) {
+      if (!this.pausedSuspended && (!this.isSoftwareGl || this.shouldActivateComposer())) {
         this.rebuildComposer();
       }
       this.render();
     };
-    if (!this.isWebGpu) {
-      this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLostHandler, false);
-      this.renderer.domElement.addEventListener(
-        'webglcontextrestored',
-        this.onContextRestoredHandler,
-        false
-      );
-    }
+    this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLostHandler, false);
+    this.renderer.domElement.addEventListener(
+      'webglcontextrestored',
+      this.onContextRestoredHandler,
+      false
+    );
 
     // 6. Initialize Post-Processing Pipeline & Apply Initial Config
     if (initialConfig) {
       this.config = { ...this.config, ...initialConfig };
     }
-    if (!this.isWebGpu && this.shouldActivateComposer()) {
+    if (this.shouldActivateComposer()) {
       this.rebuildComposer();
     }
     this.applyConfig(this.config);
@@ -532,9 +500,7 @@ export class HardwareGpuEngine {
    */
   public suspendForPause(): void {
     this.pausedSuspended = true;
-    if (!this.isWebGpu) {
-      this.disposeComposerTargets();
-    }
+    this.disposeComposerTargets();
   }
 
   /**
@@ -543,13 +509,13 @@ export class HardwareGpuEngine {
   public resumeFromPause(): void {
     if (!this.pausedSuspended) return;
     this.pausedSuspended = false;
-    if (!this.isWebGpu && this.shouldActivateComposer()) {
+    if (this.shouldActivateComposer()) {
       this.rebuildComposer();
     }
   }
 
   private shouldEnableStudioAreaLight(preset: GpuQualityPreset): boolean {
-    if (this.isSoftwareGl || this.isWebGpu || this.isMobileDevice) return false;
+    if (this.isSoftwareGl || this.isMobileDevice) return false;
     // Skip expensive LTC RectAreaLight shader path on low ('performance') and medium ('balanced') presets
     return preset === 'high' || preset === 'ultra';
   }
@@ -686,7 +652,7 @@ export class HardwareGpuEngine {
   }
 
   private rebuildComposer(): void {
-    if (this.isWebGpu || this.disposed || this.pausedSuspended) return;
+    if (this.disposed || this.pausedSuspended) return;
     if (!cachedWebGl2PostModule) {
       if (this.composerLoading) return;
       this.composerLoading = true;
@@ -775,9 +741,7 @@ export class HardwareGpuEngine {
     this.masterFilterPass = null;
     this.outputPass = null;
     this.fxaaPass = null;
-    if (!this.isWebGpu) {
-      this.activeMsaaSamples = 0;
-    }
+    this.activeMsaaSamples = 0;
   }
 
   private syncFxaaResolution(): void {
@@ -926,12 +890,10 @@ export class HardwareGpuEngine {
       this.rimLight.visible = true;
     }
 
-    // 2. Shadow Map Mode & Resolution (Hardware WebGL2/WebGPU only; software WebGL uses soft contact shadow)
+    // 2. Shadow Map Mode & Resolution (Hardware WebGL2 only; software WebGL uses soft contact shadow)
     if (this.config.shadowQuality === 'off' || this.isSoftwareGl) {
       this.renderer.shadowMap.enabled = false;
-      if (!this.isWebGpu) {
-        (this.renderer as THREE.WebGLRenderer).shadowMap.autoUpdate = false;
-      }
+      this.renderer.shadowMap.autoUpdate = false;
       this.sunLight.castShadow = false;
       if (this.sunLight.shadow.map) {
         this.sunLight.shadow.map.dispose();
@@ -949,9 +911,7 @@ export class HardwareGpuEngine {
       const prevEnabled = this.renderer.shadowMap.enabled;
       const prevType = this.renderer.shadowMap.type;
       this.renderer.shadowMap.enabled = true;
-      if (!this.isWebGpu) {
-        (this.renderer as THREE.WebGLRenderer).shadowMap.autoUpdate = true;
-      }
+      this.renderer.shadowMap.autoUpdate = true;
       this.sunLight.castShadow = this.lastShadowCasterMode === 'sun';
       if (this.moonLight) {
         this.moonLight.castShadow = this.lastShadowCasterMode === 'moon';
@@ -988,9 +948,7 @@ export class HardwareGpuEngine {
         }
       }
       this.activeShadowMapSize = desiredMapSize;
-      if (!this.isWebGpu) {
-        (this.renderer as THREE.WebGLRenderer).shadowMap.needsUpdate = true;
-      }
+      this.renderer.shadowMap.needsUpdate = true;
     }
 
     // 3. Global Texture Filtering & Hardware Anisotropy across all PBR DataTextures & CanvasTextures
@@ -1007,21 +965,12 @@ export class HardwareGpuEngine {
       this.shouldActivateComposer(),
       this.isSoftwareGl,
       this.config.resolutionScale ?? 1.0,
-      this.isWebGpu,
       this.isMobileDevice
     );
     const prChanged = Math.abs(this.renderer.getPixelRatio() - desiredPr) > 0.01;
     if (prChanged) {
       this.renderer.setPixelRatio(desiredPr);
       this.renderer.setSize(this.viewportWidth, this.viewportHeight);
-    }
-
-    if (this.webGpuPipeline) {
-      if (prChanged) {
-        this.webGpuPipeline.setSize(this.viewportWidth, this.viewportHeight, desiredPr);
-      }
-      this.webGpuPipeline.applyConfig(this.config);
-      return;
     }
 
     // 5. Update WebGL2 Composer RenderTargets without destructive FBO teardown/flicker:
@@ -1071,7 +1020,7 @@ export class HardwareGpuEngine {
 
   public setForceSoftwarePostProcess(force: boolean): void {
     this.forceSoftwarePostProcess = force;
-    if (!this.isWebGpu && force && !this.composer) {
+    if (force && !this.composer) {
       this.rebuildComposer();
     }
   }
@@ -1100,11 +1049,6 @@ export class HardwareGpuEngine {
     iblEnvIntensity: number = 1.15
   ): void {
     this.elapsedTime += dt;
-    this.lastDeltaDt = dt;
-    this.lastHeroX = heroWorldX;
-    this.lastHeroY = heroWorldY;
-    this.lastHeroZ = heroWorldZ;
-    this.lastNightFactor = nightFactor;
     this.lastSurfaceVisible = isSurfaceVisible;
     this.lastDayPhaseLabel = dayPhaseLabel;
     this.lastTimeOfDayHours = timeOfDayHours;
@@ -1269,20 +1213,6 @@ export class HardwareGpuEngine {
       _shaftScratch
     );
 
-    if (this.webGpuPipeline) {
-      this.webGpuPipeline.updateEnvironmentUniforms(
-        _shaftScratch.uvX,
-        _shaftScratch.uvY,
-        isSurfaceVisible && this.config.postProcessingEnabled ? _shaftScratch.strength : 0,
-        nightFactor,
-        this.gpuWakeParams[0],
-        this.gpuWakeParams[1],
-        this.gpuWakeParams[2],
-        this.gpuWakeParams[3],
-        this.clusteredLightCount
-      );
-    }
-
     if (this.masterFilterPass) {
       this.masterFilterPass.uniforms['uTime'].value = this.elapsedTime;
       this.masterFilterPass.uniforms['uCameraNear'].value = this.camera.near;
@@ -1312,7 +1242,6 @@ export class HardwareGpuEngine {
     if (!this.config.postProcessingEnabled || this.contextLost || this.composerFaulted) {
       return false;
     }
-    if (this.isWebGpu) return true;
     if (
       this.isSoftwareGl &&
       !this.forceSoftwarePostProcess &&
@@ -1324,9 +1253,6 @@ export class HardwareGpuEngine {
   }
 
   public isPostProcessingRunning(): boolean {
-    if (this.webGpuPipeline) {
-      return this.config.postProcessingEnabled;
-    }
     if (!this.shouldActivateComposer()) return false;
     if (!this.composer) {
       this.rebuildComposer();
@@ -1366,18 +1292,6 @@ export class HardwareGpuEngine {
 
   public render(): void {
     if (this.contextLost) return;
-    if (this.webGpuPipeline) {
-      this.webGpuPipeline.stepComputeAndRender(
-        this.lastDeltaDt,
-        this.lastHeroX,
-        this.lastHeroY,
-        this.lastHeroZ,
-        this.lastNightFactor,
-        this.lastSurfaceVisible,
-        this.crispOverlayActive
-      );
-      return;
-    }
     if (this.isPostProcessingRunning() && this.composer) {
       try {
         this.composer.render();
@@ -1402,11 +1316,6 @@ export class HardwareGpuEngine {
     }
     this.viewportWidth = nextW;
     this.viewportHeight = nextH;
-
-    if (this.webGpuPipeline) {
-      this.webGpuPipeline.setSize(nextW, nextH, this.renderer.getPixelRatio());
-      return;
-    }
 
     if (this.sceneCaptureTarget) {
       const pr = this.renderer.getPixelRatio();
@@ -1453,9 +1362,7 @@ export class HardwareGpuEngine {
         shadowCasters:
           (this.sunLight.castShadow ? 1 : 0) + (this.moonLight?.castShadow ? 1 : 0),
         postProcessingActive: this.isPostProcessingRunning(),
-        ssaoEnabled: this.webGpuPipeline
-          ? this.config.ssaoEnabled
-          : this.config.ssaoEnabled && Boolean(this.depthTexture),
+        ssaoEnabled: this.config.ssaoEnabled && Boolean(this.depthTexture),
         bloomEnabled: this.config.bloomEnabled,
         msaaSamples: this.activeMsaaSamples,
       });
@@ -1463,11 +1370,9 @@ export class HardwareGpuEngine {
     const memFoot = this.cachedMemFootprint;
 
     return {
-      backendLabel: this.webGpuPipeline
-        ? 'WebGPU WGSL + TSL PostFX + Compute'
-        : this.isSoftwareGl
-          ? 'WebGL2 Software Rasterizer'
-          : 'WebGL2 Hardware Accelerated GPU',
+      backendLabel: this.isSoftwareGl
+        ? 'WebGL2 Software Rasterizer'
+        : 'WebGL2 Hardware Accelerated GPU',
       gpuRenderer: this.gpuRendererString,
       isSoftwareGl: this.isSoftwareGl,
       contextLost: this.contextLost,
@@ -1488,24 +1393,14 @@ export class HardwareGpuEngine {
       effectivePixelRatio: +this.renderer.getPixelRatio().toFixed(2),
       msaaSamples: this.activeMsaaSamples,
       bloomEnabled: this.config.bloomEnabled,
-      ssaoEnabled: this.webGpuPipeline
-        ? this.config.ssaoEnabled
-        : this.config.ssaoEnabled && Boolean(this.depthTexture),
+      ssaoEnabled: this.config.ssaoEnabled && Boolean(this.depthTexture),
       sharpenAmount: +this.config.sharpenAmount.toFixed(2),
-      drawCalls: extractWebGpuRenderDrawCalls(
-        renderInfo as { calls?: number; drawCalls?: number },
-        this.isWebGpu
-      ),
+      drawCalls: renderInfo.calls ?? 0,
       triangles: renderInfo.triangles,
       texturesInVram: memInfo.textures,
       geometriesInVram: memInfo.geometries,
       shaderPrograms: programsCount,
       registeredPbrTextures: PbrTextureSynthesizer.getRegisteredTextureCount(),
-      webGpuActive: this.isWebGpu,
-      webGpuSupported: Boolean(this.webGpuProbe?.supported),
-      webGpuAdapterName: this.webGpuProbe?.adapterName || this.gpuRendererString,
-      computeParticlesActive: this.isWebGpu,
-      backendBenchmarkSummary: this.webGpuProbe?.benchmarkSummary,
       shadowCasterMode:
         this.isSoftwareGl || this.config.shadowQuality === 'off'
           ? 'off'
@@ -1523,11 +1418,8 @@ export class HardwareGpuEngine {
       indirectCullingActive: true,
       culledBatches: this.culledBatchesCount,
       visibleBatches: this.visibleBatchesCount,
-      clusteredLightsActive:
-        this.isWebGpu ? CLUSTER_GRID_X * CLUSTER_GRID_Y * CLUSTER_GRID_Z : this.clusteredLightCount,
-      gpuWaterWakeGridSize: this.webGpuPipeline ? this.webGpuPipeline.gpuWaterWakeGridSize : 24,
-      subgroupsSupported: Boolean(this.webGpuPipeline?.subgroupsSupported),
-      taaEnabled: Boolean(this.webGpuPipeline?.taaActive),
+      clusteredLightsActive: this.clusteredLightCount,
+      gpuWaterWakeGridSize: 24,
       volumetricShaftsActive: Boolean(
         this.isPostProcessingRunning() && _shaftScratch.strength > 0.005
       ),
@@ -1537,14 +1429,11 @@ export class HardwareGpuEngine {
 
   public dispose(): void {
     this.disposed = true;
-    if (!this.isWebGpu) {
-      this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLostHandler);
-      this.renderer.domElement.removeEventListener(
-        'webglcontextrestored',
-        this.onContextRestoredHandler
-      );
-    }
-    this.webGpuPipeline?.dispose();
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLostHandler);
+    this.renderer.domElement.removeEventListener(
+      'webglcontextrestored',
+      this.onContextRestoredHandler
+    );
     this.disposeComposerTargets();
     if (this.iblEnvironmentTexture) {
       if (this.scene.environment === this.iblEnvironmentTexture) {

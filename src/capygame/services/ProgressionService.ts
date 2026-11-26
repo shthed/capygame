@@ -252,12 +252,7 @@ export class ProgressionService {
         ? parsed.gpuQualityPreset
         : DEFAULT_CAPY_SETTINGS.gpuQualityPreset;
 
-    const gpuBackendPreference: CapyGameSettings['gpuBackendPreference'] =
-      parsed.gpuBackendPreference === 'auto' ||
-      parsed.gpuBackendPreference === 'webgpu' ||
-      parsed.gpuBackendPreference === 'webgl2'
-        ? parsed.gpuBackendPreference
-        : DEFAULT_CAPY_SETTINGS.gpuBackendPreference;
+    const gpuBackendPreference: CapyGameSettings['gpuBackendPreference'] = 'webgl2';
 
     const gpuVisualFilter: CapyGameSettings['gpuVisualFilter'] =
       parsed.gpuVisualFilter === 'natural_pbr' ||

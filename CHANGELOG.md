@@ -2,6 +2,18 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.2.3] - 2026-11-26
+
+- Standardized CapyGame's 3D renderer cleanly on WebGL2 across desktop and mobile, removing the experimental WebGPU backend so Infinite Zoom's cosmic shaders, multiverse bubbles, nebulae, and lighting render identically everywhere with zero placeholder stripes or bloom streaks.
+- Removed the unused WebGPU bundle chunks and backend switcher from Settings while keeping older saved settings compatible by normalizing any prior GPU backend choice to WebGL2 automatically.
+- Fixed the bottom-right Infinite Zoom HUD overlap on medium desktop viewports so the flight info strip and speed controls always stay cleanly separated across phone, tablet, and desktop widths.
+
+## [1.2.2] - 2026-11-26
+
+- Toned down reflective metal glare across Capytorio machines, belts, brass gears, and copper coils with brushed satin finishes, riveted enamel casings, deeper ribbed rubber belt treads, richer organic meadow turf textures, and warmer, higher-contrast sunlight and sky reflections.
+- Replaced text labels on top of Capytorio buildings in Alt-Mode with crisp item, machine, and alert icons so you can see what each building is crafting or filtering at a glance.
+- Removed the text labels from Capytorio's top-left Undo and Redo buttons so they display compact arrow icons only, freeing horizontal space on mobile screens.
+
 ## [1.2.1] - 2026-11-26
 
 - Polished Infinite Zoom transitions from Planet down to DNA by grounding the Forest Glade clearing and overlapping it smoothly into Leaf & Fur with zero empty gaps.

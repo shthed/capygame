@@ -161,7 +161,7 @@ export const DEFAULT_GPU_PIPELINE_CONFIG: GpuPipelineConfig = {
   drawDistance: 650,
 };
 
-export type GpuRenderBackendMode = 'auto' | 'webgpu' | 'webgl2';
+export type GpuRenderBackendMode = 'webgl2';
 
 export type PerformanceLogSeverity = 'warn' | 'critical';
 
@@ -205,10 +205,6 @@ export interface PerformanceLogSnapshot {
 
 export interface GpuEngineTelemetry {
   backendLabel: string;
-  webGpuActive: boolean;
-  webGpuSupported: boolean;
-  webGpuAdapterName: string;
-  computeParticlesActive: boolean;
   shadowCasterMode: 'sun' | 'moon' | 'off';
   dayPhaseLabel: string;
   timeOfDayHours: number;
@@ -240,7 +236,6 @@ export interface GpuEngineTelemetry {
   geometriesInVram: number;
   shaderPrograms: number;
   registeredPbrTextures: number;
-  backendBenchmarkSummary?: string;
   jsHeapUsedMB: number | null;
   jsHeapTotalMB: number | null;
   estimatedGeoVramMB: number;
@@ -254,8 +249,6 @@ export interface GpuEngineTelemetry {
   visibleBatches?: number;
   clusteredLightsActive?: number;
   gpuWaterWakeGridSize?: number;
-  subgroupsSupported?: boolean;
-  taaEnabled?: boolean;
   volumetricShaftsActive?: boolean;
   idleWarmupComplete?: boolean;
 }

@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.2.1';
+      : '1.2.3';
   } catch {
-    return '1.2.1';
+    return '1.2.3';
   }
 })();
 
@@ -89,14 +89,6 @@ export default defineConfig({
             norm.includes('vite/preload-helper')
           ) {
             return 'vendor-react';
-          }
-          if (
-            norm.includes('/node_modules/three/build/three.webgpu') ||
-            norm.includes('/node_modules/three/build/three.tsl') ||
-            norm.includes('/node_modules/three/examples/jsm/tsl/') ||
-            norm.includes('/node_modules/three/addons/tsl/')
-          ) {
-            return 'vendor-three-webgpu';
           }
           if (norm.includes('/src/capygame/engine/gpu/GpuEngineTypes.ts')) {
             return 'capy-gpu-types';
@@ -139,12 +131,6 @@ export default defineConfig({
       'react/jsx-dev-runtime',
       'lucide-react',
       'three',
-      'three/webgpu',
-      'three/tsl',
-      'three/addons/tsl/display/BloomNode.js',
-      'three/addons/tsl/display/FXAANode.js',
-      'three/addons/tsl/display/GTAONode.js',
-      'three/addons/tsl/display/TRAANode.js',
       'three/examples/jsm/environments/RoomEnvironment.js',
       'three/examples/jsm/lights/RectAreaLightUniformsLib.js',
       'three/examples/jsm/postprocessing/EffectComposer.js',

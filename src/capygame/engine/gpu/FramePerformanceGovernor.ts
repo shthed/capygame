@@ -214,8 +214,8 @@ export function computeBloomRenderScale(
 }
 
 /**
- * Computes optimal WebGL2/WebGPU devicePixelRatio cap scaled by user `resolutionScale` (`0.5`..`1.5`)
- * to sustain smooth FPS on 2x-3x HiDPI & mobile displays (WebGL2 capped to 1.5x by default).
+ * Computes optimal WebGL2 devicePixelRatio cap scaled by user `resolutionScale` (`0.5`..`1.5`)
+ * to sustain smooth FPS on 2x-3x HiDPI & mobile displays (capped to 1.5x by default).
  */
 export function computeEffectivePixelRatio(
   devicePixelRatio: number,
@@ -223,8 +223,7 @@ export function computeEffectivePixelRatio(
   postProcessingEnabled: boolean,
   isSoftwareGl: boolean,
   resolutionScale: number = 1.0,
-  isWebGpu: boolean = false,
-  isMobile: boolean = false
+  _isMobile: boolean = false
 ): number {
   const safeDpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
   const safeScale = Number.isFinite(resolutionScale)
@@ -238,10 +237,8 @@ export function computeEffectivePixelRatio(
     baseCap = 1.0;
   } else if (preset === 'balanced') {
     baseCap = postProcessingEnabled ? 1.35 : 1.5;
-  } else if (preset === 'high') {
-    baseCap = isWebGpu && !isMobile ? (postProcessingEnabled ? 1.65 : 2.0) : 1.5;
-  } else if (preset === 'ultra') {
-    baseCap = isMobile || !isWebGpu ? 1.5 : 2.0;
+  } else if (preset === 'high' || preset === 'ultra') {
+    baseCap = 1.5;
   }
   const scaled = Math.min(safeDpr, baseCap) * safeScale;
   return Math.max(0.5, Math.min(2.25, Math.round(scaled * 100) / 100));
@@ -844,13 +841,13 @@ export function computeDayNightAtmosphereRig(
   _dayNightRigResult.moonDirZ = moonDirZ;
   _dayNightRigResult.activeShadowCaster = activeShadowCaster;
   _dayNightRigResult.shadowIntensity = shadowIntensity;
-  _dayNightRigResult.sunIntensity = Math.max(0, dayFactor * 2.95 * weatherDim) + lightningFlash * 3.0;
+  _dayNightRigResult.sunIntensity = Math.max(0, dayFactor * 3.35 * weatherDim) + lightningFlash * 3.0;
   _dayNightRigResult.moonIntensity = nightFactor * (0.92 - cloudCover * 0.32);
-  _dayNightRigResult.hemiIntensity = 0.28 + dayFactor * (0.44 + cloudCover * 0.12);
-  _dayNightRigResult.ambientIntensity = 0.08 + dayFactor * 0.11 + lightningFlash * 0.35;
-  _dayNightRigResult.iblEnvIntensity = 0.48 + dayFactor * 0.78 + duskFactor * 0.18;
+  _dayNightRigResult.hemiIntensity = 0.22 + dayFactor * (0.28 + cloudCover * 0.10);
+  _dayNightRigResult.ambientIntensity = 0.04 + dayFactor * 0.05 + lightningFlash * 0.35;
+  _dayNightRigResult.iblEnvIntensity = 0.30 + dayFactor * 0.42 + duskFactor * 0.10;
   _dayNightRigResult.lanternBoost = 0.08 + nightFactor * 2.25 + duskFactor * 0.75;
-  _dayNightRigResult.exposure = (0.96 + dayFactor * 0.12 + lightningFlash * 0.3) * exposureScale;
+  _dayNightRigResult.exposure = (0.94 + dayFactor * 0.09 + lightningFlash * 0.28) * exposureScale;
   return _dayNightRigResult;
 }
 
@@ -1222,7 +1219,7 @@ export function dampShortestAngle(
 }
 
 // ============================================================================
-// SCENE MATRIX GRAPH CULLING & WEBGPU TELEMETRY HELPERS
+// SCENE MATRIX GRAPH CULLING HELPERS
 // ============================================================================
 
 /**
@@ -1245,88 +1242,6 @@ export function installFastMatrixCull<T extends THREE.Object3D>(root: T): T {
     THREE.Object3D.prototype.updateMatrixWorld.call(this, force);
   };
   return root;
-}
-
-/**
- * Extracts accurate per-frame draw call counts across WebGPURenderer and WebGLRenderer.
- * In Three.js WebGPURenderer, `info.render.calls` counts lifetime `_renderScene` invocations
- * rather than current-frame draw calls, whereas `info.render.drawCalls` holds per-frame draws.
- */
-export function extractWebGpuRenderDrawCalls(
-  renderInfo: { calls?: number; drawCalls?: number } | undefined,
-  isWebGpu: boolean
-): number {
-  if (!renderInfo) return 0;
-  if (isWebGpu && typeof renderInfo.drawCalls === 'number') {
-    return renderInfo.drawCalls;
-  }
-  return renderInfo.calls ?? 0;
-}
-
-export interface BackendBenchSample {
-  supported: boolean;
-  avgMs: number;
-  maxMs: number;
-  hadError: boolean;
-}
-
-export interface BackendBenchSelection {
-  winner: 'webgpu' | 'webgl2';
-  webGpuScoreMs: number;
-  webGl2ScoreMs: number;
-  reason: string;
-}
-
-/**
- * Picks the faster, cleaner graphics backend from live startup micro-benchmark results.
- * Weights average frame execution (72%) alongside worst-case tail spike (28%) so drivers with
- * severe command-queue stalls automatically yield to the smoother backend.
- */
-export function selectBestGpuBackend(
-  webGpu: BackendBenchSample,
-  webGl2: BackendBenchSample
-): BackendBenchSelection {
-  const wgScore =
-    webGpu.supported && !webGpu.hadError && Number.isFinite(webGpu.avgMs) && webGpu.avgMs > 0
-      ? Math.round((webGpu.avgMs * 0.72 + Math.max(webGpu.avgMs, webGpu.maxMs) * 0.28) * 100) / 100
-      : Number.POSITIVE_INFINITY;
-  const glScore =
-    webGl2.supported && !webGl2.hadError && Number.isFinite(webGl2.avgMs) && webGl2.avgMs > 0
-      ? Math.round((webGl2.avgMs * 0.72 + Math.max(webGl2.avgMs, webGl2.maxMs) * 0.28) * 100) / 100
-      : Number.POSITIVE_INFINITY;
-
-  if (!Number.isFinite(wgScore)) {
-    return {
-      winner: 'webgl2',
-      webGpuScoreMs: wgScore,
-      webGl2ScoreMs: glScore,
-      reason: webGpu.hadError ? 'WebGPU driver error during bench -> WebGL2' : 'WebGPU unavailable -> WebGL2',
-    };
-  }
-  if (!Number.isFinite(glScore)) {
-    return {
-      winner: 'webgpu',
-      webGpuScoreMs: wgScore,
-      webGl2ScoreMs: glScore,
-      reason: 'WebGL2 unavailable -> WebGPU',
-    };
-  }
-
-  // Slight <= 3% tolerance favors WebGPU compute capability on genuine ties; otherwise strictly faster wins
-  if (wgScore <= glScore * 1.03) {
-    return {
-      winner: 'webgpu',
-      webGpuScoreMs: wgScore,
-      webGl2ScoreMs: glScore,
-      reason: `WebGPU faster/tied (${webGpu.avgMs.toFixed(1)}ms vs WebGL2 ${webGl2.avgMs.toFixed(1)}ms)`,
-    };
-  }
-  return {
-    winner: 'webgl2',
-    webGpuScoreMs: wgScore,
-    webGl2ScoreMs: glScore,
-    reason: `WebGL2 faster (${webGl2.avgMs.toFixed(1)}ms vs WebGPU ${webGpu.avgMs.toFixed(1)}ms)`,
-  };
 }
 
 // ============================================================================

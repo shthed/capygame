@@ -3,7 +3,8 @@ import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { Capytorio3DRenderer } from './CapytorioMeshBuilder';
+import { Capytorio3DRenderer, populateCapytorioAltBadgeSpec } from './CapytorioMeshBuilder';
+import type { CapytorioAltBadgeSpec } from './CapytorioAltIconRenderer';
 import { resolveCapytorioClipboardPointerAction } from './capytorio/CapytorioStateGuard';
 import {
   computeCapytorioAmbientMix,
@@ -3619,6 +3620,90 @@ test('Capytorio Copy/Cut/Paste movement: pointer routing, blueprint footprint hi
   engine.syncPasteGhostForHeroMovement(26, 24, null, null, 10);
   assert.equal(engine.hoveredGx, 26);
   assert.equal(engine.hoveredGz, 24);
+});
+
+test('Capytorio satin metal PBR calibration and icon-only Alt-Mode badge resolution', () => {
+  const renderer = new Capytorio3DRenderer();
+  try {
+    const pbr = renderer.getPbrCalibrationSummary();
+    assert.ok(pbr.steelDarkRoughness >= 0.65, 'Dark steel uses satin-matte industrial roughness');
+    assert.ok(pbr.steelLightRoughness >= 0.5, 'Light steel avoids mirror-like sky glare');
+    assert.ok(pbr.steelLightEnvMapIntensity <= 0.55, 'Light steel clamps sky IBL reflections');
+    assert.ok(pbr.brassRoughness >= 0.44, 'Brass gears use brushed satin roughness');
+    assert.ok(pbr.copperRoughness >= 0.44, 'Copper coils use brushed satin roughness');
+  } finally {
+    renderer.dispose();
+  }
+
+  // Verify icon renderer never draws canvas text labels in Alt-Mode badges
+  const iconRendererSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/engine/CapytorioAltIconRenderer.ts'),
+    'utf8'
+  );
+  assert.equal(iconRendererSrc.includes('fillText('), false, 'Alt-Mode badge renderer draws zero fillText');
+  assert.equal(iconRendererSrc.includes('strokeText('), false, 'Alt-Mode badge renderer draws zero strokeText');
+
+  const engine = new CapytorioFactoryEngine();
+  engine.resetToBlankStarterField();
+  // Power the grid so operational machines display crafting/item icons instead of no-power warning
+  assert.equal(engine.placeMachine('generator', -6, -6, 0).ok, true);
+  const gen = engine.getMachineAt(-6, -6);
+  assert.ok(gen);
+  gen.fuelTimer = 60;
+  engine.step(0.1);
+
+  assert.equal(engine.placeMachine('assembler', 0, 0, 0, 'iron_gear').ok, true);
+  assert.equal(engine.placeMachine('assembler', 4, 0, 0, 'transport_belt').ok, true);
+  assert.equal(engine.placeMachine('furnace', 8, 0, 0).ok, true);
+  const furn = engine.getMachineAt(8, 0);
+  assert.ok(furn);
+  furn.outputBuffer.copper_plate = 2;
+
+  assert.equal(engine.placeMachine('inserter', 0, 4, 0).ok, true);
+  engine.setInserterConfigAt(0, 4, { filters: ['iron_plate'], filterMode: 'blacklist' });
+
+  const spec: CapytorioAltBadgeSpec = {
+    key: '',
+    iconKind: 'item',
+    itemShape: 'ore',
+    machineType: '',
+    variantItemId: '',
+    accentCss: '#ffffff',
+    warn: false,
+    blacklist: false,
+  };
+
+  // Assembler crafting intermediate item -> item shape icon ('gear')
+  const asmGear = engine.getMachineAt(0, 0)!;
+  assert.equal(populateCapytorioAltBadgeSpec(engine, asmGear, spec), true);
+  assert.equal(spec.iconKind, 'item');
+  assert.equal(spec.itemShape, 'gear');
+  assert.equal(spec.warn, false);
+
+  // Assembler crafting placeable building -> machine icon ('belt')
+  const asmBelt = engine.getMachineAt(4, 0)!;
+  assert.equal(populateCapytorioAltBadgeSpec(engine, asmBelt, spec), true);
+  assert.equal(spec.iconKind, 'machine');
+  assert.equal(spec.machineType, 'belt');
+  assert.equal(spec.variantItemId, 'transport_belt');
+
+  // Furnace smelting copper plates -> item shape icon ('plate')
+  assert.equal(populateCapytorioAltBadgeSpec(engine, furn, spec), true);
+  assert.equal(spec.iconKind, 'item');
+  assert.equal(spec.itemShape, 'plate');
+
+  // Blacklisted filter inserter -> item icon + blacklist flag
+  const ins = engine.getMachineAt(0, 4)!;
+  assert.equal(populateCapytorioAltBadgeSpec(engine, ins, spec), true);
+  assert.equal(spec.iconKind, 'item');
+  assert.equal(spec.itemShape, 'plate');
+  assert.equal(spec.blacklist, true);
+
+  // Unpowered assembler -> warn_power alert icon
+  engine.powerEfficiency = 0;
+  assert.equal(populateCapytorioAltBadgeSpec(engine, asmGear, spec), true);
+  assert.equal(spec.iconKind, 'warn_power');
+  assert.equal(spec.warn, true);
 });
 
 

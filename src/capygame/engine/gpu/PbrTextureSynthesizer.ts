@@ -1,9 +1,7 @@
 import * as THREE from 'three';
-import type * as THREE_WEBGPU from 'three/webgpu';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GpuTextureFilterMode } from './GpuEngineTypes';
 import { isMobileEnvironment } from './FramePerformanceGovernor';
-import { getWebGpuRuntime } from './WebGpuRuntime';
 
 export type PbrSurfaceMaterialKind =
   | 'grass'
@@ -626,7 +624,7 @@ export class PbrTextureSynthesizer {
    *   synthesized in <0.5ms on CPU so software rasterizers never stall on 36-pass cubemap convolution.
    */
   public static createStudioAndSkyEnvironmentMap(
-    renderer: THREE.WebGLRenderer | THREE_WEBGPU.WebGPURenderer,
+    renderer: THREE.WebGLRenderer,
     isSoftwareGl: boolean = false
   ): THREE.Texture | null {
     if (isSoftwareGl) {
@@ -657,21 +655,21 @@ export class PbrTextureSynthesizer {
           let b: number;
           if (dy >= 0) {
             const t = Math.min(1, dy);
-            r = (0.75 * (1 - t) + 0.18 * t) * 255;
-            g = (0.88 * (1 - t) + 0.46 * t) * 255;
-            b = (1.0 * (1 - t) + 0.88 * t) * 255;
+            r = (0.56 * (1 - t) + 0.16 * t) * 255;
+            g = (0.68 * (1 - t) + 0.36 * t) * 255;
+            b = (0.80 * (1 - t) + 0.68 * t) * 255;
           } else {
             const t = Math.min(1, -dy * 2.2);
-            r = (0.45 * (1 - t) + 0.18 * t) * 255;
-            g = (0.52 * (1 - t) + 0.26 * t) * 255;
-            b = (0.58 * (1 - t) + 0.16 * t) * 255;
+            r = (0.34 * (1 - t) + 0.14 * t) * 255;
+            g = (0.40 * (1 - t) + 0.20 * t) * 255;
+            b = (0.44 * (1 - t) + 0.12 * t) * 255;
           }
           const sunDot = Math.max(0, dx * sx + dy * sy + dz * sz);
-          const spec = Math.pow(sunDot, 24) * 180;
+          const spec = Math.pow(sunDot, 28) * 110;
           const p4 = (y * w + x) * 4;
           bytes[p4] = Math.min(255, Math.round(r + spec));
-          bytes[p4 + 1] = Math.min(255, Math.round(g + spec * 0.92));
-          bytes[p4 + 2] = Math.min(255, Math.round(b + spec * 0.78));
+          bytes[p4 + 1] = Math.min(255, Math.round(g + spec * 0.90));
+          bytes[p4 + 2] = Math.min(255, Math.round(b + spec * 0.72));
           bytes[p4 + 3] = 255;
         }
       }
@@ -684,60 +682,46 @@ export class PbrTextureSynthesizer {
       return envTex;
     }
 
-    const isWebGpu = Boolean(
-      (renderer as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer
-    );
-    let pmremGenerator: {
-      fromScene: (scene: THREE.Scene, sigma?: number) => { texture: THREE.Texture };
-      dispose: () => void;
-    } | null = null;
+    let pmremGenerator: THREE.PMREMGenerator | null = null;
     let envScene: THREE.Scene | null = null;
     const disposableGeos: THREE.BufferGeometry[] = [];
     const disposableMats: THREE.Material[] = [];
 
     try {
-      const webGpuRt = isWebGpu ? getWebGpuRuntime() : null;
-      if (isWebGpu && !webGpuRt) {
-        return null;
-      }
-      pmremGenerator = isWebGpu
-        ? webGpuRt!.createPmremGenerator(renderer)
-        : new THREE.PMREMGenerator(renderer as THREE.WebGLRenderer);
+      pmremGenerator = new THREE.PMREMGenerator(renderer);
       envScene = new RoomEnvironment();
 
       // Add a warm solar specular softbox dome + cool sky hemisphere + botanical ground bounce
       const skyDomeGeo = new THREE.SphereGeometry(14, 24, 16);
-      const skyDomeMat: THREE.Material = isWebGpu
-        ? webGpuRt!.createTslIblSkyDomeMaterial()
-        : new THREE.ShaderMaterial({
-            side: THREE.BackSide,
-            depthWrite: false,
-            vertexShader: `
+      const skyDomeMat: THREE.Material = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        vertexShader: `
           varying vec3 vDir;
           void main() {
             vDir = normalize(position);
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
           }
         `,
-            fragmentShader: `
+        fragmentShader: `
           varying vec3 vDir;
           void main() {
             float y = vDir.y;
-            vec3 sky = mix(vec3(0.68, 0.84, 1.0), vec3(0.12, 0.38, 0.82), clamp(y, 0.0, 1.0));
-            vec3 ground = vec3(0.11, 0.16, 0.10);
-            vec3 col = y >= 0.0 ? sky : mix(vec3(0.32, 0.38, 0.42), ground, clamp(-y * 2.4, 0.0, 1.0));
+            vec3 sky = mix(vec3(0.46, 0.60, 0.76), vec3(0.10, 0.28, 0.58), clamp(y, 0.0, 1.0));
+            vec3 ground = vec3(0.10, 0.14, 0.09);
+            vec3 col = y >= 0.0 ? sky : mix(vec3(0.24, 0.29, 0.32), ground, clamp(-y * 2.4, 0.0, 1.0));
             float sunDot = max(0.0, dot(normalize(vDir), normalize(vec3(0.48, 0.74, 0.42))));
-            col += vec3(1.8, 1.45, 1.05) * pow(sunDot, 28.0);
-            col += vec3(7.5, 6.8, 5.4) * pow(sunDot, 220.0);
+            col += vec3(1.15, 0.92, 0.64) * pow(sunDot, 24.0);
+            col += vec3(3.4, 2.9, 2.2) * pow(sunDot, 160.0);
             gl_FragColor = vec4(col, 1.0);
           }
         `,
-          });
+      });
       disposableGeos.push(skyDomeGeo);
       disposableMats.push(skyDomeMat);
       envScene.add(new THREE.Mesh(skyDomeGeo, skyDomeMat));
 
-      const rt = pmremGenerator.fromScene(envScene, 0.035);
+      const rt = pmremGenerator.fromScene(envScene, 0.052);
       return rt.texture;
     } catch {
       return null;

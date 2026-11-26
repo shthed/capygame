@@ -42,7 +42,6 @@ import {
   SANCTUARY_SURFACE_LON_DEG,
   installFastMatrixCull,
 } from './gpu/FramePerformanceGovernor';
-import { getWebGpuRuntime } from './gpu/WebGpuRuntime';
 import {
   buildForestMicroDiorama,
   ForestMicroDioramaHandle,
@@ -186,7 +185,6 @@ export class SeamlessUniverseSimulator {
   public readonly celestialBackdropGroup: THREE.Group = new THREE.Group();
 
   private readonly isSoftwareGl: boolean;
-  private readonly isWebGpu: boolean;
   private readonly layers: ScaleLayerRuntime[] = [];
   private readonly woodlandCapys: WoodlandCapyEntry[] = [];
   private readonly markerAnchors: WorldMarkerAnchor[] = [];
@@ -388,9 +386,8 @@ export class SeamlessUniverseSimulator {
     return _galaxyNavState;
   }
 
-  constructor(isSoftwareGl: boolean = false, isWebGpu: boolean = false) {
+  constructor(isSoftwareGl: boolean = false) {
     this.isSoftwareGl = isSoftwareGl;
-    this.isWebGpu = isWebGpu;
     this.rootGroup.name = 'SeamlessUniverseSimulatorRoot';
     this.rootGroup.visible = false;
     this.rootGroup.matrixWorldAutoUpdate = false;
@@ -437,10 +434,6 @@ export class SeamlessUniverseSimulator {
     if (this.layersBuilt) return;
     this.layersBuilt = true;
     this.buildCelestialStarBackdrop();
-    if (this.isWebGpu) {
-      getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(this.celestialBackdropGroup);
-      this.celestialBackdropMats = this.collectLayerMaterials(this.celestialBackdropGroup);
-    }
     this.buildAllScaleLayers();
   }
 
@@ -816,9 +809,6 @@ export class SeamlessUniverseSimulator {
         break;
     }
 
-    if (this.isWebGpu) {
-      getWebGpuRuntime()?.convertLegacyShaderMaterialsToTsl(group);
-    }
     layer.materials = this.collectLayerMaterials(group);
     layer.tickFn = tickFn;
 
@@ -850,8 +840,7 @@ export class SeamlessUniverseSimulator {
         seen.add(mat);
         mat.transparent = true;
         const shaderMat = mat as THREE.ShaderMaterial;
-        const tslOpacity = mat.userData?.__tslOpacityUniform as { value: number } | undefined;
-        const uOpacity = shaderMat.uniforms?.uOpacity ?? tslOpacity;
+        const uOpacity = shaderMat.uniforms?.uOpacity;
         const uTime = shaderMat.uniforms?.uTime;
         const uHubbleMix = shaderMat.uniforms?.uHubbleMix;
         const baseOpacity = uOpacity

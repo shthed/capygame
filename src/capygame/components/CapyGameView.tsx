@@ -1,5 +1,4 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type * as THREE_WEBGPU_TYPES from 'three/webgpu';
 import {
   AstrophysicsPaletteMode,
   PlayStyle,
@@ -22,7 +21,6 @@ import {
   GpuAntiAliasingMode,
   GpuEngineTelemetry,
   GpuQualityPreset,
-  GpuRenderBackendMode,
   GpuShadowQualityMode,
   GpuTextureFilterMode,
   GpuToneMappingMode,
@@ -57,10 +55,6 @@ import type {
 import type { PhysicsEngineTelemetry } from '../engine/physics/PhysicsTypes';
 import type { CosmicSimTelemetry } from '../engine/CosmicUniverseBuilder';
 import { getPresetPatchForGpuQuality } from '../engine/gpu/GpuEngineTypes';
-import {
-  clearGpuBackendBenchmarkCache,
-  type WebGpuProbeResult,
-} from '../engine/gpu/WebGpuRuntime';
 import { GamePauseController } from '../engine/GamePauseController';
 import { AudioService } from '../services/AudioService';
 import { NativeBridge } from '../../services/NativeBridge';
@@ -505,10 +499,6 @@ export const CapyGameView: React.FC = () => {
     backendLabel: 'WebGL2 Hardware Accelerated GPU',
     gpuRenderer: 'WebGL2 GPU',
     isSoftwareGl: false,
-    webGpuActive: false,
-    webGpuSupported: false,
-    webGpuAdapterName: 'Probing GPU...',
-    computeParticlesActive: false,
     shadowCasterMode: 'sun',
     dayPhaseLabel: 'Daylight',
     timeOfDayHours: 9.5,
@@ -1531,59 +1521,6 @@ export const CapyGameView: React.FC = () => {
         swGl = true;
       }
 
-      const backendPref = initialSettings.gpuBackendPreference ?? 'auto';
-      const canTryWebGpu =
-        typeof navigator !== 'undefined' &&
-        'gpu' in navigator &&
-        Boolean((navigator as Navigator & { gpu?: unknown }).gpu) &&
-        !swGl &&
-        backendPref !== 'webgl2';
-
-      let webGpuProbe: WebGpuProbeResult = {
-        supported: false,
-        shouldUseWebGpu: false,
-        adapterName: swGl ? 'Software WebGL2' : 'WebGL2 Hardware',
-        isFallbackAdapter: swGl,
-        features: [],
-      };
-
-      let webGpuInit: {
-        renderer: THREE_WEBGPU_TYPES.WebGPURenderer | null;
-        probe: WebGpuProbeResult;
-        isSoftwareGl: boolean;
-      } = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
-
-      if (canTryWebGpu) {
-        try {
-          const webGpuPipelineMod = await import('../engine/gpu/WebGpuPipeline');
-          if (cancelled || !mountRef.current) return;
-          webGpuProbe = await webGpuPipelineMod.probeWebGpuBackend(backendPref, swGl);
-          if (cancelled || !mountRef.current) return;
-          webGpuInit = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
-
-          if (webGpuProbe.shouldUseWebGpu) {
-            const THREE_WEBGPU = await import('three/webgpu');
-            if (cancelled || !mountRef.current) return;
-            const initPreset = initialSettings.gpuQualityPreset ?? 'high';
-            const initAa = initialSettings.gpuAntiAliasing ?? 'msaa_fxaa';
-            const enableWebGpuMsaa =
-              initAa === 'msaa_fxaa' && initPreset !== 'performance' && initPreset !== 'balanced';
-            const wgpuRenderer = new THREE_WEBGPU.WebGPURenderer({
-              antialias: enableWebGpuMsaa,
-              powerPreference: 'high-performance',
-            });
-            await wgpuRenderer.init();
-            if (cancelled) {
-              wgpuRenderer.dispose();
-              return;
-            }
-            webGpuInit = { renderer: wgpuRenderer, probe: webGpuProbe, isSoftwareGl: swGl };
-          }
-        } catch {
-          webGpuInit = { renderer: null, probe: webGpuProbe, isSoftwareGl: swGl };
-        }
-      }
-
       if (cancelled || !mountRef.current) return;
 
       let PlayStyleManagerCtor: typeof import('../engine/PlayStyleManager').PlayStyleManager;
@@ -1750,7 +1687,7 @@ export const CapyGameView: React.FC = () => {
           });
         },
       },
-      webGpuInit
+      { isSoftwareGl: swGl }
     );
       } catch (err) {
         const message =
@@ -1794,9 +1731,8 @@ export const CapyGameView: React.FC = () => {
       let modalWakeParity = 0;
       const glCtx =
         manager.isSoftwareGl &&
-        !manager.isWebGpu &&
-        typeof (manager.renderer as { getContext?: unknown }).getContext === 'function'
-          ? ((manager.renderer as { getContext: () => WebGL2RenderingContext | null }).getContext())
+        typeof manager.renderer.getContext === 'function'
+          ? (manager.renderer.getContext() as WebGL2RenderingContext | null)
           : null;
 
       const cancelScheduledFrame = () => {
@@ -4873,9 +4809,7 @@ export const CapyGameView: React.FC = () => {
                 <span>PERFORMANCE &amp; FPS GOVERNOR</span>
               </div>
               <p className="text-[10px] font-mono text-zinc-400 truncate mt-0.5">
-                {gpuTelemetry.webGpuActive
-                  ? `WebGPU WGSL · ${gpuTelemetry.webGpuAdapterName}`
-                  : gpuTelemetry.backendLabel}
+                {gpuTelemetry.backendLabel}
               </p>
             </div>
             <button
@@ -5197,7 +5131,7 @@ export const CapyGameView: React.FC = () => {
                   Drops: {perfLog.droppedFramesCount}
                 </span>
                 <span className="px-2 py-0.5 rounded bg-zinc-900 border border-white/10 text-sky-300 truncate">
-                  {gpuTelemetry.webGpuActive ? 'WebGPU' : gpuTelemetry.backendLabel}
+                  {gpuTelemetry.backendLabel}
                 </span>
               </div>
             </div>
@@ -8680,7 +8614,7 @@ export const CapyGameView: React.FC = () => {
                 <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2">
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-zinc-100">
-                      3D Hardware GPU Engine, WebGPU WGSL, Lighting &amp; Filters
+                      3D Hardware GPU Engine, Lighting &amp; Filters
                     </div>
                     <p className="text-[11px] text-zinc-400 mt-0.5 tabular-nums truncate">
                       {gpuTelemetry.backendLabel} · DPR {gpuTelemetry.effectivePixelRatio}x · Shadow {gpuTelemetry.shadowMapSize || 'OFF'} ({gpuTelemetry.shadowCasterMode.toUpperCase()})
@@ -8704,14 +8638,14 @@ export const CapyGameView: React.FC = () => {
                   </button>
                 </div>
 
-                {/* WebGPU / WebGL2 Backend Capability Strip & Auto-Benchmark Selector */}
+                {/* WebGL2 Hardware Adapter & Memory Capability Strip */}
                 <div className="p-2 rounded-lg bg-zinc-900/90 border border-white/8 space-y-1.5">
                   <div className="flex items-center justify-between gap-2 text-[10px] font-mono">
                     <span className="text-zinc-400 truncate">
-                      Adapter: <span className="text-cyan-300">{gpuTelemetry.webGpuAdapterName}</span>
+                      Adapter: <span className="text-cyan-300">{gpuTelemetry.gpuRenderer}</span>
                     </span>
-                    <span className={gpuTelemetry.webGpuActive ? 'text-emerald-300 font-semibold shrink-0' : 'text-sky-300 shrink-0'}>
-                      {gpuTelemetry.webGpuActive ? 'WEBGPU WGSL' : 'WEBGL2'}
+                    <span className="text-sky-300 font-semibold shrink-0">
+                      WEBGL2
                     </span>
                   </div>
                   <div
@@ -8736,49 +8670,6 @@ export const CapyGameView: React.FC = () => {
                         LEAN MEM
                       </span>
                     )}
-                  </div>
-                  {gpuTelemetry.backendBenchmarkSummary && (
-                    <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-zinc-300 bg-zinc-950/70 px-2 py-1 rounded border border-white/5">
-                      <span className="truncate">{gpuTelemetry.backendBenchmarkSummary}</span>
-                      <button
-                        type="button"
-                        data-testid="settings-backend-retest"
-                        onClick={() => {
-                          clearGpuBackendBenchmarkCache();
-                          updateGameSettings({ gpuBackendPreference: 'auto' });
-                          showToast('Cleared GPU bench cache — reload page to re-benchmark WebGPU vs WebGL2');
-                        }}
-                        className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-200 border border-cyan-400/35 hover:bg-cyan-500/25 cursor-pointer shrink-0"
-                      >
-                        Re-Test
-                      </button>
-                    </div>
-                  )}
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {(
-                      [
-                        { id: 'auto', label: 'Auto (Bench)' },
-                        { id: 'webgpu', label: 'WebGPU' },
-                        { id: 'webgl2', label: 'WebGL2' },
-                      ] as Array<{ id: GpuRenderBackendMode; label: string }>
-                    ).map(({ id, label }) => (
-                      <button
-                        key={id}
-                        type="button"
-                        data-testid={`settings-backend-${id}`}
-                        onClick={() => {
-                          updateGameSettings({ gpuBackendPreference: id });
-                          showToast('Saved GPU Backend — reload page to switch active graphics device');
-                        }}
-                        className={`px-2 py-1 rounded text-[10px] font-mono cursor-pointer border ${
-                          (gameSettings.gpuBackendPreference ?? 'auto') === id
-                            ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/45'
-                            : 'bg-zinc-950 text-zinc-400 border-white/10 hover:text-zinc-200'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
                   </div>
                 </div>
 
@@ -10487,8 +10378,8 @@ export const CapyGameView: React.FC = () => {
           data-testid="chrono-vessel-flight-strip"
           className={`fixed bottom-2 z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-1.5 sm:px-2 py-1.5 text-zinc-100 overflow-x-auto ${
             isAdvancedMode
-              ? 'left-1/2 -translate-x-1/2 w-[calc(100vw-16px)] max-w-[700px]'
-              : 'left-2 sm:left-1/2 sm:-translate-x-1/2 w-auto max-w-[calc(100vw-148px)]'
+              ? 'left-2 w-[calc(100vw-16px)] sm:w-[calc(100vw-152px)] max-w-[700px] xl:left-1/2 xl:-translate-x-1/2'
+              : 'left-2 sm:left-1/2 sm:-translate-x-1/2 w-auto max-w-[calc(100vw-152px)]'
           }`}
         >
           {!isAdvancedMode ? (
