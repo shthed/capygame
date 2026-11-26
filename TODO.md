@@ -14,14 +14,12 @@ For subsystem references, see:
 
 ## Roadmap Overview
 
-| Priority | Workstream | Release Blocker | Target Outcome |
-| :--- | :--- | :--- | :--- |
-| **P0** | Phase 1: Android Packaging & TWA / Capacitor | Play Store | Signed release `.aab` with verified Digital Asset Links on `capyboop.com` |
-| **P0** | Phase 2: Play Console Policy, Hosting & Data Safety | Play Store | Verified `https://capyboop.com/privacy.html`, Data Safety, and IARC Age Rating |
-| **P0** | Phase 3: Store Listing Copy, Fresh Screenshots & Asset Upload | Play Store | Updated `v1.2.x` store/README visuals, listing copy, and maskable safe-zone QA |
-| **P1** | Phase 4: E2E Alignment, Android Device QA & Ergonomics | Play Store | Updated 3-mode E2E suite, Android back-button/cutouts, context loss, thermal FPS QA |
-| **P1** | Phase 5: Release CI Gates & Staged Rollout | Recommended | Automated `lint` / `test:unit` / `test:pwa` / `test:game` + staged `10% -> 100%` rollout |
-| **P2** | Web Performance & Asset Hygiene Backlog | No | Optional per-mode code splitting (`< 500 kB` chunks) and unused media cleanup |
+- **Phase 1 (`P0` | Play Store Blocker) -- Android Packaging & TWA / Capacitor**: Signed release `.aab` with verified Digital Asset Links on `capyboop.com`.
+- **Phase 2 (`P0` | Play Store Blocker) -- Play Console Policy, Hosting & Data Safety**: Verified `https://capyboop.com/privacy.html`, Data Safety, and IARC Age Rating.
+- **Phase 3 (`P0` | Play Store Blocker) -- Store Listing Copy, Fresh Screenshots & Asset Upload**: Updated `v1.2.x` store/README visuals, listing copy, and maskable safe-zone QA.
+- **Phase 4 (`P1` | Play Store Blocker) -- E2E Alignment, Android Device QA & Ergonomics**: Updated 3-mode E2E suite, Android back-button/cutouts, context loss, and thermal FPS QA.
+- **Phase 5 (`P1` | Recommended) -- Release CI Gates & Staged Rollout**: Automated `lint` / `test:unit` / `test:pwa` / `test:game` gates and staged `10% -> 100%` rollout.
+- **Backlog (`P2` | Non-Blocker) -- Web Performance & Asset Hygiene**: Optional per-mode code splitting (`< 500 kB` chunks) and unused media cleanup.
 
 ---
 

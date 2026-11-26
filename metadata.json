@@ -1,5 +1,5 @@
 {
-  "name": "Capy - Color by Number & CapyGame 3D",
+  "name": "CapyGame",
   "description": "Hardware-accelerated 3D multi-scale universe simulator, contiguous Capybara world builder, and multiphysics mini-game archipelago.",
   "requestFramePermissions": [],
   "capabilities": [

@@ -8,17 +8,15 @@ This document outlines the automated verification suites, headless WebGL executi
 
 Run all commands from the repository root:
 
-| Test Level | Command | Scope |
-| :--- | :--- | :--- |
-| **Type Checking** | `npm run lint` | Runs `tsc -p tsconfig.json --noEmit` in strict mode across all React components, Three.js shaders/engines, and Rapier3D worker modules. |
-| **Production Build** | `npm run build` | Compiles TypeScript and produces minified relative-path (`./assets/...`) bundles in `dist/` including the Rapier3D Wasm physics worker. |
-| **Dev Server** | `npm run dev` | Launches Vite on `http://localhost:3000`. |
-| **Preview Server** | `npm run preview` | Serves compiled `dist/` on `http://localhost:3000` for production verification. |
-| **Unit Logic Suite** | `npm run test:unit` | Runs `135` deterministic `node:test` assertions across all 6 suites (`ProgressionAndPhysics.test.ts`, `UniverseAndGpuMath.test.ts`, `CapytorioFactoryEngine.test.ts`, `forestMicroSpecimens.test.ts`, `UfoFlightSequence.test.ts`, and `TutorialCatalog.test.ts`) covering 3-mode isolation & simulation pausing, Capytorio simulation/crafting/Lua/blueprints/Alt-Mode/3D variants, economy/save sanitization/WebGL2 backend normalization/quota recovery, UFO orbit-to-surface flight, Micro-Glade Discovery Sticker Book, tutorial catalog & version sync, spine/fluid/XPBD physics, cold-load lazy boot & mountain PBR invariants, GPU indirect draw culling & shaders, and PWA/security header invariants. |
-| **CapyGame E2E Suite** | `npm run test:game` | Executes `scripts/test-capygame.mjs` against `http://localhost:3000`, verifying all cosmic, surface, factory automation, multiphysics, economy, and AAA GPU rendering invariants. |
-| **PWA & Offline Suite** | `npm run test:pwa` | Executes `scripts/test-pwa-offline.mjs` to validate `manifest.webmanifest`, scope-isolated Service Worker (`sw.js`) precaching, and 100% offline 3D reload. |
-| **District Gallery Capture** | `npm run gallery:capture` | Executes `scripts/capture-capygame-gallery.mjs` to capture full-frame screenshots across all 5 districts into `docs/gallery/`. |
-| **27-Band Zoom Capture** | `npm run gallery:capture:zoom` | Executes `scripts/capture-all-zoom-levels.mjs` across all 27 logarithmic universe scale bands (`10^+30 m` to `10^-35 m`) into `docs/gallery/zoom_levels/`. |
+- **Type Checking (`npm run lint`)**: Runs `tsc -p tsconfig.json --noEmit` in strict mode across all React components, Three.js shaders/engines, and Rapier3D worker modules.
+- **Production Build (`npm run build`)**: Compiles TypeScript and produces minified relative-path (`./assets/...`) bundles in `dist/` including the Rapier3D Wasm physics worker.
+- **Dev Server (`npm run dev`)**: Launches Vite on `http://localhost:3000`.
+- **Preview Server (`npm run preview`)**: Serves compiled `dist/` on `http://localhost:3000` for production verification.
+- **Unit Logic Suite (`npm run test:unit`)**: Runs `135` deterministic `node:test` assertions across all 6 suites (`ProgressionAndPhysics.test.ts`, `UniverseAndGpuMath.test.ts`, `CapytorioFactoryEngine.test.ts`, `forestMicroSpecimens.test.ts`, `UfoFlightSequence.test.ts`, and `TutorialCatalog.test.ts`) covering 3-mode isolation & simulation pausing, Capytorio simulation/crafting/Lua/blueprints/Alt-Mode/3D variants, economy/save sanitization/WebGL2 backend normalization/quota recovery, UFO orbit-to-surface flight, Micro-Glade Discovery Sticker Book, tutorial catalog & version sync, spine/fluid/XPBD physics, cold-load lazy boot & mountain PBR invariants, GPU indirect draw culling & shaders, and PWA/security header invariants.
+- **CapyGame E2E Suite (`npm run test:game`)**: Executes `scripts/test-capygame.mjs` against `http://localhost:3000`, verifying all cosmic, surface, factory automation, multiphysics, economy, and AAA GPU rendering invariants.
+- **PWA & Offline Suite (`npm run test:pwa`)**: Executes `scripts/test-pwa-offline.mjs` to validate `manifest.webmanifest`, scope-isolated Service Worker (`sw.js`) precaching, and 100% offline 3D reload.
+- **District Gallery Capture (`npm run gallery:capture`)**: Executes `scripts/capture-capygame-gallery.mjs` to capture full-frame screenshots across all 5 districts into `docs/gallery/`.
+- **27-Band Zoom Capture (`npm run gallery:capture:zoom`)**: Executes `scripts/capture-all-zoom-levels.mjs` across all 27 logarithmic universe scale bands (`10^+30 m` to `10^-35 m`) into `docs/gallery/zoom_levels/`.
 
 ---
 
