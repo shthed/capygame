@@ -1,4 +1,4 @@
-// CapyGame 3D Service Worker - Offline PWA Caching Engine
+// CapyGame Service Worker - Offline PWA Caching Engine
 // Respects relative subpath hosting across GitHub Pages root, PR previews, and local dev.
 
 const SCOPE_PATH = new URL('./', self.location).pathname;

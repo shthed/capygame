@@ -805,7 +805,7 @@ test('PerformanceProfiler: measures subsystem CPU/GPU times, traces actions, and
   assert.equal(snap.recentEvents[1].name, 'Switch District: sanctuary');
 
   const report = profiler.formatAnalysisReport();
-  assert.ok(report.includes('=== CAPYGAME 3D PERFORMANCE ANALYSIS ==='));
+  assert.ok(report.includes('=== CAPYGAME PERFORMANCE ANALYSIS ==='));
   assert.ok(report.includes('MODULE / SUBSYSTEM CPU BREAKDOWN:'));
   assert.ok(report.includes('RECENT ACTIONS & TIMED EVENTS:'));
   assert.ok(report.includes('ANALYSIS INSIGHTS & HOTSPOTS:'));

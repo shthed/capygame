@@ -1,4 +1,4 @@
-// test-pwa-offline.mjs - Automated Playwright Test for CapyGame 3D PWA & Offline Support
+// test-pwa-offline.mjs - Automated Playwright Test for CapyGame PWA & Offline Support
 import { chromium } from 'playwright';
 import fs from 'fs';
 
@@ -6,7 +6,7 @@ const SYSTEM_CHROMIUM =
   '/ms-playwright/chromium_headless_shell-1247/chrome-headless-shell-linux64/chrome-headless-shell';
 
 async function runPwaOfflineTest() {
-  console.log('[PWA Test] Starting CapyGame 3D PWA & Offline Verification...');
+  console.log('[PWA Test] Starting CapyGame PWA & Offline Verification...');
   const browser = await chromium.launch({
     headless: true,
     executablePath: fs.existsSync(SYSTEM_CHROMIUM) ? SYSTEM_CHROMIUM : undefined,
@@ -45,7 +45,7 @@ async function runPwaOfflineTest() {
       throw new Error(`Failed to load manifest.webmanifest (status: ${manifestResponse?.status()})`);
     }
     const manifestJson = JSON.parse(await manifestResponse.text());
-    if (manifestJson.name !== 'CapyGame 3D' || manifestJson.short_name !== 'CapyGame') {
+    if (manifestJson.name !== 'CapyGame' || manifestJson.short_name !== 'CapyGame') {
       throw new Error(`Unexpected manifest name/short_name: ${manifestJson.name} / ${manifestJson.short_name}`);
     }
     if (manifestJson.display !== 'standalone') {
@@ -102,7 +102,7 @@ async function runPwaOfflineTest() {
     await page.getByTestId('unified-top-bar').waitFor({ state: 'visible', timeout: 15000 });
     await page.getByTestId('capygame-canvas-container').waitFor({ state: 'visible', timeout: 15000 });
     await page.waitForTimeout(400);
-    console.log('   CapyGame 3D HUD and WebGL canvas loaded offline via Service Worker.');
+    console.log('   CapyGame HUD and WebGL canvas loaded offline via Service Worker.');
 
     await context.setOffline(false);
     if (consoleErrors.length > 0) {

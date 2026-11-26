@@ -5326,7 +5326,7 @@ export class PlayStyleManager {
 
     if (mode === 'summary') {
       const sLines: string[] = [];
-      sLines.push('=== CAPYGAME 3D PERF SUMMARY ===');
+      sLines.push('=== CAPYGAME PERF SUMMARY ===');
       sLines.push(`Target: ${perf.fpsTarget} FPS | Max Cap: ${capLabel} (AutoOpt: ${perf.autoOptimizerEnabled ? `ON T${perf.activeGovernorTier}` : 'OFF'})`);
       sLines.push(`Live: ${perf.liveFps} | Avg: ${perf.avgFps} | Min: ${perf.minFps} | Drops: ${perf.droppedFramesCount} | Avg ${perf.avgFrameMs}ms / P95 ${perf.p95FrameMs}ms / Spike ${perf.maxFrameMs}ms`);
       sLines.push(`Scene: ${this.currentMode} · ${this.cosmicStage} | Scale: ${this.currentLogScaleMeters.toFixed(1)} log-m (T+${computeCosmicAgeGyr(this.currentLogScaleMeters).toFixed(2)} Gyr)`);
@@ -5356,7 +5356,7 @@ export class PlayStyleManager {
     }
 
     const lines: string[] = [];
-    lines.push('=== CAPYGAME 3D PERFORMANCE DEBUG REPORT ===');
+    lines.push('=== CAPYGAME PERFORMANCE DEBUG REPORT ===');
     lines.push(`Generated: ${new Date().toISOString()}`);
     lines.push(`Uptime: ${Math.floor(performance.now() / 1000)}s`);
     lines.push(`Target FPS: ${perf.fpsTarget} FPS | Max Cap: ${capLabel} (Auto GPU Optimizer: ${perf.autoOptimizerEnabled ? `ON Tier ${perf.activeGovernorTier}` : 'OFF'})`);

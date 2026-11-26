@@ -30,7 +30,7 @@ export const CAPYGAME_OVERVIEW_COPY = {
   heading: 'About CapyGame',
   subtitle: 'Help & Game Overview',
   summary:
-    'CapyGame 3D is a seamless 3D universe explorer and cozy capybara playground. Fly a time-traveling Chrono-Vessel from galaxies down to subatomic foam, roam a sunny 3D island sanctuary to grow your Capy-Snake trail, or automate belt-fed factories in Capytorio.',
+    'CapyGame is a seamless 3D universe explorer and cozy capybara playground. Fly a time-traveling Chrono-Vessel from galaxies down to subatomic foam, roam a sunny 3D island sanctuary to grow your Capy-Snake trail, or automate belt-fed factories in Capytorio.',
   controlsSummary:
     'Move with WASD or Arrow keys (drag on touch), Space to jump, drag mouse or press M to look around, and scroll or pinch to zoom continuously between ground and deep space.',
 } as const;

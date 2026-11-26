@@ -1,6 +1,6 @@
 # CapyGame -- Active Roadmap & Google Play Store Production TODO
 
-This document tracks pending architectural, packaging, compliance, QA, and release engineering tasks required to ship **CapyGame 3D** to the Google Play Store.
+This document tracks pending architectural, packaging, compliance, QA, and release engineering tasks required to ship **CapyGame** to the Google Play Store.
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.
@@ -57,7 +57,7 @@ For subsystem references, see:
 - **Verify Maskable Icon Safe Zone**:
   - Confirm `public/assets/icon-maskable-512.png` keeps central artwork cleanly inside the 80% Android adaptive icon safe zone across circular and squircle masks.
 - **Finalize Store Listing Copy**:
-  - Draft Store Title (<= 30 chars: `CapyGame 3D`), Short Description (<= 80 chars), Full Description (<= 4000 chars), app category (`Game -> Simulation`), and release notes for `v1.0.0`.
+  - Draft Store Title (<= 30 chars: `CapyGame`), Short Description (<= 80 chars), Full Description (<= 4000 chars), app category (`Game -> Simulation`), and release notes for `v1.0.0`.
   - Upload `public/assets/feature-graphic-1024x500.png` and device screenshots (`public/assets/screenshot-*.png`) to Play Console, adding a 7-inch/10-inch tablet capture if required by Play Console track rules.
 
 ---

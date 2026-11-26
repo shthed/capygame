@@ -320,7 +320,7 @@ export class PerformanceProfiler {
     const snap = this.getTelemetrySnapshot();
     const lines: string[] = [];
 
-    lines.push('=== CAPYGAME 3D PERFORMANCE ANALYSIS ===');
+    lines.push('=== CAPYGAME PERFORMANCE ANALYSIS ===');
     lines.push(
       `CPU Work: ${snap.totalCpuMs.toFixed(1)}ms | GPU Work: ${snap.gpuExecutionMs.toFixed(
         1

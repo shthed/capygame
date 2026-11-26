@@ -14,8 +14,9 @@ import {
 test('TutorialCatalog: provides valid tutorials, unique IDs, and deterministic step transitions', () => {
   assert.ok(CAPYGAME_OVERVIEW_COPY.heading === 'About CapyGame');
   assert.ok(
-    CAPYGAME_OVERVIEW_COPY.summary.includes('CapyGame 3D'),
-    'About overview should retain CapyGame 3D branding'
+    CAPYGAME_OVERVIEW_COPY.summary.includes('CapyGame') &&
+      !CAPYGAME_OVERVIEW_COPY.summary.includes('CapyGame 3D'),
+    'About overview should use CapyGame branding'
   );
   assert.ok(CAPYGAME_TUTORIALS.length >= 4, 'Expected at least 4 interactive tutorials');
 

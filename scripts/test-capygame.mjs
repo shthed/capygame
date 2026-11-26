@@ -1298,13 +1298,13 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await settingsModal.waitFor({ state: 'hidden', timeout: 5000 });
   console.log('✓ Settings Page camera, 60 FPS Dynamic LOD, Day/Night & Weather controls verified and closed');
 
-  // 11. Verify Overview / About modal opens with unified CapyGame 3D branding & Privacy Policy viewer
+  // 11. Verify Overview / About modal opens with unified CapyGame branding & Privacy Policy viewer
   await page.getByTestId('open-about-btn').click({ force: true });
   const aboutModal = page.getByTestId('capygame-about-modal');
   await aboutModal.waitFor({ state: 'visible', timeout: 5000 });
   const aboutText = (await aboutModal.innerText()) || '';
-  if (!aboutText.toLowerCase().includes('capygame 3d')) {
-    throw new Error(`Expected unified 'CapyGame 3D' branding in About modal, got: ${aboutText}`);
+  if (!aboutText.toLowerCase().includes('capygame')) {
+    throw new Error(`Expected unified 'CapyGame' branding in About modal, got: ${aboutText}`);
   }
   await aboutModal.getByTestId('open-privacy-policy-btn').click({ force: true });
   const privacyModal = page.getByTestId('privacy-policy-modal');
@@ -1316,7 +1316,7 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.getByTestId('close-privacy-policy-btn').click({ force: true });
   await privacyModal.waitFor({ state: 'hidden', timeout: 5000 });
   await aboutModal.waitFor({ state: 'hidden', timeout: 5000 });
-  console.log('✓ Unified CapyGame 3D About modal & embedded Privacy Policy modal opened and closed cleanly');
+  console.log('✓ Unified CapyGame About modal & embedded Privacy Policy modal opened and closed cleanly');
 
   // 12. Progressive Unlock & Transit across all 5 World Sectors
   const modes = ['spore', 'capytorio', 'runner', 'fallguys', 'sanctuary'];

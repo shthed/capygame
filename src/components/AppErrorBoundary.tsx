@@ -54,7 +54,7 @@ export function classifyError(err: unknown): { title: string; message: string; d
   }
 
   return {
-    title: 'Unable to Load CapyGame 3D',
+    title: 'Unable to Load CapyGame',
     message:
       'An unexpected runtime error prevented the 3D simulation from rendering cleanly. Use the recovery actions below to reload.',
     details: stack,

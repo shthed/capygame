@@ -3598,7 +3598,7 @@ export const CapyGameView: React.FC = () => {
     const effectiveMode = mode ?? debugReportMode;
     const report = managerRef.current
       ? managerRef.current.generatePerformanceDebugReport(effectiveMode)
-      : 'CapyGame 3D: Engine not initialized';
+      : 'CapyGame: Engine not initialized';
     setDebugReportText(report);
     setSelectedSnippet('');
     setIsDebugReportOpen(true);
@@ -4011,7 +4011,7 @@ export const CapyGameView: React.FC = () => {
             Interactive 3D Universe
           </div>
           <h1 className="m-0 text-[clamp(28px,5vw,44px)] font-extrabold tracking-[-0.02em] text-slate-50 leading-[1.1]">
-            CapyGame 3D
+            CapyGame
           </h1>
           <p className="mt-2.5 mb-[22px] max-w-[420px] text-sm leading-relaxed text-slate-400">
             Cosmic Universe Simulator &amp; Capybara Sanctuary Archipelago
@@ -9572,7 +9572,7 @@ export const CapyGameView: React.FC = () => {
                 <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
                 <div>
                   <h2 className="text-sm font-semibold tracking-wider uppercase text-zinc-100">
-                    CapyGame 3D · Privacy Policy
+                    CapyGame · Privacy Policy
                   </h2>
                   <p className="text-[11px] font-mono text-zinc-400">
                     100% On-Device Saves · Zero Tracking SDKs
@@ -9592,7 +9592,7 @@ export const CapyGameView: React.FC = () => {
             <div className="p-3 bg-zinc-950 flex-1 min-h-0">
               <iframe
                 src="./privacy.html"
-                title="CapyGame 3D Privacy Policy"
+                title="CapyGame Privacy Policy"
                 className="w-full h-[64vh] rounded-lg border border-white/10 bg-zinc-950"
               />
             </div>

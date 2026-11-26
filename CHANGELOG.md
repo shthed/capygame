@@ -2,6 +2,10 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.2.4] - 2026-11-26
+
+- Renamed "CapyGame 3D" to "CapyGame" across the boot screen, browser title, web app manifest, About and Privacy Policy pages, error fallback, and performance reports.
+
 ## [1.2.3] - 2026-11-26
 
 - Standardized CapyGame's 3D renderer cleanly on WebGL2 across desktop and mobile, removing the experimental WebGPU backend so Infinite Zoom's cosmic shaders, multiverse bubbles, nebulae, and lighting render identically everywhere with zero placeholder stripes or bloom streaks.

@@ -1,7 +1,7 @@
 import type { PlayStyle } from '../../types';
 
 /**
- * Shared memory & worker message protocol for the CapyGame 3D Multiphysics Engine:
+ * Shared memory & worker message protocol for the CapyGame Multiphysics Engine:
  * - Rigid-Body Dynamics & Swept Continuous Collision Detection (Rapier3D Wasm + substep TOI)
  * - Physical Character Controller (Kinematic/Dynamic blending, autostep, slope slide, zero mesh clipping)
  * - Volumetric XPBD Soft-Body Deformation (tetrahedral volume-preserving shells & bouncy mushroom pads)

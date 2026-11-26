@@ -1,6 +1,6 @@
 {
   "id": "./",
-  "name": "CapyGame 3D",
+  "name": "CapyGame",
   "short_name": "CapyGame",
   "description": "3D hardware-accelerated Capybara universe simulator, contiguous world builder, and multiphysics mini-game archipelago.",
   "lang": "en",
