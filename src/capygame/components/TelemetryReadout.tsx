@@ -162,7 +162,7 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
   return (
     <div
       data-testid="surface-action-controls"
-      className={`fixed bottom-3 z-20 items-center gap-1.5 pointer-events-auto ${
+      className={`fixed bottom-3 hud-safe-bottom z-20 items-center gap-1.5 pointer-events-auto ${
         props.activeMode === 'capytorio' ? 'hidden' : 'flex'
       } ${props.showTouchDpad ? 'right-36' : 'right-3'}`}
     >

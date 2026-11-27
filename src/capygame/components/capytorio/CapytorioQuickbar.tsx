@@ -113,7 +113,7 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
     <section
       data-testid="capytorio-build-bar"
       aria-label="Capytorio Factorio Quickbar"
-      className="fixed bottom-1.5 left-1/2 -translate-x-1/2 z-30 pointer-events-auto w-[calc(100vw-12px)] max-w-[780px] text-[#e6e8ec]"
+      className="fixed bottom-1.5 hud-safe-bottom hud-safe-quickbar left-1/2 -translate-x-1/2 z-30 pointer-events-auto w-[calc(100vw-12px)] max-w-[780px] text-[#e6e8ec]"
     >
       <div className={`${FACTORIO_PANEL_FRAME} overflow-hidden`}>
         {/* SELECTED ITEM STATUS BAR */}

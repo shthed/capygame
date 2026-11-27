@@ -42,8 +42,7 @@ import {
   SANCTUARY_SURFACE_LON_DEG,
   installFastMatrixCull,
 } from './gpu/FramePerformanceGovernor';
-import {
-  buildForestMicroDiorama,
+import type {
   ForestMicroDioramaHandle,
 } from './ForestMicroDioramaBuilder';
 import {
@@ -3604,15 +3603,20 @@ export class SeamlessUniverseSimulator {
     group: THREE.Group,
     glowWarm: THREE.CanvasTexture
   ): (dt: number, elapsed: number) => void {
-    const diorama = buildForestMicroDiorama(
-      group,
-      glowWarm,
-      this.isSoftwareGl,
-      this.activeForestSpecimenId
-    );
-    this.forestDiorama = diorama;
+    let loaded = false;
+    void import('./ForestMicroDioramaBuilder').then(({ buildForestMicroDiorama }) => {
+      if (loaded || !group.parent) return;
+      loaded = true;
+      const diorama = buildForestMicroDiorama(
+        group,
+        glowWarm,
+        this.isSoftwareGl,
+        this.activeForestSpecimenId
+      );
+      this.forestDiorama = diorama;
+    });
     return (dt, elapsed) => {
-      diorama.tick(dt, elapsed);
+      this.forestDiorama?.tick(dt, elapsed);
     };
   }
 

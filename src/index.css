@@ -37,6 +37,45 @@
   padding-bottom: max(1.5rem, calc(var(--sab) + 1.25rem));
 }
 
+/* Display cutout & Android gesture-bar clearances (zero overhead on desktop where insets are 0px) */
+.hud-safe-top {
+  padding-top: var(--sat);
+  padding-left: max(0.25rem, var(--sal));
+  padding-right: max(0.25rem, var(--sar));
+  min-height: calc(2.5rem + var(--sat));
+}
+
+.hud-safe-bottom {
+  bottom: calc(0.5rem + var(--sab));
+}
+
+.hud-safe-bottom-left {
+  bottom: calc(0.625rem + var(--sab));
+  left: calc(0.625rem + var(--sal));
+}
+
+.hud-safe-bottom-right {
+  bottom: calc(0.75rem + var(--sab));
+  right: calc(0.75rem + var(--sar));
+}
+
+.hud-safe-flight-panel {
+  bottom: calc(62px + var(--sab));
+  right: calc(0.5rem + var(--sar));
+}
+
+@media (min-width: 640px) {
+  .hud-safe-flight-panel {
+    bottom: calc(0.5rem + var(--sab));
+  }
+}
+
+.hud-safe-quickbar {
+  padding-bottom: var(--sab);
+  padding-left: var(--sal);
+  padding-right: var(--sar);
+}
+
 /* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;

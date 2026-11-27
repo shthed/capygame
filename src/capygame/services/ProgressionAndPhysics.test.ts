@@ -2168,4 +2168,124 @@ test('Bundle-Diet & Cleanup Pass (v1.2.10): SW precache trim, idle Capytorio aut
   );
 });
 
+test('v1.3.0 Chunk Split, Safe-Area Cutouts, Android Back Sentinel & TWA Manifest Invariants', () => {
+  const managerSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/engine/PlayStyleManager.ts'),
+    'utf8'
+  );
+  const simSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/engine/SeamlessUniverseSimulator.ts'),
+    'utf8'
+  );
+  const viteSrc = fs.readFileSync(path.resolve(process.cwd(), 'vite.config.ts'), 'utf8');
+  const cssSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf8');
+  const viewSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/components/CapyGameView.tsx'),
+    'utf8'
+  );
+  const telemetrySrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/components/TelemetryReadout.tsx'),
+    'utf8'
+  );
+  const quickbarSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/capygame/components/capytorio/CapytorioQuickbar.tsx'),
+    'utf8'
+  );
+  const nativeBridgeSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/services/NativeBridge.ts'),
+    'utf8'
+  );
+
+  // 1. ForestDistrictBuilders and ForestMicroDioramaBuilder are dynamically imported on demand
+  assert.ok(
+    managerSrc.includes("import('./ForestDistrictBuilders')"),
+    'PlayStyleManager must dynamically import ForestDistrictBuilders on demand'
+  );
+  assert.ok(
+    managerSrc.includes('public async ensureForestReadyAsync('),
+    'PlayStyleManager must expose ensureForestReadyAsync for async Forest chunk hydration'
+  );
+  assert.match(
+    simSrc,
+    /import\s+type\s+\{[^}]*ForestMicroDioramaHandle[^}]*\}\s+from\s+'\.\/ForestMicroDioramaBuilder'/,
+    'SeamlessUniverseSimulator must import ForestMicroDioramaBuilder as type-only at top level'
+  );
+  assert.ok(
+    simSrc.includes("import('./ForestMicroDioramaBuilder')"),
+    'SeamlessUniverseSimulator must dynamically import ForestMicroDioramaBuilder when micro layer builds'
+  );
+  assert.ok(
+    viteSrc.includes("return 'feature-universe';"),
+    'vite.config.ts must isolate SeamlessUniverseSimulator + UniverseShaders into feature-universe chunk'
+  );
+
+  // 2. Obsolete breakout gallery screenshot is removed
+  assert.equal(
+    fs.existsSync(path.resolve(process.cwd(), 'docs/gallery/capygame_breakout.png')),
+    false,
+    'Obsolete docs/gallery/capygame_breakout.png must be removed'
+  );
+
+  // 3. Safe-area cutout utilities exist in CSS and are wired into pinned HUD bars
+  for (const cls of [
+    '.hud-safe-top',
+    '.hud-safe-bottom',
+    '.hud-safe-bottom-left',
+    '.hud-safe-bottom-right',
+    '.hud-safe-flight-panel',
+    '.hud-safe-quickbar',
+  ]) {
+    assert.ok(cssSrc.includes(cls), `src/index.css must define ${cls}`);
+  }
+  assert.ok(viewSrc.includes('hud-safe-top'), 'CapyGameView top bar must apply hud-safe-top');
+  assert.ok(viewSrc.includes('hud-safe-bottom'), 'CapyGameView flight strip must apply hud-safe-bottom');
+  assert.ok(
+    telemetrySrc.includes('hud-safe-bottom'),
+    'TelemetryReadout surface actions must apply hud-safe-bottom'
+  );
+  assert.ok(
+    quickbarSrc.includes('hud-safe-quickbar'),
+    'CapytorioQuickbar must apply hud-safe-quickbar'
+  );
+
+  // 4. NativeBridge implements popstate history sentinel + Capacitor backButton hook
+  assert.ok(
+    nativeBridgeSrc.includes("window.addEventListener('popstate', this.handlePopState)"),
+    'NativeBridge must listen for popstate to dismiss open modals on Android hardware Back'
+  );
+  assert.ok(
+    nativeBridgeSrc.includes("addListener?.('backButton'"),
+    'NativeBridge must wire optional Capacitor backButton listener'
+  );
+
+  // 5. Manifest & TWA packaging templates are valid JSON and aligned to v1.3.0
+  const manifest = JSON.parse(
+    fs.readFileSync(path.resolve(process.cwd(), 'public/manifest.webmanifest'), 'utf8')
+  ) as { screenshots: Array<{ label: string }> };
+  assert.equal(
+    manifest.screenshots.some((s) => s.label.includes('Skydiving Rings')),
+    false,
+    'public/manifest.webmanifest must not contain stale Skydiving Rings label'
+  );
+
+  const assetLinks = JSON.parse(
+    fs.readFileSync(path.resolve(process.cwd(), 'public/.well-known/assetlinks.json'), 'utf8')
+  ) as Array<{ target?: { namespace?: string; package_name?: string; sha256_cert_fingerprints?: string[] } }>;
+  assert.equal(assetLinks[0]?.target?.namespace, 'android_app');
+  assert.equal(assetLinks[0]?.target?.package_name, 'com.capyboop.capygame');
+  assert.ok((assetLinks[0]?.target?.sha256_cert_fingerprints?.length ?? 0) >= 1);
+
+  const twa = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'twa-manifest.json'), 'utf8')) as {
+    packageId: string;
+    host: string;
+    appVersionName: string;
+    minSdkVersion: number;
+  };
+  assert.equal(twa.packageId, 'com.capyboop.capygame');
+  assert.equal(twa.host, 'capyboop.com');
+  assert.equal(twa.appVersionName, '1.3.0');
+  assert.ok(twa.minSdkVersion >= 24);
+});
+
+
 

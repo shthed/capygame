@@ -52,6 +52,10 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await canvasContainer.waitFor({ state: 'visible', timeout: 30000 });
   await page.waitForFunction(() => Boolean(window.__capyManager), { timeout: 30000 });
 
+  const revealTopBarBtn = page.getByTestId('reveal-top-bar-btn');
+  if (await revealTopBarBtn.isVisible().catch(() => false)) {
+    await revealTopBarBtn.click({ force: true });
+  }
   const unifiedTopBar = page.getByTestId('unified-top-bar');
   await unifiedTopBar.waitFor({ state: 'visible', timeout: 5000 });
   const initialUiMode = await unifiedTopBar.getAttribute('data-ui-mode');
@@ -204,6 +208,10 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   await page.getByTestId('close-scale-atlas-btn').click({ force: true });
 
   // Open Settings and verify Basic -> Advanced Mode toggle works cleanly
+  if (!(await page.getByTestId('open-settings-btn').isVisible())) {
+    await page.getByTestId('toggle-menu-btn').click({ force: true });
+    await page.getByTestId('open-settings-btn').waitFor({ state: 'visible', timeout: 5000 });
+  }
   await page.getByTestId('open-settings-btn').click({ force: true });
   await page.getByTestId('settings-mode-panel').waitFor({ state: 'visible', timeout: 4000 });
   await page.getByTestId('settings-mode-advanced-btn').click({ force: true });
@@ -217,6 +225,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   const advUrl = BASE_URL.includes('?') ? `${BASE_URL}&advanced=1` : `${BASE_URL}?advanced=1`;
   await page.goto(advUrl, { waitUntil: 'networkidle' });
   await canvasContainer.waitFor({ state: 'visible', timeout: 10000 });
+  if (await page.getByTestId('reveal-top-bar-btn').isVisible().catch(() => false)) {
+    await page.getByTestId('reveal-top-bar-btn').click({ force: true });
+  }
   await unifiedTopBar.waitFor({ state: 'visible', timeout: 5000 });
   const topBarBox = await unifiedTopBar.boundingBox();
   if (!topBarBox || topBarBox.y !== 0 || topBarBox.height > 44) {
@@ -268,6 +279,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   }
   await page.evaluate(() => {
     window.__capyManager?.setCosmicStage('singularity');
+  });
+  await page.waitForFunction(() => Boolean(window.__capyManager?.cosmicUniverse), {
+    timeout: 10000,
   });
   await page.waitForTimeout(80);
   const singularityStage = await cosmicHud.getAttribute('data-cosmic-stage');
@@ -1277,6 +1291,10 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
   console.log('✓ Chase Camera toggle verified');
 
   // 10. Verify Settings Page modal opens and configures camera, 60 FPS LOD, Day/Night & Weather
+  if (!(await page.getByTestId('open-settings-btn').isVisible())) {
+    await page.getByTestId('toggle-menu-btn').click({ force: true });
+    await page.getByTestId('open-settings-btn').waitFor({ state: 'visible', timeout: 5000 });
+  }
   await page.getByTestId('open-settings-btn').click({ force: true });
   const settingsModal = page.getByTestId('capygame-settings-modal');
   await settingsModal.waitFor({ state: 'visible', timeout: 5000 });
@@ -1753,8 +1771,9 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     const mgr = window.__capyManager;
     if (!mgr) return null;
 
-    // Return to planet surface gameplay in Sanctuary (0, 0)
+    // Return to planet surface gameplay in Sanctuary (0, 0) and ensure lazy Forest chunk is loaded
     mgr.resumeSurfacePlayFromForest(true);
+    await mgr.ensureForestReadyAsync('sanctuary');
     mgr.switchMode('sanctuary', true);
     mgr.settings.cameraFollowBehind = false;
     mgr.suspendedFootTestHeight = null;
@@ -2176,11 +2195,12 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     `✓ Hardware-Accelerated 3D GPU Engine verified: PMREM IBL + 3-Point Rim Light + Texel-Snapped Hero Shadow Cascade, ${gpuEngineCheck.registeredPbrTextures} PBR Normal/Roughness/AO Textures, Live Trilinear/Aniso/Nearest Filtering & HDR Post-Processing Filters (Cinema Filmic, Golden Hour, Retro CRT)!`
   );
 
-  // 14F. Verify Seamless Orbit-to-Surface Descent, Skydiving Rings, Docked Chrono-Vessel, Dash/Dive, Arcade Combo & Bounties HUD
-  const orbitDescentCheck = await page.evaluate(() => {
+  // 14F. Verify Seamless Orbit-to-Surface Descent, Docked Chrono-Vessel, Dash/Dive, Arcade Combo & Bounties HUD
+  const orbitDescentCheck = await page.evaluate(async () => {
     const mgr = window.__capyManager;
     if (!mgr) return null;
 
+    await mgr.ensureForestReadyAsync('sanctuary');
     mgr.launchIntoCosmos(4.65);
     mgr.tick(0.05);
     const startRingsHit = mgr.getUniverseScaleTelemetry().descentRingsHit;
@@ -2261,16 +2281,16 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000/';
     `✓ Seamless Orbit Descent, Outer Archipelago Orbital Reveal (skyAlpha=${orbitDescentCheck.skyAlphaApproach}), Docked Chrono-Vessel, Dash/Dive/Combo HUD (x${orbitDescentCheck.comboCount}) & Bounties Drawer verified!`
   );
 
-  // 14G. Verify Capytorio Interactive UI: Play Capytorio CTA beside Play on Island!, 10-slot Recent Quickbar, Factorio Crafting Tabs, Inventory Panel [I], 68° Oblique <-> 3D Chase Camera Toggle [V], Zoom +/-, Citrus Tree Orange Mining & Zero CapyCoins
+  // 14G. Verify Capytorio Interactive UI: Direct Forest & Capytorio flight-strip shortcuts, 10-slot Recent Quickbar, Factorio Crafting Tabs, Inventory Panel [I], 68° Oblique <-> 3D Chase Camera Toggle [V], Zoom +/-, Citrus Tree Orange Mining & Zero CapyCoins
   await page.evaluate(() => {
     const mgr = window.__capyManager;
     if (!mgr) return;
     mgr.launchIntoCosmos(2.2);
     mgr.tick(0.05);
   });
-  await page.getByTestId('chrono-land-pad-btn').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('chrono-land-capytorio-btn').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('chrono-land-capytorio-btn').click({ force: true });
+  await page.getByTestId('flight-strip-go-forest-btn').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('flight-strip-go-capytorio-btn').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('flight-strip-go-capytorio-btn').click({ force: true });
   await page.getByTestId('capytorio-toolbar').waitFor({ state: 'visible', timeout: 10000 });
 
   const coinsHiddenInCapytorio = await page.evaluate(

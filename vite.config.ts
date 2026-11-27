@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.2.10';
+      : '1.3.0';
   } catch {
-    return '1.2.10';
+    return '1.3.0';
   }
 })();
 
@@ -102,6 +102,12 @@ export default defineConfig(({ command }) => {
           }
           if (norm.includes('/node_modules/three/')) {
             return 'vendor-three';
+          }
+          if (
+            norm.includes('/src/capygame/engine/SeamlessUniverseSimulator.ts') ||
+            norm.includes('/src/capygame/engine/UniverseShaders.ts')
+          ) {
+            return 'feature-universe';
           }
           if (
             !norm.includes('/CapytorioStateGuard.ts') &&

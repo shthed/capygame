@@ -2,6 +2,13 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.3.0] - 2026-11-26
+
+- Split all 6 Forest Games 3D district builders (`buildSharedArchipelagoBase`, `buildSelectableCapyHeroCircle`, `buildSanctuary`, `buildSporeWorld`, `initRunnerPools`/`spawnRunnerTrackSegment`, and `initFallGuysArena`) out of `PlayStyleManager.ts` into an on-demand async `ForestDistrictBuilders.ts` chunk, lazy-loaded `ForestMicroDioramaBuilder.ts` only when zooming into micro scale, and isolated `SeamlessUniverseSimulator` + `UniverseShaders` into a dedicated `feature-universe` Vite chunk so `PlayStyleManager` stays well under Vite's 500 KB chunk budget.
+- Added Android hardware Back button dismissal via a lightweight `history.pushState`/`popstate` modal sentinel and optional Capacitor `backButton` listener in `NativeBridge.ts` so pressing Back closes open modals and drawers cleanly before exiting.
+- Applied display cutout and gesture-bar safe-area inset classes (`hud-safe-top`, `hud-safe-bottom`, `hud-safe-bottom-left`, `hud-safe-bottom-right`, `hud-safe-flight-panel`, `hud-safe-quickbar`) across `CapyGameView`, `TelemetryReadout`, and `CapytorioQuickbar`.
+- Added Google Play TWA packaging scaffolding (`public/.well-known/assetlinks.json`, `twa-manifest.json`, and `docs/ANDROID_PLAY_STORE.md`), updated `public/manifest.webmanifest` screenshot labels, refreshed all 4 store screenshots from the live `v1.3.0` build, removed obsolete `docs/gallery/capygame_breakout.png`, aligned `scripts/test-capygame.mjs` with `v1.3.0` async chunks and 3-mode shortcuts, and synchronized `TODO.md`, `GAME.md`, `TESTING.md`, and `README.md`.
+
 ## [1.2.10] - 2026-11-26
 
 - Trimmed 755 KB of 512px PWA install icons (`icon-512.png` and `icon-maskable-512.png`) from the Service Worker background precache list in `public/sw.js` while keeping `favicon.svg`, `icon-192.png`, and `apple-touch-icon.png` precached.

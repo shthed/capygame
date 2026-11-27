@@ -4182,7 +4182,7 @@ export const CapyGameView: React.FC = () => {
           Hidden by default for a clean viewport; revealed from top-right Menu.
          ===================================================================== */}
       {!isTopBarVisible && (
-          <div className="fixed top-2 right-2 z-30 flex items-center gap-1.5 pointer-events-auto">
+          <div className="fixed top-[calc(0.5rem+var(--sat))] right-[calc(0.5rem+var(--sar))] z-30 flex items-center gap-1.5 pointer-events-auto">
             <button
               type="button"
               data-testid="quick-help-btn"
@@ -4220,7 +4220,7 @@ export const CapyGameView: React.FC = () => {
         data-ui-mode={isAdvancedMode ? 'advanced' : 'basic'}
         data-active-game={activeGame}
         aria-label="CapyGame Mode Switcher and Controls"
-        className="fixed top-0 inset-x-0 z-30 h-10 bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
+        className="fixed top-0 inset-x-0 z-30 h-10 hud-safe-top bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
       >
         {/* LEFT CLUSTER: 3-Game Standalone Switcher + Mode-Specific Zoom Controls */}
         <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 shrink">
@@ -5148,7 +5148,7 @@ export const CapyGameView: React.FC = () => {
             <aside
               data-testid="bounties-hud-container"
               aria-label="Archipelago Bounties"
-              className={`fixed bottom-2.5 left-2.5 z-20 pointer-events-auto flex-col items-start gap-1.5 ${
+              className={`fixed bottom-2.5 left-2.5 hud-safe-bottom-left z-20 pointer-events-auto flex-col items-start gap-1.5 ${
                 activeMode === 'capytorio' ? 'hidden' : 'flex'
               }`}
             >
@@ -5440,7 +5440,7 @@ export const CapyGameView: React.FC = () => {
       {showTouchDpad && (
         <div
           data-testid="touch-dpad-controls"
-          className="fixed bottom-3 right-3 z-20 flex flex-col items-center gap-1 pointer-events-auto"
+          className="fixed bottom-3 right-3 hud-safe-bottom-right z-20 flex flex-col items-center gap-1 pointer-events-auto"
         >
           <button
             type="button"
@@ -5624,7 +5624,7 @@ export const CapyGameView: React.FC = () => {
             <aside
               data-testid="right-flight-speed-panel"
               aria-label="Flight Trajectory and Speed Controls"
-              className="fixed right-2 bottom-[62px] sm:bottom-2 z-30 pointer-events-auto flex flex-col items-end gap-1.5 select-none"
+              className="fixed right-2 bottom-[62px] sm:bottom-2 hud-safe-flight-panel z-30 pointer-events-auto flex flex-col items-end gap-1.5 select-none"
             >
               <button
                 type="button"
@@ -5745,7 +5745,7 @@ export const CapyGameView: React.FC = () => {
           return (
             <div
               data-testid="chrono-vessel-flight-strip"
-              className="fixed bottom-2 left-2 right-2 sm:right-auto sm:w-auto sm:max-w-[calc(100vw-152px)] xl:left-1/2 xl:-translate-x-1/2 xl:max-w-[min(760px,calc(100vw-304px))] z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2 sm:px-2.5 py-1.5 text-zinc-100"
+              className="fixed bottom-2 hud-safe-bottom left-2 right-2 sm:right-auto sm:w-auto sm:max-w-[calc(100vw-152px)] xl:left-1/2 xl:-translate-x-1/2 xl:max-w-[min(760px,calc(100vw-304px))] z-30 pointer-events-auto bg-zinc-950/95 border border-cyan-400/30 rounded-xl shadow-2xl px-2 sm:px-2.5 py-1.5 text-zinc-100"
             >
               <div className="flex items-center justify-between gap-2 min-w-0">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
