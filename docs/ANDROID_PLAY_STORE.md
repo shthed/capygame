@@ -24,10 +24,10 @@ Explore three hardware-accelerated 3D Capybara worlds in one lightweight, offlin
 
 Built for smooth 60 FPS mobile and desktop play with WebGL2 PBR graphics, touch and keyboard controls, full offline support, full-profile JSON save backups, optional zero-server cloud sync, and zero ads or tracking.
 
-### Release Notes (`v1.4.0`)
+### Release Notes (`v1.4.1`)
 
 - Full-profile v2 Save Export/Import in both Basic and Advanced Settings with drag-and-drop JSON support and side-by-side restore confirmation.
-- Live client-side Google Drive cloud save sync (`drive.file` minimal scope, in-memory token caching) and native Android Google Play Games Services v2 bridge support.
+- Direct client-side Google Drive cloud save sync via Google Identity Services (`VITE_GOOGLE_CLIENT_ID`, `drive.file` minimal scope, in-memory token caching, zero Firebase SDK or API keys) and native Android Google Play Games Services v2 bridge support.
 - Android home-screen shortcuts for Infinite Zoom, Forest Games, and Capytorio.
 - Restored lazy cold-boot loading of 3D and universe chunks and smooth Forest Micro-Glade crossfades.
 
@@ -49,14 +49,16 @@ Built for smooth 60 FPS mobile and desktop play with WebGL2 PBR graphics, touch 
 
 ## 3. Client-Side Google Sign-In & Cloud Sync Architecture
 
-CapyGame requires **zero custom game servers and zero Firestore databases**. Two optional client-side cloud sync paths are supported:
+CapyGame requires **zero custom game servers, zero Firebase SDK, and zero Google API keys**. Two optional client-side cloud sync paths are supported:
 
-### Option A: Live Google Drive Sync (Web + Android TWA)
+### Option A: Direct Google Drive Sync via Google Identity Services (Web + Android TWA)
 
-1. Google Sign-In and the `https://www.googleapis.com/auth/drive.file` scope are configured client-side via `firebase-applet-config.json` and lazy-loaded inside `src/capygame/services/FirebaseDriveAuth.ts` (zero cold-boot impact).
-2. CapyGame creates and updates only its own `CapyGame-Cloud-Save.json` file in the player's Google Drive via the Drive v3 REST API.
-3. OAuth access tokens are cached strictly in JavaScript memory (never written to `localStorage` or `sessionStorage`) and cleared automatically on sign-out or token expiration.
-4. **Authorized Domains & COOP Header Note**: Add your production domain (`capyboop.com`) to Firebase Auth Authorized Domains, and on Cloudflare Pages update `Cross-Origin-Opener-Policy` in `public/_headers` from `same-origin` to `same-origin-allow-popups` so the Google Sign-In popup can communicate cleanly with the opener window (CapyGame's Rapier3D physics worker automatically uses transferable `Float32Array` buffers when `SharedArrayBuffer` is unavailable).
+1. Open Google Cloud Console and create an **OAuth 2.0 Client ID** of type **Web application** (no client secret or Google API key is needed).
+2. Add your production origin (`https://capyboop.com`), GitHub Pages preview origin (if used), and local dev origin (`http://localhost:3000`) under **Authorized JavaScript origins**.
+3. Enable the **Google Drive API** on that Google Cloud project and configure the OAuth consent screen with the non-sensitive `https://www.googleapis.com/auth/drive.file` scope (plus `openid`, `profile`, `email`).
+4. Set `VITE_GOOGLE_CLIENT_ID=<your-public-web-client-id>` in `.env` locally and as the `VITE_GOOGLE_CLIENT_ID` GitHub Actions repository variable for CI deployments (see `.env.example`; never commit client secrets or private API keys).
+5. Google Identity Services (`https://accounts.google.com/gsi/client`) loads lazily only when the player clicks **Sign in with Google** (zero cold-boot impact). CapyGame creates and updates only its own `CapyGame-Cloud-Save.json` file via the Drive v3 REST API, keeps access tokens strictly in JavaScript memory (never in `localStorage` or `sessionStorage`), and revokes them on sign-out.
+6. **COOP Header Note**: If you enable Google Sign-In popups on Cloudflare Pages, update `Cross-Origin-Opener-Policy` in `public/_headers` from `same-origin` to `same-origin-allow-popups` so the Google Identity Services popup can communicate cleanly with the opener window (CapyGame's Rapier3D physics worker automatically uses transferable `Float32Array` buffers when `SharedArrayBuffer` is unavailable).
 
 ### Option B: Native Google Play Games Services v2 (Android Wrapper / Capacitor)
 
@@ -80,8 +82,8 @@ CapyGame runs 100% client-side with zero developer backend servers, analytics SD
 
 | Build Configuration | Play Console Data Safety Declaration |
 | :--- | :--- |
-| **Offline-Only Play (Player Never Signs In)** | All progression, settings, and factory saves stay strictly on-device in browser `localStorage` and Cache Storage. |
-| **With Optional Google Drive / Play Games Sync** | Declare **Account info (User ID / Email)** and **App activity (In-game save files)** as **Optional** (`Collected` only when the player explicitly signs in, **Not shared** with third parties, **Encrypted in transit** via HTTPS, **User can request/perform deletion** directly inside Settings or Google Drive). |
+| **Offline-Only Build (`VITE_GOOGLE_CLIENT_ID` unset)** | **No user data collected or shared.** All progression, settings, and factory saves stay strictly on-device in browser `localStorage` and Cache Storage. |
+| **With Optional Google Drive (`VITE_GOOGLE_CLIENT_ID` set) / Play Games Sync** | Declare **Account info (User ID / Email)** and **App activity (In-game save files)** as **Optional** (`Collected` only when the player explicitly signs in, **Not shared** with third parties, **Encrypted in transit** via HTTPS, **User can request/perform deletion** directly inside Settings or Google Drive). |
 
 - **Privacy Policy URL**: `https://capyboop.com/privacy.html` (kept synchronized with `public/privacy.html`).
 - **IARC Content Rating**: Expected **Everyone / PEGI 3** (no violence, no user-generated chat, no purchases, no location sharing).

@@ -173,6 +173,8 @@ jobs:
 
       - name: Build, lint & unit-test CapyGame
         if: steps.target.outputs.skip != 'true'
+        env:
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
         run: |
           npm ci --prefer-offline --no-audit --no-fund
           npm run lint

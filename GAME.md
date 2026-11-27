@@ -55,8 +55,7 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/capygame/services/AudioService.ts` | Procedural Web Audio synthesizer with master `DynamicsCompressorNode`, damped stereo delay reverb bus, surface-aware paw foley, and clean context disposal. |
 | `src/capygame/services/ProgressionService.ts` | Persistent `PlayerStats` (`capy_game_save_v3`, `capy_game_save_updated_ms`), validated DNA/CapyCoin economy & Prestige Ascension, full-profile `capygame-save-bundle-v2` export/import (backward-compatible with v1/raw JSON), and `CapyGameSettings` (`capy_game_settings_v1`). |
 | `src/capygame/services/SaveSyncMath.ts` | Pure snapshot summarization (`buildSaveSnapshotSummary`), local-vs-remote conflict comparison (`compareSaveSnapshots`), and timestamp/ghost-time formatting helpers. |
-| `src/capygame/services/CloudSyncService.ts` | Unified cloud sync adapter combining direct browser Google Drive v3 REST helpers (`CapyGame-Cloud-Save.json`, `drive.file` scope) with native Android Google Play Games Services v2 snapshot hooks. |
-| `src/capygame/services/FirebaseDriveAuth.ts` | Lazy-loaded client-side Firebase Authentication popup wrapper (`vendor-firebase` chunk) requesting `drive.file` with strict in-memory OAuth access token caching and `onAuthStateChanged` cleanup. |
+| `src/capygame/services/CloudSyncService.ts` | Unified cloud sync adapter combining lazy-loaded Google Identity Services (GIS) OAuth (`VITE_GOOGLE_CLIENT_ID`, strict in-memory token caching, `drive.file` scope) + direct browser Google Drive v3 REST helpers (`CapyGame-Cloud-Save.json`) with native Android Google Play Games Services v2 snapshot hooks. |
 
 ---
 

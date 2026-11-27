@@ -1,4 +1,3 @@
-import firebaseConfig from '../../../firebase-applet-config.json';
 import {
   NativeBridge,
   type PlayGamesNativePlugin,
@@ -38,11 +37,45 @@ export interface GoogleDriveFileEntry {
 
 export const DRIVE_SAVE_FILE_NAME = 'CapyGame-Cloud-Save.json';
 export const PLAY_GAMES_SNAPSHOT_SLOT = 'capygame_cloud_save_v2';
-export const SCOPES = ['https://www.googleapis.com/auth/drive.file'] as const;
+export const SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'openid',
+  'profile',
+  'email',
+] as const;
 
+const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client';
+const GIS_SCOPE_STRING = SCOPES.join(' ');
 const DRIVE_FILES_API = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3/files';
 const GOOGLE_USERINFO_API = 'https://www.googleapis.com/oauth2/v3/userinfo';
+
+interface GisTokenResponse {
+  access_token?: string;
+  expires_in?: number;
+  error?: string;
+  error_description?: string;
+}
+
+interface GisTokenClient {
+  requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
+}
+
+interface GoogleGisWindow extends Window {
+  google?: {
+    accounts?: {
+      oauth2?: {
+        initTokenClient: (config: {
+          client_id: string;
+          scope: string;
+          callback: (response: GisTokenResponse) => void;
+          error_callback?: (error: { type?: string; message?: string }) => void;
+        }) => GisTokenClient;
+        revoke?: (token: string, done?: () => void) => void;
+      };
+    };
+  };
+}
 
 export class CloudAuthExpiredError extends Error {
   constructor(message: string = 'Your Google sign-in session expired. Please sign in again.') {
@@ -64,9 +97,21 @@ export function sanitizeHttpsAvatarUrl(raw: unknown): string | undefined {
   return undefined;
 }
 
-export function isGoogleDriveSyncConfigured(): boolean {
-  const cfg = firebaseConfig as { apiKey?: string; authDomain?: string; projectId?: string } | null;
-  return Boolean(cfg?.apiKey && cfg?.authDomain && cfg?.projectId);
+export function getConfiguredGoogleClientId(overrideClientId?: string): string {
+  if (typeof overrideClientId === 'string') {
+    return overrideClientId.trim();
+  }
+  try {
+    const raw = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+      ?.VITE_GOOGLE_CLIENT_ID;
+    return typeof raw === 'string' ? raw.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+export function isGoogleDriveSyncConfigured(overrideClientId?: string): boolean {
+  return getConfiguredGoogleClientId(overrideClientId).length > 0;
 }
 
 export function getActivePlayGamesBridge(): PlayGamesNativePlugin | null {
@@ -285,18 +330,73 @@ export async function fetchGoogleUserProfile(
   };
 }
 
-// Strict in-memory account state (access token lives strictly in FirebaseDriveAuth memory)
+// Strict in-memory token cache (NEVER persisted to localStorage or sessionStorage)
+let inMemoryGoogleToken: { accessToken: string; expiresAtMs: number } | null = null;
 let inMemoryGoogleProfile: CloudAccountProfile | null = null;
 let inMemoryPlayGamesProfile: CloudAccountProfile | null = null;
+let gisScriptPromise: Promise<void> | null = null;
 
-async function loadFirebaseDriveAuth() {
-  return import('./FirebaseDriveAuth');
+function loadGoogleIdentityServicesScript(): Promise<void> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return Promise.reject(new Error('Google Sign-In requires a browser environment.'));
+  }
+  const gWin = window as GoogleGisWindow;
+  if (gWin.google?.accounts?.oauth2?.initTokenClient) {
+    return Promise.resolve();
+  }
+  if (gisScriptPromise) return gisScriptPromise;
+
+  gisScriptPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${GIS_SCRIPT_URL}"]`);
+    if (existing) {
+      if (gWin.google?.accounts?.oauth2?.initTokenClient) {
+        resolve();
+        return;
+      }
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener(
+        'error',
+        () => {
+          gisScriptPromise = null;
+          reject(new Error('Could not load Google Sign-In script. Check your internet connection.'));
+        },
+        { once: true }
+      );
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = GIS_SCRIPT_URL;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => {
+      gisScriptPromise = null;
+      reject(new Error('Could not load Google Sign-In script. Check your internet connection.'));
+    };
+    document.head.appendChild(script);
+  });
+
+  return gisScriptPromise;
+}
+
+function getValidGoogleAccessToken(): string | null {
+  if (!inMemoryGoogleToken) return null;
+  // Treat token as expired 30 seconds before hard expiry
+  if (Date.now() >= inMemoryGoogleToken.expiresAtMs - 30_000) {
+    inMemoryGoogleToken = null;
+    inMemoryGoogleProfile = null;
+    return null;
+  }
+  return inMemoryGoogleToken.accessToken;
 }
 
 export class CloudSyncService {
   public static getActiveAccount(): CloudAccountProfile | null {
     if (inMemoryPlayGamesProfile) return inMemoryPlayGamesProfile;
-    if (inMemoryGoogleProfile) return inMemoryGoogleProfile;
+    if (inMemoryGoogleProfile && getValidGoogleAccessToken()) {
+      return inMemoryGoogleProfile;
+    }
     return null;
   }
 
@@ -304,29 +404,12 @@ export class CloudSyncService {
     onAuthenticated: (profile: CloudAccountProfile) => void,
     onSignedOut: () => void
   ): Promise<() => void> {
-    if (!isGoogleDriveSyncConfigured() || typeof window === 'undefined') {
-      return () => undefined;
+    if (inMemoryGoogleProfile && getValidGoogleAccessToken()) {
+      onAuthenticated(inMemoryGoogleProfile);
+    } else if (!inMemoryPlayGamesProfile) {
+      onSignedOut();
     }
-    const mod = await loadFirebaseDriveAuth();
-    return mod.initFirebaseDriveAuth(
-      (fbProfile) => {
-        const mapped: CloudAccountProfile = {
-          provider: 'google_drive',
-          id: fbProfile.id,
-          displayName: fbProfile.displayName,
-          email: fbProfile.email,
-          avatarUrl: fbProfile.avatarUrl,
-        };
-        inMemoryGoogleProfile = mapped;
-        onAuthenticated(mapped);
-      },
-      () => {
-        inMemoryGoogleProfile = null;
-        if (!inMemoryPlayGamesProfile) {
-          onSignedOut();
-        }
-      }
-    );
+    return () => undefined;
   }
 
   public static async detectExistingPlayGamesSession(): Promise<CloudAccountProfile | null> {
@@ -367,22 +450,71 @@ export class CloudSyncService {
     return inMemoryPlayGamesProfile;
   }
 
-  public static async signInWithGoogleDrive(): Promise<CloudAccountProfile> {
-    if (!isGoogleDriveSyncConfigured()) {
-      throw new Error('Google Drive sign-in is not configured for this build.');
+  public static async signInWithGoogleDrive(
+    prompt: 'consent' | 'select_account' | '' = 'select_account',
+    overrideClientId?: string
+  ): Promise<CloudAccountProfile> {
+    const clientId = getConfiguredGoogleClientId(overrideClientId);
+    if (!clientId) {
+      throw new Error(
+        'Google Sign-In is not configured for this build (VITE_GOOGLE_CLIENT_ID is empty).'
+      );
     }
-    const mod = await loadFirebaseDriveAuth();
-    const { profile } = await mod.signInWithFirebaseGoogleDrive();
-    const mapped: CloudAccountProfile = {
-      provider: 'google_drive',
-      id: profile.id,
-      displayName: profile.displayName,
-      email: profile.email,
-      avatarUrl: profile.avatarUrl,
+
+    await loadGoogleIdentityServicesScript();
+    const gWin = window as GoogleGisWindow;
+    const oauth2 = gWin.google?.accounts?.oauth2;
+    if (!oauth2?.initTokenClient) {
+      throw new Error('Google Identity Services failed to initialize.');
+    }
+
+    const tokenResp = await new Promise<GisTokenResponse>((resolve, reject) => {
+      const client = oauth2.initTokenClient({
+        client_id: clientId,
+        scope: GIS_SCOPE_STRING,
+        callback: (resp) => {
+          if (resp.error || !resp.access_token) {
+            reject(
+              new Error(
+                resp.error_description || resp.error || 'Google Sign-In did not grant access.'
+              )
+            );
+            return;
+          }
+          resolve(resp);
+        },
+        error_callback: (err) => {
+          reject(
+            new Error(
+              err.type === 'popup_closed'
+                ? 'Google Sign-In popup was closed before completing.'
+                : err.message || 'Google Sign-In popup was blocked or cancelled.'
+            )
+          );
+        },
+      });
+      client.requestAccessToken({ prompt });
+    });
+
+    const expiresInSec =
+      typeof tokenResp.expires_in === 'number' && Number.isFinite(tokenResp.expires_in)
+        ? tokenResp.expires_in
+        : 3600;
+    inMemoryGoogleToken = {
+      accessToken: tokenResp.access_token!,
+      expiresAtMs: Date.now() + expiresInSec * 1000,
     };
-    inMemoryGoogleProfile = mapped;
-    NativeBridge.haptic('success');
-    return mapped;
+
+    try {
+      const profile = await fetchGoogleUserProfile(inMemoryGoogleToken.accessToken);
+      inMemoryGoogleProfile = profile;
+      NativeBridge.haptic('success');
+      return profile;
+    } catch (err) {
+      inMemoryGoogleToken = null;
+      inMemoryGoogleProfile = null;
+      throw err;
+    }
   }
 
   public static async signOut(provider: CloudSyncProviderId): Promise<void> {
@@ -399,9 +531,17 @@ export class CloudSyncService {
       return;
     }
 
+    const token = inMemoryGoogleToken?.accessToken;
+    inMemoryGoogleToken = null;
     inMemoryGoogleProfile = null;
-    const mod = await loadFirebaseDriveAuth();
-    await mod.signOutFirebaseDrive();
+    if (token && typeof window !== 'undefined') {
+      const gWin = window as GoogleGisWindow;
+      try {
+        gWin.google?.accounts?.oauth2?.revoke?.(token);
+      } catch {
+        // Ignore revoke errors
+      }
+    }
   }
 
   public static async checkCloudMetadata(
@@ -412,8 +552,7 @@ export class CloudSyncService {
       return remote?.metadata ?? null;
     }
 
-    const mod = await loadFirebaseDriveAuth();
-    const token = mod.getCachedFirebaseAccessToken();
+    const token = getValidGoogleAccessToken();
     if (!token) {
       inMemoryGoogleProfile = null;
       throw new CloudAuthExpiredError();
@@ -422,7 +561,7 @@ export class CloudSyncService {
       return await findDriveSaveFile(token);
     } catch (err) {
       if (err instanceof CloudAuthExpiredError) {
-        mod.clearCachedFirebaseAccessToken();
+        inMemoryGoogleToken = null;
         inMemoryGoogleProfile = null;
       }
       throw err;
@@ -454,8 +593,7 @@ export class CloudSyncService {
       };
     }
 
-    const mod = await loadFirebaseDriveAuth();
-    const token = mod.getCachedFirebaseAccessToken();
+    const token = getValidGoogleAccessToken();
     if (!token) {
       inMemoryGoogleProfile = null;
       throw new CloudAuthExpiredError();
@@ -466,7 +604,7 @@ export class CloudSyncService {
       return await downloadDriveSaveFile(token, meta);
     } catch (err) {
       if (err instanceof CloudAuthExpiredError) {
-        mod.clearCachedFirebaseAccessToken();
+        inMemoryGoogleToken = null;
         inMemoryGoogleProfile = null;
       }
       throw err;
@@ -497,8 +635,7 @@ export class CloudSyncService {
       };
     }
 
-    const mod = await loadFirebaseDriveAuth();
-    const token = mod.getCachedFirebaseAccessToken();
+    const token = getValidGoogleAccessToken();
     if (!token) {
       inMemoryGoogleProfile = null;
       throw new CloudAuthExpiredError();
@@ -512,7 +649,7 @@ export class CloudSyncService {
       return await uploadDriveSaveFile(token, jsonContent, targetFileId);
     } catch (err) {
       if (err instanceof CloudAuthExpiredError) {
-        mod.clearCachedFirebaseAccessToken();
+        inMemoryGoogleToken = null;
         inMemoryGoogleProfile = null;
       }
       throw err;
@@ -532,8 +669,7 @@ export class CloudSyncService {
       return;
     }
 
-    const mod = await loadFirebaseDriveAuth();
-    const token = mod.getCachedFirebaseAccessToken();
+    const token = getValidGoogleAccessToken();
     if (!token) {
       inMemoryGoogleProfile = null;
       throw new CloudAuthExpiredError();
@@ -542,7 +678,7 @@ export class CloudSyncService {
       await deleteDriveSaveFile(token, fileId);
     } catch (err) {
       if (err instanceof CloudAuthExpiredError) {
-        mod.clearCachedFirebaseAccessToken();
+        inMemoryGoogleToken = null;
         inMemoryGoogleProfile = null;
       }
       throw err;

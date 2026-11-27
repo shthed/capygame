@@ -21,6 +21,7 @@ import {
   downloadDriveSaveFile,
   fetchGoogleUserProfile,
   findDriveSaveFile,
+  getConfiguredGoogleClientId,
   isGoogleDriveSyncConfigured,
   isPlayGamesBridgeAvailable,
   sanitizeHttpsAvatarUrl,
@@ -132,8 +133,21 @@ test('SaveSyncMath: compares local and remote snapshots accurately by timestamp 
 });
 
 test('CloudSyncService: Google Drive v3 REST helpers handle find, download, upload (POST/PATCH), delete, and 401 expiry', async () => {
-  assert.equal(isGoogleDriveSyncConfigured(), true);
-  assert.deepEqual([...SCOPES], ['https://www.googleapis.com/auth/drive.file']);
+  assert.equal(getConfiguredGoogleClientId(''), '');
+  assert.equal(getConfiguredGoogleClientId('   '), '');
+  assert.equal(
+    getConfiguredGoogleClientId(' 12345-abc.apps.googleusercontent.com '),
+    '12345-abc.apps.googleusercontent.com'
+  );
+  assert.equal(isGoogleDriveSyncConfigured(''), false);
+  assert.equal(isGoogleDriveSyncConfigured('   '), false);
+  assert.equal(isGoogleDriveSyncConfigured('12345-abc.apps.googleusercontent.com'), true);
+  assert.deepEqual([...SCOPES], [
+    'https://www.googleapis.com/auth/drive.file',
+    'openid',
+    'profile',
+    'email',
+  ]);
   assert.equal(sanitizeHttpsAvatarUrl('https://lh3.googleusercontent.com/avatar.png'), 'https://lh3.googleusercontent.com/avatar.png');
   assert.equal(sanitizeHttpsAvatarUrl('javascript:alert(1)'), undefined);
   assert.equal(sanitizeHttpsAvatarUrl('http://insecure.example/a.png'), undefined);

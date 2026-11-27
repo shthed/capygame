@@ -1,6 +1,6 @@
 # CapyGame -- Active Roadmap & Production TODO
 
-This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.4.0`).
+This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.4.1`).
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.
@@ -29,9 +29,9 @@ For subsystem references, see:
   - Run `bubblewrap update --manifest=twa-manifest.json && bubblewrap build` with Android `compileSdk`/`targetSdk` API `35+` and `minSdk` `24`.
 - **Publish Live Google Play App Signing SHA-256 Fingerprint**:
   - Enroll `com.capyboop.capygame` in Google Play App Signing, replace `REPLACE_WITH_PLAY_APP_SIGNING_SHA256_FINGERPRINT` in `public/.well-known/assetlinks.json`, and verify `https://capyboop.com/.well-known/assetlinks.json` returns HTTP 200 `application/json` with zero redirects.
-- **Configure Production Google Sign-In Domain & Popup Headers**:
-  - Add `capyboop.com` to Firebase Authentication Authorized Domains in the linked Google Cloud project so Google Drive sign-in popups succeed on the production origin.
-  - Validate `Cross-Origin-Opener-Policy` in `public/_headers` on Cloudflare Pages: if `same-origin` blocks Google Sign-In popup callbacks on production, switch to `same-origin-allow-popups` (CapyGame's Rapier3D physics worker falls back cleanly to zero-allocation transferable `Float32Array` buffers) and update the corresponding header assertion in `ProgressionAndPhysics.test.ts`.
+- **Configure Production Google Sign-In Client ID, Origins & Popup Headers**:
+  - Create a public Web Application OAuth 2.0 Client ID in Google Cloud Console with `https://capyboop.com` (and `http://localhost:3000` for dev) under **Authorized JavaScript origins**, enable the Google Drive API (`drive.file` scope), and set the `VITE_GOOGLE_CLIENT_ID` repository variable in GitHub Actions so Google Drive sign-in activates in production builds.
+  - Validate `Cross-Origin-Opener-Policy` in `public/_headers` on Cloudflare Pages: if `same-origin` blocks Google Identity Services popup callbacks on production, switch to `same-origin-allow-popups` (CapyGame's Rapier3D physics worker falls back cleanly to zero-allocation transferable `Float32Array` buffers) and update the corresponding header assertion in `ProgressionAndPhysics.test.ts`.
 - **Validate WebAssembly, Worker & Offline Caching in Android TWA**:
   - Confirm `@dimforge/rapier3d-compat` physics worker and `public/sw.js` offline fallback serve `./index.html`, `./privacy.html`, and hashed JS/Wasm chunks cleanly in standalone Android Chrome Custom Tabs (TWA) mode.
 

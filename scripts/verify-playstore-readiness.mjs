@@ -118,6 +118,10 @@ if (fs.existsSync(distIndexPath)) {
     'Cold-boot regression: dist/index.html eagerly preloads vendor-firebase'
   );
   assertCond(
+    !html.includes('accounts.google.com/gsi/client'),
+    'Cold-boot regression: dist/index.html eagerly loads Google Identity Services script'
+  );
+  assertCond(
     fs.existsSync(path.join(ROOT, 'dist/.well-known/assetlinks.json')),
     'Missing dist/.well-known/assetlinks.json in production build output'
   );

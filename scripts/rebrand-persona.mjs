@@ -23,6 +23,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 export const DEV_ONLY_RELATIVE_PATHS = new Set([
   'AGENTS.md',
   'metadata.json',
+  'firebase-applet-config.json',
   'favicon.ico',
   'public/assets/aistudio',
   'src/assets/images/capygame_feature_graphic_1794867675350.jpg',

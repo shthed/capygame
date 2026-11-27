@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.4.0';
+      : '1.4.1';
   } catch {
-    return '1.4.0';
+    return '1.4.1';
   }
 })();
 
@@ -115,12 +115,6 @@ export default defineConfig(({ command }) => {
             return 'vendor-three';
           }
           if (
-            norm.includes('/node_modules/firebase/') ||
-            norm.includes('/node_modules/@firebase/')
-          ) {
-            return 'vendor-firebase';
-          }
-          if (
             norm.includes('/src/capygame/engine/SeamlessUniverseSimulator.ts') ||
             norm.includes('/src/capygame/engine/UniverseShaders.ts')
           ) {
@@ -170,8 +164,6 @@ export default defineConfig(({ command }) => {
       'three/examples/jsm/postprocessing/UnrealBloomPass.js',
       'three/examples/jsm/shaders/CopyShader.js',
       'three/examples/jsm/shaders/FXAAShader.js',
-      'firebase/app',
-      'firebase/auth',
     ],
   },
   server: {

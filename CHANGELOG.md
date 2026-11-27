@@ -2,6 +2,12 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.4.1] - 2026-11-27
+
+- Removed the Firebase SDK dependency and client config file, switching Google Drive cloud save sync in `CloudSyncService.ts` to direct, lazy-loaded Google Identity Services (GIS) OAuth configured via the public `VITE_GOOGLE_CLIENT_ID` environment variable (zero Firebase SDK, zero Google API keys, strict in-memory OAuth token caching with revoke on sign-out, and graceful offline fallback when unset).
+- Removed the unused `vendor-firebase` Vite chunk and `optimizeDeps` entries, added a cold-boot guard in `scripts/verify-playstore-readiness.mjs` ensuring `dist/index.html` never eagerly loads `accounts.google.com/gsi/client`, and wired `VITE_GOOGLE_CLIENT_ID` from GitHub Actions repository variables into `deploy-branch.yml` and `deploy-cloudflare.yml`.
+- Added `.gitignore` and release-export exclusion guards for local OAuth/config files, updated unit tests in `SaveAndCloudSync.test.ts` to verify configured vs. empty client ID handling, and updated `docs/ANDROID_PLAY_STORE.md`, `TODO.md`, `GAME.md`, `TESTING.md`, and `README.md`.
+
 ## [1.4.0] - 2026-11-26
 
 - Restored lazy cold-boot loading of `vendor-three` and `feature-universe` by isolating pure shared non-Three modules (`types.ts`, `UniverseScaleMath.ts`, `GameplayFunMath.ts`, `forestMicroSpecimens.ts`, `ProceduralGameConfig.ts`, `appVersion.ts`, and `CapytorioStateGuard.ts`) into a lightweight `capy-shared-core` Vite chunk so `dist/index.html` never eagerly preloads 3D or factory chunks.

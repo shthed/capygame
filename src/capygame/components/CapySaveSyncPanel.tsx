@@ -702,8 +702,10 @@ export const CapySaveSyncPanel: React.FC<CapySaveSyncPanelProps> = ({
                 className="text-[10px] text-zinc-400 bg-zinc-900/75 border border-white/8 rounded-lg px-2.5 py-2 leading-relaxed"
               >
                 <span className="text-zinc-200 font-medium">Offline-first mode:</span>{' '}
-                Use Export/Import JSON above anytime. Google Play Games activates automatically inside
-                the native Android Play Store build.
+                Use Export/Import JSON above anytime. Direct Google Drive sign-in activates when a
+                public <code className="text-sky-300">VITE_GOOGLE_CLIENT_ID</code> is configured,
+                and Google Play Games activates automatically inside the native Android Play Store
+                build.
               </div>
             ) : (
               <p className="text-[10px] text-zinc-400">
