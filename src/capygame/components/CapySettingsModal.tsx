@@ -1,7 +1,6 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import {
   Code2,
-  Copy,
   Download,
   HelpCircle,
   Moon,
@@ -9,7 +8,6 @@ import {
   Settings as SettingsIcon,
   Shield,
   Sun,
-  Upload,
   X,
 } from 'lucide-react';
 import {
@@ -25,14 +23,17 @@ import {
   GpuToneMappingMode,
   GpuVisualFilterPreset,
   PerformanceLogSnapshot,
+  PlayerStats,
   WeatherType,
 } from '../types';
 import { getPresetPatchForGpuQuality } from '../engine/gpu/GpuEngineTypes';
 import type { ProceduralGameConfig } from '../config/ProceduralGameConfig';
 import { AudioService } from '../services/AudioService';
 import { PwaService } from '../../services/PwaService';
+import { CapySaveSyncPanel } from './CapySaveSyncPanel';
 
 export interface CapySettingsModalProps {
+  stats: PlayerStats;
   isAdvancedMode: boolean;
   gameSettings: CapyGameSettings;
   isMuted: boolean;
@@ -64,13 +65,13 @@ export interface CapySettingsModalProps {
   onResetProgress: () => void;
   onExportSaveBundleFile: () => void;
   onCopySaveBundleJson: () => void;
-  onImportSaveFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onToggleSaveJsonPasteOpen: () => void;
   onChangeSaveJsonDraft: (val: string) => void;
-  onApplyImportedSaveBundle: (raw: string) => void;
+  onApplyImportedSaveBundle: (raw: string) => boolean;
 }
 
 export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
+  stats,
   isAdvancedMode,
   gameSettings,
   isMuted,
@@ -98,12 +99,25 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
   onResetProgress,
   onExportSaveBundleFile,
   onCopySaveBundleJson,
-  onImportSaveFileChange,
   onToggleSaveJsonPasteOpen,
   onChangeSaveJsonDraft,
   onApplyImportedSaveBundle,
 }) => {
-  const saveImportFileInputRef = useRef<HTMLInputElement | null>(null);
+  const saveSyncPanel = (
+    <CapySaveSyncPanel
+      stats={stats}
+      gameSettings={gameSettings}
+      proceduralConfig={proceduralConfig}
+      isSaveJsonPasteOpen={isSaveJsonPasteOpen}
+      saveJsonDraft={saveJsonDraft}
+      savePortabilityFeedback={savePortabilityFeedback}
+      onExportSaveBundleFile={onExportSaveBundleFile}
+      onCopySaveBundleJson={onCopySaveBundleJson}
+      onToggleSaveJsonPasteOpen={onToggleSaveJsonPasteOpen}
+      onChangeSaveJsonDraft={onChangeSaveJsonDraft}
+      onApplyImportedSaveBundle={onApplyImportedSaveBundle}
+    />
+  );
 
   return (
     <div
@@ -404,6 +418,8 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                   ))}
                 </div>
               </div>
+
+              {saveSyncPanel}
 
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
                 <div className="flex items-center gap-1.5">
@@ -1597,105 +1613,8 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* Cloud Save & Settings Portability (capy_game_save_v3 + capy_game_settings_v1) */}
-              <div
-                data-testid="settings-save-portability-panel"
-                className="p-3 rounded-lg bg-zinc-950/90 border border-emerald-400/20 space-y-2.5"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <div className="text-xs font-semibold text-zinc-100">
-                      Save &amp; Settings Portability (JSON)
-                    </div>
-                    <div className="text-[10px] font-mono text-zinc-400 mt-0.5">
-                      Backup or transfer capy_game_save_v3, settings &amp; Yuzu ghost PB
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      data-testid="settings-export-save-btn"
-                      onClick={onExportSaveBundleFile}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-400/35 cursor-pointer"
-                    >
-                      <Download className="w-3 h-3" />
-                      <span>Export JSON</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="settings-copy-save-btn"
-                      onClick={onCopySaveBundleJson}
-                      className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/15 cursor-pointer"
-                    >
-                      <Copy className="w-3 h-3" />
-                      <span>Copy</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="settings-import-save-btn"
-                      onClick={() => saveImportFileInputRef.current?.click()}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-mono bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-400/35 cursor-pointer"
-                    >
-                      <Upload className="w-3 h-3" />
-                      <span>Import File</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="settings-toggle-paste-save-btn"
-                      onClick={onToggleSaveJsonPasteOpen}
-                      className="px-2 py-1 rounded text-[11px] font-mono bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/15 cursor-pointer"
-                    >
-                      {isSaveJsonPasteOpen ? 'Hide JSON' : 'Paste JSON'}
-                    </button>
-                  </div>
-                </div>
-
-                <input
-                  ref={saveImportFileInputRef}
-                  type="file"
-                  accept=".json,application/json"
-                  data-testid="settings-import-save-input"
-                  onChange={onImportSaveFileChange}
-                  className="hidden"
-                />
-
-                {isSaveJsonPasteOpen && (
-                  <div className="space-y-2 pt-1 border-t border-white/10">
-                    <textarea
-                      data-testid="settings-import-json-textarea"
-                      value={saveJsonDraft}
-                      onChange={(e) => onChangeSaveJsonDraft(e.target.value)}
-                      placeholder="Paste capygame-save-bundle-v1 JSON here..."
-                      rows={5}
-                      className="w-full rounded-lg bg-zinc-900 border border-white/15 p-2 text-[11px] font-mono text-zinc-100 focus:outline-none focus:border-sky-400/60"
-                    />
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        data-testid="settings-apply-import-json-btn"
-                        disabled={!saveJsonDraft.trim()}
-                        onClick={() => onApplyImportedSaveBundle(saveJsonDraft)}
-                        className="px-3 py-1 rounded text-[11px] font-mono bg-sky-500/20 hover:bg-sky-500/30 disabled:opacity-40 text-sky-200 border border-sky-400/40 cursor-pointer"
-                      >
-                        Apply Backup JSON
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {savePortabilityFeedback && (
-                  <div
-                    data-testid="settings-save-status"
-                    className={`text-[11px] font-mono px-2.5 py-1.5 rounded border ${
-                      savePortabilityFeedback.tone === 'ok'
-                        ? 'bg-emerald-500/10 text-emerald-300 border-emerald-400/30'
-                        : 'bg-rose-500/10 text-rose-300 border-rose-400/30'
-                    }`}
-                  >
-                    {savePortabilityFeedback.message}
-                  </div>
-                )}
-              </div>
+              {/* Save Backup & Zero-Server Cloud Sync (Local JSON v2 + Google Drive / Play Games) */}
+              {saveSyncPanel}
 
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
                 <div className="flex items-center gap-1.5">

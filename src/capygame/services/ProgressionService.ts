@@ -35,10 +35,24 @@ import {
 } from '../engine/GameplayFunMath';
 
 import { sanitizeCapytorioStateShallow } from '../engine/capytorio/CapytorioStateGuard';
+import { CAPYGAME_VERSION } from '../config/appVersion';
+import {
+  type ProceduralGameConfig,
+  hasCompletedFirstRunSetup,
+  loadSavedProceduralConfig,
+  markFirstRunSetupComplete,
+  parseAndValidateProceduralConfig,
+  saveProceduralConfig,
+} from '../config/ProceduralGameConfig';
+import {
+  type SaveSnapshotSummary,
+  buildSaveSnapshotSummary,
+} from './SaveSyncMath';
 
 const SAVE_KEY = 'capy_game_save_v3';
 const LEGACY_SAVE_KEY_V2 = 'capy_game_save_v2';
 const SETTINGS_KEY = 'capy_game_settings_v1';
+const SAVE_UPDATED_AT_KEY = 'capy_game_save_updated_ms';
 
 const VALID_PLAY_STYLES: ReadonlySet<PlayStyle> = new Set([
   'sanctuary',
@@ -62,21 +76,31 @@ const VALID_MUTATION_IDS: ReadonlySet<MutationId> = new Set(
 );
 
 export interface CapySaveBundle {
-  schema: 'capygame-save-bundle-v1';
+  schema: 'capygame-save-bundle-v2' | 'capygame-save-bundle-v1';
+  appVersion?: string;
   exportedAtIso: string;
+  updatedAtMs?: number;
   saveKey: typeof SAVE_KEY;
   settingsKey: typeof SETTINGS_KEY;
   stats: PlayerStats;
   settings: CapyGameSettings;
+  proceduralConfig?: ProceduralGameConfig;
   yuzuGhostRun?: QuantizedGhostRun | null;
+  firstRunSetupComplete?: boolean;
 }
 
 export type SaveBundleImportResult =
   | {
       ok: true;
+      schema: 'capygame-save-bundle-v2' | 'capygame-save-bundle-v1' | 'legacy-raw';
+      exportedAtIso: string;
+      updatedAtMs: number;
       stats: PlayerStats;
       settings: CapyGameSettings;
+      proceduralConfig: ProceduralGameConfig | null;
       yuzuGhostRun: QuantizedGhostRun | null;
+      firstRunSetupComplete: boolean | null;
+      summary: SaveSnapshotSummary;
       warnings: string[];
     }
   | {
@@ -393,20 +417,73 @@ export class ProgressionService {
     };
   }
 
+  public static getLastLocalSaveTimestampMs(): number {
+    try {
+      if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(SAVE_UPDATED_AT_KEY);
+        if (raw) {
+          const parsed = Number(raw);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            return Math.round(parsed);
+          }
+        }
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return Date.now();
+  }
+
+  public static recordLocalSaveTimestampMs(timestampMs: number = Date.now()): void {
+    try {
+      if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+        const clean = Number.isFinite(timestampMs) && timestampMs > 0 ? Math.round(timestampMs) : Date.now();
+        localStorage.setItem(SAVE_UPDATED_AT_KEY, String(clean));
+      }
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  public static getLocalSnapshotSummary(
+    statsOverride?: PlayerStats,
+    proceduralConfigOverride?: ProceduralGameConfig,
+    ghostOverride?: QuantizedGhostRun | null
+  ): SaveSnapshotSummary {
+    const stats = this.sanitizePlayerStats(statsOverride ?? this.loadStats());
+    const proceduralConfig = proceduralConfigOverride ?? loadSavedProceduralConfig();
+    const yuzuGhostRun =
+      ghostOverride !== undefined ? ghostOverride : loadBestYuzuGhostRun();
+    const updatedAtMs = this.getLastLocalSaveTimestampMs();
+    return buildSaveSnapshotSummary({
+      stats,
+      proceduralConfig,
+      yuzuGhostRun,
+      updatedAtMs,
+      exportedAtIso: new Date(updatedAtMs).toISOString(),
+    });
+  }
+
   public static exportSaveBundleJson(
     statsOverride?: PlayerStats,
     settingsOverride?: CapyGameSettings,
-    ghostOverride?: QuantizedGhostRun | null
+    ghostOverride?: QuantizedGhostRun | null,
+    proceduralConfigOverride?: ProceduralGameConfig
   ): string {
+    const nowMs = Date.now();
     const bundle: CapySaveBundle = {
-      schema: 'capygame-save-bundle-v1',
-      exportedAtIso: new Date().toISOString(),
+      schema: 'capygame-save-bundle-v2',
+      appVersion: CAPYGAME_VERSION,
+      exportedAtIso: new Date(nowMs).toISOString(),
+      updatedAtMs: nowMs,
       saveKey: SAVE_KEY,
       settingsKey: SETTINGS_KEY,
       stats: this.sanitizePlayerStats(statsOverride ?? this.loadStats()),
       settings: this.sanitizeGameSettings(settingsOverride ?? this.loadSettings()),
+      proceduralConfig: proceduralConfigOverride ?? loadSavedProceduralConfig(),
       yuzuGhostRun:
         ghostOverride !== undefined ? ghostOverride : loadBestYuzuGhostRun(),
+      firstRunSetupComplete: hasCompletedFirstRunSetup(),
     };
     return JSON.stringify(bundle, null, 2);
   }
@@ -439,7 +516,7 @@ export class ProgressionService {
       return {
         ok: false,
         error:
-          'Unrecognized save format. Expected capygame-save-bundle-v1 with stats and/or settings.',
+          'Unrecognized save format. Expected capygame-save-bundle-v2 or v1 with stats and/or settings.',
       };
     }
 
@@ -455,6 +532,23 @@ export class ProgressionService {
         ? this.sanitizeGameSettings(obj, warnings)
         : this.sanitizeGameSettings(this.loadSettings());
 
+    let proceduralConfig: ProceduralGameConfig | null = null;
+    if (
+      'proceduralConfig' in obj &&
+      obj.proceduralConfig !== null &&
+      obj.proceduralConfig !== undefined
+    ) {
+      const cfgResult = parseAndValidateProceduralConfig(JSON.stringify(obj.proceduralConfig));
+      if (cfgResult.ok) {
+        proceduralConfig = cfgResult.config;
+        for (let i = 0; i < cfgResult.warnings.length; i++) {
+          warnings.push(`worldConfig: ${cfgResult.warnings[i]}`);
+        }
+      } else {
+        warnings.push('Ignored malformed proceduralConfig payload in backup.');
+      }
+    }
+
     let yuzuGhostRun: QuantizedGhostRun | null = null;
     if ('yuzuGhostRun' in obj && obj.yuzuGhostRun !== null && obj.yuzuGhostRun !== undefined) {
       const validGhost = parseAndValidateGhostRun(obj.yuzuGhostRun);
@@ -465,7 +559,50 @@ export class ProgressionService {
       }
     }
 
-    return { ok: true, stats, settings, yuzuGhostRun, warnings };
+    const firstRunSetupComplete =
+      typeof obj.firstRunSetupComplete === 'boolean' ? obj.firstRunSetupComplete : null;
+
+    const schema: 'capygame-save-bundle-v2' | 'capygame-save-bundle-v1' | 'legacy-raw' =
+      obj.schema === 'capygame-save-bundle-v2'
+        ? 'capygame-save-bundle-v2'
+        : obj.schema === 'capygame-save-bundle-v1'
+          ? 'capygame-save-bundle-v1'
+          : 'legacy-raw';
+
+    const parsedIsoMs =
+      typeof obj.exportedAtIso === 'string' ? Date.parse(obj.exportedAtIso) : Number.NaN;
+    const updatedAtMs =
+      typeof obj.updatedAtMs === 'number' && Number.isFinite(obj.updatedAtMs) && obj.updatedAtMs > 0
+        ? Math.round(obj.updatedAtMs)
+        : Number.isFinite(parsedIsoMs) && parsedIsoMs > 0
+          ? Math.round(parsedIsoMs)
+          : Date.now();
+    const exportedAtIso =
+      typeof obj.exportedAtIso === 'string' && obj.exportedAtIso.trim().length > 0
+        ? obj.exportedAtIso
+        : new Date(updatedAtMs).toISOString();
+
+    const summary = buildSaveSnapshotSummary({
+      stats,
+      proceduralConfig: proceduralConfig ?? loadSavedProceduralConfig(),
+      yuzuGhostRun,
+      updatedAtMs,
+      exportedAtIso,
+    });
+
+    return {
+      ok: true,
+      schema,
+      exportedAtIso,
+      updatedAtMs,
+      stats,
+      settings,
+      proceduralConfig,
+      yuzuGhostRun,
+      firstRunSetupComplete,
+      summary,
+      warnings,
+    };
   }
 
   public static importSaveBundleJson(jsonText: string): SaveBundleImportResult {
@@ -473,9 +610,16 @@ export class ProgressionService {
     if (!res.ok) return res;
     this.saveStats(res.stats);
     this.saveSettings(res.settings);
+    if (res.proceduralConfig) {
+      saveProceduralConfig(res.proceduralConfig);
+    }
     if (res.yuzuGhostRun) {
       saveYuzuGhostRunDirect(res.yuzuGhostRun);
     }
+    if (res.firstRunSetupComplete === true) {
+      markFirstRunSetupComplete();
+    }
+    this.recordLocalSaveTimestampMs(res.updatedAtMs);
     return res;
   }
 
@@ -512,6 +656,7 @@ export class ProgressionService {
     if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(this.cachedStats));
+      this.recordLocalSaveTimestampMs();
     } catch (e) {
       // On QuotaExceededError, retry saving core progression without large factory payload
       const isQuotaError =

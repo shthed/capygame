@@ -780,7 +780,7 @@ export class SeamlessUniverseSimulator {
         tickFn = this.populateForestCanopyMotesLayer(group, glowWarm);
         break;
       case 'leaf_fur_micro':
-        tickFn = this.populateLeafAndFurMicroLayer(group, glowWarm);
+        tickFn = this.populateLeafAndFurMicroLayer(layer, group, glowWarm);
         break;
       case 'biological_cells':
         tickFn = this.populateBiologicalCellsLayer(group);
@@ -3600,6 +3600,7 @@ export class SeamlessUniverseSimulator {
 
   // --- 17. FOREST MICRO-GLADE · RANDOMIZED 11-SPECIMEN STORYBOOK CLEARING (-2.0 · 1.0 cm) ---
   private populateLeafAndFurMicroLayer(
+    layer: ScaleLayerRuntime,
     group: THREE.Group,
     glowWarm: THREE.CanvasTexture
   ): (dt: number, elapsed: number) => void {
@@ -3614,6 +3615,8 @@ export class SeamlessUniverseSimulator {
         this.activeForestSpecimenId
       );
       this.forestDiorama = diorama;
+      layer.materials = this.collectLayerMaterials(group);
+      diorama.setActiveSpecimen(this.activeForestSpecimenId);
     });
     return (dt, elapsed) => {
       this.forestDiorama?.tick(dt, elapsed);

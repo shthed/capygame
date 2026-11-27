@@ -1,6 +1,6 @@
 # CapyGame -- Active Roadmap & Production TODO
 
-This document tracks remaining Android packaging, Play Console submission, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.3.0`).
+This document tracks remaining Android packaging, Play Console submission, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.4.0`).
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.
@@ -40,7 +40,7 @@ For subsystem references, see:
 - **Verify Production HTTPS Privacy URL**:
   - Confirm `https://capyboop.com/privacy.html` serves the current `CapyGame` privacy policy over HTTPS and submit it in Play Console (`App content -> Privacy policy`).
 - **Complete Data Safety, Permissions & IARC Rating**:
-  - Submit the Play Console Data Safety questionnaire (on-device `localStorage` and Cache Storage only; zero account sign-in, ads, analytics, or server data transfer) using [`docs/ANDROID_PLAY_STORE.md`](./docs/ANDROID_PLAY_STORE.md).
+  - Submit the Play Console Data Safety questionnaire matching your chosen build configuration (offline-only default or optional client-side Google Drive / Play Games cloud sync) using [`docs/ANDROID_PLAY_STORE.md`](./docs/ANDROID_PLAY_STORE.md).
   - Audit `metadata.json` and generated Android `AndroidManifest.xml` to ensure zero unused permissions remain before submission.
   - Complete the IARC content rating questionnaire and select general-audience age groups.
 - **Upload Store Listing Copy & Graphic Assets**:
@@ -62,7 +62,7 @@ For subsystem references, see:
 ### Phase 4: Pre-Submission CI Gates & Staged Play Console Rollout (`P1`)
 
 - **CI Verification & Release Candidate Gate**:
-  - Require green `npm run lint`, `npm run test:unit`, `npm run test:pwa`, and `npm run test:game` runs on every release tag before generating the signed `.aab`.
+  - Require green `npm run lint`, `npm run test:unit`, `npm run build`, `npm run verify:playstore`, `npm run test:pwa`, and `npm run test:game` runs on every release tag before generating the signed `.aab`.
 - **Staged Google Play Rollout Track Progression**:
   - Deploy signed `.aab` to **Internal Testing** track and verify clean TWA boot, offline launch, hardware Back dismissal, cutout insets, and save persistence on physical Android devices.
   - Complete **Closed Testing** requirements (verify Play Console personal account 12-tester / 14-day opt-in criteria if applicable) and address all Pre-Launch Report crashes, ANRs, or accessibility warnings.

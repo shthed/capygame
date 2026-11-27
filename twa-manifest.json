@@ -20,9 +20,28 @@
     "path": "./android-release.keystore",
     "alias": "capygame"
   },
-  "appVersionName": "1.3.0",
-  "appVersionCode": 130,
-  "shortcuts": [],
+  "appVersionName": "1.4.0",
+  "appVersionCode": 140,
+  "shortcuts": [
+    {
+      "name": "Infinite Zoom",
+      "shortName": "Zoom",
+      "url": "https://capyboop.com/?mode=zoom",
+      "chosenIconUrl": "https://capyboop.com/assets/icon-192.png"
+    },
+    {
+      "name": "Forest Games",
+      "shortName": "Forest",
+      "url": "https://capyboop.com/?mode=forest",
+      "chosenIconUrl": "https://capyboop.com/assets/icon-192.png"
+    },
+    {
+      "name": "Capytorio Factory",
+      "shortName": "Factory",
+      "url": "https://capyboop.com/?mode=capytorio",
+      "chosenIconUrl": "https://capyboop.com/assets/icon-192.png"
+    }
+  ],
   "generatorApp": "bubblewrap-cli",
   "webManifestUrl": "https://capyboop.com/manifest.webmanifest",
   "fallbackType": "customtabs",

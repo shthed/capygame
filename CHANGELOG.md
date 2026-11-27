@@ -2,6 +2,14 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.4.0] - 2026-11-26
+
+- Restored lazy cold-boot loading of `vendor-three` and `feature-universe` by isolating pure shared non-Three modules (`types.ts`, `UniverseScaleMath.ts`, `GameplayFunMath.ts`, `forestMicroSpecimens.ts`, `ProceduralGameConfig.ts`, `appVersion.ts`, and `CapytorioStateGuard.ts`) into a lightweight `capy-shared-core` Vite chunk so `dist/index.html` never eagerly preloads 3D or factory chunks.
+- Fixed Forest Micro-Glade opacity crossfade and specimen syncing after lazy loading by updating `layer.materials = this.collectLayerMaterials(group)` and calling `diorama.setActiveSpecimen(this.activeForestSpecimenId)` inside the async `ForestMicroDioramaBuilder` import callback in `SeamlessUniverseSimulator.ts`.
+- Upgraded save portability to full-profile `capygame-save-bundle-v2` (progress, Capytorio factory, simulation settings, procedural world seeds/presets, Yuzu Mountain parkour personal-best ghost replay, and timestamps, with full backward compatibility for v1/raw JSON) and surfaced Save Backup & Cloud Sync in both Basic and Advanced Settings with drag-and-drop JSON import and side-by-side preview confirmation.
+- Added live client-side Google Drive cloud save sync in `FirebaseDriveAuth.ts` and `CloudSyncService.ts` (lazy-loaded Firebase Auth popup + Google Drive v3 `drive.file` backup with strict in-memory token caching and explicit side-by-side overwrite/restore/delete confirmation) plus automatic detection of a native Android Google Play Games Services v2 bridge in `NativeBridge.ts`.
+- Expanded Google Play Store release readiness with Play Store home-screen shortcuts and `related_applications` in `public/manifest.webmanifest` and `twa-manifest.json`, updated `public/privacy.html` and `docs/ANDROID_PLAY_STORE.md` (Play Games v2 bridge setup and Data Safety table), and added the automated `npm run verify:playstore` preflight check.
+
 ## [1.3.0] - 2026-11-26
 
 - Split all 6 Forest Games 3D district builders (`buildSharedArchipelagoBase`, `buildSelectableCapyHeroCircle`, `buildSanctuary`, `buildSporeWorld`, `initRunnerPools`/`spawnRunnerTrackSegment`, and `initFallGuysArena`) out of `PlayStyleManager.ts` into an on-demand async `ForestDistrictBuilders.ts` chunk, lazy-loaded `ForestMicroDioramaBuilder.ts` only when zooming into micro scale, and isolated `SeamlessUniverseSimulator` + `UniverseShaders` into a dedicated `feature-universe` Vite chunk so `PlayStyleManager` stays well under Vite's 500 KB chunk budget.

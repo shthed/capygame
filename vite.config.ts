@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.3.0';
+      : '1.4.0';
   } catch {
-    return '1.3.0';
+    return '1.4.0';
   }
 })();
 
@@ -94,6 +94,17 @@ export default defineConfig(({ command }) => {
           ) {
             return 'vendor-react';
           }
+          if (
+            norm.includes('/src/capygame/types.ts') ||
+            norm.includes('/src/capygame/engine/UniverseScaleMath.ts') ||
+            norm.includes('/src/capygame/engine/GameplayFunMath.ts') ||
+            norm.includes('/src/capygame/engine/forestMicroSpecimens.ts') ||
+            norm.includes('/src/capygame/config/ProceduralGameConfig.ts') ||
+            norm.includes('/src/capygame/config/appVersion.ts') ||
+            norm.includes('/src/capygame/engine/capytorio/CapytorioStateGuard.ts')
+          ) {
+            return 'capy-shared-core';
+          }
           if (norm.includes('/src/capygame/engine/gpu/GpuEngineTypes.ts')) {
             return 'capy-gpu-types';
           }
@@ -102,6 +113,12 @@ export default defineConfig(({ command }) => {
           }
           if (norm.includes('/node_modules/three/')) {
             return 'vendor-three';
+          }
+          if (
+            norm.includes('/node_modules/firebase/') ||
+            norm.includes('/node_modules/@firebase/')
+          ) {
+            return 'vendor-firebase';
           }
           if (
             norm.includes('/src/capygame/engine/SeamlessUniverseSimulator.ts') ||
@@ -153,6 +170,8 @@ export default defineConfig(({ command }) => {
       'three/examples/jsm/postprocessing/UnrealBloomPass.js',
       'three/examples/jsm/shaders/CopyShader.js',
       'three/examples/jsm/shaders/FXAAShader.js',
+      'firebase/app',
+      'firebase/auth',
     ],
   },
   server: {

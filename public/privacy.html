@@ -54,27 +54,29 @@
   <body>
     <main>
       <h1>CapyGame — Privacy Policy</h1>
-      <p class="meta">Effective Date: November 15, 2026</p>
+      <p class="meta">Effective Date: November 26, 2026</p>
 
       <p>
         CapyGame is a standalone 3D universe simulator, world builder, and multiphysics game
-        archipelago designed for players of all ages. Protecting player privacy—especially for younger
-        explorers using Basic Mode—is core to our architecture.
+        archipelago designed for players of all ages. CapyGame runs with <strong>zero backend servers</strong>
+        and zero developer-hosted databases.
       </p>
 
       <h2>1. Data We Collect</h2>
       <p>
-        CapyGame does <strong>not</strong> collect, transmit, sell, or share personal information.
-        We do not integrate third-party advertising networks, behavioral tracking SDKs, cross-app
-        identifiers, or external telemetry servers.
+        CapyGame does <strong>not</strong> operate game servers and does not collect, sell, or share
+        personal data with third parties. We do not integrate advertising networks, behavioral tracking
+        SDKs, cross-app identifiers, or external analytics servers.
       </p>
 
       <h2>2. On-Device Storage</h2>
-      <p>All game data remains strictly on your device using standard browser storage:</p>
+      <p>By default, all game data remains strictly on your device using standard browser storage:</p>
       <ul>
         <li>
           <strong>Progression and Discovery Stickers:</strong> Saved locally under
-          <code>capy_game_save_v3</code> (unlocks, micro-glade specimen stickers, coins, DNA, and world builds).
+          <code>capy_game_save_v3</code> (unlocks, micro-glade specimen stickers, coins, DNA, Capytorio
+          factory snapshots, and Sanctuary builds) plus a local timestamp under
+          <code>capy_game_save_updated_ms</code>.
         </li>
         <li>
           <strong>Settings and Preferences:</strong> Saved locally under
@@ -95,21 +97,42 @@
         </li>
       </ul>
 
-      <h2>3. Device Capabilities and Accessibility Audio</h2>
+      <h2>3. Optional Cloud Sync (Google Drive &amp; Play Games)</h2>
+      <p>
+        Cloud sync is strictly optional and disabled until you explicitly choose to sign in inside Settings:
+      </p>
+      <ul>
+        <li>
+          <strong>Google Drive Sync (Web &amp; Android TWA):</strong> When enabled by the player,
+          CapyGame authenticates directly from your browser using Google Sign-In with minimal
+          <code>drive.file</code> permission. CapyGame can only create, read, update, or delete its own
+          <code>CapyGame-Cloud-Save.json</code> backup file inside your personal Google Drive. Access
+          tokens are held strictly in browser memory for the active session, are never written to
+          <code>localStorage</code> or <code>sessionStorage</code>, and are cleared on sign-out.
+        </li>
+        <li>
+          <strong>Google Play Games Services (Native Android Builds):</strong> When packaged with the
+          optional Android Play Games bridge, players may sign in with their Google Play Games profile
+          to store save snapshots directly in Google Play Games Saved Games.
+        </li>
+      </ul>
+
+      <h2>4. Device Capabilities and Accessibility Audio</h2>
       <p>
         When enabled by the user, "Read Aloud" scale cards use the device's built-in Web Speech API
         (<code>speechSynthesis</code>) directly on-device. CapyGame does not record microphone audio,
         access camera feeds, request location data, or read contacts.
       </p>
 
-      <h2>4. Managing or Deleting Your Data</h2>
+      <h2>5. Managing or Deleting Your Data</h2>
       <p>
-        You retain complete control over local game data. You can export or import save snapshots inside the
-        game settings panel, reset local saves at any time, or clear app storage from your Android or browser
-        settings.
+        You retain complete control over your game saves. You can export or import full-profile JSON
+        backups inside Settings (Basic or Advanced Mode), reset local saves at any time, delete your
+        <code>CapyGame-Cloud-Save.json</code> cloud backup from Settings or directly in Google Drive,
+        or clear app storage from your Android or browser settings.
       </p>
 
-      <h2>5. Contact</h2>
+      <h2>6. Contact</h2>
       <p>
         For questions about this Privacy Policy or Google Play Store releases, open an issue on the
         <a href="https://github.com/capyboop/capygame/issues" target="_blank" rel="noopener noreferrer">CapyGame Support &amp; Issues tracker</a>

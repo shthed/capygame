@@ -13,10 +13,58 @@
   "background_color": "#000000",
   "theme_color": "#000000",
   "prefer_related_applications": false,
+  "related_applications": [
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=com.capyboop.capygame",
+      "id": "com.capyboop.capygame"
+    }
+  ],
   "launch_handler": {
     "client_mode": "focus-existing"
   },
   "categories": ["games", "entertainment"],
+  "shortcuts": [
+    {
+      "name": "Infinite Zoom",
+      "short_name": "Zoom",
+      "description": "Launch the 65-order cosmic-to-quantum zoom continuum",
+      "url": "./?mode=zoom",
+      "icons": [
+        {
+          "src": "assets/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Forest Games",
+      "short_name": "Forest",
+      "description": "Play Sanctuary, Spore Lagoon, Stampede & Yuzu Parkour",
+      "url": "./?mode=forest",
+      "icons": [
+        {
+          "src": "assets/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Capytorio Factory",
+      "short_name": "Factory",
+      "description": "Build 3D conveyor automation on the infinite frontier",
+      "url": "./?mode=capytorio",
+      "icons": [
+        {
+          "src": "assets/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
   "icons": [
     {
       "src": "assets/icon-192.png",

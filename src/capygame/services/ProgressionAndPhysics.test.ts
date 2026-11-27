@@ -2281,9 +2281,12 @@ test('v1.3.0 Chunk Split, Safe-Area Cutouts, Android Back Sentinel & TWA Manifes
     appVersionName: string;
     minSdkVersion: number;
   };
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8')) as {
+    version: string;
+  };
   assert.equal(twa.packageId, 'com.capyboop.capygame');
   assert.equal(twa.host, 'capyboop.com');
-  assert.equal(twa.appVersionName, '1.3.0');
+  assert.equal(twa.appVersionName, pkg.version);
   assert.ok(twa.minSdkVersion >= 24);
 });
 

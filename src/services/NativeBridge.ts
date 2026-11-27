@@ -1,5 +1,30 @@
 export type HapticType = 'tick' | 'success' | 'warning' | 'error';
 
+export interface PlayGamesPlayerProfile {
+  playerId: string;
+  displayName: string;
+  avatarUrl?: string;
+}
+
+export interface PlayGamesSnapshotPayload {
+  data: string;
+  updatedAtMs: number;
+  description?: string;
+}
+
+export interface PlayGamesNativePlugin {
+  signIn: () => Promise<PlayGamesPlayerProfile | null>;
+  signOut?: () => Promise<void>;
+  getCurrentPlayer?: () => Promise<PlayGamesPlayerProfile | null>;
+  loadSavedGame: (slotName: string) => Promise<PlayGamesSnapshotPayload | null>;
+  saveGame: (
+    slotName: string,
+    data: string,
+    description: string
+  ) => Promise<{ updatedAtMs: number }>;
+  deleteSavedGame?: (slotName: string) => Promise<void>;
+}
+
 interface CapacitorAppPlugin {
   addListener?: (
     eventName: 'backButton',
@@ -10,9 +35,11 @@ interface CapacitorAppPlugin {
 declare global {
   interface Window {
     __capyCloseModal?: () => boolean;
+    CapyPlayGamesBridge?: PlayGamesNativePlugin;
     Capacitor?: {
       Plugins?: {
         App?: CapacitorAppPlugin;
+        PlayGames?: PlayGamesNativePlugin;
       };
     };
   }

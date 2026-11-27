@@ -3831,15 +3831,22 @@ export const CapyGameView: React.FC = () => {
     showToast('Simulation state reset');
   };
 
-  const applyImportedSaveBundle = (rawText: string) => {
+  const applyImportedSaveBundle = (rawText: string): boolean => {
     const res = ProgressionService.importSaveBundleJson(rawText);
     if (!res.ok) {
       setSavePortabilityFeedback({ tone: 'error', message: res.error });
       showToast(res.error);
-      return;
+      return false;
     }
     setStats(res.stats);
     setGameSettings(res.settings);
+    if (res.proceduralConfig) {
+      setProceduralConfig(res.proceduralConfig);
+      managerRef.current?.applyProceduralConfig(res.proceduralConfig, true);
+    }
+    if (res.firstRunSetupComplete === true) {
+      setIsFirstRunSetupOpen(false);
+    }
     managerRef.current?.updateStats(res.stats);
     managerRef.current?.updateSettings(res.settings);
     managerRef.current?.refreshSanctuaryBuildings();
@@ -3850,18 +3857,25 @@ export const CapyGameView: React.FC = () => {
     }
     AudioService.playPrestigeFanfare();
     const ghostNote = res.yuzuGhostRun
-      ? ` + Yuzu Ghost PB (${(res.yuzuGhostRun.durationMs / 1000).toFixed(2)}s)`
+      ? ` + Parkour PB (${(res.yuzuGhostRun.durationMs / 1000).toFixed(2)}s)`
       : '';
-    const warnNote = res.warnings.length > 0 ? ` (${res.warnings.length} clamped)` : '';
-    const okMsg = `Imported save (${res.stats.dna} DNA, ${res.stats.coins}c)${ghostNote}${warnNote}.`;
+    const seedNote = res.proceduralConfig ? ` + Seed #${res.proceduralConfig.meta.seed}` : '';
+    const warnNote = res.warnings.length > 0 ? ` (${res.warnings.length} sanitized)` : '';
+    const okMsg = `Restored save (${res.stats.dna} DNA, ${res.stats.coins}c)${seedNote}${ghostNote}${warnNote}.`;
     setSavePortabilityFeedback({ tone: 'ok', message: okMsg });
     setSaveJsonDraft('');
     setIsSaveJsonPasteOpen(false);
     showToast(okMsg);
+    return true;
   };
 
   const handleExportSaveBundleFile = () => {
-    const json = ProgressionService.exportSaveBundleJson(stats, gameSettings);
+    const json = ProgressionService.exportSaveBundleJson(
+      stats,
+      gameSettings,
+      undefined,
+      proceduralConfig
+    );
     try {
       const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -3878,13 +3892,18 @@ export const CapyGameView: React.FC = () => {
     setSaveJsonDraft(json);
     setSavePortabilityFeedback({
       tone: 'ok',
-      message: 'Exported capy_game_save_v3 & capy_game_settings_v1 JSON backup.',
+      message: 'Exported full v2 save backup (progress, Capytorio, settings, seeds & Parkour PB).',
     });
-    showToast('Exported Save & Settings JSON');
+    showToast('Exported Full Save Backup JSON');
   };
 
   const handleCopySaveBundleJson = async () => {
-    const json = ProgressionService.exportSaveBundleJson(stats, gameSettings);
+    const json = ProgressionService.exportSaveBundleJson(
+      stats,
+      gameSettings,
+      undefined,
+      proceduralConfig
+    );
     setSaveJsonDraft(json);
     setIsSaveJsonPasteOpen(true);
     try {
@@ -3896,24 +3915,9 @@ export const CapyGameView: React.FC = () => {
     }
     setSavePortabilityFeedback({
       tone: 'ok',
-      message: 'Copied JSON backup to clipboard and opened preview.',
+      message: 'Copied full v2 JSON backup to clipboard and opened preview.',
     });
     showToast('Save JSON copied');
-  };
-
-  const handleImportSaveFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    try {
-      const text = await file.text();
-      applyImportedSaveBundle(text);
-    } catch {
-      setSavePortabilityFeedback({
-        tone: 'error',
-        message: 'Could not read selected JSON file.',
-      });
-    }
   };
 
   const getHighScoreForMode = (mode: PlayStyle): number => {
@@ -5509,6 +5513,7 @@ export const CapyGameView: React.FC = () => {
       {isSettingsOpen && (
         <Suspense fallback={null}>
           <LazyCapySettingsModal
+            stats={stats}
             isAdvancedMode={isAdvancedMode}
             gameSettings={gameSettings}
             isMuted={isMuted}
@@ -5566,7 +5571,6 @@ export const CapyGameView: React.FC = () => {
             onResetProgress={handleResetProgress}
             onExportSaveBundleFile={handleExportSaveBundleFile}
             onCopySaveBundleJson={() => void handleCopySaveBundleJson()}
-            onImportSaveFileChange={(e) => void handleImportSaveFileChange(e)}
             onToggleSaveJsonPasteOpen={() => setIsSaveJsonPasteOpen((prev) => !prev)}
             onChangeSaveJsonDraft={setSaveJsonDraft}
             onApplyImportedSaveBundle={applyImportedSaveBundle}
