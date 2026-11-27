@@ -15,7 +15,7 @@
 7. **Always display working thoughts & structured status updates**: Explain what file or subsystem is being inspected or modified, why, priority (`P0`, `P1`, `P2`), complexity (`Low`, `Medium`, `High`), estimated step duration, and overall ETA.
 8. **Verify builds, unit tests & Play Store preflight before finishing**: Add or update unit tests for code changes and always run `npm run lint`, `npm run test:unit`, `npm run build`, and `npm run verify:playstore` cleanly before completing code changes. Keep `package-lock.json` synchronized as the single lockfile (never leave `bun.lock` behind).
 9. **SemVer & `CHANGELOG.md` synchronization**: For every non-doc code change, bump `package.json`, `package-lock.json`, `src/capygame/config/appVersion.ts`, `vite.config.ts`, and `twa-manifest.json` (`appVersionName` and `appVersionCode`) using SemVer (`patch` for fixes/perf/CI, `minor` for new features, `major` only when explicitly requested) and add a plain-English `## [X.Y.Z] - YYYY-MM-DD` entry at the top of `CHANGELOG.md` before running verification commands.
-10. **Cold-boot lazy chunk & cloud token hygiene**: Never allow `dist/index.html` to eagerly preload `vendor-three`, `feature-universe`, `feature-capytorio`, or `accounts.google.com/gsi/client` (keep shared non-Three modules in `capy-shared-core` and lazy-load Google Identity Services only when the player initiates Google Drive sign-in). Keep Google Drive OAuth access tokens (`drive.file` scope via `VITE_GOOGLE_CLIENT_ID`, zero Firebase SDK or Google API keys) strictly in JavaScript memory (never `localStorage`/`sessionStorage`), revoke/clear tokens on sign-out or HTTP 401 expiry, and require explicit in-app side-by-side confirmation before any save overwrite, restore, or cloud deletion.
+10. **Cold-boot lazy chunk & cloud token hygiene**: Never allow `dist/index.html` to eagerly preload `vendor-three`, `feature-universe`, `feature-capytorio*`, or `accounts.google.com/gsi/client` (keep shared non-Three modules in `capy-shared-core`, keep every non-vendor feature chunk `<= 500 KB`, and lazy-load Google Identity Services only when the player initiates Google Drive sign-in). Keep Google Drive OAuth access tokens (`drive.file` scope via `VITE_GOOGLE_CLIENT_ID`, zero Firebase SDK or Google API keys) strictly in JavaScript memory (never `localStorage`/`sessionStorage`), revoke/clear tokens on sign-out or HTTP 401 expiry, and require explicit in-app side-by-side confirmation before any save overwrite, restore, or cloud deletion.
 
 ---
 
@@ -27,7 +27,7 @@
 | **3D World & Universe Engine** | `src/capygame/engine/*.ts` | 3 standalone modes (pure `10^+30 m` to `10^-35 m` Infinite Zoom, unified bridgeless Forest island, Capytorio factory), lazy `ForestDistrictBuilders` & `ForestMicroDioramaBuilder`, 4-tier 60 FPS Capybara LOD, GLSL shaders |
 | **Hardware WebGL2 GPU & VFX** | `src/capygame/engine/gpu/*.ts` | Standardized WebGL2 renderer, Sobel tangent-space PBR synthesizer, PMREM IBL, texel-snapped shadow cascade, `EffectComposer` Bloom/SSAO/DoF/CAS, SoA `InstancedMesh` VFX |
 | **Multiphysics Engine** | `src/capygame/engine/physics/*.ts` | `@dimforge/rapier3d-compat` Wasm worker, `ContiguousWorldTopology` unified Forest island & Capytorio terrain, XPBD soft-body pads, shallow-water buoyancy |
-| **Audio, Progression & Cloud Sync** | `src/capygame/services/*.ts`, `src/services/*.ts` | Web Audio compressor/reverb synthesizer, full-profile `capygame-save-bundle-v2` (`ProgressionService.ts`, `SaveSyncMath.ts`), direct lazy-loaded GIS Google Drive sync (`CloudSyncService.ts`), Android Play Games bridge & hardware Back sentinel (`NativeBridge.ts`), offline PWA service worker |
+| **Audio, Progression & Cloud Sync** | `src/capygame/services/*.ts`, `src/services/*.ts` | 3-bus studio Web Audio synthesizer (`AudioService.ts`, `AudioSynthesisMath.ts`), full-profile `capygame-save-bundle-v2` (`ProgressionService.ts`, `SaveSyncMath.ts`), direct lazy-loaded GIS Google Drive sync (`CloudSyncService.ts`), Android Play Games bridge & hardware Back sentinel (`NativeBridge.ts`), offline PWA service worker |
 | **E2E, Play Store & Showcase Automation** | `scripts/*.mjs`, `twa-manifest.json`, `public/.well-known/assetlinks.json` | Play Store packaging & cold-boot preflight (`verify-playstore-readiness.mjs`), headless Playwright 3D E2E (`test-capygame.mjs`), PWA offline test (`test-pwa-offline.mjs`), gallery screenshot capture |
 
 ---
@@ -39,9 +39,9 @@ From the repository root:
 ```bash
 npm ci                       # Clean dependency install
 npm run lint                 # Strict TypeScript check (tsc -p tsconfig.json --noEmit)
-npm run test:unit            # Fast deterministic unit tests (node:test via tsx, 8 suites)
+npm run test:unit            # Fast deterministic unit tests (node:test via tsx, 11 suites)
 npm run build                # Compile production bundle into dist/
-npm run verify:playstore     # Validate TWA/PWA manifests, assets & cold-boot preload diet
+npm run verify:playstore     # Validate TWA/PWA manifests, assets, <=500 KB chunk budgets & cold-boot preload diet
 npm run dev                  # Start Vite dev server on http://localhost:3000
 npm run preview              # Serve dist/ on http://localhost:3000
 npm run test:game            # Run full Playwright 3D E2E test suite

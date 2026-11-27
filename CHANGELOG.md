@@ -2,6 +2,14 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.5.0] - 2026-11-27
+
+- Overhauled the procedural Web Audio engine in `AudioService.ts` and pure DSP module `AudioSynthesisMath.ts` with a 3-bus studio architecture (independent `musicBus`, `sfxBus`, and `uiBus` routed through a warm master low-pass polish filter, dynamics compressor, and damped stereo reverb), perceptual `x^1.75` volume curves, subtle pitch humanization, and per-voice anti-spam cooldowns.
+- Replaced harsh unfiltered sine/triangle boop effects across all three modes: replaced the repetitive background marimba loop with mode-aware soundscapes (a scale-mapped celestial cosmic drone in Infinite Zoom, sparse warm Lydian fifth/octave Forest plucks, and industrial hum in Capytorio), replaced ~30 UI button `playCoin()` chimes and mode-switch `playJump()` boings with subtle wooden `playUiClick()` micro-taps, and resculpted jump, pickup, cosmic warp, brick, trampoline, and fanfare envelopes.
+- Added persistent independent Audio Mixer controls (Master Volume, Sound Effects, Ambient Music sliders, Subtle UI Clicks toggle, and a Preview Test trigger) to both Basic and Advanced views in `CapySettingsModal.tsx`, synced automatically with `ProgressionService` save bundles (`capygame-save-bundle-v2`).
+- Split the monolithic Capytorio Vite bundle into three on-demand chunks (`feature-capytorio-sim`, `feature-capytorio-3d`, and `feature-capytorio-hud`), enforced a strict `<= 500 KB` per-chunk budget guard in `scripts/verify-playstore-readiness.mjs`, and added `npm run verify:playstore` plus npm dependency caching to GitHub Actions CI workflows.
+- Extracted pure, zero-Three.js domain modules (`AudioSynthesisMath.ts`, `ForestPlacementMath.ts`, `CapytorioLogisticsMath.ts`) with three new `node:test` unit suites, eliminated `THREE.Vector3` allocations inside `PlayStyleManager.switchMode()`, and added the `CapyWebGlContextBanner` recovery overlay for `webglcontextlost`/`webglcontextrestored` events.
+
 ## [1.4.2] - 2026-11-27
 
 - Updated `public/_headers` to serve `Cross-Origin-Opener-Policy: same-origin-allow-popups` and removed `Cross-Origin-Embedder-Policy: require-corp` so Google Identity Services sign-in popups return tokens cleanly and Google profile avatars load without CORP blocking (Rapier3D physics falls back automatically to zero-copy transferable `Float32Array` buffers), and synchronized header assertions in `ProgressionAndPhysics.test.ts` plus `TODO.md` and `docs/ANDROID_PLAY_STORE.md`.

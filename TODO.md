@@ -1,6 +1,6 @@
 # CapyGame -- Active Roadmap & Production TODO
 
-This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.4.2`).
+This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.5.0`).
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.
@@ -66,7 +66,7 @@ For subsystem references, see:
 ### Phase 4: Pre-Submission CI Gates & Staged Play Console Rollout (`P1`)
 
 - **CI Verification & Release Candidate Gate**:
-  - Add `npm run verify:playstore` to `.github/workflows/deploy-branch.yml` alongside `npm ci`, `npm run lint`, `npm run test:unit`, and `npm run build`, and require green `npm run test:pwa` and `npm run test:game` runs before generating the signed `.aab`.
+  - Require green `npm run test:pwa` and `npm run test:game` runs alongside the automated CI lint, unit-test, build, and `verify:playstore` gates before generating the signed `.aab`.
 - **Staged Google Play Rollout Track Progression**:
   - Deploy signed `.aab` to **Internal Testing** track and verify clean TWA boot, offline launch, hardware Back dismissal, cutout insets, and save persistence on physical Android devices.
   - Complete **Closed Testing** requirements (verify Play Console personal account 12-tester / 14-day opt-in criteria if applicable) and address all Pre-Launch Report crashes, ANRs, or accessibility warnings.

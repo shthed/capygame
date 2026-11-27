@@ -238,6 +238,11 @@ import {
   loadCapytorioRuntime,
   type CapytorioRuntimeBundle,
 } from './capytorio/CapytorioModuleLoader';
+import {
+  findClearSanctuarySpot,
+  getSanctuaryBuildingRadius,
+  isSanctuarySpotClear,
+} from './controllers/ForestPlacementMath';
 
 const CAPYTORIO_OBLIQUE_PITCH_RAD = (68 * Math.PI) / 180;
 const CAPYTORIO_HIGH_ORBIT_PITCH_RAD = (84 * Math.PI) / 180;
@@ -2355,6 +2360,7 @@ export class PlayStyleManager {
     }
     this.flushCapytorioAutosave();
     AudioService.updateCapytorioAmbient(0, 0, false);
+    AudioService.setAmbientMode('cosmic');
 
     this.autoLandAtForestPending = false;
     this.orbitalAscentFromSurfaceActive = false;
@@ -2395,6 +2401,8 @@ export class PlayStyleManager {
     if (this.disposed) return;
     this.flushCapytorioAutosave();
     AudioService.updateCapytorioAmbient(0, 0, false);
+    AudioService.updateCosmicAmbient(0, false);
+    AudioService.setAmbientMode('forest');
     this.autoZoomDirection = 0;
     this.cruiseVelocityLogPerSec = 0;
     this.targetCruiseVelocityLogPerSec = 0;
@@ -2417,6 +2425,8 @@ export class PlayStyleManager {
    */
   public enterCapytorio(instant: boolean = true): void {
     if (this.disposed) return;
+    AudioService.updateCosmicAmbient(0, false);
+    AudioService.setAmbientMode('capytorio');
     this.autoZoomDirection = 0;
     this.cruiseVelocityLogPerSec = 0;
     this.targetCruiseVelocityLogPerSec = 0;
@@ -3366,7 +3376,7 @@ export class PlayStyleManager {
       this.yuzuGhostRunElapsedSec = 0;
       this.yuzuGhostRecorder.stopRun();
     }
-    const prevWorldPos = this.heroCapy.position.clone();
+    const prevWorldPos = _samplePos.copy(this.heroCapy.position);
     const prevMode = this.currentMode;
     this.currentMode = mode;
     if (prevMode === 'capytorio' && mode !== 'capytorio') {
@@ -3497,7 +3507,7 @@ export class PlayStyleManager {
     this.heroCapy.rotation.set(0, this.heroYaw, 0);
 
     const zone = ZONE_LOCATIONS[mode];
-    const targetWorldPos = new THREE.Vector3(
+    const targetWorldPos = _tempVec3.set(
       zone.x + this.heroLocalPos.x,
       this.heroLocalPos.y,
       zone.z + this.heroLocalPos.z
@@ -4092,19 +4102,19 @@ export class PlayStyleManager {
 
   public adjustGravityConstant(delta: number) {
     this.cosmicBuilder?.adjustGravityConstant(delta);
-    AudioService.playCoin();
+    AudioService.playUiClick('tap');
     this.emitCosmicState();
   }
 
   public setStellarColorMode(mode: StellarColorMappingMode) {
     this.cosmicBuilder?.setStellarColorMode(mode);
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
     this.emitCosmicState();
   }
 
   public cycleStellarColorMode() {
     this.cosmicBuilder?.cycleStellarColorMode();
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
     this.emitCosmicState();
   }
 
@@ -4114,7 +4124,7 @@ export class PlayStyleManager {
     const ts = this.cosmicBuilder.getTrackedStarTelemetry();
     this.selectedGalaxyIndex = ts.hostGalaxyIndex;
     this.selectedStarIndex = ts.hostStarSystemIndex;
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
     this.emitCosmicState();
     return idx;
   }
@@ -4122,7 +4132,7 @@ export class PlayStyleManager {
   public toggleFollowTrackedStar(): boolean {
     if (!this.cosmicBuilder) return false;
     const following = this.cosmicBuilder.toggleCameraFollowingTrackedStar();
-    AudioService.playCoin();
+    AudioService.playUiClick(following ? 'toggle_on' : 'toggle_off');
     this.emitCosmicState();
     return following;
   }
@@ -4205,7 +4215,7 @@ export class PlayStyleManager {
     const name = belt?.name || 'Main Asteroid Belt';
     const sub = belt?.subtitle || '2.8 AU · 1,200 Planetesimals';
     this.callbacks.onModeNotification?.(`${name} · ${sub}`);
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
   }
 
   public selectPlanet(index: number) {
@@ -4381,7 +4391,7 @@ export class PlayStyleManager {
 
   public setFlightTrajectory(mode: FlightTrajectoryMode): void {
     this.flightTrajectory = mode === 'spiral' ? 'spiral' : 'straight';
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
     this.callbacks.onUniverseScaleChange?.(this.getUniverseScaleTelemetry());
   }
 
@@ -4704,7 +4714,7 @@ export class PlayStyleManager {
     this.stats.activeHat = this.activeHeroSpec.hat;
     this.syncDachshundSkinAndOrange();
 
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
 
     if (confirmAndPlay) {
       AudioService.playPrestigeFanfare();
@@ -4888,77 +4898,55 @@ export class PlayStyleManager {
     buildingRadius: number = 2.05,
     ignoreBuildingIndex: number = -1
   ): boolean {
-    // Stay safely inside meadow shoreline, clear of Hero spawn (0, 4) & Chrono-Vessel Pad
-    if (Math.hypot(x, z) > 29.5 - buildingRadius) return false;
-    if (Math.hypot(x - 0, z - 4.0) < buildingRadius + 1.8) return false;
-    if (Math.hypot(x - CHRONO_PAD_X, z - CHRONO_PAD_Z) < 3.4 + buildingRadius) return false;
-
-    // Clear of Home Pool + rim boulders + overflow splash apron (radius 5.4m around (-8.8, 3.0))
-    if (this.homePool) {
-      const dPool = Math.hypot(x - this.homePool.centerX, z - this.homePool.centerZ);
-      if (dPool < 5.45 + buildingRadius) return false;
-    }
-
-    // Clear of all 8 Procedural Trees (full crown & buttress root clearance so canopies/roofs never clip!)
-    for (let t = 0; t < this.sanctuaryTrees.length; t++) {
-      const tree = this.sanctuaryTrees[t];
-      const treeClearance = Math.max(tree.trunkRadius + 1.2, tree.crownRadius * 0.92);
-      if (Math.hypot(x - tree.x, z - tree.z) < treeClearance + buildingRadius) {
-        return false;
-      }
-    }
-
-    // Clear of 4 Northern Portals
-    for (let p = 0; p < this.sanctuaryPortals.length; p++) {
-      const portal = this.sanctuaryPortals[p];
-      if (Math.hypot(x - portal.x, z - portal.z) < 2.8 + buildingRadius) {
-        return false;
-      }
-    }
-
-    // Clear of all other placed Sanctuary structures
-    for (let i = 0; i < this.stats.buildings.length; i++) {
-      if (i === ignoreBuildingIndex) continue;
-      const other = this.stats.buildings[i];
-      const otherR = other.type === 'trampoline_pad' ? 1.65 : 2.05;
-      if (Math.hypot(x - other.x, z - other.z) < otherR + buildingRadius + 0.45) {
-        return false;
-      }
-    }
-
-    return true;
+    return isSanctuarySpotClear(
+      {
+        chronoPadX: CHRONO_PAD_X,
+        chronoPadZ: CHRONO_PAD_Z,
+        homePool: this.homePool,
+        trees: this.sanctuaryTrees,
+        portals: this.sanctuaryPortals,
+        buildings: this.stats.buildings,
+      },
+      x,
+      z,
+      buildingRadius,
+      ignoreBuildingIndex
+    );
   }
 
   public findClearBuildingSpot(preferredIdx: number = 0): { x: number; z: number } {
-    for (let step = 0; step < 260; step++) {
-      const k = preferredIdx + step;
-      const radius = 6.8 + (step / 260) * 21.5;
-      const angle = k * 2.39996 + 0.42;
-      const cx = +(Math.cos(angle) * radius).toFixed(2);
-      const cz = +(Math.sin(angle) * radius).toFixed(2);
-      if (this.isStaticSpotClearForBuilding(cx, cz, 2.05, -1)) {
-        return { x: cx, z: cz };
-      }
-    }
-    return { x: 18.5, z: 14.5 };
+    return findClearSanctuarySpot(
+      {
+        chronoPadX: CHRONO_PAD_X,
+        chronoPadZ: CHRONO_PAD_Z,
+        homePool: this.homePool,
+        trees: this.sanctuaryTrees,
+        portals: this.sanctuaryPortals,
+        buildings: this.stats.buildings,
+      },
+      preferredIdx,
+      2.05,
+      -1,
+      0.42
+    );
   }
 
   private sanitizeBuildingNonClipping() {
+    const ctx = {
+      chronoPadX: CHRONO_PAD_X,
+      chronoPadZ: CHRONO_PAD_Z,
+      homePool: this.homePool,
+      trees: this.sanctuaryTrees,
+      portals: this.sanctuaryPortals,
+      buildings: this.stats.buildings,
+    };
     for (let i = 0; i < this.stats.buildings.length; i++) {
       const b = this.stats.buildings[i];
-      const bRad = b.type === 'trampoline_pad' ? 1.65 : 2.05;
-      if (!this.isStaticSpotClearForBuilding(b.x, b.z, bRad, i)) {
-        for (let step = 0; step < 260; step++) {
-          const radius = 6.8 + (step / 260) * 21.5;
-          const angle = (i * 7 + step) * 2.39996 + 0.35;
-          const cx = +(Math.cos(angle) * radius).toFixed(2);
-          const cz = +(Math.sin(angle) * radius).toFixed(2);
-          if (this.isStaticSpotClearForBuilding(cx, cz, bRad, i)) {
-            b.x = cx;
-            b.z = cz;
-            break;
-          }
-        }
+      const bRad = getSanctuaryBuildingRadius(b.type);
+      if (!isSanctuarySpotClear(ctx, b.x, b.z, bRad, i)) {
+        const spot = findClearSanctuarySpot(ctx, i * 7, bRad, i, 0.35);
+        b.x = spot.x;
+        b.z = spot.z;
       }
     }
   }
@@ -12773,6 +12761,7 @@ export class PlayStyleManager {
       isCapytorioSurfaceFlight,
       isCapytorioSurfaceFlight
     );
+    AudioService.updateCosmicAmbient(logVal, this.seamlessZoomActive && !showPlayableSurface);
     this.seamlessUniverse.rootGroup.scale.setScalar(camRadius / canonicalRadius);
 
     // Blend background sky color cleanly across cosmic stratosphere -> daylight/night horizon during landing

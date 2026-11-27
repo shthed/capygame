@@ -55,6 +55,10 @@ import {
   type CapytorioCraftingQueueHost,
 } from './capytorio/CapytorioCraftingQueue';
 import {
+  computeMachineFrontEjectTile,
+  computeSplitterPorts,
+} from './capytorio/CapytorioLogisticsMath';
+import {
   buildBlueprintLabel as buildBlueprintLabelPure,
   computeBlueprintBounds as computeBlueprintBoundsPure,
   deleteBlueprintFromLibrary as deleteBlueprintFromLibraryInHost,
@@ -1237,18 +1241,7 @@ export class CapytorioFactoryEngine {
     edgeGz: number;
   } {
     const fp = this.getMachineFootprint(m);
-    const midX = m.gx + Math.floor((fp.width - 1) * 0.5);
-    const midZ = m.gz + Math.floor((fp.height - 1) * 0.5);
-    if (m.dir === 0) {
-      return { targetGx: midX, targetGz: m.gz - 1, edgeGx: midX, edgeGz: m.gz };
-    }
-    if (m.dir === 1) {
-      return { targetGx: m.gx + fp.width, targetGz: midZ, edgeGx: m.gx + fp.width - 1, edgeGz: midZ };
-    }
-    if (m.dir === 2) {
-      return { targetGx: midX, targetGz: m.gz + fp.height, edgeGx: midX, edgeGz: m.gz + fp.height - 1 };
-    }
-    return { targetGx: m.gx - 1, targetGz: midZ, edgeGx: m.gx, edgeGz: midZ };
+    return computeMachineFrontEjectTile(m.gx, m.gz, fp.width, fp.height, m.dir);
   }
 
   /**
@@ -1265,48 +1258,7 @@ export class CapytorioFactoryEngine {
     rightOutGx: number;
     rightOutGz: number;
   } {
-    const fwdDx = DIR_DX[m.dir];
-    const fwdDz = DIR_DZ[m.dir];
-    // For each facing, determine which sub-tile is on the splitter's Left vs Right when looking forward:
-    // dir 0 (North, -Z): Left is -X (gx, gz), Right is +X (gx+1, gz)
-    // dir 1 (East, +X): Left is -Z (gx, gz), Right is +Z (gx, gz+1)
-    // dir 2 (South, +Z): Left is +X (gx+1, gz), Right is -X (gx, gz)
-    // dir 3 (West, -X): Left is +Z (gx, gz+1), Right is -Z (gx, gz)
-    let leftGx = m.gx;
-    let leftGz = m.gz;
-    let rightGx = m.gx;
-    let rightGz = m.gz;
-    if (m.dir === 0) {
-      leftGx = m.gx;
-      leftGz = m.gz;
-      rightGx = m.gx + 1;
-      rightGz = m.gz;
-    } else if (m.dir === 1) {
-      leftGx = m.gx;
-      leftGz = m.gz;
-      rightGx = m.gx;
-      rightGz = m.gz + 1;
-    } else if (m.dir === 2) {
-      leftGx = m.gx + 1;
-      leftGz = m.gz;
-      rightGx = m.gx;
-      rightGz = m.gz;
-    } else {
-      leftGx = m.gx;
-      leftGz = m.gz + 1;
-      rightGx = m.gx;
-      rightGz = m.gz;
-    }
-    return {
-      leftGx,
-      leftGz,
-      rightGx,
-      rightGz,
-      leftOutGx: leftGx + fwdDx,
-      leftOutGz: leftGz + fwdDz,
-      rightOutGx: rightGx + fwdDx,
-      rightOutGz: rightGz + fwdDz,
-    };
+    return computeSplitterPorts(m.gx, m.gz, m.dir);
   }
 
   public resetToBlankStarterField(): void {

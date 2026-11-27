@@ -414,6 +414,10 @@ export class ProgressionService {
       gpuBloomStrength: cleanNum(parsed.gpuBloomStrength, DEFAULT_CAPY_SETTINGS.gpuBloomStrength, 0.0, 1.5),
       gpuSsaoEnabled: cleanBool(parsed.gpuSsaoEnabled, DEFAULT_CAPY_SETTINGS.gpuSsaoEnabled),
       gpuSharpenAmount: cleanNum(parsed.gpuSharpenAmount, DEFAULT_CAPY_SETTINGS.gpuSharpenAmount, 0.0, 1.0),
+      masterVolume: cleanNum(parsed.masterVolume, DEFAULT_CAPY_SETTINGS.masterVolume, 0.0, 1.0),
+      sfxVolume: cleanNum(parsed.sfxVolume, DEFAULT_CAPY_SETTINGS.sfxVolume, 0.0, 1.0),
+      musicVolume: cleanNum(parsed.musicVolume, DEFAULT_CAPY_SETTINGS.musicVolume, 0.0, 1.0),
+      uiSoundsEnabled: cleanBool(parsed.uiSoundsEnabled, DEFAULT_CAPY_SETTINGS.uiSoundsEnabled),
     };
   }
 

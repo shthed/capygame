@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.4.2';
+      : '1.5.0';
   } catch {
-    return '1.4.2';
+    return '1.5.0';
   }
 })();
 
@@ -99,6 +99,8 @@ export default defineConfig(({ command }) => {
             norm.includes('/src/capygame/engine/UniverseScaleMath.ts') ||
             norm.includes('/src/capygame/engine/GameplayFunMath.ts') ||
             norm.includes('/src/capygame/engine/forestMicroSpecimens.ts') ||
+            norm.includes('/src/capygame/engine/controllers/ForestPlacementMath.ts') ||
+            norm.includes('/src/capygame/services/AudioSynthesisMath.ts') ||
             norm.includes('/src/capygame/config/ProceduralGameConfig.ts') ||
             norm.includes('/src/capygame/config/appVersion.ts') ||
             norm.includes('/src/capygame/engine/capytorio/CapytorioStateGuard.ts')
@@ -116,7 +118,8 @@ export default defineConfig(({ command }) => {
           }
           if (
             norm.includes('/src/capygame/engine/SeamlessUniverseSimulator.ts') ||
-            norm.includes('/src/capygame/engine/UniverseShaders.ts')
+            norm.includes('/src/capygame/engine/UniverseShaders.ts') ||
+            norm.includes('/src/capygame/engine/universe/')
           ) {
             return 'feature-universe';
           }
@@ -124,15 +127,28 @@ export default defineConfig(({ command }) => {
             !norm.includes('/CapytorioStateGuard.ts') &&
             !norm.includes('/CapytorioModuleLoader.ts') &&
             !norm.includes('/CapytorioEntityInfoPanel.tsx') &&
-            !norm.includes('/CapytorioPediaView.tsx') &&
-            (norm.includes('/src/capygame/engine/Capytorio') ||
+            !norm.includes('/CapytorioPediaView.tsx')
+          ) {
+            if (
+              norm.includes('/src/capygame/engine/CapytorioMeshBuilder.ts') ||
+              norm.includes('/src/capygame/engine/CapytorioAltIconRenderer.ts')
+            ) {
+              return 'feature-capytorio-3d';
+            }
+            if (
+              norm.includes('/src/capygame/engine/Capytorio') ||
               norm.includes('/src/capygame/engine/capytorioLuaDefaults.ts') ||
               norm.includes('/src/capygame/engine/FactorioBlueprintCodec.ts') ||
-              norm.includes('/src/capygame/engine/capytorio/') ||
+              norm.includes('/src/capygame/engine/capytorio/')
+            ) {
+              return 'feature-capytorio-sim';
+            }
+            if (
               norm.includes('/src/capygame/components/Capytorio') ||
-              norm.includes('/src/capygame/components/capytorio/'))
-          ) {
-            return 'feature-capytorio';
+              norm.includes('/src/capygame/components/capytorio/')
+            ) {
+              return 'feature-capytorio-hud';
+            }
           }
           return undefined;
         },

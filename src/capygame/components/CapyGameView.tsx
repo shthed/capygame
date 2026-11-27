@@ -87,6 +87,7 @@ import {
 import { resolveCapytorioClipboardPointerAction } from '../engine/capytorio/CapytorioStateGuard';
 import type { CapytorioDrawerTab, CapytorioHudProps } from './CapytorioHud';
 import { createLiveTelemetryStore, TelemetryReadout } from './TelemetryReadout';
+import { CapyWebGlContextBanner } from './hud/CapyWebGlContextBanner';
 
 const LazyCapytorioHud = React.lazy(() =>
   import('./CapytorioHud').then((m) => ({ default: m.CapytorioHud }))
@@ -261,6 +262,21 @@ export const CapyGameView: React.FC = () => {
   const isAdvancedMode = Boolean(gameSettings.advancedMode);
   const gameSettingsRef = useRef<CapyGameSettings>(gameSettings);
   gameSettingsRef.current = gameSettings;
+  const [isWebGlContextLost, setIsWebGlContextLost] = useState<boolean>(false);
+
+  useEffect(() => {
+    AudioService.applyMixerSettings({
+      masterVolume: gameSettings.masterVolume,
+      sfxVolume: gameSettings.sfxVolume,
+      musicVolume: gameSettings.musicVolume,
+      uiSoundsEnabled: gameSettings.uiSoundsEnabled,
+    });
+  }, [
+    gameSettings.masterVolume,
+    gameSettings.sfxVolume,
+    gameSettings.musicVolume,
+    gameSettings.uiSoundsEnabled,
+  ]);
   const [isFreeMouselook, setIsFreeMouselook] = useState<boolean>(false);
   const isFreeMouselookRef = useRef<boolean>(false);
   isFreeMouselookRef.current = isFreeMouselook;
@@ -2419,6 +2435,21 @@ export const CapyGameView: React.FC = () => {
         setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
       };
 
+      const webglCanvasEl = containerEl.querySelector('canvas');
+      const handleWebGlContextLost = (e: Event) => {
+        e.preventDefault();
+        if (!cancelled) {
+          setIsWebGlContextLost(true);
+        }
+      };
+      const handleWebGlContextRestored = () => {
+        if (!cancelled) {
+          setIsWebGlContextLost(false);
+        }
+      };
+      webglCanvasEl?.addEventListener('webglcontextlost', handleWebGlContextLost, false);
+      webglCanvasEl?.addEventListener('webglcontextrestored', handleWebGlContextRestored, false);
+
       containerEl.addEventListener('touchstart', handleTouchStart, { passive: true });
       containerEl.addEventListener('touchmove', handleTouchMove, { passive: true });
       containerEl.addEventListener('touchend', handleTouchEnd, { passive: true });
@@ -2446,6 +2477,8 @@ export const CapyGameView: React.FC = () => {
         resumeAnimLoopRef.current = null;
         isBackgroundSuspendedRef.current = false;
         cancelScheduledFrame();
+        webglCanvasEl?.removeEventListener('webglcontextlost', handleWebGlContextLost, false);
+        webglCanvasEl?.removeEventListener('webglcontextrestored', handleWebGlContextRestored, false);
         containerEl.removeEventListener('touchstart', handleTouchStart);
         containerEl.removeEventListener('touchmove', handleTouchMove);
         containerEl.removeEventListener('touchend', handleTouchEnd);
@@ -3239,13 +3272,13 @@ export const CapyGameView: React.FC = () => {
 
   const handleToggleObjectMarkers = () => {
     const nextVal = !gameSettings.showObjectMarkers;
-    AudioService.playCoin();
+    AudioService.playUiClick(nextVal ? 'toggle_on' : 'toggle_off');
     updateGameSettings({ showObjectMarkers: nextVal });
     managerRef.current?.setShowObjectMarkers(nextVal);
   };
 
   const handleSetAstrophysicsPalette = (palette: AstrophysicsPaletteMode) => {
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
     updateGameSettings({ astrophysicsPalette: palette });
     managerRef.current?.setAstrophysicsPalette(palette);
   };
@@ -3297,7 +3330,7 @@ export const CapyGameView: React.FC = () => {
       if (!isZoneUnlocked(targetSub)) {
         setAllFeaturesUnlocked(true);
       }
-      AudioService.playJump();
+      AudioService.playUiClick('select');
       setActiveMode(targetSub);
       setStats((prev: PlayerStats) => {
         const updated = { ...prev, selectedPlayStyle: targetSub };
@@ -3312,7 +3345,7 @@ export const CapyGameView: React.FC = () => {
     if (!isZoneUnlocked('capytorio')) {
       setAllFeaturesUnlocked(true);
     }
-    AudioService.playJump();
+    AudioService.playUiClick('select');
     setActiveMode('capytorio');
     setStats((prev: PlayerStats) => {
       const updated = { ...prev, selectedPlayStyle: 'capytorio' as PlayStyle };
@@ -3335,7 +3368,7 @@ export const CapyGameView: React.FC = () => {
     const wasSeamlessActive = Boolean(
       managerRef.current?.getUniverseScaleTelemetry().active
     );
-    AudioService.playJump();
+    AudioService.playUiClick('select');
     setActiveMode(mode);
     setStats((prev: PlayerStats) => {
       const updated = { ...prev, selectedPlayStyle: mode };
@@ -3377,7 +3410,7 @@ export const CapyGameView: React.FC = () => {
         managerRef.current.enterForestGames('sanctuary', true);
         setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
       }
-      AudioService.playJump();
+      AudioService.playUiClick('select');
     } else if (tutorial.launchTarget === 'capytorio') {
       handleSwitchTopLevelGame('capytorio');
     } else if (tutorial.launchTarget === 'genesis_setup') {
@@ -3401,12 +3434,12 @@ export const CapyGameView: React.FC = () => {
     AudioService.setMuted(nextMuted);
     setIsMuted(nextMuted);
     if (!nextMuted) {
-      AudioService.playCoin();
+      AudioService.playUiClick('toggle_on');
     }
   };
 
   const handleToggleFullscreen = () => {
-    AudioService.playCoin();
+    AudioService.playUiClick('tap');
     const doc = document as Document & {
       webkitFullscreenElement?: Element | null;
       webkitExitFullscreen?: () => Promise<void> | void;
@@ -3455,7 +3488,7 @@ export const CapyGameView: React.FC = () => {
 
   const handleToggleChaseCamera = () => {
     const nextFollow = !gameSettings.cameraFollowBehind;
-    AudioService.playCoin();
+    AudioService.playUiClick(nextFollow ? 'toggle_on' : 'toggle_off');
     updateGameSettings({ cameraFollowBehind: nextFollow });
     showToast(nextFollow ? 'Tracking Camera: Active' : 'Fixed Horizon Camera: Active');
   };
@@ -3468,7 +3501,7 @@ export const CapyGameView: React.FC = () => {
   };
 
   const handleOpenJsonEditor = () => {
-    AudioService.playCoin();
+    AudioService.playUiClick('tap');
     setJsonDraftText(JSON.stringify(proceduralConfigRef.current, null, 2));
     setJsonValidationError(null);
     setJsonValidationWarnings([]);
@@ -3511,7 +3544,7 @@ export const CapyGameView: React.FC = () => {
       setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
       setSnakeTelemetry(managerRef.current.getCapySnakeTelemetry());
     }
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
     showToast(
       regenerate
         ? `Regenerated World: ${cfg.meta.configName} (Seed ${cfg.meta.seed})`
@@ -3618,7 +3651,7 @@ export const CapyGameView: React.FC = () => {
   };
 
   const handleOpenFirstRunSetup = () => {
-    AudioService.playCoin();
+    AudioService.playUiClick('tap');
     setIsMenuOpen(false);
     setIsScaleAtlasOpen(false);
     setIsOpticsOpen(false);
@@ -3656,7 +3689,7 @@ export const CapyGameView: React.FC = () => {
   };
 
   const handleOpenDebugReport = (mode?: 'summary' | 'analysis' | 'detail') => {
-    AudioService.playCoin();
+    AudioService.playUiClick('tap');
     const effectiveMode = mode ?? debugReportMode;
     const report = managerRef.current
       ? managerRef.current.generatePerformanceDebugReport(effectiveMode)
@@ -3701,7 +3734,7 @@ export const CapyGameView: React.FC = () => {
         document.body.removeChild(ta);
       }
       setIsReportCopied(true);
-      AudioService.playCoin();
+      AudioService.playUiClick('select');
       const msg = textToCopy
         ? 'Incident log entry copied'
         : selectedSnippet
@@ -3769,7 +3802,7 @@ export const CapyGameView: React.FC = () => {
       setActiveMode('sanctuary');
       managerRef.current?.switchMode('sanctuary', true);
     }
-    AudioService.playCoin();
+    AudioService.playUiClick('select');
     managerRef.current?.startBuildingPlacementGhost(
       def.type,
       def.name,
@@ -4120,6 +4153,11 @@ export const CapyGameView: React.FC = () => {
         </div>
       )}
 
+      <CapyWebGlContextBanner
+        isContextLost={isWebGlContextLost && !webglError}
+        onReloadScene={() => window.location.reload()}
+      />
+
       {/* Subtle HUD Notice when Free Mouselook (M) is Active */}
       {isFreeMouselook && (
         <div
@@ -4231,7 +4269,7 @@ export const CapyGameView: React.FC = () => {
               type="button"
               data-testid="quick-help-btn"
               onClick={() => {
-                AudioService.playCoin();
+                AudioService.playUiClick('tap');
                 setIsAboutOpen(true);
               }}
               title="About CapyGame & Tutorials"
@@ -4245,7 +4283,7 @@ export const CapyGameView: React.FC = () => {
               type="button"
               data-testid="reveal-top-bar-btn"
               onClick={() => {
-                AudioService.playCoin();
+                AudioService.playUiClick('tap');
                 setIsTopBarVisible(true);
               }}
               title="Show World & Scale Menu Bar"
@@ -4342,7 +4380,7 @@ export const CapyGameView: React.FC = () => {
             data-testid="toggle-scale-atlas-btn"
             aria-expanded={isScaleAtlasOpen}
             onClick={() => {
-              AudioService.playCoin();
+              AudioService.playUiClick('tap');
               setIsScaleAtlasOpen((prev) => {
                 const next = !prev;
                 if (next) {
@@ -4432,7 +4470,7 @@ export const CapyGameView: React.FC = () => {
               data-testid="toggle-optics-panel-btn"
               aria-expanded={isOpticsOpen}
               onClick={() => {
-                AudioService.playCoin();
+                AudioService.playUiClick('tap');
                 setIsOpticsOpen((prev) => {
                   const next = !prev;
                   if (next) {
@@ -4514,7 +4552,7 @@ export const CapyGameView: React.FC = () => {
                 data-testid="toggle-infographic-btn"
                 aria-expanded={isInfographicExpanded}
                 onClick={() => {
-                  AudioService.playCoin();
+                  AudioService.playUiClick('tap');
                   setIsInfographicExpanded((prev) => {
                     const next = !prev;
                     if (next) {
@@ -4677,7 +4715,7 @@ export const CapyGameView: React.FC = () => {
             type="button"
             data-testid="toggle-menu-btn"
             onClick={() => {
-              AudioService.playCoin();
+              AudioService.playUiClick('tap');
               setIsMenuOpen((prev) => {
                 const next = !prev;
                 if (next) {
@@ -4745,7 +4783,7 @@ export const CapyGameView: React.FC = () => {
             type="button"
             data-testid="open-settings-btn"
             onClick={() => {
-              AudioService.playCoin();
+              AudioService.playUiClick('tap');
               setIsSettingsOpen(true);
             }}
             title="Settings"
@@ -4759,7 +4797,7 @@ export const CapyGameView: React.FC = () => {
             type="button"
             data-testid="open-about-btn"
             onClick={() => {
-              AudioService.playCoin();
+              AudioService.playUiClick('tap');
               setIsAboutOpen(true);
             }}
             title="About CapyGame & Tutorials"
@@ -4775,7 +4813,7 @@ export const CapyGameView: React.FC = () => {
               type="button"
               data-testid="top-right-fps-btn"
               onClick={() => {
-                AudioService.playCoin();
+                AudioService.playUiClick('tap');
                 setIsPerfLogOpen((prev) => {
                   const next = !prev;
                   if (next) {
@@ -4836,7 +4874,7 @@ export const CapyGameView: React.FC = () => {
             type="button"
             data-testid="hide-top-bar-btn"
             onClick={() => {
-              AudioService.playCoin();
+              AudioService.playUiClick('back');
               setIsTopBarVisible(false);
               setIsScaleAtlasOpen(false);
               setIsOpticsOpen(false);
@@ -5147,7 +5185,7 @@ export const CapyGameView: React.FC = () => {
             getHighScoreForMode={getHighScoreForMode}
             onUnlockAllFeatures={handleUnlockAllFeatures}
             onOpenCapySelect={() => {
-              AudioService.playCoin();
+              AudioService.playUiClick('select');
               managerRef.current?.setCosmicStage('capy_selection');
               setIsMenuOpen(false);
             }}
@@ -5256,7 +5294,7 @@ export const CapyGameView: React.FC = () => {
                 data-testid="bounties-hud-toggle"
                 aria-expanded={isBountiesOpen}
                 onClick={() => {
-                  AudioService.playCoin();
+                  AudioService.playUiClick('tap');
                   setIsBountiesOpen((prev) => !prev);
                 }}
                 className="h-9 px-2.5 rounded-lg bg-zinc-950/95 hover:bg-zinc-900 border border-white/15 shadow-lg flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-zinc-100 cursor-pointer"
@@ -5831,7 +5869,7 @@ export const CapyGameView: React.FC = () => {
                       type="button"
                       data-testid="shuffle-forest-specimen-btn"
                       onClick={() => {
-                        AudioService.playCoin();
+                        AudioService.playUiClick('select');
                         managerRef.current?.rerollForestSpecimen();
                       }}
                       title="Pick a random Forest Glade specimen"

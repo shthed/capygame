@@ -133,6 +133,18 @@ if (fs.existsSync(distIndexPath)) {
     fs.existsSync(path.join(ROOT, 'dist/manifest.webmanifest')),
     'Missing dist/manifest.webmanifest in production build output'
   );
+  const distAssetsDir = path.join(ROOT, 'dist/assets');
+  if (fs.existsSync(distAssetsDir)) {
+    const assetFiles = fs.readdirSync(distAssetsDir).filter((f) => f.endsWith('.js'));
+    for (const file of assetFiles) {
+      if (file.startsWith('vendor-') || file.startsWith('physics.worker')) continue;
+      const bytes = fs.statSync(path.join(distAssetsDir, file)).size;
+      assertCond(
+        bytes <= 500 * 1024,
+        `Feature chunk budget exceeded (>500 KB): dist/assets/${file} is ${(bytes / 1024).toFixed(1)} KB`
+      );
+    }
+  }
 } else {
   warnings.push('dist/index.html not found yet; run npm run build to validate production bundle output.');
 }

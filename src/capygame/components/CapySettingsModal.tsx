@@ -103,6 +103,137 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
   onChangeSaveJsonDraft,
   onApplyImportedSaveBundle,
 }) => {
+  const audioMixerPanel = (
+    <div
+      data-testid="settings-audio-mixer-panel"
+      className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 space-y-2.5"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold text-zinc-100">Sound &amp; Ambience</div>
+          <div className="text-[11px] text-zinc-400">
+            Warm organic foley, mode ambience &amp; tactile UI clicks
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            data-testid="settings-audio-preview-btn"
+            disabled={isMuted}
+            onClick={() => AudioService.playCoin()}
+            className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border-white/10 disabled:opacity-40 cursor-pointer"
+          >
+            Test
+          </button>
+          <button
+            type="button"
+            data-testid="settings-basic-mute-btn"
+            onClick={onToggleMute}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
+              !isMuted
+                ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/45'
+                : 'bg-zinc-900 text-zinc-400 border-white/10'
+            }`}
+          >
+            {!isMuted ? 'Sound ON' : 'Muted'}
+          </button>
+        </div>
+      </div>
+
+      <div className={`space-y-2 pt-1 ${isMuted ? 'opacity-45 pointer-events-none' : ''}`}>
+        <label className="block space-y-1">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-zinc-300">Master Volume</span>
+            <span className="font-mono text-zinc-400 tabular-nums">
+              {Math.round((gameSettings.masterVolume ?? 0.8) * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            data-testid="settings-slider-master-volume"
+            min={0}
+            max={100}
+            step={5}
+            value={Math.round((gameSettings.masterVolume ?? 0.8) * 100)}
+            onChange={(e) => {
+              const masterVolume = Number(e.target.value) / 100;
+              AudioService.applyMixerSettings({ masterVolume });
+              onUpdateGameSettings({ masterVolume });
+            }}
+            className="w-full accent-emerald-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+          />
+        </label>
+
+        <label className="block space-y-1">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-zinc-300">Sound Effects (SFX)</span>
+            <span className="font-mono text-zinc-400 tabular-nums">
+              {Math.round((gameSettings.sfxVolume ?? 0.75) * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            data-testid="settings-slider-sfx-volume"
+            min={0}
+            max={100}
+            step={5}
+            value={Math.round((gameSettings.sfxVolume ?? 0.75) * 100)}
+            onChange={(e) => {
+              const sfxVolume = Number(e.target.value) / 100;
+              AudioService.applyMixerSettings({ sfxVolume });
+              onUpdateGameSettings({ sfxVolume });
+            }}
+            className="w-full accent-sky-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+          />
+        </label>
+
+        <label className="block space-y-1">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-zinc-300">Ambient Soundscape</span>
+            <span className="font-mono text-zinc-400 tabular-nums">
+              {Math.round((gameSettings.musicVolume ?? 0.45) * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            data-testid="settings-slider-music-volume"
+            min={0}
+            max={100}
+            step={5}
+            value={Math.round((gameSettings.musicVolume ?? 0.45) * 100)}
+            onChange={(e) => {
+              const musicVolume = Number(e.target.value) / 100;
+              AudioService.applyMixerSettings({ musicVolume });
+              onUpdateGameSettings({ musicVolume });
+            }}
+            className="w-full accent-amber-400 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+          />
+        </label>
+
+        <div className="flex items-center justify-between pt-1 border-t border-white/5">
+          <span className="text-[11px] text-zinc-300">Subtle UI Clicks</span>
+          <button
+            type="button"
+            data-testid="settings-toggle-ui-sounds"
+            onClick={() => {
+              const next = !(gameSettings.uiSoundsEnabled ?? true);
+              AudioService.applyMixerSettings({ uiSoundsEnabled: next });
+              onUpdateGameSettings({ uiSoundsEnabled: next });
+              if (next) AudioService.playUiClick('toggle_on');
+            }}
+            className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
+              (gameSettings.uiSoundsEnabled ?? true)
+                ? 'bg-sky-500/20 text-sky-200 border-sky-400/45'
+                : 'bg-zinc-900 text-zinc-400 border-white/10'
+            }`}
+          >
+            {(gameSettings.uiSoundsEnabled ?? true) ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   const saveSyncPanel = (
     <CapySaveSyncPanel
       stats={stats}
@@ -193,24 +324,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
 
           {!isAdvancedMode ? (
             <>
-              <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/80 border border-white/10">
-                <div>
-                  <div className="text-xs font-semibold text-zinc-100">Sound Effects</div>
-                  <div className="text-[11px] text-zinc-400">Music and fun game sounds</div>
-                </div>
-                <button
-                  type="button"
-                  data-testid="settings-basic-mute-btn"
-                  onClick={onToggleMute}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
-                    !isMuted
-                      ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/45'
-                      : 'bg-zinc-900 text-zinc-400 border-white/10'
-                  }`}
-                >
-                  {!isMuted ? 'Sound ON' : 'Muted'}
-                </button>
-              </div>
+              {audioMixerPanel}
 
               <div className="flex items-center justify-between gap-4 p-3 rounded-lg bg-zinc-950/80 border border-white/10">
                 <div>
@@ -434,7 +548,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                     type="button"
                     data-testid="settings-open-about-btn"
                     onClick={() => {
-                      AudioService.playCoin();
+                      AudioService.playUiClick('tap');
                       onOpenAbout();
                     }}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
@@ -446,7 +560,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                     type="button"
                     data-testid="open-privacy-policy-btn"
                     onClick={() => {
-                      AudioService.playCoin();
+                      AudioService.playUiClick('tap');
                       onOpenPrivacy();
                     }}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
@@ -1519,23 +1633,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                 />
               </div>
 
-              <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-950/80 border border-white/10">
-                <div>
-                  <div className="text-xs font-medium text-zinc-200">Audio Synthesis</div>
-                  <div className="text-[10px] text-zinc-500">WebAudio harmonic output</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={onToggleMute}
-                  className={`px-2.5 py-1 rounded text-xs font-mono border cursor-pointer ${
-                    !isMuted
-                      ? 'bg-sky-500/20 text-sky-300 border-sky-400/40'
-                      : 'bg-zinc-900 text-zinc-400 border-white/10'
-                  }`}
-                >
-                  {!isMuted ? 'ON' : 'MUTED'}
-                </button>
-              </div>
+              {audioMixerPanel}
 
               <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/10 flex items-center justify-between gap-2">
                 <div>
@@ -1629,7 +1727,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                     type="button"
                     data-testid="settings-open-about-btn"
                     onClick={() => {
-                      AudioService.playCoin();
+                      AudioService.playUiClick('tap');
                       onOpenAbout();
                     }}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
@@ -1641,7 +1739,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                     type="button"
                     data-testid="open-privacy-policy-btn"
                     onClick={() => {
-                      AudioService.playCoin();
+                      AudioService.playUiClick('tap');
                       onOpenPrivacy();
                     }}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"

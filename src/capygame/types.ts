@@ -340,6 +340,10 @@ export interface CapyGameSettings {
   gpuBloomStrength: number;
   gpuSsaoEnabled: boolean;
   gpuSharpenAmount: number;
+  masterVolume: number;
+  sfxVolume: number;
+  musicVolume: number;
+  uiSoundsEnabled: boolean;
 }
 
 export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
@@ -386,6 +390,10 @@ export const DEFAULT_CAPY_SETTINGS: CapyGameSettings = {
   gpuBloomStrength: 0.15,
   gpuSsaoEnabled: true,
   gpuSharpenAmount: 0.26,
+  masterVolume: 0.8,
+  sfxVolume: 0.75,
+  musicVolume: 0.45,
+  uiSoundsEnabled: true,
 };
 
 export interface ProgressiveUnlockMilestone {
