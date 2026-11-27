@@ -1,6 +1,6 @@
 # CapyGame -- Active Roadmap & Production TODO
 
-This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.4.1`).
+This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.4.2`).
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.
@@ -17,7 +17,7 @@ For subsystem references, see:
 
 - **Phase 1 (`P0` | Play Store Blocker) -- Signed Android `.aab`, Asset Links & Production Auth Domain**: Generate upload keystore, build signed TWA `.aab` from `twa-manifest.json`, publish the Play App Signing SHA-256 fingerprint in `public/.well-known/assetlinks.json`, and verify production Google Sign-In popup compatibility.
 - **Phase 2 (`P0` | Play Store Blocker) -- Play Console Policy, Data Safety & Store Upload**: Submit `https://capyboop.com/privacy.html`, Data Safety declarations for optional Google Drive / Play Games sync, IARC rating, and store listing assets.
-- **Phase 3 (`P1` | Play Store Blocker) -- Physical Android Device QA, Cloud Sync & Lifecycle Resilience**: Profile hardware GPU thermals, Wasm/COOP/COEP headers, live Google Drive sync flows, audio focus, and WebGL context recovery on real Android hardware.
+- **Phase 3 (`P1` | Play Store Blocker) -- Physical Android Device QA, Cloud Sync & Lifecycle Resilience**: Profile hardware GPU thermals, Wasm/COOP headers, live Google Drive sync flows, audio focus, and WebGL context recovery on real Android hardware.
 - **Phase 4 (`P1` | Recommended) -- Release CI Gates & Staged Rollout**: Automate full release gates (`verify:playstore`, E2E, PWA) and progress through Internal, Closed, and Staged Production tracks.
 
 ---
@@ -29,9 +29,8 @@ For subsystem references, see:
   - Run `bubblewrap update --manifest=twa-manifest.json && bubblewrap build` with Android `compileSdk`/`targetSdk` API `35+` and `minSdk` `24`.
 - **Publish Live Google Play App Signing SHA-256 Fingerprint**:
   - Enroll `com.capyboop.capygame` in Google Play App Signing, replace `REPLACE_WITH_PLAY_APP_SIGNING_SHA256_FINGERPRINT` in `public/.well-known/assetlinks.json`, and verify `https://capyboop.com/.well-known/assetlinks.json` returns HTTP 200 `application/json` with zero redirects.
-- **Configure Production Google Sign-In Client ID, Origins & Popup Headers**:
+- **Configure Production Google Sign-In Client ID & Authorized Origins**:
   - Create a public Web Application OAuth 2.0 Client ID in Google Cloud Console with `https://capyboop.com` (and `http://localhost:3000` for dev) under **Authorized JavaScript origins**, enable the Google Drive API (`drive.file` scope), and set the `VITE_GOOGLE_CLIENT_ID` repository variable in GitHub Actions so Google Drive sign-in activates in production builds.
-  - Validate `Cross-Origin-Opener-Policy` in `public/_headers` on Cloudflare Pages: if `same-origin` blocks Google Identity Services popup callbacks on production, switch to `same-origin-allow-popups` (CapyGame's Rapier3D physics worker falls back cleanly to zero-allocation transferable `Float32Array` buffers) and update the corresponding header assertion in `ProgressionAndPhysics.test.ts`.
 - **Validate WebAssembly, Worker & Offline Caching in Android TWA**:
   - Confirm `@dimforge/rapier3d-compat` physics worker and `public/sw.js` offline fallback serve `./index.html`, `./privacy.html`, and hashed JS/Wasm chunks cleanly in standalone Android Chrome Custom Tabs (TWA) mode.
 

@@ -1672,8 +1672,8 @@ test('Phase 5 Build, Security Headers, Manifest & CI Invariants', () => {
 
   // 1. Security & cache headers in public/_headers
   const headers = fs.readFileSync(path.resolve(root, 'public/_headers'), 'utf8');
-  assert.ok(headers.includes('Cross-Origin-Opener-Policy: same-origin'));
-  assert.ok(headers.includes('Cross-Origin-Embedder-Policy: require-corp'));
+  assert.ok(headers.includes('Cross-Origin-Opener-Policy: same-origin-allow-popups'));
+  assert.ok(!headers.includes('Cross-Origin-Embedder-Policy: require-corp'));
   assert.ok(headers.includes('X-Content-Type-Options: nosniff'));
   assert.ok(headers.includes('Referrer-Policy: strict-origin-when-cross-origin'));
   assert.ok(headers.includes('/sw.js'));

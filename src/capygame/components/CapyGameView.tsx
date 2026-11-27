@@ -48,7 +48,9 @@ import {
   detectEmbeddedIframe,
   isEditableKeyboardTarget,
   readDocumentFocusState,
-  shouldAutoSuspendBackgroundLoop,
+  resolveSuspensionMode,
+  shouldCapturePointerOnCanvasDown,
+  shouldUseNativePointerLock,
 } from '../engine/FocusGuard';
 import { AudioService } from '../services/AudioService';
 import { NativeBridge } from '../../services/NativeBridge';
@@ -1282,7 +1284,11 @@ export const CapyGameView: React.FC = () => {
     managerRef.current?.setMouselookLocked(true);
 
     const el = mountRef.current;
-    if (el && typeof el.requestPointerLock === 'function') {
+    if (
+      shouldUseNativePointerLock(isEmbeddedIframeRef.current) &&
+      el &&
+      typeof el.requestPointerLock === 'function'
+    ) {
       try {
         const lockMaybePromise = el.requestPointerLock() as unknown as Promise<void> | undefined;
         if (lockMaybePromise && typeof lockMaybePromise.catch === 'function') {
@@ -1728,20 +1734,26 @@ export const CapyGameView: React.FC = () => {
 
       let firstFrameRendered = false;
 
-      const syncBackgroundSuspension = () => {
+      const syncBackgroundSuspension = (forceFocused: boolean = false) => {
         if (cancelled) return;
         const docFocus = readDocumentFocusState();
-        const shouldSuspend = shouldAutoSuspendBackgroundLoop({
+        const effectiveWindowFocused = forceFocused
+          ? true
+          : isWindowFocusedRef.current && docFocus.documentHasFocus;
+        const suspendMode = resolveSuspensionMode({
           isManuallyPaused: isGamePausedRef.current,
           isDocumentHidden: docFocus.visibilityState === 'hidden',
           isEmbeddedIframe: isEmbeddedIframeRef.current,
-          isWindowFocused: isWindowFocusedRef.current && docFocus.documentHasFocus,
+          isWindowFocused: effectiveWindowFocused,
           firstFrameRendered,
         });
+        const shouldSuspend = suspendMode !== 'none';
         isBackgroundSuspendedRef.current = shouldSuspend;
         if (shouldSuspend || isGamePausedRef.current) {
           cancelScheduledFrame();
-          manager.setPaused(true);
+          manager.setPaused(true, {
+            releaseResources: suspendMode === 'deep' || isGamePausedRef.current,
+          });
         } else {
           manager.setPaused(false);
           lastTime = performance.now();
@@ -1751,7 +1763,7 @@ export const CapyGameView: React.FC = () => {
           }
         }
       };
-      syncBackgroundSuspensionRef.current = syncBackgroundSuspension;
+      syncBackgroundSuspensionRef.current = () => syncBackgroundSuspension(false);
 
       const animate = (now: number) => {
         animFrameId = 0;
@@ -2257,10 +2269,34 @@ export const CapyGameView: React.FC = () => {
 
       const handleWindowPointerDown = () => {
         altTapCandidateRef.current = false;
-        if (!isWindowFocusedRef.current) {
-          isWindowFocusedRef.current = true;
-          syncBackgroundSuspension();
+        const wasUnfocusedOrSuspended =
+          !isWindowFocusedRef.current || isBackgroundSuspendedRef.current;
+        isWindowFocusedRef.current = true;
+        if (wasUnfocusedOrSuspended) {
+          syncBackgroundSuspension(true);
         }
+      };
+
+      const handleWindowPointerUpOrCancel = (e: PointerEvent) => {
+        const g = pointerGestureRef.current;
+        if (g.pointerId !== e.pointerId) return;
+        releaseCanvasPointerCapture();
+        g.pointerId = null;
+        if (capytorioDragRef.current.active) {
+          capytorioDragRef.current.active = false;
+          capytorioDragRef.current.mode = 'none';
+          capytorioDragRef.current.placedAny = false;
+          capytorioDragRef.current.batchStarted = false;
+          setCapytorioSelectionOverlay(null);
+        }
+        if (syncMoveInputRef.current) {
+          syncMoveInputRef.current();
+        } else if (managerRef.current) {
+          managerRef.current.moveInput.x = 0;
+          managerRef.current.moveInput.z = 0;
+          managerRef.current.pointerTargetX = null;
+        }
+        setTouchVisual((prev) => (prev.active ? { ...prev, active: false } : prev));
       };
 
       const handleWindowMouseMove = (e: MouseEvent) => {
@@ -2322,20 +2358,14 @@ export const CapyGameView: React.FC = () => {
         clearHeldInputs();
         stopMobileZoomHold();
         releaseCanvasPointerCapture();
+        pointerGestureRef.current.pointerId = null;
         if (isFreeMouselookRef.current) {
           setFreeMouselookActive(false);
         }
-        if (typeof document !== 'undefined') {
-          const activeEl = document.activeElement;
-          if (activeEl instanceof HTMLElement && activeEl !== document.body) {
-            try {
-              activeEl.blur();
-            } catch {
-              // Ignore blur errors
-            }
-          }
-        }
-        syncBackgroundSuspension();
+        // Never call document.activeElement.blur() inside a window blur handler:
+        // in Chromium cross-origin iframes (OOPIFs), calling .blur() during focus handoff
+        // can bounce focus back into the iframe and prevent typing in the host page.
+        syncBackgroundSuspension(false);
       };
 
       const handleDocumentVisibilityChange = () => {
@@ -2383,6 +2413,9 @@ export const CapyGameView: React.FC = () => {
         e.preventDefault();
         const zoomDelta = -e.deltaY * 0.0012;
         managerRef.current.adjustZoom(zoomDelta);
+        if (isBackgroundSuspendedRef.current && !isGamePausedRef.current) {
+          managerRef.current.renderImmediateFrame(0.016);
+        }
         setUniverseScale(managerRef.current.getUniverseScaleTelemetry());
       };
 
@@ -2395,6 +2428,8 @@ export const CapyGameView: React.FC = () => {
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('keyup', handleKeyUp);
       window.addEventListener('pointerdown', handleWindowPointerDown, true);
+      window.addEventListener('pointerup', handleWindowPointerUpOrCancel);
+      window.addEventListener('pointercancel', handleWindowPointerUpOrCancel);
       window.addEventListener('mousemove', handleWindowMouseMove);
       window.addEventListener('focus', handleWindowFocus);
       window.addEventListener('blur', handleWindowBlur);
@@ -2419,6 +2454,8 @@ export const CapyGameView: React.FC = () => {
         window.removeEventListener('keydown', handleKeyDown);
         window.removeEventListener('keyup', handleKeyUp);
         window.removeEventListener('pointerdown', handleWindowPointerDown, true);
+        window.removeEventListener('pointerup', handleWindowPointerUpOrCancel);
+        window.removeEventListener('pointercancel', handleWindowPointerUpOrCancel);
         window.removeEventListener('mousemove', handleWindowMouseMove);
         window.removeEventListener('focus', handleWindowFocus);
         window.removeEventListener('blur', handleWindowBlur);
@@ -2475,11 +2512,13 @@ export const CapyGameView: React.FC = () => {
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!managerRef.current) return;
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      activePointerCaptureIdRef.current = e.pointerId;
-    } catch {
-      // Ignore pointer capture errors on synthetic events
+    if (shouldCapturePointerOnCanvasDown(isEmbeddedIframeRef.current, e.pointerType)) {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        activePointerCaptureIdRef.current = e.pointerId;
+      } catch {
+        // Ignore pointer capture errors on synthetic events
+      }
     }
 
     const pointerType =
@@ -4029,6 +4068,7 @@ export const CapyGameView: React.FC = () => {
         onPointerMove={handleCanvasPointerMove}
         onPointerUp={handleCanvasPointerUpOrCancel}
         onPointerCancel={handleCanvasPointerUpOrCancel}
+        onLostPointerCapture={handleCanvasPointerUpOrCancel}
         onPointerLeave={() => {
           setCapytorioPointerHoverActive(false);
           managerRef.current?.clearCapytorioPointerHover();

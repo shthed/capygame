@@ -1,3 +1,8 @@
+import {
+  detectEmbeddedIframe,
+  shouldUseHistoryBackSentinel,
+} from '../capygame/engine/FocusGuard';
+
 export type HapticType = 'tick' | 'success' | 'warning' | 'error';
 
 export interface PlayGamesPlayerProfile {
@@ -100,7 +105,13 @@ class NativeBridgeService {
   }
 
   private pushHistorySentinel(): void {
-    if (this.hasHistorySentinel || typeof window === 'undefined') return;
+    if (
+      this.hasHistorySentinel ||
+      typeof window === 'undefined' ||
+      !shouldUseHistoryBackSentinel(detectEmbeddedIframe())
+    ) {
+      return;
+    }
     try {
       const currentState =
         window.history.state && typeof window.history.state === 'object'
@@ -122,6 +133,7 @@ class NativeBridgeService {
   private popHistorySentinelSilently(): void {
     if (!this.hasHistorySentinel || typeof window === 'undefined') return;
     this.hasHistorySentinel = false;
+    if (!shouldUseHistoryBackSentinel(detectEmbeddedIframe())) return;
     try {
       const state = window.history.state as Record<string, unknown> | null;
       if (state && state[BACK_SENTINEL_KEY]) {

@@ -1376,11 +1376,14 @@ export class PlayStyleManager {
 
   private deferredBootComplete: boolean = false;
   private idleWarmupComplete: boolean = false;
+  private isDeepPausedState: boolean = false;
 
-  public setPaused(paused: boolean): void {
-    if (this.disposed || this.isPausedState === paused) return;
-    this.isPausedState = paused;
+  public setPaused(paused: boolean, options?: { releaseResources?: boolean }): void {
+    if (this.disposed) return;
+    const releaseResources = options?.releaseResources ?? true;
     if (paused) {
+      if (this.isPausedState && (!releaseResources || this.isDeepPausedState)) return;
+      this.isPausedState = true;
       this.moveInput.x = 0;
       this.moveInput.z = 0;
       this.isJumping = false;
@@ -1392,13 +1395,21 @@ export class PlayStyleManager {
       this.forestHydrationCancel = null;
       this.idleWarmupCancel?.();
       this.idleWarmupCancel = null;
-      ProgressionService.flushPendingSave();
-      this.physicsBridge?.suspendForPause();
-      this.gpuEngine?.suspendForPause();
       AudioService.suspendForPause();
+      if (releaseResources && !this.isDeepPausedState) {
+        this.isDeepPausedState = true;
+        ProgressionService.flushPendingSave();
+        this.physicsBridge?.suspendForPause();
+        this.gpuEngine?.suspendForPause();
+      }
     } else {
-      this.physicsBridge?.resumeFromPause();
-      this.gpuEngine?.resumeFromPause();
+      if (!this.isPausedState && !this.isDeepPausedState) return;
+      this.isPausedState = false;
+      if (this.isDeepPausedState) {
+        this.isDeepPausedState = false;
+        this.physicsBridge?.resumeFromPause();
+        this.gpuEngine?.resumeFromPause();
+      }
       AudioService.resumeFromPause();
       if (
         !this.surfaceWorldsBuilt &&

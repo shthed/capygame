@@ -6,8 +6,12 @@ import {
   detectEmbeddedIframe,
   isEditableKeyboardTarget,
   readDocumentFocusState,
+  resolveSuspensionMode,
   shouldAutoSuspendBackgroundLoop,
+  shouldCapturePointerOnCanvasDown,
   shouldRunDeferredSearchFocus,
+  shouldUseHistoryBackSentinel,
+  shouldUseNativePointerLock,
 } from './FocusGuard';
 
 test('detectEmbeddedIframe handles top-level, iframe, and cross-origin SecurityError', () => {
@@ -221,3 +225,64 @@ test('readDocumentFocusState safely reads document focus and visibility', () => 
     { documentHasFocus: false, visibilityState: 'hidden' }
   );
 });
+
+test('resolveSuspensionMode distinguishes soft iframe blur from deep manual/hidden pause', () => {
+  // Unfocused embedded iframe after Frame 1 -> soft pause (keeps GPU FBOs & physics warm)
+  assert.equal(
+    resolveSuspensionMode({
+      isManuallyPaused: false,
+      isDocumentHidden: false,
+      isEmbeddedIframe: true,
+      isWindowFocused: false,
+      firstFrameRendered: true,
+    }),
+    'soft'
+  );
+  // Hidden document -> deep pause (releases GPU FBOs & worker)
+  assert.equal(
+    resolveSuspensionMode({
+      isManuallyPaused: false,
+      isDocumentHidden: true,
+      isEmbeddedIframe: true,
+      isWindowFocused: false,
+      firstFrameRendered: true,
+    }),
+    'deep'
+  );
+  // Manual pause -> deep pause
+  assert.equal(
+    resolveSuspensionMode({
+      isManuallyPaused: true,
+      isDocumentHidden: false,
+      isEmbeddedIframe: false,
+      isWindowFocused: true,
+      firstFrameRendered: true,
+    }),
+    'deep'
+  );
+  // Focused embedded iframe -> active ('none')
+  assert.equal(
+    resolveSuspensionMode({
+      isManuallyPaused: false,
+      isDocumentHidden: false,
+      isEmbeddedIframe: true,
+      isWindowFocused: true,
+      firstFrameRendered: true,
+    }),
+    'none'
+  );
+});
+
+test('embedded iframe guards disable native pointer lock, mouse pointer capture, and history sentinel', () => {
+  assert.equal(shouldUseNativePointerLock(true), false);
+  assert.equal(shouldUseNativePointerLock(false), true);
+
+  assert.equal(shouldCapturePointerOnCanvasDown(true, 'mouse'), false);
+  assert.equal(shouldCapturePointerOnCanvasDown(true, 'touch'), true);
+  assert.equal(shouldCapturePointerOnCanvasDown(true, 'pen'), true);
+  assert.equal(shouldCapturePointerOnCanvasDown(false, 'mouse'), true);
+
+  assert.equal(shouldUseHistoryBackSentinel(true), false);
+  assert.equal(shouldUseHistoryBackSentinel(false), true);
+});
+

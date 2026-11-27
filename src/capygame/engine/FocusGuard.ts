@@ -149,6 +149,28 @@ export function shouldRunDeferredSearchFocus(
   return canRequestProgrammaticFocus(env);
 }
 
+export type BackgroundSuspendMode = 'none' | 'soft' | 'deep';
+
+/**
+ * Classifies how aggressively the engine should suspend:
+ * - 'deep': User manually paused or browser tab is hidden -> release GPU composer FBOs
+ *   and terminate the off-thread physics worker to reclaim VRAM/RAM.
+ * - 'soft': Embedded iframe is visible on screen (e.g. live preview beside a host chat)
+ *   but unfocused -> stop scheduling rAF and pause audio/input cleanly while keeping GPU
+ *   FBOs and Wasm physics warm so the user's first click/interaction resumes instantly
+ *   without a shader/FBO rebuild freeze.
+ * - 'none': Active foreground gameplay.
+ */
+export function resolveSuspensionMode(input: BackgroundSuspendInput): BackgroundSuspendMode {
+  if (input.isManuallyPaused || input.isDocumentHidden) {
+    return 'deep';
+  }
+  if (input.isEmbeddedIframe && !input.isWindowFocused && input.firstFrameRendered) {
+    return 'soft';
+  }
+  return 'none';
+}
+
 /**
  * Determines whether the 3D render/physics/audio loop should automatically suspend:
  * - Always suspended when manually paused or tab is hidden.
@@ -157,10 +179,34 @@ export function shouldRunDeferredSearchFocus(
  *   not have user focus so background rendering never interferes with typing in the host UI.
  */
 export function shouldAutoSuspendBackgroundLoop(input: BackgroundSuspendInput): boolean {
-  if (input.isManuallyPaused) return true;
-  if (input.isDocumentHidden) return true;
-  if (input.isEmbeddedIframe && !input.isWindowFocused && input.firstFrameRendered) {
-    return true;
-  }
-  return false;
+  return resolveSuspensionMode(input) !== 'none';
 }
+
+/**
+ * Native Pointer Lock inside an embedded cross-origin iframe traps cursor and focus
+ * handoff back to the host page; use the non-locking delta fallback when embedded.
+ */
+export function shouldUseNativePointerLock(isEmbeddedIframe: boolean): boolean {
+  return !isEmbeddedIframe;
+}
+
+/**
+ * Inside an embedded iframe, avoid calling `setPointerCapture` for mouse pointers so a
+ * cross-origin iframe never retains pointer capture when the user clicks out into host UI.
+ */
+export function shouldCapturePointerOnCanvasDown(
+  isEmbeddedIframe: boolean,
+  pointerType: string
+): boolean {
+  if (!isEmbeddedIframe) return true;
+  return pointerType === 'touch' || pointerType === 'pen';
+}
+
+/**
+ * Android TWA/PWA hardware Back sentinels use `window.history.pushState`/`history.back`,
+ * which mutates the shared top-level browser history stack; disable inside embedded iframes.
+ */
+export function shouldUseHistoryBackSentinel(isEmbeddedIframe: boolean): boolean {
+  return !isEmbeddedIframe;
+}
+

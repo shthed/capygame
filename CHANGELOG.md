@@ -2,6 +2,12 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.4.2] - 2026-11-27
+
+- Updated `public/_headers` to serve `Cross-Origin-Opener-Policy: same-origin-allow-popups` and removed `Cross-Origin-Embedder-Policy: require-corp` so Google Identity Services sign-in popups return tokens cleanly and Google profile avatars load without CORP blocking (Rapier3D physics falls back automatically to zero-copy transferable `Float32Array` buffers), and synchronized header assertions in `ProgressionAndPhysics.test.ts` plus `TODO.md` and `docs/ANDROID_PLAY_STORE.md`.
+- Fixed embedded preview iframe focus handoff so players can click directly from CapyGame back into a host page text input without getting focus-trapped: removed `document.activeElement.blur()` from the `window` blur handler (preventing Chromium OOPIF focus bounce), disabled native pointer lock, mouse `setPointerCapture`, and top-level `history.pushState`/`history.back` sentinels inside embedded iframes, and added `lostpointercapture` plus `window` `pointerup`/`pointercancel` drag cleanup.
+- Fixed the first-interaction freeze when clicking or scrolling inside an embedded preview iframe by separating lightweight soft focus-suspension (`resolveSuspensionMode` -> `'soft'`, keeping WebGL2 `EffectComposer` FBOs and the Rapier3D worker warm) from deep pause (`'deep'` on manual pause or hidden tab), waking the animation loop immediately on the first `pointerdown`, and rendering an immediate frame on wheel zoom while background-suspended.
+
 ## [1.4.1] - 2026-11-27
 
 - Removed the Firebase SDK dependency and client config file, switching Google Drive cloud save sync in `CloudSyncService.ts` to direct, lazy-loaded Google Identity Services (GIS) OAuth configured via the public `VITE_GOOGLE_CLIENT_ID` environment variable (zero Firebase SDK, zero Google API keys, strict in-memory OAuth token caching with revoke on sign-out, and graceful offline fallback when unset).
