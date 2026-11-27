@@ -11,12 +11,13 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/App.tsx` | Minimal root React component mounting `CapyGameView`. |
 | `src/main.tsx` | React 19 entry point wrapping `App` in `AppErrorBoundary` and initializing `PwaService`. |
 | `src/components/AppErrorBoundary.tsx` | Diagnostic crash and WebGL recovery boundary with cache-reset controls. |
-| `src/services/NativeBridge.ts` | Web vibration haptics (`navigator.vibrate`), `history.pushState`/`popstate` Android hardware Back sentinel, and optional Capacitor `backButton` modal dismissal. |
+| `src/services/NativeBridge.ts` | Web vibration haptics (`navigator.vibrate`), `history.pushState`/`popstate` Android hardware Back sentinel, optional Capacitor `backButton` modal dismissal, and typed Android Google Play Games Services v2 bridge interfaces (`CapyPlayGamesBridge` / `Capacitor.Plugins.PlayGames`). |
 | `src/services/PwaService.ts` | Offline Service Worker registration (`./sw.js`) and PWA install prompt lifecycle. |
 | `src/capygame/types.ts` | Scale band definitions (`UNIVERSE_SCALE_BANDS`), `PlayStyle` zones, `CapyGameSettings`, `ChronoVesselViewMode`, `PlayerStats`, and mutation/building catalogs. |
 | `src/capygame/config/appVersion.ts` | Build-time version helper injecting `package.json` SemVer via Vite (`__CAPYGAME_VERSION__`) and formatting `vX.Y.Z` labels. |
 | `src/capygame/config/ProceduralGameConfig.ts` | Deterministic `mulberry32` seed PRNG, Fine-Structure Constant ($\alpha^{-1}$) physics solver (`computeFineStructurePhysics`), validated full-game JSON schema, 5 presets, `capy_game_procedural_config_v1`, and `capy_game_onboarding_v1` persistence. |
 | `src/capygame/components/CapyGameView.tsx` | Single `40px` (`h-10`) safe-area-aware top HUD (`unified-top-bar`) with 3-mode switcher (`Infinite Zoom`, `Forest Games`, `Capytorio`), post-paint lazy `PlayStyleManager` loader with zero-CLS boot shell, and `React.lazy` code-split modals (`CapyAboutModal`, `CapyJsonConfigModal`, `CapySettingsModal`, `CapyPerfReportModal`, `CapyFirstRunModal`, `CapytorioPediaView`, `CapytorioEntityInfoPanel`). |
+| `src/capygame/components/CapySaveSyncPanel.tsx` | Modular Save Backup & Cloud Sync card embedded in both Basic and Advanced Settings with v2 JSON export/copy/file/drag-and-drop/paste import, Google Drive & Play Games sign-in controls, and side-by-side overwrite/restore/delete confirmation dialogs. |
 | `src/capygame/components/CapytorioPediaView.tsx` | Lazy-loaded Capytorio recipe, item, and technology encyclopedia viewer. |
 | `src/capygame/components/CapytorioEntityInfoPanel.tsx` | Lazy-loaded interactive Capytorio entity inspector panel (inventory, fuel feeding, recipe selection, power telemetry). |
 | `src/capygame/engine/TutorialCatalog.ts` | Plain-English game overview copy and interactive step-by-step tutorial definitions (`Cosmic Scale & Flight`, `Capy Island & Capy-Snake`, `Capytorio Factory`, `Pilot, Ship & Universe Setup`) that launch directly into their matching mode. |
@@ -52,7 +53,10 @@ This document details the architecture, multi-scale astrophysical simulation, co
 | `src/capygame/engine/physics/PhysicsWorldBridge.ts` | `SharedArrayBuffer` / transferable `Float32Array` main-thread bridge to `physics.worker.ts`, yaw-aware swept-CCD projection, shallow-water buoyancy, and XPBD soft-body pads. |
 | `src/capygame/engine/physics/physics.worker.ts` | Dedicated Web Worker exclusively bundling `@dimforge/rapier3d-compat` Wasm rigid bodies, swept CCD, `RevoluteJoint` see-saws, and kinematic sweepers. |
 | `src/capygame/services/AudioService.ts` | Procedural Web Audio synthesizer with master `DynamicsCompressorNode`, damped stereo delay reverb bus, surface-aware paw foley, and clean context disposal. |
-| `src/capygame/services/ProgressionService.ts` | Persistent `PlayerStats` (`capy_game_save_v3`), validated DNA/CapyCoin economy & Prestige Ascension, JSON save portability, and `CapyGameSettings` (`capy_game_settings_v1`). |
+| `src/capygame/services/ProgressionService.ts` | Persistent `PlayerStats` (`capy_game_save_v3`, `capy_game_save_updated_ms`), validated DNA/CapyCoin economy & Prestige Ascension, full-profile `capygame-save-bundle-v2` export/import (backward-compatible with v1/raw JSON), and `CapyGameSettings` (`capy_game_settings_v1`). |
+| `src/capygame/services/SaveSyncMath.ts` | Pure snapshot summarization (`buildSaveSnapshotSummary`), local-vs-remote conflict comparison (`compareSaveSnapshots`), and timestamp/ghost-time formatting helpers. |
+| `src/capygame/services/CloudSyncService.ts` | Unified cloud sync adapter combining direct browser Google Drive v3 REST helpers (`CapyGame-Cloud-Save.json`, `drive.file` scope) with native Android Google Play Games Services v2 snapshot hooks. |
+| `src/capygame/services/FirebaseDriveAuth.ts` | Lazy-loaded client-side Firebase Authentication popup wrapper (`vendor-firebase` chunk) requesting `drive.file` with strict in-memory OAuth access token caching and `onAuthStateChanged` cleanup. |
 
 ---
 
