@@ -487,6 +487,9 @@ data:extend({
     effects = {
       { type = "unlock-recipe", recipe = "production-science-pack" },
       { type = "unlock-recipe", recipe = "assembling-machine-3" },
+      { type = "unlock-recipe", recipe = "centrifuge" },
+      { type = "unlock-recipe", recipe = "uranium-processing" },
+      { type = "unlock-recipe", recipe = "uranium-fuel-cell" },
       { type = "unlock-recipe", recipe = "nuclear-reactor" },
       { type = "unlock-recipe", recipe = "steam-turbine" },
     },

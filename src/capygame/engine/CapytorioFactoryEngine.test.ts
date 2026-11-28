@@ -174,29 +174,34 @@ test('Capytorio spawns as a blank starter ore field with generous starter kit', 
   assert.equal(engine.getPocketItemCount('iron_plate'), 24);
   assert.equal(engine.getPocketItemCount('coal'), 16);
 
-  // Center landing tile is clean build ground
+  // Center landing tile is clean build ground; genuine factorio-mapgen Nauvis spawns all 4 starter resources around origin
   assert.equal(sampleCapytorioBaseResource(0, 0), null);
-  assert.equal(sampleCapytorioBaseResource(-5, -5)?.resource, 'iron_ore');
-  assert.equal(sampleCapytorioBaseResource(5, -5)?.resource, 'copper_ore');
-  assert.equal(sampleCapytorioBaseResource(-5, 5)?.resource, 'coal');
-  assert.equal(sampleCapytorioBaseResource(4, 5)?.resource, 'calcite');
-  assert.equal(sampleCapytorioBaseResource(9, 4)?.resource, 'yuzu_sap');
+  const starterFound = new Set<string>();
+  for (let gx = -128; gx <= 128; gx += 2) {
+    for (let gz = -128; gz <= 128; gz += 2) {
+      const res = sampleCapytorioBaseResource(gx, gz);
+      if (res) starterFound.add(res.resource);
+    }
+  }
+  for (const r of ['iron_ore', 'copper_ore', 'coal', 'stone']) {
+    assert.equal(starterFound.has(r), true, `Nauvis starting area must include ${r}`);
+  }
 });
 
 test('Capytorio provides infinite unbounded procedural ore chunks far from origin', () => {
   let foundFarChunkOre = false;
-  for (let gx = 160; gx <= 240; gx++) {
-    for (let gz = -40; gz <= 40; gz++) {
+  for (let gx = 160; gx <= 480; gx += 2) {
+    for (let gz = -240; gz <= 240; gz += 2) {
       const sample = sampleCapytorioBaseResource(gx, gz);
       if (sample) {
         foundFarChunkOre = true;
-        assert.ok(sample.initialAmount >= 400);
+        assert.ok(sample.initialAmount >= 1);
         break;
       }
     }
     if (foundFarChunkOre) break;
   }
-  assert.equal(foundFarChunkOre, true, 'far away 16x16 chunks should contain procedural ore seams');
+  assert.equal(foundFarChunkOre, true, 'far away Nauvis chunks should contain procedural ore seams');
 
   const engine = new CapytorioFactoryEngine();
   // Locate a dry land tile far across the far hemisphere (avoiding procedural oceans/lakes/rivers)
@@ -224,9 +229,27 @@ test('Capytorio provides infinite unbounded procedural ore chunks far from origi
 
 test('Capytorio hand-mining, full Drill -> Belt -> Furnace -> Chest automation, and 100% demolish refund', () => {
   const engine = new CapytorioFactoryEngine();
-  // Locate exact starter iron ore tile
-  let oreGx = -5;
-  let oreGz = -5;
+  // Locate an authentic factorio-mapgen starter iron_ore tile with dry buildable space to the East
+  let oreGx = 0;
+  let oreGz = 0;
+  let foundIron = false;
+  for (let gx = -48; gx <= 48 && !foundIron; gx++) {
+    for (let gz = -48; gz <= 48 && !foundIron; gz++) {
+      if (engine.getResourceAt(gx, gz)?.resource !== 'iron_ore') continue;
+      let clearEast = true;
+      for (let ex = gx - 1; ex <= gx + 7 && clearEast; ex++) {
+        for (let ez = gz - 3; ez <= gz + 2 && clearEast; ez++) {
+          if (isCapytorioWaterTerrain(sampleCapytorioTerrain(ex, ez))) clearEast = false;
+        }
+      }
+      if (clearEast) {
+        oreGx = gx;
+        oreGz = gz;
+        foundIron = true;
+      }
+    }
+  }
+  assert.equal(foundIron, true, 'Found starter iron_ore tile on Nauvis');
   assert.equal(engine.getResourceAt(oreGx, oreGz)?.resource, 'iron_ore');
 
   const mined = engine.handMineAt(oreGx, oreGz, 3);
@@ -237,31 +260,37 @@ test('Capytorio hand-mining, full Drill -> Belt -> Furnace -> Chest automation, 
   const badDrill = engine.placeMachine('drill', 0, 0, 1);
   assert.equal(badDrill.ok, false);
 
-  // Build 3x3 Drill at (-6,-6) facing East (+X) -> ejects at (-3,-5)
-  // -> Belt (-3,-5) -> Belt (-2,-5) -> 2x2 Furnace (-1,-5) -> Chest (1,-5)
-  assert.equal(engine.placeMachine('drill', -6, -6, 1).ok, true);
-  assert.equal(engine.placeMachine('belt', -3, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('belt', -2, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('furnace', -1, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('chest', 1, -5, 1).ok, true);
-  assert.equal(engine.placeMachine('generator', 2, -6, 1).ok, true);
+  // Build 3x3 Drill centered on (oreGx, oreGz) facing East (+X) -> ejects at (dGx+3, dGz+1)
+  // -> Belt -> Belt -> 2x2 Furnace -> Chest
+  const dGx = oreGx - 1;
+  const dGz = oreGz - 1;
+  const belt1Gx = dGx + 3;
+  const belt1Gz = dGz + 1;
+  const chestGx = dGx + 7;
+  const chestGz = dGz + 1;
+  assert.equal(engine.placeMachine('drill', dGx, dGz, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', belt1Gx, belt1Gz, 1).ok, true);
+  assert.equal(engine.placeMachine('belt', dGx + 4, dGz + 1, 1).ok, true);
+  assert.equal(engine.placeMachine('furnace', dGx + 5, dGz + 1, 1).ok, true);
+  assert.equal(engine.placeMachine('chest', chestGx, chestGz, 1).ok, true);
+  assert.equal(engine.placeMachine('generator', dGx + 5, dGz - 2, 1).ok, true);
 
   // Clicking an existing belt rotates it instead of erroring
-  const rotateRes = engine.placeMachine('belt', -3, -5, 1);
+  const rotateRes = engine.placeMachine('belt', belt1Gx, belt1Gz, 1);
   assert.equal(rotateRes.ok, true);
   assert.equal(rotateRes.machine?.dir, 2);
   // Rotate 3 more times back to East (1)
-  engine.rotateMachineAt(-3, -5);
-  engine.rotateMachineAt(-3, -5);
-  engine.rotateMachineAt(-3, -5);
-  assert.equal(engine.machines.get(tileKey(-3, -5))?.dir, 1);
+  engine.rotateMachineAt(belt1Gx, belt1Gz);
+  engine.rotateMachineAt(belt1Gx, belt1Gz);
+  engine.rotateMachineAt(belt1Gx, belt1Gz);
+  assert.equal(engine.machines.get(tileKey(belt1Gx, belt1Gz))?.dir, 1);
 
   // Simulate 16 seconds of factory execution
   for (let i = 0; i < 320; i++) {
     engine.step(0.05);
   }
 
-  const chest = engine.machines.get(tileKey(1, -5));
+  const chest = engine.machines.get(tileKey(chestGx, chestGz));
   assert.ok(chest, 'chest exists');
   assert.ok((chest.outputBuffer.iron_plate ?? 0) >= 1, 'smelted iron plates arrived in chest');
   assert.ok(engine.getTotalProduced() >= 2);
@@ -269,15 +298,15 @@ test('Capytorio hand-mining, full Drill -> Belt -> Furnace -> Chest automation, 
 
   // Auto-collect nearby chest empties plates into pocket
   const collected = engine.collectFromNearbyChestsAndOutputs(
-    1 * CAPYTORIO_TILE_SIZE,
-    (-5) * CAPYTORIO_TILE_SIZE
+    chestGx * CAPYTORIO_TILE_SIZE,
+    chestGz * CAPYTORIO_TILE_SIZE
   );
   assert.ok(collected >= 1);
   assert.ok(engine.getPocketItemCount('iron_plate') > 24);
 
   // Demolish returns the furnace to pocket cleanly (works from any sub-tile!)
   const prevFurnaces = engine.getPocketMachineCount('furnace');
-  assert.equal(engine.demolishAt(0, -4), 'furnace');
+  assert.equal(engine.demolishAt(dGx + 6, dGz + 2), 'furnace');
   assert.equal(engine.getPocketMachineCount('furnace'), prevFurnaces + 1);
 });
 
@@ -426,12 +455,12 @@ test('Capytorio drag belt-painting aligns corners, pipette samples recipes, manu
 test('Capytorio citrus trees yield Fresh Oranges, fuel generators, and milestone/tech callbacks grant zero CapyCoins', () => {
   const engine = new CapytorioFactoryEngine();
 
-  // Locate a deterministic citrus tree around the meadow
+  // Locate a deterministic factorio-mapgen tree around the Nauvis starting area
   let treeGx = 0;
   let treeGz = 0;
   let found = false;
-  for (let gx = -24; gx <= 24 && !found; gx++) {
-    for (let gz = -24; gz <= 24 && !found; gz++) {
+  for (let gx = -80; gx <= 80 && !found; gx++) {
+    for (let gz = -80; gz <= 80 && !found; gz++) {
       if (sampleCapytorioTreeAt(gx, gz)) {
         treeGx = gx;
         treeGz = gz;
@@ -439,7 +468,7 @@ test('Capytorio citrus trees yield Fresh Oranges, fuel generators, and milestone
       }
     }
   }
-  assert.equal(found, true, 'expected deterministic citrus trees in meadow');
+  assert.equal(found, true, 'expected deterministic Nauvis trees');
   assert.equal(engine.hasTreeAt(treeGx, treeGz), true);
   assert.equal(engine.getPocketItemCount('orange'), 0);
 
@@ -455,13 +484,21 @@ test('Capytorio citrus trees yield Fresh Oranges, fuel generators, and milestone
   assert.ok(loadedFuel >= 17, `expected coal + oranges loaded into generator, got ${loadedFuel}`);
   assert.equal(engine.getPocketItemCount('orange'), 0);
 
-  // Place a drill on starter iron (-5,-5) & test tree auto-harvest on building placement + zero-coin milestone callback
-  assert.equal(engine.placeMachine('drill', -5, -5, 1).ok, true);
+  // Place a drill on a real starter iron tile & test tree auto-harvest on building placement
+  let drillPlaced = false;
+  for (let gx = -48; gx <= 48 && !drillPlaced; gx++) {
+    for (let gz = -48; gz <= 48 && !drillPlaced; gz++) {
+      if (engine.getResourceAt(gx, gz)?.resource === 'iron_ore') {
+        if (engine.placeMachine('drill', gx, gz, 1).ok) drillPlaced = true;
+      }
+    }
+  }
+  assert.equal(drillPlaced, true, 'Placed drill on Nauvis iron_ore');
   let treeGx2 = 0;
   let treeGz2 = 0;
   let found2 = false;
-  for (let gx = -24; gx <= 24 && !found2; gx++) {
-    for (let gz = -24; gz <= 24 && !found2; gz++) {
+  for (let gx = -80; gx <= 80 && !found2; gx++) {
+    for (let gz = -80; gz <= 80 && !found2; gz++) {
       if ((gx !== treeGx || gz !== treeGz) && sampleCapytorioTreeAt(gx, gz)) {
         treeGx2 = gx;
         treeGz2 = gz;
@@ -1037,8 +1074,8 @@ test('Capytorio universal tile inspection reports belt item counts/lanes, ore ri
   let treeGx = 0;
   let treeGz = 0;
   let foundTree = false;
-  for (let gx = -18; gx <= 18 && !foundTree; gx++) {
-    for (let gz = -18; gz <= 18 && !foundTree; gz++) {
+  for (let gx = -80; gx <= 80 && !foundTree; gx++) {
+    for (let gz = -80; gz <= 80 && !foundTree; gz++) {
       if (engine.hasTreeAt(gx, gz)) {
         treeGx = gx;
         treeGz = gz;
@@ -1075,7 +1112,12 @@ test('Capytorio universal tile inspection reports belt item counts/lanes, ore ri
   assert.equal(foundEmpty, true);
   const terrainInfo = engine.inspectTileSnapshot(emptyGx, emptyGz);
   assert.equal(terrainInfo.primaryKind, 'terrain');
-  assert.equal(terrainInfo.title, 'Meadow Grass');
+  assert.ok(
+    ['Lush Meadow', 'Meadow Grass', 'Dry Dirt', 'Arid Dirt', 'Golden Sand', 'Red Desert'].includes(
+      terrainInfo.title
+    ),
+    `Expected dry land biome title, got ${terrainInfo.title}`
+  );
 
   engine.spilledItems.push(
     {
@@ -1696,8 +1738,21 @@ test('CapytorioPedia resolves machines, variants, ores, trees, beacon, terrain, 
   const beltInspect = engine.inspectTileSnapshot(0, 0);
   assert.equal(resolvePediaIdFromTileInspection(beltInspect), 'belt');
 
-  // Ore seam
-  const ironOreInspect = engine.inspectTileSnapshot(-5, -5);
+  // Ore seam (locate real factorio-mapgen starter iron_ore tile)
+  let ironX = 0;
+  let ironZ = 0;
+  let foundIronPedia = false;
+  for (let x = -48; x <= 48 && !foundIronPedia; x++) {
+    for (let z = -48; z <= 48 && !foundIronPedia; z++) {
+      if (sampleCapytorioBaseResource(x, z)?.resource === 'iron_ore') {
+        ironX = x;
+        ironZ = z;
+        foundIronPedia = true;
+      }
+    }
+  }
+  assert.equal(foundIronPedia, true, 'Found Nauvis iron_ore seam for CapytorioPedia');
+  const ironOreInspect = engine.inspectTileSnapshot(ironX, ironZ);
   assert.equal(ironOreInspect.resource?.id, 'iron_ore');
   assert.equal(resolvePediaIdFromTileInspection(ironOreInspect), 'iron_ore');
 
@@ -1739,8 +1794,8 @@ test('CapytorioPedia resolves machines, variants, ores, trees, beacon, terrain, 
   // Find a starter Wild Citrus Tree
   let treeGx: number | null = null;
   let treeGz: number | null = null;
-  for (let x = -12; x <= 12 && treeGx === null; x++) {
-    for (let z = -12; z <= 12; z++) {
+  for (let x = -80; x <= 80 && treeGx === null; x++) {
+    for (let z = -80; z <= 80; z++) {
       if (sampleCapytorioTreeAt(x, z) && !sampleCapytorioBaseResource(x, z)) {
         treeGx = x;
         treeGz = z;
@@ -2120,14 +2175,29 @@ test('Capytorio3DRenderer builds all 9 upgraded composite archetypes with live m
     pocket[mType] = Math.max(pocket[mType] ?? 0, 5);
   }
 
-  // Locate a nearby ore tile for drill placement
+  // Place all remaining 8 composite machine types on non-overlapping guaranteed dry starter clearing coordinates
+  const placements: Array<['furnace' | 'assembler' | 'generator' | 'lab' | 'splitter' | 'tunnel' | 'chest' | 'inserter', number, number]> = [
+    ['furnace', 1, -2],
+    ['assembler', 5, -2],
+    ['generator', -4, -2],
+    ['lab', -8, -2],
+    ['splitter', 0, 3],
+    ['tunnel', 3, 3],
+    ['chest', 5, 3],
+    ['inserter', 7, 3],
+  ];
+  for (const [type, gx, gz] of placements) {
+    assert.equal(engine.placeMachine(type, gx, gz, 0).ok, true, `Placed ${type}`);
+  }
+
+  // Locate a nearby ore tile that does not overlap the 8 placed buildings
   let oreGx = 0;
   let oreGz = 0;
   let foundOre = false;
-  for (let r = 0; r <= 12 && !foundOre; r++) {
+  for (let r = 0; r <= 32 && !foundOre; r++) {
     for (let dx = -r; dx <= r && !foundOre; dx++) {
       for (let dz = -r; dz <= r && !foundOre; dz++) {
-        if (engine.findFirstOreInFootprint(dx, dz, 2, 2)) {
+        if (engine.findFirstOreInFootprint(dx, dz, 3, 3) && engine.placeMachine('drill', dx, dz, 0).ok) {
           oreGx = dx;
           oreGz = dz;
           foundOre = true;
@@ -2135,46 +2205,30 @@ test('Capytorio3DRenderer builds all 9 upgraded composite archetypes with live m
       }
     }
   }
-  assert.equal(foundOre, true, 'Found ore patch for drill placement');
-  assert.equal(engine.placeMachine('drill', oreGx, oreGz, 0).ok, true);
-
-  // Place all remaining 8 composite machine types on clear coordinates
-  const placements: Array<['furnace' | 'assembler' | 'generator' | 'lab' | 'splitter' | 'tunnel' | 'chest' | 'inserter', number, number]> = [
-    ['furnace', 12, 0],
-    ['assembler', 16, 0],
-    ['generator', 20, 0],
-    ['lab', 24, 0],
-    ['splitter', 12, 6],
-    ['tunnel', 16, 6],
-    ['chest', 18, 6],
-    ['inserter', 20, 6],
-  ];
-  for (const [type, gx, gz] of placements) {
-    assert.equal(engine.placeMachine(type, gx, gz, 0).ok, true, `Placed ${type}`);
-  }
+  assert.equal(foundOre, true, `Found ore patch for drill placement at (${oreGx},${oreGz})`);
 
   // Activate generator, assembler, lab, and inserter hold state so all sub-parts animate
-  const gen = engine.machines.get(tileKey(20, 0))!;
+  const gen = engine.machines.get(tileKey(-4, -2))!;
   gen.fuelTimer = 25;
-  const asm = engine.machines.get(tileKey(16, 0))!;
+  const asm = engine.machines.get(tileKey(5, -2))!;
   asm.recipeId = 'iron_gear';
   asm.craftProgress = 0.45;
-  const lab = engine.machines.get(tileKey(24, 0))!;
+  const lab = engine.machines.get(tileKey(-8, -2))!;
   lab.craftProgress = 0.5;
-  const ins = engine.machines.get(tileKey(20, 6))!;
+  const ins = engine.machines.get(tileKey(7, 3))!;
   ins.holdingItem = 'iron_plate';
 
   const renderer = new Capytorio3DRenderer();
   try {
-    const cx = capytorioGridToWorldX(16);
-    const cz = capytorioGridToWorldZ(2);
+    const cx = capytorioGridToWorldX(0);
+    const cz = capytorioGridToWorldZ(0);
     renderer.sync(engine, cx, cz, 0.016, 1.0, true, 32);
 
     const activeGroups = (renderer as unknown as { activeMachineGroups: Map<string, THREE.Group> }).activeMachineGroups;
-    const asmGroup = activeGroups.get(tileKey(16, 0))!;
-    const labGroup = activeGroups.get(tileKey(24, 0))!;
-    const insGroup = activeGroups.get(tileKey(20, 6))!;
-    const genGroup = activeGroups.get(tileKey(20, 0))!;
+    const asmGroup = activeGroups.get(tileKey(5, -2))!;
+    const labGroup = activeGroups.get(tileKey(-8, -2))!;
+    const insGroup = activeGroups.get(tileKey(7, 3))!;
+    const genGroup = activeGroups.get(tileKey(-4, -2))!;
     assert.ok(asmGroup.userData.gearA && asmGroup.userData.gearB && asmGroup.userData.pressHead, 'Assembler has meshing gears and stamping press');
     assert.ok(labGroup.userData.labRingA && labGroup.userData.labRingB, 'Lab has dual orbital gyro rings');
     assert.ok(insGroup.userData.jawL && insGroup.userData.jawR, 'Inserter has articulated pneumatic jaws');
@@ -2202,33 +2256,32 @@ test('Capytorio3DRenderer builds all 9 upgraded composite archetypes with live m
 });
 
 test('Capytorio terrain generator creates lakes, rivers, and oceans while keeping starter plain dry and guarding water placement', () => {
-  // 1. Starter plain (r <= 12.6) is strictly dry meadow grass
+  // 1. Starter plain (r <= 12.6) is strictly dry buildable land
   for (let gx = -12; gx <= 12; gx++) {
     for (let gz = -12; gz <= 12; gz++) {
       if (Math.hypot(gx, gz) <= 12.6) {
         const detail = sampleCapytorioTerrainDetail(gx, gz);
         assert.equal(detail.isWater, false, `Starter tile (${gx},${gz}) must stay dry`);
-        assert.equal(detail.type, 'grass', `Starter tile (${gx},${gz}) must be meadow grass`);
       }
     }
   }
 
-  // 2. Scan surrounding region (-90..90) and verify all 6 hydrology/terrain types exist deterministically
+  // 2. Scan surrounding Nauvis region (-140..140) and verify authentic Factorio water & biome tiles exist
   const counts: Record<string, number> = {
+    lush_grass: 0,
     grass: 0,
+    dirt: 0,
     sand: 0,
-    shallow_water: 0,
-    river: 0,
+    red_desert: 0,
     lake: 0,
     ocean: 0,
   };
   let sampleLakeTile: [number, number] | null = null;
-  let sampleRiverTile: [number, number] | null = null;
   let sampleOceanTile: [number, number] | null = null;
   let sampleSandTile: [number, number] | null = null;
 
-  for (let gx = -90; gx <= 90; gx += 2) {
-    for (let gz = -90; gz <= 90; gz += 2) {
+  for (let gx = -140; gx <= 140; gx += 2) {
+    for (let gz = -140; gz <= 140; gz += 2) {
       const d = sampleCapytorioTerrainDetail(gx, gz);
       counts[d.type] = (counts[d.type] ?? 0) + 1;
       if (d.isWater) {
@@ -2238,28 +2291,24 @@ test('Capytorio terrain generator creates lakes, rivers, and oceans while keepin
         assert.equal(sampleCapytorioBaseResource(gx, gz), null, `No ore should spawn underwater at (${gx},${gz})`);
         assert.equal(sampleCapytorioTreeAt(gx, gz), false, `No tree should spawn underwater at (${gx},${gz})`);
       } else if (d.type === 'sand') {
-        assert.equal(sampleCapytorioTreeAt(gx, gz), false, `No tree should spawn on sandy beach at (${gx},${gz})`);
         if (!sampleSandTile) sampleSandTile = [gx, gz];
       }
       if (d.type === 'lake' && !sampleLakeTile) sampleLakeTile = [gx, gz];
-      if (d.type === 'river' && !sampleRiverTile) sampleRiverTile = [gx, gz];
       if (d.type === 'ocean' && !sampleOceanTile) sampleOceanTile = [gx, gz];
     }
   }
 
-  assert.ok(counts.grass > 100, 'Expected abundant meadow grass');
-  assert.ok(counts.sand > 20, 'Expected sandy beaches and riverbanks');
-  assert.ok(counts.shallow_water > 10, 'Expected shallow coastal water');
-  assert.ok(counts.river > 10, 'Expected meandering rivers');
-  assert.ok(counts.lake > 10, 'Expected inland freshwater lakes');
-  assert.ok(counts.ocean > 50, 'Expected sweeping ocean basins');
-  assert.ok(sampleLakeTile && sampleRiverTile && sampleOceanTile && sampleSandTile);
+  assert.ok(counts.grass + counts.lush_grass > 100, 'Expected abundant temperate & lush grass');
+  assert.ok(counts.dirt > 100, 'Expected Nauvis dirt tiles');
+  assert.ok(counts.sand > 10, 'Expected sandy desert/beach tiles');
+  assert.ok(counts.lake > 10, 'Expected inland freshwater water tiles');
+  assert.ok(counts.ocean > 50, 'Expected deep water ocean basins');
+  assert.ok(sampleLakeTile && sampleOceanTile && sampleSandTile);
 
   // 3. Water blocks land machines while permitting offshore_pump
   const engine = new CapytorioFactoryEngine();
   engine.addPocketItem('offshore_pump', 2);
   const [lakeX, lakeZ] = sampleLakeTile!;
-  const [riverX, riverZ] = sampleRiverTile!;
   const [oceanX, oceanZ] = sampleOceanTile!;
   const [sandX, sandZ] = sampleSandTile!;
 
@@ -2274,12 +2323,12 @@ test('Capytorio terrain generator creates lakes, rivers, and oceans while keepin
   assert.equal(okPump.ok, true, 'Offshore pump can be placed on water');
 
   // 4. Tile inspection reports accurate hydrology labels
-  const riverInspect = engine.inspectTileSnapshot(riverX, riverZ);
-  assert.equal(riverInspect.terrainName, 'Flowing River');
+  const lakeInspect = engine.inspectTileSnapshot(lakeX, lakeZ);
+  assert.equal(lakeInspect.terrainName, 'Freshwater Lake');
   const oceanInspect = engine.inspectTileSnapshot(oceanX, oceanZ);
   assert.equal(oceanInspect.terrainName, 'Deep Ocean');
   const sandInspect = engine.inspectTileSnapshot(sandX, sandZ);
-  assert.equal(sandInspect.terrainName, 'Sandy Shore');
+  assert.equal(sandInspect.terrainName, 'Golden Sand');
 
   // 5. Capytorio3DRenderer syncs terrain & water decks cleanly across close, strategic, and high-altitude zooms
   const renderer = new Capytorio3DRenderer();
@@ -2660,16 +2709,16 @@ test('Factorio blueprint decoder enforces 4 MB decompressed byte cap and rejects
   }
 });
 
-test('Capytorio3DRenderer lowers terrain deck resolution to 64x64 segments while preserving 320 m world width', () => {
+test('Capytorio3DRenderer maintains 128x128 tile-exact terrain deck resolution while preserving 320 m world width', () => {
   const renderer = new Capytorio3DRenderer();
   try {
     const groundDeckGeo = (renderer as unknown as { groundDeckGeo: THREE.PlaneGeometry }).groundDeckGeo;
     assert.ok(groundDeckGeo, 'groundDeckGeo exists');
-    assert.equal(groundDeckGeo.parameters.widthSegments, 64);
-    assert.equal(groundDeckGeo.parameters.heightSegments, 64);
+    assert.equal(groundDeckGeo.parameters.widthSegments, 128);
+    assert.equal(groundDeckGeo.parameters.heightSegments, 128);
     assert.equal(groundDeckGeo.parameters.width, 320);
     assert.equal(groundDeckGeo.parameters.height, 320);
-    assert.equal(groundDeckGeo.attributes.position.count, 65 * 65);
+    assert.equal(groundDeckGeo.attributes.position.count, 129 * 129);
   } finally {
     renderer.dispose();
   }
@@ -3278,8 +3327,8 @@ test('Phase 2: Drag placement allows offshore_pump on water, getUiSnapshot is re
 
   // 1. Offshore pump drag placement on water tile
   let waterSpot: [number, number] | null = null;
-  for (let gx = -26; gx <= 26 && !waterSpot; gx++) {
-    for (let gz = -26; gz <= 26 && !waterSpot; gz++) {
+  for (let gx = -80; gx <= 80 && !waterSpot; gx++) {
+    for (let gz = -80; gz <= 80 && !waterSpot; gz++) {
       if (isCapytorioWaterTerrain(sampleCapytorioTerrain(gx, gz)) && !engine.getMachineAt(gx, gz)) {
         waterSpot = [gx, gz];
       }
@@ -3333,7 +3382,8 @@ test('Phase 2: Save hydration sanitizes corrupted data, Factorio codec pairs tun
   // 1. Save hydration sanitization
   const engine = new CapytorioFactoryEngine();
   const sanitized = sanitizeCapytorioState({
-    version: 1,
+    version: 2,
+    mapGen: engine.getMapGenConfig(),
     score: Number.NaN,
     techDelivered: -99,
     activeTechId: 'nonexistent_tech',

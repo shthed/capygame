@@ -135,6 +135,28 @@ export const CapytorioMachineIcon: React.FC<CapytorioMachineIconProps> = ({
             <rect x="5" y="4.5" width="5" height="2.8" rx="0.6" fill="#ea580c" stroke="#111317" strokeWidth="1" />
           </svg>
         );
+      case 'pumpjack':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="16.5" width="17" height="3.2" rx="0.8" fill="#1e293b" stroke="#111317" strokeWidth="1.2" />
+            <path d="M9 16.5L12 7.5L15 16.5" stroke="#94a3b8" strokeWidth="1.8" strokeLinejoin="round" />
+            <path d="M5 9.5L18.5 5.2" stroke="#f59e0b" strokeWidth="2.4" strokeLinecap="round" />
+            <path d="M5 9.5V16.5" stroke="#cbd5e1" strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="18.2" cy="5.4" r="2.1" fill="#475569" stroke="#111317" strokeWidth="1.1" />
+            <circle cx="5" cy="17.8" r="1.5" fill="#6d28d9" />
+          </svg>
+        );
+      case 'centrifuge':
+        return (
+          <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">
+            <rect x="3.5" y="5" width="17" height="14.5" rx="2" fill="#27313d" stroke="#111317" strokeWidth="1.4" />
+            <circle cx="8.5" cy="12.2" r="3.4" fill="#15803d" stroke="#111317" strokeWidth="1.1" />
+            <circle cx="15.5" cy="12.2" r="3.4" fill="#15803d" stroke="#111317" strokeWidth="1.1" />
+            <circle cx="8.5" cy="12.2" r="1.4" fill="#86efac" />
+            <circle cx="15.5" cy="12.2" r="1.4" fill="#86efac" />
+            <path d="M5.5 7H18.5" stroke="#4ade80" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+        );
       case 'offshore_pump':
         return (
           <svg width={size} height={size} viewBox="1.5 1.5 21 21" fill="none" className={className} aria-hidden="true">

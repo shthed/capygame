@@ -68,6 +68,7 @@ export interface CapytorioPlaceableMapping {
 export const CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE: Record<string, CapytorioPlaceableMapping> = {
   burner_mining_drill: { baseType: 'drill', tierMult: 0.75, tintHex: 0x78716c },
   electric_mining_drill: { baseType: 'drill', tierMult: 1.25, tintHex: 0x0ea5e9 },
+  pumpjack: { baseType: 'drill', tierMult: 1.4, tintHex: 0x334155 },
   offshore_pump: { baseType: 'drill', tierMult: 1.0, tintHex: 0x0284c7 },
   transport_belt: { baseType: 'belt', tierMult: 1.0, tintHex: 0xfacc15 },
   fast_transport_belt: { baseType: 'belt', tierMult: 2.0, tintHex: 0xef4444 },
@@ -118,6 +119,7 @@ export const CAPYTORIO_PLACEABLE_ITEM_TO_MACHINE: Record<string, CapytorioPlacea
   pump: { baseType: 'chest', tierMult: 1.5, tintHex: 0x0ea5e9 },
   oil_refinery: { baseType: 'assembler', tierMult: 2.0, tintHex: 0x334155 },
   chemical_plant: { baseType: 'assembler', tierMult: 1.8, tintHex: 0x06b6d4 },
+  centrifuge: { baseType: 'assembler', tierMult: 2.2, tintHex: 0x22c55e },
   // Rail & Trains
   rail: { baseType: 'chest', tierMult: 1.0, tintHex: 0x78716c },
   train_stop: { baseType: 'chest', tierMult: 1.2, tintHex: 0xef4444 },
@@ -176,6 +178,8 @@ export const CAPYTORIO_BEACON_SPEC = {
 
 export const CAPYTORIO_FUEL_BURN_SECONDS = {
   coal: 10.0,
+  solid_fuel: 22.0,
+  uranium_fuel_cell: 60.0,
   yuzu_sap: 6.5,
   orange: 5.0,
 } as const;
@@ -321,6 +325,8 @@ export function getCapytorioBaseFootprint(
   if (
     variantItemId === 'oil_refinery' ||
     variantItemId === 'chemical_plant' ||
+    variantItemId === 'centrifuge' ||
+    variantItemId === 'pumpjack' ||
     variantItemId === 'roboport'
   ) {
     return { width: 3, height: 3 };
@@ -425,7 +431,7 @@ export const CAPYTORIO_MACHINE_SPECS: Record<CapytorioMachineType, CapytorioMach
     description: 'Auto-smelts Iron Ore, Copper Ore, Calcite, Steel & any smelting recipes from recipe.lua.',
     powerDemandMw: 1.2,
     powerSupplyMw: 0,
-    craftCost: { calcite: 2, iron_plate: 2 },
+    craftCost: { stone: 2, iron_plate: 2 },
     colorHex: 0xf97316,
     starterCount: 4,
   },

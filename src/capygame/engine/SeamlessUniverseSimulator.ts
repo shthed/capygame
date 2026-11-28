@@ -4754,10 +4754,10 @@ export class SeamlessUniverseSimulator {
       const isPlanckFoam = layerId === 'planck_quantum_foam';
 
       // When zooming out from Capytorio (industrial meadow/aquatic world), never fade in
-      // Sanctuary's woodland glade / giant pine ecosystem / valley canopy meshes on top of the factory!
+      // Sanctuary's low-poly atmosphere cloud puffs / woodland glade / giant pine ecosystem / valley canopy meshes!
       if (
         suppressWoodlandSurfaceLayers &&
-        (isLandMasses || isEcosystems || isForestGlade || isLeafGlade)
+        (isAtmosphere || isLandMasses || isEcosystems || isForestGlade || isLeafGlade)
       ) {
         if (layer.group.visible) {
           layer.group.visible = false;

@@ -895,6 +895,7 @@ export const CapyGameView: React.FC = () => {
     | 'onInstallModule'
     | 'onRemoveModule'
     | 'onRepairMachine'
+    | 'onApplyMapGen'
   >;
 
   const capytorioHudActions = useMemo<MemoizedCapytorioHudActions>(
@@ -1263,6 +1264,16 @@ export const CapyGameView: React.FC = () => {
             ? `Repaired & tuned (+${Math.round(res.overclockSec)}s overclock)`
             : res?.reason ?? 'Need a Repair Pack in pocket'
         );
+      },
+      onApplyMapGen: (config, resetFactory) => {
+        const applied = managerRef.current?.applyCapytorioMapGenConfig(config, resetFactory);
+        if (applied) {
+          showToast(
+            `World loaded · Seed #${applied.seed}${
+              applied.preset !== 'custom' ? ` (${applied.preset.replace(/_/g, ' ')})` : ''
+            }`
+          );
+        }
       },
     }),
     [showToast]
@@ -5532,6 +5543,7 @@ export const CapyGameView: React.FC = () => {
               pediaContextInfo={capytorioPediaContextInfo}
               searchFocusNonce={capytorioSearchFocusNonce}
               onOpenPedia={openCapytorioPedia}
+              onDownloadSaveBackup={handleExportSaveBundleFile}
               showToast={showToast}
               {...capytorioHudActions}
             />

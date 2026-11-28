@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.5.2';
+      : '1.8.0';
   } catch {
-    return '1.5.2';
+    return '1.8.0';
   }
 })();
 
@@ -127,13 +127,18 @@ export default defineConfig(({ command }) => {
             !norm.includes('/CapytorioStateGuard.ts') &&
             !norm.includes('/CapytorioModuleLoader.ts') &&
             !norm.includes('/CapytorioEntityInfoPanel.tsx') &&
-            !norm.includes('/CapytorioPediaView.tsx')
+            !norm.includes('/CapytorioPediaView.tsx') &&
+            !norm.includes('/CapytorioWorldGenDrawer.tsx')
           ) {
             if (
               norm.includes('/src/capygame/engine/CapytorioMeshBuilder.ts') ||
-              norm.includes('/src/capygame/engine/CapytorioAltIconRenderer.ts')
+              norm.includes('/src/capygame/engine/CapytorioAltIconRenderer.ts') ||
+              norm.includes('/src/capygame/engine/capytorio/CapytorioPlanetarySurfaceLayer.ts')
             ) {
               return 'feature-capytorio-3d';
+            }
+            if (norm.includes('/src/capygame/engine/capytorio/factorioMapgen/')) {
+              return 'feature-capytorio-mapgen';
             }
             if (
               norm.includes('/src/capygame/engine/Capytorio') ||

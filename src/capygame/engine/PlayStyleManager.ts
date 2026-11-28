@@ -224,6 +224,7 @@ import type {
   CapytorioUiSnapshot,
 } from './CapytorioFactoryEngine';
 import type { Capytorio3DRenderer } from './CapytorioMeshBuilder';
+import type { CapytorioMapGenConfig } from './capytorio/FactorioMapExchangeCodec';
 import {
   CAPYTORIO_TILE_SIZE_CONST as CAPYTORIO_TILE_SIZE,
   CAPYTORIO_WORLD_ORIGIN_X_CONST as CAPYTORIO_WORLD_ORIGIN_X,
@@ -3198,13 +3199,15 @@ export class PlayStyleManager {
         this.camera.far = desiredFar;
         this.camera.updateProjectionMatrix();
       }
-      this.capytorioPlanetFadeActive = pose.altitudeRadius > 420;
-      const skyAlpha = 1.0 - smoothstep01(3.05, 4.15, pose.logAlt);
+      // Keep 10m..42km 100% genuine Factorio Nauvis clipmaps + drifting clouds before activating orbital globe
+      this.capytorioPlanetFadeActive = pose.altitudeRadius > 42_000;
+      const skyAlpha = 1.0 - smoothstep01(3.85, 4.95, pose.logAlt);
       this.setSkyDomeAlpha(skyAlpha);
       if (this.worldEnv) {
         this.worldEnv.skyMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
         this.worldEnv.skyMesh.scale.setScalar(Math.max(1.0, (desiredFar * 0.72) / 720));
         this.worldEnv.mountainMesh.visible = false;
+        this.worldEnv.cloudGroup.visible = false;
       }
       if (this.oceanMesh) {
         this.oceanMesh.visible = !suppressArchipelagoForCapytorio && pose.logAlt <= 3.65;
@@ -5448,6 +5451,33 @@ export class PlayStyleManager {
     this.callbacks.onModeNotification?.(
       'Capytorio Frontier reset to untouched infinite ore field with full Starter Kit!'
     );
+  }
+
+  public applyCapytorioMapGenConfig(
+    config: CapytorioMapGenConfig,
+    resetFactory: boolean = true
+  ): CapytorioMapGenConfig | null {
+    if (!this.capytorioEngine) return null;
+    const applied = this.capytorioEngine.applyMapGenConfig(config, resetFactory);
+    if (resetFactory) {
+      this.heroLocalPos.set(0, 0, 3.0);
+      this.heroVelocity.set(0, 0, 0);
+    }
+    const pose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
+    this.ensureCapytorioRenderer()?.sync(
+      this.capytorioEngine,
+      CAPYTORIO_WORLD_ORIGIN_X + this.heroLocalPos.x,
+      CAPYTORIO_WORLD_ORIGIN_Z + this.heroLocalPos.z,
+      0.016,
+      this.worldEnv?.elapsedSeconds ?? 0,
+      this.capytorioGroup.visible,
+      this.getCapytorioCameraMode() === 'oblique' ? pose.altitudeRadius : 26
+    );
+    this.markCapytorioDirty();
+    this.flushCapytorioAutosave();
+    this.emitTelemetry();
+    AudioService.playCapytorioUiClick('tool');
+    return applied;
   }
 
   public updateCapytorioHoverFromNdc(ndcX: number, ndcY: number): void {
@@ -13454,17 +13484,29 @@ export class PlayStyleManager {
     pose: typeof _capytorioAltPose
   ): void {
     if (!this.seamlessUniverse || this.seamlessZoomActive) return;
-    // Keep tactical & macro factory zoom (up to 420m altitude) 100% pure Capytorio terrain/water
-    // with zero universe-scale woodland or planetary overlay interference.
-    if (pose.altitudeRadius <= 420) {
+    // Keep ground, regional & stratosphere zoom (up to 42 km altitude) 100% pure generated
+    // Factorio Nauvis clipmap rings + drifting patchy clouds with zero generic planet-sphere washout.
+    const skyAlpha = 1.0 - smoothstep01(3.85, 4.95, pose.logAlt);
+    if (pose.altitudeRadius <= 42_000) {
       if (this.capytorioPlanetFadeActive) {
         this.capytorioPlanetFadeActive = false;
         this.seamlessUniverse.hide();
-        this.setSkyDomeAlpha(1.0);
         if (this.oceanMesh) {
           this.oceanMesh.visible = this.camera.position.x < 680;
         }
-        this.setSceneBackgroundHex(this.activeBiome?.skyHex ?? 0x38bdf8);
+      }
+      this.setSkyDomeAlpha(skyAlpha);
+      if (this.worldEnv) {
+        _colorHelper.copy(this.worldEnv.currentHorizonSkyColor);
+      } else {
+        _colorHelper.setHex(this.activeBiome?.skyHex ?? 0x38bdf8);
+      }
+      _seamlessSkyColor.setHex(0x0b1a36);
+      _colorHelper.lerp(_seamlessSkyColor, 1.0 - skyAlpha);
+      if (this.scene.background instanceof THREE.Color) {
+        this.scene.background.copy(_colorHelper);
+      } else {
+        this.scene.background = _colorHelper.clone();
       }
       return;
     }
@@ -13477,7 +13519,7 @@ export class PlayStyleManager {
       this.settings.astrophysicsPalette ?? 'natural';
     _seamlessFocalPos.set(wx, wy, wz);
     // Pass suppressWoodlandSurfaceLayers = true so Sanctuary's giant pine/ecosystem/glade trees
-    // NEVER appear over Capytorio — only atmosphere clouds and the planetary globe emerge cleanly!
+    // NEVER appear over Capytorio — only atmosphere limb and planetary globe emerge cleanly beneath Ring 4!
     this.seamlessUniverse.updateForLogScale(
       pose.logAlt,
       dt,
@@ -13494,7 +13536,6 @@ export class PlayStyleManager {
     this.seamlessUniverse.forestGroveGroup.visible = false;
     this.seamlessUniverse.forestGroveGroup.matrixWorldAutoUpdate = false;
 
-    const skyAlpha = 1.0 - smoothstep01(3.05, 4.15, pose.logAlt);
     this.setSkyDomeAlpha(skyAlpha);
     if (this.worldEnv) {
       _colorHelper.copy(this.worldEnv.currentHorizonSkyColor);

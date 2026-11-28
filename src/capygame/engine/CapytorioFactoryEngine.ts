@@ -38,14 +38,21 @@ import {
   type FactorioBlueprintImportResult,
 } from './FactorioBlueprintCodec';
 import {
+  getActiveCapytorioMapGen,
   isCapytorioWaterTerrain,
+  resetActiveCapytorioMapGenToDefault,
   sampleCapytorioBaseResource,
   sampleCapytorioTerrain,
   sampleCapytorioTerrainDetail,
   sampleCapytorioTreeAt,
+  setActiveCapytorioMapGen,
   type CapytorioTerrainSample,
   type CapytorioTerrainType,
 } from './capytorio/CapytorioTerrainGen';
+import {
+  cloneCapytorioMapGenConfig,
+  type CapytorioMapGenConfig,
+} from './capytorio/FactorioMapExchangeCodec';
 import {
   cancelCraftQueueItem as cancelCraftQueueItemInHost,
   enqueueMachineCraft as enqueueMachineCraftInHost,
@@ -85,11 +92,14 @@ import {
 } from './capytorio/CapytorioSerializer';
 
 export {
+  getActiveCapytorioMapGen,
   isCapytorioWaterTerrain,
+  resetActiveCapytorioMapGenToDefault,
   sampleCapytorioBaseResource,
   sampleCapytorioTerrain,
   sampleCapytorioTerrainDetail,
   sampleCapytorioTreeAt,
+  setActiveCapytorioMapGen,
   type CapytorioTerrainSample,
   type CapytorioTerrainType,
 };
@@ -281,7 +291,8 @@ export interface CapytorioMilestoneStatus {
 }
 
 export interface CapytorioSerializedState {
-  version: 1;
+  version: 2;
+  mapGen: CapytorioMapGenConfig;
   machines: Array<{
     type: CapytorioMachineType;
     variantItemId?: CapytorioItemId;
@@ -588,6 +599,7 @@ export interface CapytorioUiSnapshot {
     sourceType: 'assembler' | 'splitter' | 'inserter' | 'chest';
     sourceLabel: string;
   } | null;
+  mapGen: CapytorioMapGenConfig;
   craftingQueue: Array<{
     uid: number;
     kind: 'recipe' | 'machine';
@@ -853,6 +865,7 @@ export class CapytorioFactoryEngine {
   /** O(1) multi-tile spatial lookup mapping EVERY occupied sub-tile `tileKey(tx, tz)` to its owning machine */
   public readonly occupancyGrid = new Map<string, CapytorioMachine>();
   private readonly oreRemainingOverrides = new Map<string, number>();
+  private readonly demoOreOverrides = new Map<string, { resource: CapytorioItemId; initialAmount: number }>();
   private readonly harvestedTrees = new Set<string>();
   private readonly pocketItems: Partial<Record<CapytorioItemId, number>> = {};
   private readonly pocketMachines: Partial<Record<CapytorioMachineType, number>> = {};
@@ -928,6 +941,8 @@ export class CapytorioFactoryEngine {
   private machineListDirty = true;
   /** Monotonic revision incremented on machine placement/demolish/rotate, tree harvest, ore depletion, reset, or hydrate */
   public topologyRevision = 1;
+  /** Active Factorio procedural world generation config */
+  private mapGenConfig: CapytorioMapGenConfig = getActiveCapytorioMapGen();
 
   // Dirty-tracking state to avoid redundant 60 Hz recomputations & allocations
   private powerDirty = true;
@@ -1149,6 +1164,10 @@ export class CapytorioFactoryEngine {
         this.canFootprintFit(gx, gz, width, height, ignoreMachine, allowWater),
       getMachineModuleSlotLimit: (m) => this.getMachineModuleSlotLimit(m),
       registerMachineOccupancy: (m) => this.registerMachineOccupancy(m),
+      getMapGenConfig: () => this.getMapGenConfig(),
+      setMapGenConfig: (cfg) => {
+        this.mapGenConfig = setActiveCapytorioMapGen(cfg);
+      },
       markHydratedAndRecomputePower: () => {
         this.machineListDirty = true;
         this.powerDirty = true;
@@ -1156,11 +1175,29 @@ export class CapytorioFactoryEngine {
       },
     };
 
-    if (initialState && initialState.version === 1) {
+    if (initialState && initialState.version === 2) {
       this.hydrate(initialState);
     } else {
+      this.mapGenConfig = resetActiveCapytorioMapGenToDefault();
       this.resetToBlankStarterField();
     }
+  }
+
+  public getMapGenConfig(): CapytorioMapGenConfig {
+    return cloneCapytorioMapGenConfig(this.mapGenConfig);
+  }
+
+  public applyMapGenConfig(
+    config: CapytorioMapGenConfig,
+    resetFactory: boolean = true
+  ): CapytorioMapGenConfig {
+    this.mapGenConfig = setActiveCapytorioMapGen(config);
+    if (resetFactory) {
+      this.resetToBlankStarterField();
+    } else {
+      this.topologyRevision++;
+    }
+    return this.getMapGenConfig();
   }
 
   public getMachineFootprint(m: CapytorioMachine): { width: number; height: number } {
@@ -1218,17 +1255,24 @@ export class CapytorioFactoryEngine {
     gx: number,
     gz: number,
     width: number,
-    height: number
+    height: number,
+    mode: 'any' | 'solid' | 'oil' = 'any'
   ): CapytorioResourceTile | null {
+    const matches = (ore: CapytorioResourceTile | null): ore is CapytorioResourceTile => {
+      if (!ore) return false;
+      if (mode === 'oil') return ore.resource === 'crude_oil';
+      if (mode === 'solid') return ore.resource !== 'crude_oil';
+      return true;
+    };
     // Check center tile first, then scan all footprint tiles deterministically
     const cx = gx + Math.floor((width - 1) * 0.5);
     const cz = gz + Math.floor((height - 1) * 0.5);
     const centerOre = this.getResourceAt(cx, cz);
-    if (centerOre) return centerOre;
+    if (matches(centerOre)) return centerOre;
     for (let dx = 0; dx < width; dx++) {
       for (let dz = 0; dz < height; dz++) {
         const ore = this.getResourceAt(gx + dx, gz + dz);
-        if (ore) return ore;
+        if (matches(ore)) return ore;
       }
     }
     return null;
@@ -1266,6 +1310,7 @@ export class CapytorioFactoryEngine {
     this.occupancyGrid.clear();
     this.spilledItems.length = 0;
     this.oreRemainingOverrides.clear();
+    this.demoOreOverrides.clear();
     this.harvestedTrees.clear();
     this.craftingQueue.length = 0;
     this.entitySettingsClipboard = null;
@@ -1351,10 +1396,12 @@ export class CapytorioFactoryEngine {
   }
 
   public hasTreeAt(gx: number, gz: number): boolean {
+    if (!sampleCapytorioTreeAt(gx, gz)) return false;
+    if (this.harvestedTrees.size === 0 && this.occupancyGrid.size === 0) return true;
     const key = tileKey(gx, gz);
     if (this.harvestedTrees.has(key)) return false;
     if (this.occupancyGrid.has(key)) return false;
-    return sampleCapytorioTreeAt(gx, gz);
+    return true;
   }
 
   public harvestTreeAt(gx: number, gz: number): boolean {
@@ -1367,12 +1414,20 @@ export class CapytorioFactoryEngine {
   }
 
   public getResourceAt(gx: number, gz: number): CapytorioResourceTile | null {
-    const base = sampleCapytorioBaseResource(gx, gz);
+    const base =
+      sampleCapytorioBaseResource(gx, gz) ??
+      (this.demoOreOverrides.size > 0 ? this.demoOreOverrides.get(tileKey(gx, gz)) : undefined) ??
+      null;
     if (!base) return null;
-    const k = tileKey(gx, gz);
-    const remaining = this.oreRemainingOverrides.has(k)
-      ? this.oreRemainingOverrides.get(k)!
-      : Math.round(base.initialAmount * this.configOreRichnessMult);
+    let remaining: number;
+    if (this.oreRemainingOverrides.size > 0) {
+      const k = tileKey(gx, gz);
+      remaining = this.oreRemainingOverrides.has(k)
+        ? this.oreRemainingOverrides.get(k)!
+        : Math.round(base.initialAmount * this.configOreRichnessMult);
+    } else {
+      remaining = Math.round(base.initialAmount * this.configOreRichnessMult);
+    }
     if (remaining <= 0) return null;
     return {
       gx,
@@ -1637,9 +1692,25 @@ export class CapytorioFactoryEngine {
     }
 
     if (baseType === 'drill' && variantItemId !== 'offshore_pump') {
-      const ore = this.findFirstOreInFootprint(gx, gz, fp.width, fp.height);
+      const isPumpjack = variantItemId === 'pumpjack';
+      const ore = this.findFirstOreInFootprint(
+        gx,
+        gz,
+        fp.width,
+        fp.height,
+        isPumpjack ? 'oil' : 'solid'
+      );
       if (!ore) {
-        return { ok: false, reason: 'Mining Drills must cover at least one glowing ore tile' };
+        if (isPumpjack) {
+          return { ok: false, reason: 'Pumpjacks must be placed over a Crude Oil spot' };
+        }
+        const oilOnly = this.findFirstOreInFootprint(gx, gz, fp.width, fp.height, 'oil');
+        return {
+          ok: false,
+          reason: oilOnly
+            ? 'Use a Pumpjack to extract Crude Oil spots'
+            : 'Mining Drills must cover at least one solid ore tile',
+        };
       }
     }
 
@@ -2861,6 +2932,15 @@ export class CapytorioFactoryEngine {
       // 3. Place every building with exact recipe, chest slot cap, and initial generator fuel
       for (let i = 0; i < plan.length; i++) {
         const item = plan[i];
+        if (item.baseType === 'drill' && !this.findFirstOreInFootprint(item.gx, item.gz, 3, 3, 'solid')) {
+          // Ensure the one-click Starter Mall demo works cleanly on any Factorio Nauvis seed
+          const demoRes: CapytorioItemId =
+            item.gz >= 2 ? 'coal' : item.gx >= 0 ? 'copper_ore' : 'iron_ore';
+          this.demoOreOverrides.set(tileKey(item.gx + 1, item.gz + 1), {
+            resource: demoRes,
+            initialAmount: 4500,
+          });
+        }
         const res = this.placeMachine(item.toolId, item.gx, item.gz, item.dir, item.recipeId);
         if (res.ok && res.machine) {
           placedCount++;
@@ -3123,7 +3203,13 @@ export class CapytorioFactoryEngine {
     if (!m || !isCapytorioFuelGenerator(m)) return 0;
 
     let loaded = 0;
-    const fuels: readonly CapytorioItemId[] = ['coal', 'yuzu_sap', 'orange'];
+    const fuels: readonly CapytorioItemId[] = [
+      'uranium_fuel_cell',
+      'solid_fuel',
+      'coal',
+      'yuzu_sap',
+      'orange',
+    ];
     for (let f = 0; f < fuels.length && loaded < maxAmount; f++) {
       const fuelId = fuels[f];
       const curBuf = m.inputBuffer[fuelId] ?? 0;
@@ -3136,7 +3222,15 @@ export class CapytorioFactoryEngine {
     }
 
     if (m.fuelTimer <= 0) {
-      if ((m.inputBuffer.coal ?? 0) > 0) {
+      if ((m.inputBuffer.uranium_fuel_cell ?? 0) > 0) {
+        m.inputBuffer.uranium_fuel_cell = (m.inputBuffer.uranium_fuel_cell ?? 1) - 1;
+        if (m.inputBuffer.uranium_fuel_cell <= 0) delete m.inputBuffer.uranium_fuel_cell;
+        m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.uranium_fuel_cell;
+      } else if ((m.inputBuffer.solid_fuel ?? 0) > 0) {
+        m.inputBuffer.solid_fuel = (m.inputBuffer.solid_fuel ?? 1) - 1;
+        if (m.inputBuffer.solid_fuel <= 0) delete m.inputBuffer.solid_fuel;
+        m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.solid_fuel;
+      } else if ((m.inputBuffer.coal ?? 0) > 0) {
         m.inputBuffer.coal = (m.inputBuffer.coal ?? 1) - 1;
         if (m.inputBuffer.coal <= 0) delete m.inputBuffer.coal;
         m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.coal;
@@ -3376,8 +3470,9 @@ export class CapytorioFactoryEngine {
     const totalOreMined =
       (this.pocketItems.iron_ore ?? 0) +
       (this.pocketItems.copper_ore ?? 0) +
-      (this.pocketItems.calcite ?? 0) +
-      (this.pocketItems.yuzu_sap ?? 0);
+      (this.pocketItems.stone ?? 0) +
+      (this.pocketItems.crude_oil ?? 0) +
+      (this.pocketItems.uranium_ore ?? 0);
     const hasTechDelivered = this.hasAnyTechDelivered();
     if (
       this.topologyRevision === this.lastMilestoneTopoRev &&
@@ -3432,8 +3527,9 @@ export class CapytorioFactoryEngine {
     const totalOreMined =
       (this.pocketItems.iron_ore ?? 0) +
       (this.pocketItems.copper_ore ?? 0) +
-      (this.pocketItems.calcite ?? 0) +
-      (this.pocketItems.yuzu_sap ?? 0);
+      (this.pocketItems.stone ?? 0) +
+      (this.pocketItems.crude_oil ?? 0) +
+      (this.pocketItems.uranium_ore ?? 0);
     const hasTechDelivered = this.hasAnyTechDelivered();
 
     const defs: Array<{ id: string; label: string; hint: string; met: boolean }> = [
@@ -3874,7 +3970,15 @@ export class CapytorioFactoryEngine {
     }
 
     if (isCapytorioFuelGenerator(target)) {
-      if (item !== 'coal' && item !== 'yuzu_sap' && item !== 'orange') return false;
+      if (
+        item !== 'uranium_fuel_cell' &&
+        item !== 'solid_fuel' &&
+        item !== 'coal' &&
+        item !== 'yuzu_sap' &&
+        item !== 'orange'
+      ) {
+        return false;
+      }
       const cur = target.inputBuffer[item] ?? 0;
       if (cur >= 16) return false;
       target.inputBuffer[item] = cur + 1;
@@ -3984,7 +4088,17 @@ export class CapytorioFactoryEngine {
         if (m.fuelTimer <= 0) anyFuelChanged = true;
       }
       if (m.fuelTimer <= 0) {
-        if ((m.inputBuffer.coal ?? 0) > 0) {
+        if ((m.inputBuffer.uranium_fuel_cell ?? 0) > 0) {
+          m.inputBuffer.uranium_fuel_cell = (m.inputBuffer.uranium_fuel_cell ?? 1) - 1;
+          if (m.inputBuffer.uranium_fuel_cell <= 0) delete m.inputBuffer.uranium_fuel_cell;
+          m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.uranium_fuel_cell;
+          anyFuelChanged = true;
+        } else if ((m.inputBuffer.solid_fuel ?? 0) > 0) {
+          m.inputBuffer.solid_fuel = (m.inputBuffer.solid_fuel ?? 1) - 1;
+          if (m.inputBuffer.solid_fuel <= 0) delete m.inputBuffer.solid_fuel;
+          m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.solid_fuel;
+          anyFuelChanged = true;
+        } else if ((m.inputBuffer.coal ?? 0) > 0) {
           m.inputBuffer.coal = (m.inputBuffer.coal ?? 1) - 1;
           if (m.inputBuffer.coal <= 0) delete m.inputBuffer.coal;
           m.fuelTimer = CAPYTORIO_FUEL_BURN_SECONDS.coal;
@@ -4038,7 +4152,11 @@ export class CapytorioFactoryEngine {
 
       if (m.type === 'drill') {
         const fp = this.getMachineFootprint(m);
-        const oreTile = this.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height);
+        const drillMode = m.variantItemId === 'pumpjack' ? 'oil' : 'solid';
+        const oreTile =
+          m.variantItemId === 'offshore_pump'
+            ? null
+            : this.findFirstOreInFootprint(m.gx, m.gz, fp.width, fp.height, drillMode);
         const bufferedOut = this.countMapValues(m.outputBuffer);
         if (oreTile && bufferedOut < 4) {
           const mods = this.computeMachineModuleModifiers(m, _moduleModScratch);
@@ -4987,7 +5105,14 @@ export class CapytorioFactoryEngine {
       return false;
     }
     if (isCapytorioFuelGenerator(target)) {
-      return (item === 'coal' || item === 'yuzu_sap' || item === 'orange') && (target.inputBuffer[item] ?? 0) < 16;
+      return (
+        (item === 'uranium_fuel_cell' ||
+          item === 'solid_fuel' ||
+          item === 'coal' ||
+          item === 'yuzu_sap' ||
+          item === 'orange') &&
+        (target.inputBuffer[item] ?? 0) < 16
+      );
     }
     if (isCapytorioResearchLab(target)) {
       const meta = getCapytorioItemMeta(item);
@@ -5279,15 +5404,30 @@ export class CapytorioFactoryEngine {
       CapytorioTerrainType,
       { name: string; subtitle: string; hint: string }
     > = {
+      lush_grass: {
+        name: 'Lush Meadow',
+        subtitle: 'Fertile Buildable Terrain',
+        hint: 'Rich emerald biome — select a building from quickbar to place',
+      },
       grass: {
         name: 'Meadow Grass',
         subtitle: 'Buildable Terrain',
         hint: 'Select a building from quickbar to place',
       },
+      dirt: {
+        name: 'Dry Dirt',
+        subtitle: 'Arid Buildable Plains',
+        hint: 'Solid dry ground ideal for wide factory layouts',
+      },
       sand: {
-        name: 'Sandy Shore',
-        subtitle: 'Buildable Coastal Sand',
-        hint: 'Build along the shoreline or place an Offshore Pump nearby',
+        name: 'Golden Sand',
+        subtitle: 'Buildable Desert & Shore',
+        hint: 'Build along dunes or place an Offshore Pump by the shore',
+      },
+      red_desert: {
+        name: 'Red Desert',
+        subtitle: 'Terracotta Mesa · Buildable',
+        hint: 'Warm arid plateau — great for solar fields and rail hubs',
       },
       shallow_water: {
         name: 'Coastal Shallows',
@@ -5390,8 +5530,16 @@ export class CapytorioFactoryEngine {
     } else if (resourceDetail) {
       primaryKind = 'resource';
       title = resourceDetail.name;
-      subtitle = 'Minable Resource Deposit';
-      actionHint = 'Mine [E] by hand or place a Mining Drill';
+      if (resourceDetail.id === 'crude_oil') {
+        subtitle = 'Pressurized Crude Oil Well';
+        actionHint = 'Place a Pumpjack over this oil spot to extract Crude Oil';
+      } else if (resourceDetail.id === 'uranium_ore') {
+        subtitle = 'Radioactive Uranium Deposit';
+        actionHint = 'Mine [E] or place an Electric Mining Drill, then enrich in a Centrifuge';
+      } else {
+        subtitle = 'Minable Resource Deposit';
+        actionHint = 'Mine [E] by hand or place a Mining Drill';
+      }
     } else if (spilledTotalCount > 0) {
       primaryKind = 'spilled';
       title =
@@ -5574,6 +5722,7 @@ export class CapytorioFactoryEngine {
             sourceLabel: this.entitySettingsClipboard.sourceLabel,
           }
         : null,
+      mapGen: this.getMapGenConfig(),
       craftingQueue: this.craftingQueue.map((q) => ({
         uid: q.uid,
         kind: q.kind,

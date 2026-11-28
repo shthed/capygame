@@ -30,7 +30,8 @@ export function sanitizeCapytorioStateShallow(
 ): CapytorioSerializedState | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const candidate = raw as Partial<CapytorioSerializedState>;
-  if (candidate.version !== 1) return undefined;
+  if (candidate.version !== 2) return undefined;
+  if (!candidate.mapGen || typeof candidate.mapGen !== 'object') return undefined;
   if (!Array.isArray(candidate.machines)) return undefined;
   try {
     return structuredClone(candidate) as CapytorioSerializedState;

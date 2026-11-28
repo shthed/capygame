@@ -9,6 +9,7 @@ import {
   Flame,
   FlipHorizontal2,
   FlipVertical2,
+  Globe,
   Move,
   Redo2,
   RotateCcw,
@@ -46,6 +47,7 @@ import {
   type CapytorioUiSnapshot,
 } from '../engine/CapytorioFactoryEngine';
 import type { FactorioBlueprintImportResult } from '../engine/FactorioBlueprintCodec';
+import type { CapytorioMapGenConfig } from '../engine/capytorio/FactorioMapExchangeCodec';
 import {
   canRequestProgrammaticFocus,
   readDocumentFocusState,
@@ -62,6 +64,11 @@ const LazyCapytorioEntityInfoPanel = React.lazy(() =>
 );
 const LazyCapytorioPediaView = React.lazy(() =>
   import('./CapytorioPediaView').then((m) => ({ default: m.CapytorioPediaView }))
+);
+const LazyCapytorioWorldGenDrawer = React.lazy(() =>
+  import('./capytorio/CapytorioWorldGenDrawer').then((m) => ({
+    default: m.CapytorioWorldGenDrawer,
+  }))
 );
 import {
   CapytorioTooltip,
@@ -90,7 +97,8 @@ export type CapytorioDrawerTab =
   | 'tech'
   | 'inspect'
   | 'blueprints'
-  | 'pedia';
+  | 'pedia'
+  | 'worldgen';
 export type CapytorioCraftGroupTab = CapytorioRecipeGroup | 'machines' | 'lua';
 
 export interface CapytorioHudProps {
@@ -197,6 +205,8 @@ export interface CapytorioHudProps {
   onInstallModule?: (gx: number, gz: number, moduleItemId: CapytorioItemId) => void;
   onRemoveModule?: (gx: number, gz: number, slotIndex: number) => void;
   onRepairMachine?: (gx: number, gz: number) => void;
+  onApplyMapGen?: (config: CapytorioMapGenConfig, resetFactory: boolean) => void;
+  onDownloadSaveBackup?: () => void;
   showToast: (msg: string) => void;
 }
 
@@ -262,6 +272,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
   onInstallModule,
   onRemoveModule,
   onRepairMachine,
+  onApplyMapGen,
+  onDownloadSaveBackup,
   showToast,
 }) => {
   const filterableItems = useMemo(() => {
@@ -521,6 +533,19 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
         <div className={`${FACTORIO_PANEL_FRAME} p-0.5 flex items-center gap-1 text-[#e6e8ec]`}>
           <button
             type="button"
+            data-testid="capytorio-drawer-worldgen-btn"
+            title="Factorio World Generator (Seed, Exchange String, Biomes & 6 Resources)"
+            onClick={() => toggleTab('worldgen')}
+            className={`h-6 px-2 rounded-[2px] text-[10px] font-mono font-semibold cursor-pointer flex items-center gap-1 whitespace-nowrap ${
+              drawerTab === 'worldgen' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
+            }`}
+          >
+            <Globe className="w-3 h-3 shrink-0" />
+            <span>World</span>
+          </button>
+
+          <button
+            type="button"
             data-testid="capytorio-drawer-tech-btn"
             title="Technology Research"
             onClick={() => toggleTab('tech')}
@@ -553,8 +578,23 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
         </div>
       </div>
 
+      {/* NON-OBSTRUCTIVE DOCKED FACTORIO WORLD GENERATOR DRAWER (Live 3D terrain remains visible!) */}
+      {drawerTab === 'worldgen' && onApplyMapGen && (
+        <Suspense fallback={null}>
+          <LazyCapytorioWorldGenDrawer
+            activeConfig={snap.mapGen}
+            machineCount={snap.machineCount}
+            isTopBarVisible={isTopBarVisible}
+            onApplyMapGen={onApplyMapGen}
+            onDownloadSaveBackup={onDownloadSaveBackup ?? (() => {})}
+            onClose={() => setDrawerTab('none')}
+            showToast={showToast}
+          />
+        </Suspense>
+      )}
+
       {/* CENTERED FACTORIO MODAL LAYER (sits above viewport, leaves bottom Quickbar directly clickable) */}
-      {drawerTab !== 'none' && (
+      {drawerTab !== 'none' && drawerTab !== 'worldgen' && (
         <div
           className={`fixed inset-x-0 ${
             isTopBarVisible ? 'top-[calc(2.5rem+var(--sat))]' : 'top-[var(--sat)]'

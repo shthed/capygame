@@ -49,6 +49,7 @@ export interface FactorioBlueprintImportResult {
 const FACTORIO_ENTITY_TO_CAPYTORIO: Record<string, string> = {
   'burner-mining-drill': 'burner_mining_drill',
   'electric-mining-drill': 'electric_mining_drill',
+  pumpjack: 'pumpjack',
   'offshore-pump': 'offshore_pump',
   'transport-belt': 'transport_belt',
   'fast-transport-belt': 'fast_transport_belt',
@@ -98,6 +99,7 @@ const FACTORIO_ENTITY_TO_CAPYTORIO: Record<string, string> = {
   pump: 'pump',
   'oil-refinery': 'oil_refinery',
   'chemical-plant': 'chemical_plant',
+  centrifuge: 'centrifuge',
   rail: 'rail',
   'straight-rail': 'rail',
   'train-stop': 'train_stop',
@@ -128,7 +130,6 @@ const BASE_MACHINE_TO_FACTORIO_ENTITY: Record<CapytorioMachineType, string> = {
 /** Exact bidirectional exceptions where Factorio's hyphenated ID differs from Capytorio's underscored ID. */
 const FACTORIO_ITEM_TO_CAPYTORIO_EXCEPTIONS: Record<string, string> = {
   'iron-gear-wheel': 'iron_gear',
-  stone: 'calcite',
   wood: 'orange',
   'automation-science-pack': 'automation_science',
   'logistic-science-pack': 'logistic_science',

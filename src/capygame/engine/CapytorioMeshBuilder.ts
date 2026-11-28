@@ -32,27 +32,49 @@ import {
   getCapytorioPlacementAnchor,
   getCapytorioToolFootprint,
   resolveCapytorioPlaceableSpec,
-  sampleCapytorioTerrainDetail,
   tileKey,
   type CapytorioBlueprintEntry,
   type CapytorioMachine,
   type CapytorioTerrainSample,
 } from './CapytorioFactoryEngine';
 import {
+  getCapytorioMapGenRevision,
+  sampleCapytorioTerrainForDeck,
+  sampleCapytorioTreeDetail,
+  type CapytorioTreeSample,
+} from './capytorio/CapytorioTerrainGen';
+import {
+  CAPYTORIO_MAX_ORANGE_BUDGET,
+  CAPYTORIO_MAX_ORE_BUDGET,
+  CAPYTORIO_MAX_TREE_BUDGET,
+  CAPYTORIO_MIN_VIEW_RADIUS_TILES,
+  computeCapytorioVisibleTileRadius,
+  createCapytorioAdaptiveLodState,
+  stepCapytorioAdaptiveLod,
+  type CapytorioAdaptiveLodState,
+} from './capytorio/CapytorioAdaptiveLod';
+import {
   DEDICATED_CAPYTORIO_VARIANT_MODELS,
   buildDedicatedVariantModel,
   variantSkipsDefaultPlinth,
   type CapytorioVariantMaterials,
 } from './capytorio/CapytorioVariantModels';
+import {
+  createCapytorioAltitudeLodState,
+  evaluateCapytorioAltitudeLod,
+  getCapytorioMachineProxyColorHex,
+  getCapytorioMachineProxyHeight,
+} from './capytorio/CapytorioOrbitalLodMath';
+import { CapytorioPlanetarySurfaceLayer } from './capytorio/CapytorioPlanetarySurfaceLayer';
 import { CAPY_CRISP_OVERLAY_LAYER } from './gpu/GpuEngineTypes';
 import {
   drawCapytorioAltBadgeToCanvas,
   type CapytorioAltBadgeSpec,
 } from './CapytorioAltIconRenderer';
 
-const TERRAIN_DECK_SEGS = 64;
+const TERRAIN_DECK_SEGS = 128;
 const TERRAIN_DECK_BASE_TILES = 128;
-const TERRAIN_DECK_TILES_PER_SEG = TERRAIN_DECK_BASE_TILES / TERRAIN_DECK_SEGS; // 2 tiles/seg -> 4x faster rebuilds
+const TERRAIN_DECK_TILES_PER_SEG = TERRAIN_DECK_BASE_TILES / TERRAIN_DECK_SEGS; // 1 tile/seg -> crisp exact shorelines!
 const TERRAIN_DECK_BASE_SIZE = TERRAIN_DECK_BASE_TILES * CAPYTORIO_TILE_SIZE; // 320m at lodStep = 1 (preserved!)
 const WATER_SURFACE_Y = -0.20;
 const _terrainSampleScratch: CapytorioTerrainSample = {
@@ -61,16 +83,25 @@ const _terrainSampleScratch: CapytorioTerrainSample = {
   elevationY: -0.02,
   waterDepth: 0,
   sandBlend: 0,
+  moisture: 0.5,
+  aux: 0.5,
+};
+const _treeSampleScratch: CapytorioTreeSample = {
+  hasTree: false,
+  style: 0,
+  offsetX: 0,
+  offsetZ: 0,
 };
 
-const MAX_ORE_INSTANCES = 1024;
+const MAX_ORE_INSTANCES = CAPYTORIO_MAX_ORE_BUDGET;
 const MAX_BELT_INSTANCES = 1400;
 const MAX_CURVED_BELT_INSTANCES = 600;
 const MAX_SHAPE_ITEM_INSTANCES = 2048;
-const MAX_TREE_INSTANCES = 512;
+const MAX_TREE_INSTANCES = CAPYTORIO_MAX_TREE_BUDGET;
+const MAX_TREE_ORANGE_INSTANCES = CAPYTORIO_MAX_ORANGE_BUDGET;
 const MAX_BLUEPRINT_GHOST_TILES = 256;
 const MAX_ALT_MODE_SPRITES = 256;
-const MAX_VISIBLE_RADIUS_TILES = 22;
+const MAX_VISIBLE_RADIUS_TILES = CAPYTORIO_MIN_VIEW_RADIUS_TILES;
 const BELT_SURFACE_Y = 0.145;
 const INSERTER_UPPER_ARM_LEN = 1.65;
 const INSERTER_FOREARM_LEN = 1.70;
@@ -1701,6 +1732,11 @@ export class Capytorio3DRenderer {
   private lastDeckSnapGx = Number.NaN;
   private lastDeckSnapGz = Number.NaN;
   private lastDeckLodStep = -1;
+  private lastDeckMapGenRev = -1;
+  private lastTerrainMapGenRev = -1;
+  private lastTerrainQualityTier = -1;
+  private lastTerrainFruitsEnabled = true;
+  private readonly adaptiveLod: CapytorioAdaptiveLodState = createCapytorioAdaptiveLodState();
   private beaconPillarGroup = new THREE.Group();
 
   // Instanced meshes for high-density ores, continuous dual-lane belts, distinct-shape items, and tropical citrus trees
@@ -1823,6 +1859,17 @@ export class Capytorio3DRenderer {
   private lastBeltCamZ = Number.NaN;
   private lastBeltVisibleMeters = -1;
   private lastBeltSubPixel = -1;
+  private lastUseDetailedBelts = true;
+
+  // Multi-scale orbital clipmap, drifting patchy clouds & simplified 3D proxy instanced meshes
+  private readonly altitudeLod = createCapytorioAltitudeLodState();
+  public readonly planetarySurfaceLayer: CapytorioPlanetarySurfaceLayer;
+  private readonly proxyMachineInstanced: THREE.InstancedMesh;
+  private readonly proxyBeltInstanced: THREE.InstancedMesh;
+  private lastProxyTopoRev = -1;
+  private lastProxyMachinesOn = false;
+  private lastProxyBeltsOn = false;
+  private lastProxyScale = -1;
 
   constructor() {
     this.root.name = 'Capytorio3DRendererRoot';
@@ -2450,6 +2497,51 @@ export class Capytorio3DRenderer {
     );
     this.sharedMaterials.push(beltChassisMat, beltRailMat, beltSideBridgeMat);
 
+    // 3b. Nested 5-Ring GPU Clipmap + Live Factory Rasterizer + Dual-Stratum Drifting Patchy Clouds
+    this.planetarySurfaceLayer = new CapytorioPlanetarySurfaceLayer();
+    this.root.add(this.planetarySurfaceLayer.root);
+
+    // 3c. Simplified Single-Draw-Call 3D Proxies for Regional/High-Altitude Factory View (280 m - 6.5 km)
+    const proxyMachineGeo = new THREE.BoxGeometry(1, 1, 1);
+    proxyMachineGeo.translate(0, 0.5, 0);
+    const proxyMachineMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.64,
+      metalness: 0.24,
+      envMapIntensity: 0.42,
+    });
+    this.proxyMachineInstanced = new THREE.InstancedMesh(proxyMachineGeo, proxyMachineMat, 4096);
+    this.proxyMachineInstanced.frustumCulled = false;
+    this.proxyMachineInstanced.count = 0;
+    this.proxyMachineInstanced.visible = false;
+    this.proxyMachineInstanced.userData.ignoreCameraFade = true;
+    this.root.add(this.proxyMachineInstanced);
+
+    const proxyBeltGeo = new THREE.BoxGeometry(
+      CAPYTORIO_TILE_SIZE * 0.86,
+      0.16,
+      CAPYTORIO_TILE_SIZE + 0.04
+    );
+    proxyBeltGeo.translate(0, 0.08, 0);
+    const proxyBeltMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.72,
+      metalness: 0.16,
+      envMapIntensity: 0.36,
+    });
+    this.proxyBeltInstanced = new THREE.InstancedMesh(
+      proxyBeltGeo,
+      proxyBeltMat,
+      MAX_BELT_INSTANCES
+    );
+    this.proxyBeltInstanced.frustumCulled = false;
+    this.proxyBeltInstanced.count = 0;
+    this.proxyBeltInstanced.visible = false;
+    this.proxyBeltInstanced.userData.ignoreCameraFade = true;
+    this.root.add(this.proxyBeltInstanced);
+    this.sharedGeometries.push(proxyMachineGeo, proxyBeltGeo);
+    this.sharedMaterials.push(proxyMachineMat, proxyBeltMat);
+
     // 4. Instanced Moving Items (16 distinct 3D shape archetypes with Factorio contrast colors)
     const shapeGeos = {} as Record<CapytorioItemShape, THREE.BufferGeometry>;
     const shapePools = {} as Record<CapytorioItemShape, THREE.InstancedMesh>;
@@ -2555,7 +2647,7 @@ export class Capytorio3DRenderer {
     this.treeOrangeInstanced = new THREE.InstancedMesh(
       orangeGeo,
       orangeMat,
-      MAX_TREE_INSTANCES * 3
+      MAX_TREE_ORANGE_INSTANCES
     );
     this.treeOrangeInstanced.frustumCulled = false;
     this.treeOrangeInstanced.count = 0;
@@ -4335,21 +4427,38 @@ export class Capytorio3DRenderer {
     visible: boolean,
     altitudeRadius: number = 26
   ): void {
-    const logAlt = Math.log10(Math.max(10, altitudeRadius));
-    // Smoothly fade entire factory cluster out past 100km once its on-screen size becomes sub-pixel (< 1 px)
-    const factoryClusterFade =
-      logAlt <= 4.35 ? 1.0 : logAlt >= 5.18 ? 0.0 : 1.0 - (logAlt - 4.35) / (5.18 - 4.35);
-    const effectiveVisible = visible && factoryClusterFade > 0.01;
+    const lod = evaluateCapytorioAltitudeLod(altitudeRadius, this.altitudeLod);
+    const effectiveVisible =
+      visible &&
+      (lod.clipmapOpacity > 0.004 ||
+        lod.groundDeckAlpha > 0.004 ||
+        lod.cloudLayer1Opacity > 0.004 ||
+        lod.cloudLayer2Opacity > 0.004);
     this.root.visible = effectiveVisible;
     if (!effectiveVisible) return;
 
-    // Smoothly dissolve terrain & water deck into Capy-Earth planetary globe only at high orbital altitude (~1.2km..8km)
-    const deckAlpha =
-      logAlt <= 3.10 ? 1.0 : logAlt >= 3.92 ? 0.0 : 1.0 - (logAlt - 3.10) / (3.92 - 3.10);
+    // 1. FPS-driven adaptive view distance & foliage quality governor (only throttles when FPS drops)
+    stepCapytorioAdaptiveLod(this.adaptiveLod, dt);
+
+    // 1b. Nested 5-ring GPU clipmap (exact Nauvis terrain, forests, ores, live factory) + drifting clouds
+    this.planetarySurfaceLayer.sync(
+      engine,
+      camX,
+      camZ,
+      timeSec,
+      altitudeRadius,
+      lod,
+      this.adaptiveLod.qualityTier <= 1
+    );
+
+    // Close-range tile-exact 128x128 3D groundDeck & animated waterDeck (10 m - 340 m),
+    // seamlessly handing off to Ring 0's 1-tile-per-pixel GPU clipmap right underneath
+    const deckAlpha = lod.groundDeckAlpha;
     const showGroundDeck = deckAlpha > 0.015;
     this.groundDeck.visible = showGroundDeck;
     this.waterDeck.visible = showGroundDeck;
     this.groundEdgeStrip.visible = false;
+    this.beaconPillarGroup.visible = altitudeRadius <= 1_800;
     if (showGroundDeck) {
       const wantTransparent = deckAlpha < 0.995;
       if (this.deckMat.transparent !== wantTransparent) {
@@ -4360,20 +4469,20 @@ export class Capytorio3DRenderer {
       this.deckMat.depthWrite = deckAlpha >= 0.98;
       this.waterMat.opacity = 0.76 * deckAlpha;
 
-      // Adapt vertex spacing with camera altitude so close-up shows exact 1-tile shorelines
-      // while zoomed-out strategic view reveals sweeping rivers, lakes, and entire ocean coastlines!
-      const lodStep =
-        altitudeRadius <= 95 ? 1 : altitudeRadius <= 220 ? 2 : altitudeRadius <= 520 ? 4 : 8;
+      // Keep 3D groundDeck strictly crisp (lodStep 1..2 only); distant vistas use mipmapped clipmap rings!
+      const lodStep = altitudeRadius <= 115 ? 1 : 2;
       const snapTiles = Math.max(4, 4 * lodStep);
       const rawCenterGx = (camX - CAPYTORIO_WORLD_ORIGIN_X) / CAPYTORIO_TILE_SIZE;
       const rawCenterGz = (camZ - CAPYTORIO_WORLD_ORIGIN_Z) / CAPYTORIO_TILE_SIZE;
       const snapGx = Math.round(rawCenterGx / snapTiles) * snapTiles;
       const snapGz = Math.round(rawCenterGz / snapTiles) * snapTiles;
 
+      const curMapGenRev = getCapytorioMapGenRevision();
       if (
         snapGx !== this.lastDeckSnapGx ||
         snapGz !== this.lastDeckSnapGz ||
-        lodStep !== this.lastDeckLodStep
+        lodStep !== this.lastDeckLodStep ||
+        curMapGenRev !== this.lastDeckMapGenRev
       ) {
         this.rebuildTerrainDeckGeometry(snapGx, snapGz, lodStep);
       }
@@ -4394,22 +4503,40 @@ export class Capytorio3DRenderer {
       }
     }
 
-    // Sub-pixel gentle scale-down right as factory disappears into planet surface
-    const subPixelShrink = factoryClusterFade < 0.99 ? 0.35 + 0.65 * factoryClusterFade : 1.0;
+    const subPixelShrink = lod.proxyScale;
 
-    // 2. Determine visible tile window around camera target & dirty-cache static ore/tree instanced buffers
+    // 2. Progressive 3D tree & ore visibility (trunks/crystals cull cleanly at regional altitude,
+    // canopies/plates stay visible mid-range, and baked clipmap rings carry forests/ores to orbit!)
+    const showAny3dProps = lod.showDetailedTrees || lod.showCanopyOnlyTrees;
+    this.treeTrunkInstanced.visible = lod.showDetailedTrees;
+    this.treeCanopyInstanced.visible = showAny3dProps;
+    this.oreCrystalInstanced.visible = lod.showOreCrystals;
+    this.orePlateInstanced.visible = showAny3dProps;
+
+    const wantTreeShadows = this.adaptiveLod.enableTreeShadows && altitudeRadius <= 165;
+    if (this.treeTrunkInstanced.castShadow !== wantTreeShadows) {
+      this.treeTrunkInstanced.castShadow = wantTreeShadows;
+      this.treeCanopyInstanced.castShadow = wantTreeShadows;
+    }
+
+    // Determine visible tile window around camera target & dirty-cache static ore/tree instanced buffers
     const centerGx = Math.round((camX - CAPYTORIO_WORLD_ORIGIN_X) / CAPYTORIO_TILE_SIZE);
     const centerGz = Math.round((camZ - CAPYTORIO_WORLD_ORIGIN_Z) / CAPYTORIO_TILE_SIZE);
-    const terrainTileRadius =
-      altitudeRadius > 1100
-        ? 0
-        : Math.min(34, Math.max(MAX_VISIBLE_RADIUS_TILES, Math.round(altitudeRadius * 0.25)));
+    const terrainTileRadius = showAny3dProps
+      ? computeCapytorioVisibleTileRadius(altitudeRadius, this.adaptiveLod)
+      : 0;
+    const showTreeFruits = this.adaptiveLod.enableTreeFruits && lod.showDetailedTrees && altitudeRadius <= 145;
+    this.treeOrangeInstanced.visible = showTreeFruits;
 
+    const curMapGenRevForProps = getCapytorioMapGenRevision();
     const terrainDirty =
       centerGx !== this.lastTerrainCenterGx ||
       centerGz !== this.lastTerrainCenterGz ||
       terrainTileRadius !== this.lastTerrainRadius ||
       engine.topologyRevision !== this.lastTerrainTopoRev ||
+      curMapGenRevForProps !== this.lastTerrainMapGenRev ||
+      this.adaptiveLod.qualityTier !== this.lastTerrainQualityTier ||
+      showTreeFruits !== this.lastTerrainFruitsEnabled ||
       Math.abs(subPixelShrink - this.lastTerrainSubPixel) > 0.005;
 
     if (terrainDirty) {
@@ -4417,91 +4544,167 @@ export class Capytorio3DRenderer {
       this.lastTerrainCenterGz = centerGz;
       this.lastTerrainRadius = terrainTileRadius;
       this.lastTerrainTopoRev = engine.topologyRevision;
+      this.lastTerrainMapGenRev = curMapGenRevForProps;
+      this.lastTerrainQualityTier = this.adaptiveLod.qualityTier;
+      this.lastTerrainFruitsEnabled = showTreeFruits;
       this.lastTerrainSubPixel = subPixelShrink;
 
+      const maxOres = Math.min(MAX_ORE_INSTANCES, this.adaptiveLod.maxOreBudget);
+      const maxTrees = Math.min(MAX_TREE_INSTANCES, this.adaptiveLod.maxTreeBudget);
       let oreCount = 0;
       let treeCount = 0;
       let orangeCount = 0;
+
+      const emitTileProps = (gx: number, gz: number, ringDist: number): void => {
+        const wx = capytorioGridToWorldX(gx);
+        if (wx < 504) return; // Keep Forest Island ocean shelf clean
+        const wz = capytorioGridToWorldZ(gz);
+        const h = hashTile(gx, gz);
+
+        if (oreCount < maxOres) {
+          const res = engine.getResourceAt(gx, gz);
+          if (res) {
+            const meta = getCapytorioItemMeta(res.resource);
+            const isOil = res.resource === 'crude_oil';
+            const isUranium = res.resource === 'uranium_ore';
+            const richnessFactor = isOil
+              ? 1.0
+              : Math.max(0.56, Math.min(1.18, 0.50 + Math.sqrt(Math.max(0, res.richness) / 1600) * 0.54));
+            const tileJitterX = isOil ? 0 : (h - 0.5) * 0.34;
+            const tileJitterZ = isOil ? 0 : (((h * 11) % 1) - 0.5) * 0.34;
+
+            _dummy.position.set(wx + tileJitterX, isOil ? 0.032 : 0.025, wz + tileJitterZ);
+            _dummy.rotation.set(0, h * Math.PI * 2, 0);
+            if (isOil) {
+              _dummy.scale.set(1.22 * subPixelShrink, 0.75 * subPixelShrink, 1.22 * subPixelShrink);
+            } else {
+              const plateS = richnessFactor * (0.94 + h * 0.16) * subPixelShrink;
+              _dummy.scale.set(plateS, subPixelShrink, plateS);
+            }
+            _dummy.updateMatrix();
+            this.orePlateInstanced.setMatrixAt(oreCount, _dummy.matrix);
+            if (isOil) {
+              _color.setHex(0x140b1c);
+            } else if (isUranium) {
+              _color.setHex(0x15803d);
+            } else {
+              _color.setHex(meta.colorHex).multiplyScalar(0.55);
+            }
+            this.orePlateInstanced.setColorAt(oreCount, _color);
+
+            const miner = engine.getMachineAt(gx, gz);
+            const hasDrill = miner?.type === 'drill';
+            if (isOil) {
+              const oilScale = (hasDrill ? 0.42 : 0.76 + h * 0.28) * subPixelShrink;
+              _dummy.position.set(wx, hasDrill ? 0.06 : 0.09, wz);
+              _dummy.rotation.set(0, h * 6.28, 0);
+              _dummy.scale.set(oilScale * 1.45, oilScale * 0.28, oilScale * 1.45);
+              _dummy.updateMatrix();
+              this.oreCrystalInstanced.setMatrixAt(oreCount, _dummy.matrix);
+              _color.setHex(0x4c1d95);
+              this.oreCrystalInstanced.setColorAt(oreCount, _color);
+            } else {
+              const crystalScale =
+                (hasDrill ? 0.5 : (0.62 + h * 0.38) * richnessFactor) * subPixelShrink;
+              _dummy.position.set(
+                wx + tileJitterX + (h - 0.5) * 0.34,
+                hasDrill ? 0.13 : 0.22 * crystalScale,
+                wz + tileJitterZ + (((h * 7) % 1) - 0.5) * 0.34
+              );
+              _dummy.rotation.set(h * 1.1, h * 5.2, h * 0.7);
+              _dummy.scale.setScalar(crystalScale);
+              _dummy.updateMatrix();
+              this.oreCrystalInstanced.setMatrixAt(oreCount, _dummy.matrix);
+              _color.setHex(isUranium ? 0x4ade80 : meta.colorHex);
+              this.oreCrystalInstanced.setColorAt(oreCount, _color);
+            }
+
+            oreCount++;
+            return;
+          }
+        }
+
+        if (treeCount < maxTrees && engine.hasTreeAt(gx, gz)) {
+          const td = sampleCapytorioTreeDetail(gx, gz, _treeSampleScratch);
+          const isDry = td.style === 5;
+          const treeScale = (isDry ? 0.68 + h * 0.26 : 0.85 + h * 0.32) * subPixelShrink;
+          const tx = wx + td.offsetX * CAPYTORIO_TILE_SIZE;
+          const tz = wz + td.offsetZ * CAPYTORIO_TILE_SIZE;
+
+          _dummy.position.set(tx, 0, tz);
+          _dummy.rotation.set(0, h * Math.PI * 2, 0);
+          _dummy.scale.set(treeScale, treeScale, treeScale);
+          _dummy.updateMatrix();
+          this.treeTrunkInstanced.setMatrixAt(treeCount, _dummy.matrix);
+
+          _dummy.position.set(tx, (isDry ? 1.48 : 1.82) * treeScale, tz);
+          _dummy.rotation.set(h * 0.3, h * 6.28, 0);
+          if (isDry) {
+            _dummy.scale.set(treeScale * 0.52, treeScale * 0.38, treeScale * 0.52);
+          } else {
+            _dummy.scale.set(treeScale, treeScale * 0.88, treeScale);
+          }
+          _dummy.updateMatrix();
+          this.treeCanopyInstanced.setMatrixAt(treeCount, _dummy.matrix);
+
+          // Authentic Factorio Nauvis tree species foliage tints (lush green, pine/olive, autumn red, warm brown, desert dry)
+          let canopyHex: number;
+          if (td.style === 3) {
+            canopyHex = h < 0.5 ? 0x9c4529 : 0xb4532a;
+          } else if (td.style === 4) {
+            canopyHex = h < 0.5 ? 0x7c582b : 0x8f6734;
+          } else if (td.style === 5) {
+            canopyHex = h < 0.5 ? 0x78674c : 0x8c7a5b;
+          } else if (td.style === 2) {
+            canopyHex = h < 0.34 ? 0x1f6831 : h < 0.68 ? 0x2b7b35 : 0x398c3a;
+          } else {
+            canopyHex = h < 0.34 ? 0x22792c : h < 0.68 ? 0x2f8f34 : 0x3da33d;
+          }
+          _color.setHex(canopyHex);
+          this.treeCanopyInstanced.setColorAt(treeCount, _color);
+
+          if (
+            showTreeFruits &&
+            !isDry &&
+            td.style <= 2 &&
+            ringDist <= 36 &&
+            orangeCount + 3 <= MAX_TREE_ORANGE_INSTANCES
+          ) {
+            for (let oi = 0; oi < 3; oi++) {
+              const oAngle = h * 6.28 + oi * 2.094;
+              const oRad = 0.84 * treeScale;
+              _dummy.position.set(
+                tx + Math.cos(oAngle) * oRad,
+                (2.08 + (oi % 2) * 0.22) * treeScale,
+                tz + Math.sin(oAngle) * oRad
+              );
+              _dummy.rotation.set(0, 0, 0);
+              _dummy.scale.setScalar(treeScale);
+              _dummy.updateMatrix();
+              this.treeOrangeInstanced.setMatrixAt(orangeCount, _dummy.matrix);
+              orangeCount++;
+            }
+          }
+          treeCount++;
+        }
+      };
+
+      // Concentric square-ring outward scan so nearest tiles always fill symmetrically to the horizon
       if (terrainTileRadius > 0) {
-        for (let dx = -terrainTileRadius; dx <= terrainTileRadius; dx++) {
-          const gx = centerGx + dx;
-          const wx = capytorioGridToWorldX(gx);
-          if (wx < 504) continue; // Keep ocean shelf clean
-          for (let dz = -terrainTileRadius; dz <= terrainTileRadius; dz++) {
-            const gz = centerGz + dz;
-            const wz = capytorioGridToWorldZ(gz);
-            const h = hashTile(gx, gz);
-
-            if (oreCount < MAX_ORE_INSTANCES) {
-              const res = engine.getResourceAt(gx, gz);
-              if (res) {
-                const meta = getCapytorioItemMeta(res.resource);
-
-                _dummy.position.set(wx, 0.025, wz);
-                _dummy.rotation.set(0, h * Math.PI, 0);
-                _dummy.scale.setScalar(subPixelShrink);
-                _dummy.updateMatrix();
-                this.orePlateInstanced.setMatrixAt(oreCount, _dummy.matrix);
-                _color.setHex(meta.colorHex).multiplyScalar(0.55);
-                this.orePlateInstanced.setColorAt(oreCount, _color);
-
-                const hasDrill = engine.getMachineAt(gx, gz)?.type === 'drill';
-                const crystalScale = (hasDrill ? 0.55 : 0.78 + h * 0.45) * subPixelShrink;
-                _dummy.position.set(
-                  wx + (h - 0.5) * 0.5,
-                  hasDrill ? 0.14 : 0.24 * crystalScale,
-                  wz + ((h * 7) % 1 - 0.5) * 0.5
-                );
-                _dummy.rotation.set(h * 1.1, h * 5.2, h * 0.7);
-                _dummy.scale.setScalar(crystalScale);
-                _dummy.updateMatrix();
-                this.oreCrystalInstanced.setMatrixAt(oreCount, _dummy.matrix);
-                _color.setHex(meta.colorHex);
-                this.oreCrystalInstanced.setColorAt(oreCount, _color);
-
-                oreCount++;
-                continue;
-              }
-            }
-
-            if (treeCount < MAX_TREE_INSTANCES && engine.hasTreeAt(gx, gz)) {
-              const treeScale = (0.85 + h * 0.3) * subPixelShrink;
-              const jitterX = (h - 0.5) * 0.45;
-              const jitterZ = (((h * 13) % 1) - 0.5) * 0.45;
-              const tx = wx + jitterX;
-              const tz = wz + jitterZ;
-
-              _dummy.position.set(tx, 0, tz);
-              _dummy.rotation.set(0, h * Math.PI * 2, 0);
-              _dummy.scale.set(treeScale, treeScale, treeScale);
-              _dummy.updateMatrix();
-              this.treeTrunkInstanced.setMatrixAt(treeCount, _dummy.matrix);
-
-              _dummy.position.set(tx, 1.82 * treeScale, tz);
-              _dummy.rotation.set(h * 0.3, h * 6.28, 0);
-              _dummy.scale.set(treeScale, treeScale * 0.88, treeScale);
-              _dummy.updateMatrix();
-              this.treeCanopyInstanced.setMatrixAt(treeCount, _dummy.matrix);
-              const greenShade = h < 0.34 ? 0x22792c : h < 0.68 ? 0x2f8f34 : 0x3da33d;
-              _color.setHex(greenShade);
-              this.treeCanopyInstanced.setColorAt(treeCount, _color);
-
-              for (let oi = 0; oi < 3 && orangeCount < MAX_TREE_INSTANCES * 3; oi++) {
-                const oAngle = h * 6.28 + oi * 2.094;
-                const oRad = 0.84 * treeScale;
-                _dummy.position.set(
-                  tx + Math.cos(oAngle) * oRad,
-                  (2.08 + (oi % 2) * 0.22) * treeScale,
-                  tz + Math.sin(oAngle) * oRad
-                );
-                _dummy.rotation.set(0, 0, 0);
-                _dummy.scale.setScalar(treeScale);
-                _dummy.updateMatrix();
-                this.treeOrangeInstanced.setMatrixAt(orangeCount, _dummy.matrix);
-                orangeCount++;
-              }
-              treeCount++;
-            }
+        emitTileProps(centerGx, centerGz, 0);
+        for (let ring = 1; ring <= terrainTileRadius; ring++) {
+          if (oreCount >= maxOres && treeCount >= maxTrees) break;
+          const minX = centerGx - ring;
+          const maxX = centerGx + ring;
+          const minZ = centerGz - ring;
+          const maxZ = centerGz + ring;
+          for (let gx = minX; gx <= maxX; gx++) {
+            emitTileProps(gx, minZ, ring);
+            emitTileProps(gx, maxZ, ring);
+          }
+          for (let gz = minZ + 1; gz <= maxZ - 1; gz++) {
+            emitTileProps(minX, gz, ring);
+            emitTileProps(maxX, gz, ring);
           }
         }
       }
@@ -4566,15 +4769,20 @@ export class Capytorio3DRenderer {
       (MAX_VISIBLE_RADIUS_TILES + 4) * CAPYTORIO_TILE_SIZE,
       altitudeRadius * 1.5
     );
+    const useDetailedMachines = lod.useDetailedMachines;
+    const useDetailedBelts = lod.useDetailedBelts;
     const beltsDirty =
-      engine.topologyRevision !== this.lastBeltTopoRev ||
-      !Number.isFinite(this.lastBeltCamX) ||
-      Math.abs(camX - this.lastBeltCamX) > CAPYTORIO_TILE_SIZE * 2 ||
-      Math.abs(camZ - this.lastBeltCamZ) > CAPYTORIO_TILE_SIZE * 2 ||
-      Math.abs(maxVisibleMeters - this.lastBeltVisibleMeters) > 4.0 ||
-      Math.abs(subPixelShrink - this.lastBeltSubPixel) > 0.004;
+      useDetailedBelts !== this.lastUseDetailedBelts ||
+      (useDetailedBelts &&
+        (engine.topologyRevision !== this.lastBeltTopoRev ||
+          !Number.isFinite(this.lastBeltCamX) ||
+          Math.abs(camX - this.lastBeltCamX) > CAPYTORIO_TILE_SIZE * 2 ||
+          Math.abs(camZ - this.lastBeltCamZ) > CAPYTORIO_TILE_SIZE * 2 ||
+          Math.abs(maxVisibleMeters - this.lastBeltVisibleMeters) > 4.0 ||
+          Math.abs(subPixelShrink - this.lastBeltSubPixel) > 0.004));
     const beltVisibleMeters = maxVisibleMeters + CAPYTORIO_TILE_SIZE * 4;
     if (beltsDirty) {
+      this.lastUseDetailedBelts = useDetailedBelts;
       this.lastBeltTopoRev = engine.topologyRevision;
       this.lastBeltCamX = camX;
       this.lastBeltCamZ = camZ;
@@ -4582,12 +4790,78 @@ export class Capytorio3DRenderer {
       this.lastBeltSubPixel = subPixelShrink;
     }
 
+    // 3b. Simplified 3D Instanced Proxies (280 m - 6.5 km) — identical daylight colors, 1 draw call each!
+    const useProxyMachines = lod.useProxyMachines;
+    const useProxyBelts = lod.useProxyBelts;
+    const proxyDirty =
+      useProxyMachines !== this.lastProxyMachinesOn ||
+      useProxyBelts !== this.lastProxyBeltsOn ||
+      ((useProxyMachines || useProxyBelts) &&
+        (engine.topologyRevision !== this.lastProxyTopoRev ||
+          Math.abs(subPixelShrink - this.lastProxyScale) > 0.015));
+
+    if (proxyDirty) {
+      this.lastProxyMachinesOn = useProxyMachines;
+      this.lastProxyBeltsOn = useProxyBelts;
+      this.lastProxyTopoRev = engine.topologyRevision;
+      this.lastProxyScale = subPixelShrink;
+
+      let pMachCount = 0;
+      let pBeltCount = 0;
+      if (useProxyMachines || useProxyBelts) {
+        for (const m of engine.machines.values()) {
+          const fp = engine.getMachineFootprint(m);
+          const wx = capytorioMachineCenterWorldX(m.gx, fp.width);
+          const wz = capytorioMachineCenterWorldZ(m.gz, fp.height);
+          const hex = getCapytorioMachineProxyColorHex(m.type, m.variantItemId);
+          _color.setHex(hex);
+          if (m.type === 'belt') {
+            if (useProxyBelts && pBeltCount < MAX_BELT_INSTANCES) {
+              _dummy.position.set(wx, 0, wz);
+              _dummy.rotation.set(0, dirToRotY(m.dir), 0);
+              _dummy.scale.setScalar(subPixelShrink);
+              _dummy.updateMatrix();
+              this.proxyBeltInstanced.setMatrixAt(pBeltCount, _dummy.matrix);
+              this.proxyBeltInstanced.setColorAt(pBeltCount, _color);
+              pBeltCount++;
+            }
+          } else if (useProxyMachines && pMachCount < 4096) {
+            const ph = getCapytorioMachineProxyHeight(m.type, m.variantItemId);
+            _dummy.position.set(wx, 0, wz);
+            _dummy.rotation.set(0, dirToRotY(m.dir), 0);
+            _dummy.scale.set(
+              fp.width * CAPYTORIO_TILE_SIZE * 0.92 * subPixelShrink,
+              ph * subPixelShrink,
+              fp.height * CAPYTORIO_TILE_SIZE * 0.92 * subPixelShrink
+            );
+            _dummy.updateMatrix();
+            this.proxyMachineInstanced.setMatrixAt(pMachCount, _dummy.matrix);
+            this.proxyMachineInstanced.setColorAt(pMachCount, _color);
+            pMachCount++;
+          }
+        }
+      }
+      this.proxyMachineInstanced.count = pMachCount;
+      this.proxyMachineInstanced.visible = pMachCount > 0;
+      this.proxyMachineInstanced.instanceMatrix.needsUpdate = true;
+      if (this.proxyMachineInstanced.instanceColor) {
+        this.proxyMachineInstanced.instanceColor.needsUpdate = true;
+      }
+      this.proxyBeltInstanced.count = pBeltCount;
+      this.proxyBeltInstanced.visible = pBeltCount > 0;
+      this.proxyBeltInstanced.instanceMatrix.needsUpdate = true;
+      if (this.proxyBeltInstanced.instanceColor) {
+        this.proxyBeltInstanced.instanceColor.needsUpdate = true;
+      }
+    }
+
     const beltHalfSpanX = CAPYTORIO_TILE_SIZE * 0.88 * 0.5 - 0.055; // 1.045m from tile center
-    const renderItemsAtScale = altitudeRadius <= 1800;
-    const showAltMode = engine.altModeEnabled && altitudeRadius <= 420;
+    const renderItemsAtScale = altitudeRadius <= 260;
+    const showAltMode = engine.altModeEnabled && altitudeRadius <= 280;
     this.altModeRoot.visible = showAltMode;
     let altSpriteCount = 0;
 
+    if (useDetailedMachines || useDetailedBelts || renderItemsAtScale) {
     for (const [k, m] of engine.machines) {
       const fp = engine.getMachineFootprint(m);
       const wx = capytorioMachineCenterWorldX(m.gx, fp.width);
@@ -4603,13 +4877,14 @@ export class Capytorio3DRenderer {
       const rightDz = fwdDx;
       const rotY = dirToRotY(m.dir);
       const curveShape =
-        m.type === 'belt' && (beltsDirty || (renderItemsAtScale && m.beltItems.length > 0))
+        m.type === 'belt' &&
+        ((useDetailedBelts && beltsDirty) || (renderItemsAtScale && m.beltItems.length > 0))
           ? getBeltCurveShape(engine.occupancyGrid, m)
           : 'straight';
 
       if (m.type === 'belt') {
-        if (!beltsDirty) {
-          // Static belt geometry already uploaded; fall through directly to dynamic belt items below
+        if (!useDetailedBelts || !beltsDirty) {
+          // Static belt geometry either already uploaded or handed off to simplified 3D proxy
         } else {
         const tierMult = m.tierMult ?? 1.0;
         const tierIdx: 0 | 1 | 2 =
@@ -4713,7 +4988,7 @@ export class Capytorio3DRenderer {
           }
         }
         }
-      } else {
+      } else if (useDetailedMachines) {
         _activeKeysScratch.add(k);
         const meshKey = resolveMachineMeshKey(m.type, m.variantItemId);
         let group = this.activeMachineGroups.get(k);
@@ -5080,6 +5355,7 @@ export class Capytorio3DRenderer {
           _shapeCounts[shape] = idx + 1;
         }
       }
+    }
     }
 
     // Hide unused pooled Alt-Mode sprites
@@ -5486,6 +5762,7 @@ export class Capytorio3DRenderer {
     this.lastDeckSnapGx = snapGx;
     this.lastDeckSnapGz = snapGz;
     this.lastDeckLodStep = lodStep;
+    this.lastDeckMapGenRev = getCapytorioMapGenRevision();
 
     const posAttr = this.groundDeckGeo.attributes.position as THREE.BufferAttribute;
     const colAttr = this.groundDeckGeo.attributes.color as THREE.BufferAttribute;
@@ -5506,7 +5783,7 @@ export class Capytorio3DRenderer {
       const rowOffset = iz * cols;
       for (let ix = 0; ix <= TERRAIN_DECK_SEGS; ix++) {
         const gx = snapGx + (ix - halfSegs) * tileStep;
-        const sample = sampleCapytorioTerrainDetail(gx, gz, _terrainSampleScratch);
+        const sample = sampleCapytorioTerrainForDeck(gx, gz, lodStep, _terrainSampleScratch);
         const vi = rowOffset + ix;
         const pIdx = vi * 3;
 
@@ -5530,56 +5807,25 @@ export class Capytorio3DRenderer {
             wr = 0.10 * (1 - t) + 0.04 * t;
             wg = 0.46 * (1 - t) + 0.24 * t;
             wb = 0.74 * (1 - t) + 0.54 * t;
-          } else if (sample.type === 'river') {
-            const t = Math.min(1, d);
-            r = 0.11 * (1 - t) + 0.06 * t;
-            g = 0.48 * (1 - t) + 0.34 * t;
-            b = 0.66 * (1 - t) + 0.56 * t;
-            wr = 0.18 * (1 - t) + 0.10 * t;
-            wg = 0.66 * (1 - t) + 0.52 * t;
-            wb = 0.86 * (1 - t) + 0.78 * t;
-          } else if (sample.type === 'lake') {
-            const t = Math.min(1, d);
-            r = 0.09 * (1 - t) + 0.04 * t;
-            g = 0.44 * (1 - t) + 0.26 * t;
-            b = 0.62 * (1 - t) + 0.48 * t;
-            wr = 0.14 * (1 - t) + 0.08 * t;
-            wg = 0.60 * (1 - t) + 0.44 * t;
-            wb = 0.82 * (1 - t) + 0.72 * t;
           } else {
-            const t = Math.min(1, d * 2.1);
-            r = 0.34 * (1 - t) + 0.14 * t;
-            g = 0.64 * (1 - t) + 0.54 * t;
-            b = 0.60 * (1 - t) + 0.64 * t;
-            wr = 0.34 * (1 - t) + 0.18 * t;
-            wg = 0.82 * (1 - t) + 0.70 * t;
-            wb = 0.86 * (1 - t) + 0.86 * t;
+            const t = Math.min(1, d);
+            r = 0.11 * (1 - t) + 0.05 * t;
+            g = 0.46 * (1 - t) + 0.28 * t;
+            b = 0.64 * (1 - t) + 0.50 * t;
+            wr = 0.16 * (1 - t) + 0.09 * t;
+            wg = 0.62 * (1 - t) + 0.46 * t;
+            wb = 0.84 * (1 - t) + 0.74 * t;
           }
         } else {
-          // Rich multi-octave organic meadow grass (warm olive/emerald/moss contrast) + golden sandy shores
+          // Exact factorio-mapgen Nauvis tile albedo with subtle natural surface mottling
           const mottling =
             Math.sin(gx * 0.17 + 0.4) * Math.cos(gz * 0.15 - 0.7) * 0.45 +
             Math.sin((gx + gz) * 0.07) * 0.35 +
             Math.cos((gx * 0.29 - gz * 0.23) + 1.1) * 0.2;
-          const warmth = Math.sin(gx * 0.09 - gz * 0.11 + 0.6) * 0.5;
-          const grassR = 0.215 + mottling * 0.042 + warmth * 0.022;
-          const grassG = 0.435 + mottling * 0.052 - warmth * 0.012;
-          const grassB = 0.145 + mottling * 0.024 - warmth * 0.016;
-
-          const sb = sample.sandBlend;
-          if (sb > 0.001) {
-            const wet = sb > 0.75 ? (sb - 0.75) * 0.45 : 0;
-            const sandR = 0.87 - wet * 0.18;
-            const sandG = 0.77 - wet * 0.16;
-            const sandB = 0.52 - wet * 0.14;
-            r = grassR + (sandR - grassR) * sb;
-            g = grassG + (sandG - grassG) * sb;
-            b = grassB + (sandB - grassB) * sb;
-          } else {
-            r = grassR;
-            g = grassG;
-            b = grassB;
-          }
+          const mDelta = mottling * 0.028;
+          r = Math.max(0.05, Math.min(0.95, (sample.colorR ?? 0.27) + mDelta));
+          g = Math.max(0.05, Math.min(0.95, (sample.colorG ?? 0.44) + mDelta));
+          b = Math.max(0.05, Math.min(0.95, (sample.colorB ?? 0.16) + mDelta * 0.65));
           // Subtle seafoam highlight on the tucked 1-ring shoreline vertices
           wr = 0.46;
           wg = 0.84;
@@ -5670,6 +5916,7 @@ export class Capytorio3DRenderer {
     this.machineGeoCache.clear();
     this.accentMatCache.clear();
     this.heldItemMatCache.clear();
+    this.planetarySurfaceLayer.dispose();
     this.root.clear();
   }
 }

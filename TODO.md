@@ -1,6 +1,6 @@
 # CapyGame -- Active Roadmap & Production TODO
 
-This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.5.1`).
+This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.8.0`).
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.
@@ -71,3 +71,11 @@ For subsystem references, see:
   - Deploy signed `.aab` to **Internal Testing** track and verify clean TWA boot, offline launch, hardware Back dismissal, cutout insets, and save persistence on physical Android devices.
   - Complete **Closed Testing** requirements (verify Play Console personal account 12-tester / 14-day opt-in criteria if applicable) and address all Pre-Launch Report crashes, ANRs, or accessibility warnings.
   - Promote to **Production** via staged rollout (`10% -> 25% -> 50% -> 100%`) while monitoring Android Vitals crash/ANR thresholds.
+
+---
+
+### Future Enhancements (`P2`)
+
+- **Capytorio Factorio-Compatible Save File (`.zip`) Export & Import**:
+  - Implement Factorio-compatible `.zip` save bundle export and import for Capytorio factories (building on the `v1.6.0` map exchange string codec and full 6-resource terrain generator).
+

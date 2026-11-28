@@ -32,6 +32,11 @@ import {
   type CapytorioSpilledItem,
 } from '../CapytorioFactoryEngine';
 import { buildBlueprintLabel, computeBlueprintBounds } from './CapytorioBlueprintService';
+import {
+  cloneCapytorioMapGenConfig,
+  sanitizeCapytorioMapGenConfig,
+  type CapytorioMapGenConfig,
+} from './FactorioMapExchangeCodec';
 
 export interface CapytorioSerializerHost {
   machines: Map<string, CapytorioMachine>;
@@ -75,6 +80,8 @@ export interface CapytorioSerializerHost {
   ): boolean;
   getMachineModuleSlotLimit(m: CapytorioMachine): number;
   registerMachineOccupancy(m: CapytorioMachine): void;
+  getMapGenConfig(): CapytorioMapGenConfig;
+  setMapGenConfig(config: CapytorioMapGenConfig): void;
   markHydratedAndRecomputePower(): void;
 }
 
@@ -148,7 +155,8 @@ export function serializeCapytorioEngineState(
         }))
       : undefined;
   return {
-    version: 1,
+    version: 2,
+    mapGen: cloneCapytorioMapGenConfig(host.getMapGenConfig()),
     machines: machinesOut,
     spilledItems: spilledOut,
     depletions: Array.from(host.oreRemainingOverrides.entries()),
@@ -172,6 +180,8 @@ export function hydrateCapytorioEngineState(
   host: CapytorioSerializerHost,
   raw: CapytorioSerializedState
 ): void {
+  // Apply saved Factorio terrain config first so machine footprint & water checks match exact terrain
+  host.setMapGenConfig(sanitizeCapytorioMapGenConfig(raw.mapGen));
   host.machines.clear();
   host.occupancyGrid.clear();
   host.spilledItems.length = 0;
@@ -601,7 +611,9 @@ export function sanitizeCapytorioSerializedState(
 ): CapytorioSerializedState | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const candidate = raw as CapytorioSerializedState;
-  if (candidate.version !== 1) return undefined;
+  if (candidate.version !== 2 || !candidate.mapGen || typeof candidate.mapGen !== 'object') {
+    return undefined;
+  }
   const eng = createEngine(candidate);
   return eng.serialize();
 }

@@ -30,8 +30,14 @@ const FACTORIO_NAME_ALIASES: Record<string, string> = {
   'iron-ore': 'iron_ore',
   'copper-ore': 'copper_ore',
   coal: 'coal',
-  calcite: 'calcite',
-  stone: 'calcite',
+  stone: 'stone',
+  calcite: 'stone',
+  'crude-oil': 'crude_oil',
+  'uranium-ore': 'uranium_ore',
+  'uranium-235': 'uranium_235',
+  'uranium-238': 'uranium_238',
+  'uranium-fuel-cell': 'uranium_fuel_cell',
+  pumpjack: 'pumpjack',
   wood: 'orange',
   orange: 'orange',
   'yuzu-sap': 'yuzu_sap',
@@ -606,7 +612,15 @@ function formatProceduralShortName(id: string): string {
 function inferProceduralCategory(id: string): CapytorioItemMeta['category'] {
   if (id.includes('science')) return 'science';
   if (id.includes('rocket_part') || id === 'rocket_silo') return 'rocket';
-  if (id.endsWith('_ore') || id === 'coal' || id === 'calcite' || id === 'yuzu_sap' || id === 'orange') return 'ore';
+  if (
+    id.endsWith('_ore') ||
+    id === 'coal' ||
+    id === 'stone' ||
+    id === 'calcite' ||
+    id === 'crude_oil' ||
+    id === 'yuzu_sap' ||
+    id === 'orange'
+  ) return 'ore';
   if (id.endsWith('_plate') || id.endsWith('_brick') || id.includes('concrete')) return 'plate';
   if (
     id.includes('belt') ||
@@ -786,7 +800,10 @@ export function resolveCapytorioItemShape(
   if (
     category === 'ore' ||
     id === 'coal' ||
+    id === 'stone' ||
     id === 'calcite' ||
+    id === 'crude_oil' ||
+    id === 'uranium_ore' ||
     id === 'sulfur' ||
     id.endsWith('_ore')
   ) {
@@ -824,11 +841,16 @@ export function createProceduralItemMeta(id: CapytorioItemId): CapytorioItemMeta
 }
 
 export const CURATED_CAPYTORIO_ITEMS: Record<string, CapytorioItemMeta> = {
-  // Raw Ores & Citrus Harvest
+  // Raw Factorio Resources & Citrus Harvest
   iron_ore: { id: 'iron_ore', name: 'Iron Ore', shortName: 'Fe Ore', category: 'ore', shape: 'ore', colorHex: 0x60a5fa, cssColor: '#60a5fa' },
   copper_ore: { id: 'copper_ore', name: 'Copper Ore', shortName: 'Cu Ore', category: 'ore', shape: 'ore', colorHex: 0xc2410c, cssColor: '#c2410c' },
   coal: { id: 'coal', name: 'Coal', shortName: 'Coal', category: 'ore', shape: 'ore', colorHex: 0x18181b, cssColor: '#3f3f46' },
-  calcite: { id: 'calcite', name: 'Stone & Calcite', shortName: 'Stone', category: 'ore', shape: 'ore', colorHex: 0xe7e5e4, cssColor: '#e7e5e4' },
+  stone: { id: 'stone', name: 'Stone', shortName: 'Stone', category: 'ore', shape: 'ore', colorHex: 0xd6d3d1, cssColor: '#d6d3d1' },
+  crude_oil: { id: 'crude_oil', name: 'Crude Oil', shortName: 'Crude Oil', category: 'ore', shape: 'ore', colorHex: 0x1f142b, cssColor: '#6d28d9' },
+  uranium_ore: { id: 'uranium_ore', name: 'Uranium Ore', shortName: 'U-Ore', category: 'ore', shape: 'ore', colorHex: 0x4ade80, cssColor: '#4ade80' },
+  uranium_235: { id: 'uranium_235', name: 'Uranium-235', shortName: 'U-235', category: 'intermediate', shape: 'ore', colorHex: 0x22c55e, cssColor: '#22c55e' },
+  uranium_238: { id: 'uranium_238', name: 'Uranium-238', shortName: 'U-238', category: 'intermediate', shape: 'ore', colorHex: 0x15803d, cssColor: '#15803d' },
+  uranium_fuel_cell: { id: 'uranium_fuel_cell', name: 'Uranium Fuel Cell', shortName: 'U-Cell', category: 'intermediate', shape: 'module', colorHex: 0x84cc16, cssColor: '#84cc16' },
   orange: { id: 'orange', name: 'Fresh Orange', shortName: 'Orange', category: 'ore', shape: 'fruit', colorHex: 0xf97316, cssColor: '#fb923c' },
   yuzu_sap: { id: 'yuzu_sap', name: 'Bio-Yuzu Nutrient', shortName: 'Yuzu Sap', category: 'ore', shape: 'fruit', colorHex: 0xfacc15, cssColor: '#facc15' },
 
@@ -878,6 +900,7 @@ export const CURATED_CAPYTORIO_ITEMS: Record<string, CapytorioItemMeta> = {
   // Production & Power
   burner_mining_drill: { id: 'burner_mining_drill', name: 'Burner Mining Drill', shortName: 'Brn Drill', category: 'production', shape: 'crate', colorHex: 0x78716c, cssColor: '#78716c' },
   electric_mining_drill: { id: 'electric_mining_drill', name: 'Electric Mining Drill', shortName: 'El Drill', category: 'production', shape: 'crate', colorHex: 0x0ea5e9, cssColor: '#0ea5e9' },
+  pumpjack: { id: 'pumpjack', name: 'Pumpjack', shortName: 'Pumpjack', category: 'production', shape: 'crate', colorHex: 0x334155, cssColor: '#475569' },
   offshore_pump: { id: 'offshore_pump', name: 'Offshore Pump', shortName: 'Water Pump', category: 'production', shape: 'crate', colorHex: 0x0284c7, cssColor: '#0284c7' },
   stone_furnace: { id: 'stone_furnace', name: 'Stone Furnace', shortName: 'Stn Furn', category: 'production', shape: 'crate', colorHex: 0xa8a29e, cssColor: '#a8a29e' },
   steel_furnace: { id: 'steel_furnace', name: 'Steel Furnace', shortName: 'Stl Furn', category: 'production', shape: 'crate', colorHex: 0x64748b, cssColor: '#64748b' },

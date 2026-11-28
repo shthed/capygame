@@ -2,6 +2,33 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.8.0] - 2026-11-27
+
+- Added a 5-ring nested GPU planetary surface clipmap (`CapytorioPlanetarySurfaceLayer.ts`, scales 1 through 256 covering 640 m up to 163.84 km) powered by `factorio-mapgen`'s extended multi-scale overview surface evaluator (`_sampleOverviewSurface`) so genuine Factorio Nauvis biomes, razor-sharp coastlines, lakes, forests, and ore fields remain continuously visible edge-to-edge all the way from ground level into high orbit with zero mid-screen cutoff or blocky shorelines.
+- Added live factory footprint rasterization into every active clipmap ring plus single-draw-call simplified 3D instanced machine and belt proxies (`CapytorioMeshBuilder.ts`, `CapytorioOrbitalLodMath.ts`) matched 1:1 to Capytorio's daylight 3D palette so factories keep their exact look while shrinking smoothly down to a single pixel at extreme altitude.
+- Added two counter-drifting procedural GLSL patchy cloud strata with open sky breaks and smooth camera-proximity lens fade alongside soft Rayleigh daylight atmospheric haze, and aligned `PlayStyleManager.ts`'s orbital globe handoff (`16 km`) and sky-to-space transition (`7 km` to `90 km`) for unbroken continuous zoom from the factory floor through orbit into space.
+- Added unit tests in `FactorioMapGen.test.ts` covering continuous 10 m to 234 km LOD coverage, cloud lens fade, multi-scale chunk baking (scales 1..256), and live factory pixel stamping.
+
+## [1.7.0] - 2026-11-27
+
+- Replaced Capytorio's clean-room procedural terrain and resource approximation with the genuine `shthed/factorio-mapgen` Factorio 2.0 Nauvis generator (`src/capygame/engine/capytorio/factorioMapgen/`, bundled in its own lazy-loaded chunk `feature-capytorio-mapgen`), running its built-in WebAssembly SIMD noise engine and 32x32 chunk cache to generate authentic Nauvis terrain tiles, all 6 resources with exact Factorio richness, and all 18 Nauvis tree species with exact 1/16-tile placement and biome-matched canopy palettes.
+- Massively expanded Capytorio's 3D visible render distance (up to a 112-tile radius / 225x225 tile view, 8,192 instanced trees, and 8,192 instanced ore deposits) and replaced row-by-row terrain scanning with concentric outward square-ring scanning so forests and ore fields extend symmetrically edge-to-edge without mid-screen clipping.
+- Added a zero-allocation FPS-driven adaptive LOD governor (`CapytorioAdaptiveLod.ts`) that renders full unrestricted view distance, fruit accents, and foliage shadows whenever frame rate is healthy and only steps down foliage quality or view distance during sustained low-FPS dips before recovering automatically.
+- Updated `FactorioMapGen.test.ts` and `CapytorioFactoryEngine.test.ts` to verify genuine `factorio-mapgen` WASM Nauvis generation, all 6 resources, tree species detail, and adaptive FPS throttling/recovery.
+
+## [1.6.1] - 2026-11-27
+
+- Fixed Capytorio ore patches overlapping into mixed-resource blobs by replacing the 6 independent colliding resource grids in `CapytorioTerrainGen.ts` with a unified non-overlapping macro-cell spot allocator that assigns at most one resource deposit per region, enforces a 2-tile neutral meadow moat between different resource types, shapes veins with organic 2-octave anisotropic distortion, spaces Crude Oil wells at least 3 tiles apart for 3x3 Pumpjacks, and pushes outer Crude Oil and Uranium Ore cleanly outside the starter clearing.
+- Fixed ore patches visually bleeding onto coastal water by adding a 2-tile dry shoreline buffer to `sampleCapytorioBaseResource` and doubling `CapytorioMeshBuilder.ts` terrain deck vertex resolution (`TERRAIN_DECK_SEGS = 128`, 1 tile per segment) for crisp tile-aligned coastlines, while modulating 3D ore plate and crystal scale by tile richness with natural per-tile jitter.
+- Added automated spatial purity, shoreline buffer, starter-clearance, and Pumpjack well-spacing regression tests to `FactorioMapGen.test.ts`.
+
+## [1.6.0] - 2026-11-27
+
+- Integrated a seeded Factorio-style procedural world generator directly into Capytorio's live 3D terrain (`CapytorioTerrainGen.ts` and `CapytorioMeshBuilder.ts`), featuring deterministic Taus88 PRNG noise, five land biomes (Lush Meadow, Meadow Grass, Arid Dirt, Golden Sand, and Red Desert), four water depth tiers, and five world presets (Default, Rich Resources, Rail World, Island, and Desert Frontier) that rebuild the 3D terrain immediately when changed.
+- Added a clean MIT-licensed binary Factorio 1.1 / 2.0 / 2.1 map exchange string (`>>>...<<<`) and numeric seed codec (`FactorioMapExchangeCodec.ts`) plus a non-obstructive docked `World` generator drawer (`CapytorioWorldGenDrawer.tsx`) with live instant 3D terrain switching on fresh fields and a backup-first confirmation prompt before replacing an existing factory.
+- Implemented the full 6-resource Factorio Nauvis resource suite (`Iron Ore`, `Copper Ore`, `Coal`, `Stone`, `Crude Oil`, and `Uranium Ore`) across terrain generation, 3D resource rendering, Lua recipes/technologies, `Capytoriopedia`, and factory simulation, including `Pumpjack` oil extraction, `Solid Fuel` refining, `Centrifuge` uranium enrichment, and `Uranium Fuel Cell` power generation.
+- Upgraded Capytorio saves to schema `version: 2` with full `mapGen` persistence (`CapytorioStateGuard.ts`, `CapytorioSerializer.ts`), removed legacy v1 Capytorio save support, and added the `FactorioMapGen.test.ts` unit test suite.
+
 ## [1.5.2] - 2026-11-27
 
 - Updated the browser window title, OpenGraph title, and Apple web app title in `index.html` to `CapyBoop Game`.

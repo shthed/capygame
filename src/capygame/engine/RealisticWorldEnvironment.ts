@@ -820,6 +820,7 @@ export class RealisticWorldEnvironment {
         });
     this.skyMesh = new THREE.Mesh(new THREE.SphereGeometry(720, 32, 20), this.skyMaterial);
     this.skyMesh.frustumCulled = false;
+    this.skyMesh.renderOrder = -50;
 
     // 2. Sculpted 360-Degree Photorealistic Alpine Mountain Range (lazy-built off the cold-boot path)
     this.mountainMesh.name = 'BackgroundAlpineMountains';

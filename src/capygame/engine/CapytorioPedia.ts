@@ -82,22 +82,30 @@ const MACHINE_PRIMARY_ITEM_ALIAS: Record<CapytorioMachineType, string[]> = {
 
 const RESOURCE_DESCRIPTIONS: Record<string, string> = {
   iron_ore:
-    'Primary metallic ore found in dark slate starter and procedural chunks. Smelt in a Foundry to produce Iron Plates.',
+    'Primary metallic ore found in starter and outer deposits. Smelt in a Furnace to produce Iron Plates.',
   copper_ore:
     'Warm orange ore seam essential for Copper Plates, Electronic Circuits, Copper Cable, and Science Packs.',
   coal:
-    'Combustible black mineral seam. Burns cleanly inside Coal Steam Generators to surge factory power to 6.0 MW.',
-  calcite:
-    'Crisp white mineral seam used to fabricate Furnaces, Bricks, Concrete, and Calcite-alloy upgrades.',
+    'Combustible black mineral seam. Burns cleanly inside Steam Generators and combines with Crude Oil into Plastic Bars.',
   stone:
-    'Quarry mineral used for Stone Furnaces, Stone Bricks, Concrete foundations, and defensive walls.',
+    'Quarry mineral used for Stone Furnaces, Stone Bricks, Concrete foundations, Rail tracks, Sulfur, and defensive walls.',
+  crude_oil:
+    'Pressurized dark hydrocarbon well clusters outside the starting area. Extract with a Pumpjack to refine Solid Fuel, Plastic, and Sulfur.',
+  uranium_ore:
+    'Luminous radioactive ore veins outside the starting area. Mine with Electric Drills and enrich in a Centrifuge for Nuclear Fuel Cells.',
+  uranium_235:
+    'Enriched fissile isotope produced by Uranium Enrichment in a Centrifuge for fabricating Uranium Fuel Cells.',
+  uranium_fuel_cell:
+    'High-density nuclear fuel assembly delivering 60s of sustained generator power per cell.',
   yuzu_sap:
-    'Golden Capybara grove sap deposit. Serves as both a rich Generator biofuel and bio-chemical science reagent.',
+    'Golden citrus extract crafted from harvested Fresh Oranges. Serves as a renewable biofuel and bio-science reagent.',
   orange:
     'Fresh citrus harvested from Wild Citrus Trees [E]. Burns inside Steam Generators as renewable bio-fuel.',
 };
 
 const VARIANT_DESCRIPTIONS: Record<string, string> = {
+  pumpjack: 'Heavy 3×3 nodding-donkey derrick placed directly over Crude Oil wells to pump continuous Crude Oil onto your logistics network.',
+  centrifuge: 'High-speed 3×3 isotopic enrichment plant that refines mined Uranium Ore into fissile Uranium-235 and Uranium Fuel Cells.',
   pipe: 'Pressurized industrial fluid conduit connecting offshore pumps, boilers, refineries, and chemical plants.',
   pipe_to_ground: 'Subterranean fluid conduit elbow that routes pipelines cleanly underneath belt buses and rail yards.',
   pump: 'High-pressure inline impeller booster pump that regulates and accelerates pipeline flow.',
