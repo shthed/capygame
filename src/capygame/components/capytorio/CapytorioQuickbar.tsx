@@ -177,10 +177,10 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
 
         <div
           data-testid="capytorio-toolbar"
-          className="px-1.5 py-1 bg-[#1d1f24] flex items-center justify-between gap-1.5"
+          className="px-1.5 py-1 bg-[#1d1f24] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-1.5"
         >
-          {/* LEFT: Compact 36x36px Item Slots (scrollable on narrow phones) */}
-          <div className="flex-1 min-w-0 flex items-center gap-1 overflow-x-auto no-scrollbar">
+          {/* TOP (mobile) / LEFT (desktop): Compact 36x36px Item Slots */}
+          <div className="w-full sm:flex-1 min-w-0 flex items-center gap-1 overflow-x-auto no-scrollbar">
             {recentSlots.map((toolId, slotIdx) => {
               const resolved = resolveCapytorioPlaceableSpec(toolId);
               if (!resolved) return null;
@@ -240,12 +240,16 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
           </div>
 
           <div
-            className="w-[2px] h-7 bg-[#111216] border-r border-[#3b3f4a] shrink-0"
+            className="hidden sm:block w-[2px] h-7 bg-[#111216] border-r border-[#3b3f4a] shrink-0"
             aria-hidden="true"
           />
 
-          {/* RIGHT: Strictly 5 Core Commands (Rotate, Inspect, Inventory, Craft, Copy/Paste) */}
-          <div className="flex items-center gap-1 shrink-0">
+          {/* BOTTOM (mobile) / RIGHT (desktop): Core Commands with clear labels on mobile */}
+          <div
+            className={`w-full pt-1 border-t border-[#2c303a] grid ${
+              (snap.pocketItems.rocket_part ?? 0) > 0 ? 'grid-cols-6' : 'grid-cols-5'
+            } gap-1 sm:w-auto sm:pt-0 sm:border-t-0 sm:flex sm:items-center sm:shrink-0`}
+          >
             <button
               type="button"
               data-testid="capytorio-rotate-btn"
@@ -257,10 +261,19 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
                     : `Rotate Placement Direction (${dirLabel}) [R]`
               }
               onClick={onRotateDir}
-              className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-mono font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_IDLE}`}
+              className={`h-9 px-1 sm:px-2 rounded-[2px] text-[9px] font-mono font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_IDLE}`}
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>{clip.toolState === 'paste' ? '90°' : dirLabel}</span>
+              <span>
+                {clip.toolState === 'paste' ? (
+                  '90°'
+                ) : (
+                  <>
+                    <span className="sm:hidden">Rot </span>
+                    {dirLabel}
+                  </>
+                )}
+              </span>
             </button>
 
             <button
@@ -278,14 +291,14 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
                   onSelectTool('mine');
                 }
               }}
-              className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+              className={`h-9 px-1 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
                 drawerTab === 'inspect' || (!isClipboardActive && snap.selectedTool === 'mine')
                   ? FACTORIO_BTN_ACTIVE
                   : FACTORIO_BTN_IDLE
               }`}
             >
               <Search className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Inspect</span>
+              <span>Inspect</span>
             </button>
 
             <button
@@ -293,12 +306,12 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
               data-testid="capytorio-drawer-inventory-btn"
               title="Character Inventory [I]"
               onClick={() => toggleTab('inventory')}
-              className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+              className={`h-9 px-1 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
                 drawerTab === 'inventory' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
               }`}
             >
               <Package className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Inv</span>
+              <span>Inv</span>
             </button>
 
             <button
@@ -306,12 +319,12 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
               data-testid="capytorio-drawer-craft-btn"
               title="Crafting Workbench"
               onClick={() => toggleTab('craft')}
-              className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+              className={`h-9 px-1 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
                 drawerTab === 'craft' ? FACTORIO_BTN_ACTIVE : FACTORIO_BTN_IDLE
               }`}
             >
               <Hammer className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Craft</span>
+              <span>Craft</span>
             </button>
 
             <button
@@ -326,14 +339,14 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
                   onSetClipboardMode('select_copy', clip.selectionShape);
                 }
               }}
-              className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
+              className={`h-9 px-1 sm:px-2 rounded-[2px] text-[9px] font-semibold whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${
                 isClipboardActive || drawerTab === 'blueprints'
                   ? FACTORIO_BTN_ACTIVE
                   : FACTORIO_BTN_IDLE
               }`}
             >
               <Copy className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Copy</span>
+              <span>Copy</span>
             </button>
 
             {(snap.pocketItems.rocket_part ?? 0) > 0 && (
@@ -341,10 +354,10 @@ export const CapytorioQuickbar: React.FC<CapytorioQuickbarProps> = React.memo(({
                 type="button"
                 data-testid="capytorio-launch-rocket-btn"
                 onClick={onLaunchRocket}
-                className={`h-9 px-1.5 sm:px-2 rounded-[2px] text-[9px] whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_ACTIVE}`}
+                className={`h-9 px-1 sm:px-2 rounded-[2px] text-[9px] whitespace-nowrap cursor-pointer flex flex-col items-center justify-center leading-tight ${FACTORIO_BTN_ACTIVE}`}
               >
                 <Rocket className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Launch</span>
+                <span>Launch</span>
               </button>
             )}
           </div>

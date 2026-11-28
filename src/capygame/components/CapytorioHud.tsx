@@ -445,8 +445,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
       <div
         data-testid="capytorio-history-bar"
         aria-label="Building Undo and Redo Controls"
-        className={`fixed left-2 z-30 pointer-events-auto transition-[top] duration-150 ${
-          isTopBarVisible ? 'top-[48px]' : 'top-2'
+        className={`fixed left-[calc(0.5rem+var(--sal))] z-30 pointer-events-auto ${
+          isTopBarVisible ? 'top-[calc(48px+var(--sat))]' : 'top-[calc(8px+var(--sat))]'
         }`}
       >
         <div className={`${FACTORIO_PANEL_FRAME} p-0.5 flex items-center gap-1 text-[#e6e8ec]`}>
@@ -514,8 +514,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
       <div
         data-testid="capytorio-top-right-menu"
         aria-label="Factorio Top-Right Menu"
-        className={`fixed right-2 z-30 pointer-events-auto transition-[top] duration-150 ${
-          isTopBarVisible ? 'top-[48px]' : 'top-[42px]'
+        className={`fixed right-[calc(0.5rem+var(--sar))] z-30 pointer-events-auto ${
+          isTopBarVisible ? 'top-[calc(48px+var(--sat))]' : 'top-[calc(42px+var(--sat))]'
         }`}
       >
         <div className={`${FACTORIO_PANEL_FRAME} p-0.5 flex items-center gap-1 text-[#e6e8ec]`}>
@@ -557,8 +557,8 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
       {drawerTab !== 'none' && (
         <div
           className={`fixed inset-x-0 ${
-            isTopBarVisible ? 'top-10' : 'top-0'
-          } bottom-[78px] z-20 flex items-center justify-center pt-[46px] px-2 pb-2 sm:pt-[48px] sm:px-4 sm:pb-4 bg-black/55 pointer-events-auto`}
+            isTopBarVisible ? 'top-[calc(2.5rem+var(--sat))]' : 'top-[var(--sat)]'
+          } bottom-[calc(124px+var(--sab))] sm:bottom-[calc(78px+var(--sab))] z-20 flex items-center justify-center pt-[46px] px-2 pb-2 sm:pt-[48px] sm:px-4 sm:pb-4 bg-black/55 pointer-events-auto`}
           onClick={() => setDrawerTab('none')}
         >
           {/* CHARACTER INVENTORY & CRAFTING WINDOW */}
@@ -1599,7 +1599,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
         <div
           data-testid="capytorio-craft-queue"
           aria-label="Hand-Crafting Queue"
-          className="fixed bottom-[78px] left-2 z-30 pointer-events-auto max-w-[calc(100vw-24px)]"
+          className="fixed bottom-[calc(132px+var(--sab))] sm:bottom-[calc(86px+var(--sab))] left-[calc(0.5rem+var(--sal))] z-30 pointer-events-auto max-w-[calc(100vw-64px)]"
         >
           <div className={`${FACTORIO_PANEL_FRAME} p-1 flex items-center gap-1 overflow-x-auto no-scrollbar`}>
             {snap.craftingQueue.slice(0, 8).map((q, idx) => {
@@ -1715,7 +1715,7 @@ export const CapytorioHud: React.FC<CapytorioHudProps> = React.memo(({
         <div
           data-testid="capytorio-clipboard-bar"
           aria-label="Cut Copy Paste Blueprint Controls"
-          className="fixed bottom-[78px] left-2 sm:left-1/2 sm:-translate-x-1/2 z-30 pointer-events-auto max-w-[calc(100vw-60px)] text-[#e6e8ec]"
+          className="fixed bottom-[calc(132px+var(--sab))] sm:bottom-[calc(86px+var(--sab))] left-[calc(0.5rem+var(--sal))] sm:left-1/2 sm:-translate-x-1/2 z-30 pointer-events-auto max-w-[calc(100vw-64px)] text-[#e6e8ec]"
         >
           <div className={`${FACTORIO_PANEL_FRAME} px-1.5 py-1 flex items-center gap-1`}>
             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">

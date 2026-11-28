@@ -71,7 +71,7 @@
 }
 
 .hud-safe-quickbar {
-  padding-bottom: var(--sab);
+  bottom: calc(0.5rem + var(--sab));
   padding-left: var(--sal);
   padding-right: var(--sar);
 }

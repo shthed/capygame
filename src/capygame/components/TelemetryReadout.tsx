@@ -100,7 +100,7 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
     return (
       <div
         data-testid="arcade-combo-hud"
-        className={`fixed top-12 right-2.5 z-20 pointer-events-none px-3 py-2 rounded-xl bg-zinc-950/95 border shadow-xl tabular-nums min-w-[168px] ${
+        className={`fixed top-[calc(3rem+var(--sat))] right-[calc(0.625rem+var(--sar))] z-20 pointer-events-none px-3 py-2 rounded-xl bg-zinc-950/95 border shadow-xl tabular-nums min-w-[168px] ${
           combo.feverActive ? 'border-amber-400/75' : 'border-sky-400/45'
         }`}
       >
@@ -133,7 +133,10 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
     if (!telemetry.nearParkedUfo || telemetry.ufoFlightPhase !== 'parked_on_ground') {
       return null;
     }
-    const bottomClass = props.activeMode === 'capytorio' ? 'bottom-[104px]' : 'bottom-4';
+    const bottomClass =
+      props.activeMode === 'capytorio'
+        ? 'bottom-[calc(136px+var(--sab))] sm:bottom-[calc(92px+var(--sab))]'
+        : 'bottom-[calc(1rem+var(--sab))]';
     return (
       <div
         data-testid="parked-ufo-prompt"
@@ -147,7 +150,7 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
         >
           <Rocket className="w-4 h-4 text-cyan-300 shrink-0" />
           <span>Board UFO · Launch to Orbit</span>
-          <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-400/45 text-[10px] font-mono text-cyan-200">
+          <span className="hidden sm:inline px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-400/45 text-[10px] font-mono text-cyan-200">
             E
           </span>
         </button>

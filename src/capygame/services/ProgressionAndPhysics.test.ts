@@ -2307,5 +2307,68 @@ test('v1.3.0 Chunk Split, Safe-Area Cutouts, Android Back Sentinel & TWA Manifes
   assert.ok(twa.minSdkVersion >= 24);
 });
 
+test('v1.5.2 Window Title & Mobile HUD Layout Invariants: CapyBoop Game title, two-row mobile quickbar, and zero HUD overlap', () => {
+  const root = process.cwd();
+  const indexHtml = fs.readFileSync(path.resolve(root, 'index.html'), 'utf8');
+  const cssSrc = fs.readFileSync(path.resolve(root, 'src/index.css'), 'utf8');
+  const quickbarSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/components/capytorio/CapytorioQuickbar.tsx'),
+    'utf8'
+  );
+  const infoPanelSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/components/CapytorioEntityInfoPanel.tsx'),
+    'utf8'
+  );
+  const viewSrc = fs.readFileSync(
+    path.resolve(root, 'src/capygame/components/CapyGameView.tsx'),
+    'utf8'
+  );
+
+  // 1. Window title, OpenGraph title, and Apple web app title are set to "CapyBoop Game"
+  assert.ok(
+    indexHtml.includes('<title>CapyBoop Game</title>'),
+    'index.html <title> must be CapyBoop Game'
+  );
+  assert.ok(
+    indexHtml.includes('property="og:title" content="CapyBoop Game"'),
+    'index.html og:title must be CapyBoop Game'
+  );
+  assert.ok(
+    indexHtml.includes('name="apple-mobile-web-app-title" content="CapyBoop Game"'),
+    'index.html apple-mobile-web-app-title must be CapyBoop Game'
+  );
+
+  // 2. CapytorioQuickbar stacks tool slots and labeled commands into two clean rows on mobile
+  assert.ok(
+    quickbarSrc.includes('flex-col sm:flex-row'),
+    'CapytorioQuickbar toolbar must reflow vertically on mobile so slots never clip against action buttons'
+  );
+  assert.ok(
+    quickbarSrc.includes('grid-cols-5'),
+    'CapytorioQuickbar action row must distribute core commands evenly on mobile'
+  );
+
+  // 3. CapytorioEntityInfoPanel clears the Tech/Pedia menu bar with safe-area awareness
+  assert.ok(
+    infoPanelSrc.includes('top-[calc(78px+var(--sat))]'),
+    'CapytorioEntityInfoPanel must sit below Tech/Pedia when top bar is hidden'
+  );
+  assert.ok(
+    infoPanelSrc.includes('top-[calc(84px+var(--sat))]'),
+    'CapytorioEntityInfoPanel must sit below Tech/Pedia when top bar is visible'
+  );
+
+  // 4. Mobile zoom controls respect safe-area insets and clear the two-row Capytorio quickbar
+  assert.ok(
+    viewSrc.includes('bottom-[calc(132px+var(--sab))] sm:bottom-[calc(86px+var(--sab))]'),
+    'Capytorio mobile zoom controls must clear the two-row mobile quickbar and gesture bar'
+  );
+  assert.equal(
+    /\.hud-safe-quickbar\s*\{[^}]*padding-bottom:\s*var\(--sab\)/.test(cssSrc),
+    false,
+    '.hud-safe-quickbar must not double-stack padding-bottom: var(--sab) on top of bottom safe-area offset'
+  );
+});
+
 
 

@@ -4316,7 +4316,7 @@ export const CapyGameView: React.FC = () => {
         data-ui-mode={isAdvancedMode ? 'advanced' : 'basic'}
         data-active-game={activeGame}
         aria-label="CapyGame Mode Switcher and Controls"
-        className="fixed top-0 inset-x-0 z-30 h-10 hud-safe-top bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
+        className="fixed top-0 inset-x-0 z-40 h-10 hud-safe-top bg-zinc-950/95 border-b border-white/12 px-1 sm:px-2.5 flex items-center justify-between gap-1 sm:gap-2 pointer-events-auto whitespace-nowrap"
       >
         {/* LEFT CLUSTER: 3-Game Standalone Switcher + Mode-Specific Zoom Controls */}
         <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 shrink">
@@ -5388,15 +5388,17 @@ export const CapyGameView: React.FC = () => {
         ) && (() => {
           const isCapytorioCompactZoom =
             cosmicStage === 'playing' && !universeScale.active && activeMode === 'capytorio';
-          let positionClass = 'bottom-3 right-3';
+          let positionClass = 'bottom-[calc(0.75rem+var(--sab))] right-[calc(0.75rem+var(--sar))]';
           if (universeScale.active) {
-            positionClass = 'bottom-[150px] sm:bottom-[96px] right-2';
+            positionClass =
+              'bottom-[calc(150px+var(--sab))] sm:bottom-[calc(96px+var(--sab))] right-[calc(0.5rem+var(--sar))]';
           } else if (isCapytorioCompactZoom) {
-            positionClass = 'bottom-[78px] right-2';
+            positionClass =
+              'bottom-[calc(132px+var(--sab))] sm:bottom-[calc(86px+var(--sab))] right-[calc(0.5rem+var(--sar))]';
           } else if (showTouchDpad) {
-            positionClass = 'bottom-[104px] right-3';
+            positionClass = 'bottom-[calc(104px+var(--sab))] right-[calc(0.75rem+var(--sar))]';
           } else if (gameSettings.touchControlsMode !== 'hidden') {
-            positionClass = 'bottom-[68px] right-3';
+            positionClass = 'bottom-[calc(68px+var(--sab))] right-[calc(0.75rem+var(--sar))]';
           }
           return (
             <div

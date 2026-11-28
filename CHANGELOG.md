@@ -2,6 +2,11 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.5.2] - 2026-11-27
+
+- Updated the browser window title, OpenGraph title, and Apple web app title in `index.html` to `CapyBoop Game`.
+- Fixed the mobile Capytorio HUD button layout so bottom quickbar item slots and labeled command buttons (`Rotate`, `Inspect`, `Inv`, `Craft`, `Copy`) reflow cleanly into two unclipped rows on narrow screens, removed duplicate bottom safe-area padding on `.hud-safe-quickbar`, raised the `+` / `-` zoom controls, crafting queue, blueprint clipboard bar, and UFO prompt cleanly above the quickbar with safe-area insets across all modes, and moved the top-right entity info panel below the `Tech` and `Capytoriopedia` buttons so they never overlap.
+
 ## [1.5.1] - 2026-11-27
 
 - Added a standalone Terms of Service page at `public/terms.html` (served at `https://capyboop.com/terms.html`) matching the dark styling and concise tone of `public/privacy.html`, covering free client-side zero-server operation, local saves and user-initiated Google Drive (`drive.file` / `CapyGame-Cloud-Save.json`) and Google Play Games backups, player ownership of saves and creations, acceptable use, and an "as-is" warranty disclaimer with links to `./`, `./privacy.html`, and `https://github.com/capyboop/capygame/issues`.

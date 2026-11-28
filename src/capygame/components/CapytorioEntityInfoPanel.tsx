@@ -438,8 +438,8 @@ export const CapytorioEntityInfoPanel: React.FC<CapytorioEntityInfoPanelProps> =
       data-testid="capytorio-entity-info-panel"
       data-expanded={isExpanded ? 'true' : 'false'}
       aria-label="Factorio Entity Info Window"
-      className={`fixed right-2 z-30 pointer-events-auto text-[#e6e8ec] select-none transition-[top,width] duration-150 ${
-        isTopBarVisible ? 'top-[82px]' : 'top-[42px]'
+      className={`fixed right-[calc(0.5rem+var(--sar))] z-30 pointer-events-auto text-[#e6e8ec] select-none transition-[width] duration-150 ${
+        isTopBarVisible ? 'top-[calc(84px+var(--sat))]' : 'top-[calc(78px+var(--sat))]'
       } ${isExpanded ? 'w-[200px] sm:w-[224px]' : 'w-[160px] sm:w-[164px]'}`}
     >
       <div className={`${FACTORIO_INFO_FRAME} overflow-hidden`}>
