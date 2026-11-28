@@ -1,6 +1,6 @@
 # CapyGame -- Active Roadmap & Production TODO
 
-This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.5.0`).
+This document tracks remaining Android packaging, Play Console submission, cloud auth domain setup, physical-device QA, and release engineering tasks for **CapyGame** (`https://capyboop.com/`, current codebase `v1.5.1`).
 
 > [!NOTE]
 > **Task Hygiene Rule**: Do not leave completed items in `TODO.md`. When a task or milestone is finished, remove it immediately rather than checking it off. Never use emojis or ASCII art in documentation files.

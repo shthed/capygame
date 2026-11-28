@@ -2,6 +2,7 @@ import React from 'react';
 import {
   Code2,
   Download,
+  FileText,
   HelpCircle,
   Moon,
   RotateCcw,
@@ -61,6 +62,7 @@ export interface CapySettingsModalProps {
   onUnlockAllFeatures: () => void;
   onOpenAbout: () => void;
   onOpenPrivacy: () => void;
+  onOpenTerms: () => void;
   onOpenJsonEditor: () => void;
   onResetProgress: () => void;
   onExportSaveBundleFile: () => void;
@@ -95,6 +97,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
   onUnlockAllFeatures,
   onOpenAbout,
   onOpenPrivacy,
+  onOpenTerms,
   onOpenJsonEditor,
   onResetProgress,
   onExportSaveBundleFile,
@@ -567,6 +570,18 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                   >
                     <Shield className="w-3.5 h-3.5 text-emerald-400" />
                     <span>Privacy Policy</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="open-terms-of-service-btn"
+                    onClick={() => {
+                      AudioService.playUiClick('tap');
+                      onOpenTerms();
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Terms of Service</span>
                   </button>
                 </div>
 
@@ -1746,6 +1761,18 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                   >
                     <Shield className="w-3.5 h-3.5 text-emerald-400" />
                     <span>Privacy Policy</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="open-terms-of-service-btn"
+                    onClick={() => {
+                      AudioService.playUiClick('tap');
+                      onOpenTerms();
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Terms of Service</span>
                   </button>
                 </div>
 

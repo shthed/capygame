@@ -89,8 +89,9 @@ if (Array.isArray(assetlinks)) {
   }
 }
 
-// 4. Validate Privacy Policy & Store Feature Graphic
+// 4. Validate Privacy Policy, Terms of Service & Store Feature Graphic
 assertCond(fs.existsSync(path.join(ROOT, 'public/privacy.html')), 'Missing public/privacy.html');
+assertCond(fs.existsSync(path.join(ROOT, 'public/terms.html')), 'Missing public/terms.html');
 assertCond(
   fs.existsSync(path.join(ROOT, 'public/assets/feature-graphic-1024x500.png')),
   'Missing public/assets/feature-graphic-1024x500.png'
@@ -128,6 +129,10 @@ if (fs.existsSync(distIndexPath)) {
   assertCond(
     fs.existsSync(path.join(ROOT, 'dist/privacy.html')),
     'Missing dist/privacy.html in production build output'
+  );
+  assertCond(
+    fs.existsSync(path.join(ROOT, 'dist/terms.html')),
+    'Missing dist/terms.html in production build output'
   );
   assertCond(
     fs.existsSync(path.join(ROOT, 'dist/manifest.webmanifest')),

@@ -1738,10 +1738,27 @@ test('Phase 5 Build, Security Headers, Manifest & CI Invariants', () => {
   );
   assert.equal(fs.existsSync(path.resolve(root, 'bun.lock')), false, 'bun.lock must not exist');
 
-  // 6. Privacy policy lists yuzu ghost storage key and clickable issues link
+  // 6. Privacy policy & Terms of Service invariants, cross-links, SW precache, and headers
   const privacyHtml = fs.readFileSync(path.resolve(root, 'public/privacy.html'), 'utf8');
   assert.ok(privacyHtml.includes('capy_game_yuzu_ghost_v1'));
   assert.ok(privacyHtml.includes('https://github.com/capyboop/capygame/issues'));
+  assert.ok(privacyHtml.includes('./terms.html'), 'privacy.html must link to ./terms.html');
+
+  const termsHtml = fs.readFileSync(path.resolve(root, 'public/terms.html'), 'utf8');
+  assert.ok(termsHtml.includes('zero developer-hosted servers'));
+  assert.ok(termsHtml.includes('drive.file'));
+  assert.ok(termsHtml.includes('CapyGame-Cloud-Save.json'));
+  assert.ok(termsHtml.includes('Google Play Games'));
+  assert.ok(termsHtml.toLowerCase().includes('as is'));
+  assert.ok(termsHtml.includes('./privacy.html'));
+  assert.ok(termsHtml.includes('href="./"'));
+  assert.ok(termsHtml.includes('https://github.com/capyboop/capygame/issues'));
+
+  const swJs = fs.readFileSync(path.resolve(root, 'public/sw.js'), 'utf8');
+  assert.ok(swJs.includes("'./terms.html'"), 'sw.js must precache ./terms.html');
+
+  const headersFile = fs.readFileSync(path.resolve(root, 'public/_headers'), 'utf8');
+  assert.ok(headersFile.includes('/terms.html'), '_headers must cover /terms.html');
 });
 
 test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains, dynamic engine split, shader checks, and SW navigationPreload', () => {

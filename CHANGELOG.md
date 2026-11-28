@@ -2,6 +2,11 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.5.1] - 2026-11-27
+
+- Added a standalone Terms of Service page at `public/terms.html` (served at `https://capyboop.com/terms.html`) matching the dark styling and concise tone of `public/privacy.html`, covering free client-side zero-server operation, local saves and user-initiated Google Drive (`drive.file` / `CapyGame-Cloud-Save.json`) and Google Play Games backups, player ownership of saves and creations, acceptable use, and an "as-is" warranty disclaimer with links to `./`, `./privacy.html`, and `https://github.com/capyboop/capygame/issues`.
+- Added cross-links to Terms of Service in `public/privacy.html`, added an embedded `CapyTermsModal` viewer alongside `CapyPrivacyModal` in the in-game About and Settings modals (both Basic and Advanced views), precached `./terms.html` in `public/sw.js`, added `/terms.html` cache headers in `public/_headers`, and validated `terms.html` in `scripts/verify-playstore-readiness.mjs` and unit tests.
+
 ## [1.5.0] - 2026-11-27
 
 - Overhauled the procedural Web Audio engine in `AudioService.ts` and pure DSP module `AudioSynthesisMath.ts` with a 3-bus studio architecture (independent `musicBus`, `sfxBus`, and `uiBus` routed through a warm master low-pass polish filter, dynamics compressor, and damped stereo reverb), perceptual `x^1.75` volume curves, subtle pitch humanization, and per-voice anti-spam cooldowns.

@@ -11,6 +11,7 @@ const PRECACHE_RELATIVE_URLS = [
   './index.html',
   './manifest.webmanifest',
   './privacy.html',
+  './terms.html',
   './data/capytorio/recipe.lua',
   './data/capytorio/technology.lua',
   './assets/favicon.svg',

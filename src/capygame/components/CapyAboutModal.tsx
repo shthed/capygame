@@ -4,6 +4,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  FileText,
   Settings as SettingsIcon,
   Shield,
   X,
@@ -25,6 +26,7 @@ export interface CapyAboutModalProps {
   onStartTutorial: (tutorial: CapyTutorial) => void;
   onOpenSettings: () => void;
   onOpenPrivacy: () => void;
+  onOpenTerms: () => void;
 }
 
 export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
@@ -32,6 +34,7 @@ export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
   onStartTutorial,
   onOpenSettings,
   onOpenPrivacy,
+  onOpenTerms,
 }) => {
   return (
     <div
@@ -129,7 +132,7 @@ export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
               type="button"
               data-testid="about-open-settings-btn"
               onClick={() => {
-                AudioService.playCoin();
+                AudioService.playUiClick('tap');
                 onOpenSettings();
               }}
               className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
@@ -141,7 +144,7 @@ export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
               type="button"
               data-testid="open-privacy-policy-btn"
               onClick={() => {
-                AudioService.playCoin();
+                AudioService.playUiClick('tap');
                 onOpenPrivacy();
               }}
               className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
@@ -149,12 +152,24 @@ export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
               <Shield className="w-3.5 h-3.5 text-emerald-400" />
               <span>Privacy Policy</span>
             </button>
+            <button
+              type="button"
+              data-testid="open-terms-of-service-btn"
+              onClick={() => {
+                AudioService.playUiClick('tap');
+                onOpenTerms();
+              }}
+              className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5 text-sky-400" />
+              <span>Terms of Service</span>
+            </button>
           </div>
           <button
             type="button"
             data-testid="close-about-btn"
             onClick={() => {
-              AudioService.playCoin();
+              AudioService.playUiClick('tap');
               onClose();
             }}
             className="flex items-center gap-1.5 bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
@@ -204,6 +219,49 @@ export const CapyPrivacyModal: React.FC<CapyPrivacyModalProps> = ({ onClose }) =
         <iframe
           src="./privacy.html"
           title="CapyGame Privacy Policy"
+          className="w-full h-[64vh] rounded-lg border border-white/10 bg-zinc-950"
+        />
+      </div>
+    </div>
+  </div>
+);
+
+export interface CapyTermsModalProps {
+  onClose: () => void;
+}
+
+export const CapyTermsModal: React.FC<CapyTermsModalProps> = ({ onClose }) => (
+  <div
+    data-testid="terms-of-service-modal"
+    className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/90"
+  >
+    <div className="relative w-full max-w-2xl bg-zinc-900 rounded-xl shadow-2xl border border-white/15 overflow-hidden text-zinc-100 flex flex-col max-h-[90vh]">
+      <div className="bg-zinc-950 px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2">
+          <FileText className="w-4 h-4 text-sky-400 shrink-0" />
+          <div>
+            <h2 className="text-sm font-semibold tracking-wider uppercase text-zinc-100">
+              CapyGame · Terms of Service
+            </h2>
+            <p className="text-[11px] font-mono text-zinc-400">
+              Free Client-Side Game · Player-Owned Saves
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          data-testid="close-terms-of-service-btn"
+          onClick={onClose}
+          className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/10 cursor-pointer"
+          aria-label="Close Terms of Service"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="p-3 bg-zinc-950 flex-1 min-h-0">
+        <iframe
+          src="./terms.html"
+          title="CapyGame Terms of Service"
           className="w-full h-[64vh] rounded-lg border border-white/10 bg-zinc-950"
         />
       </div>
