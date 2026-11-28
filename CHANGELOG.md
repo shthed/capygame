@@ -2,6 +2,12 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.9.1] - 2026-11-28
+
+- Fixed the mid-altitude Capytorio zoom band (`185 m` to `340 m`) turning dry land solid light blue by adding `waterDeckAlpha` to `CapytorioOrbitalLodMath.ts` so `waterDeck` fades out cleanly across `130 m` to `180 m` and hides completely before `groundDeck` disables `depthWrite` in `CapytorioMeshBuilder.ts`.
+- Updated local-air UFO fast-travel flight (`computeAirFlightAltitudeForCamera` in `UfoFlightSequence.ts` and `tickUfoAirFlight` in `PlayStyleManager.ts`) so the flying UFO smoothly climbs higher into the sky relative to the camera when zooming out, scales the ground landing reticle for readability at altitude, and settles cleanly back to ground zoom upon landing.
+- Reset Capytorio's oblique zoom distance back to ground level (`resetCapytorioZoomToGroundLevel` in `PlayStyleManager.ts`) across all orbit-to-Capytorio re-entry paths so returning from orbit never jumps back up into the sky from the previous zoom level, and prevented mobile overflow on the air-flight control hint in `TelemetryReadout.tsx`.
+
 ## [1.9.0] - 2026-11-28
 
 - Removed the static `#static-boot-shell` loading screen and its frozen progress bar from `index.html` and cleaned up its dismissal hooks in `CapyGameView.tsx` so the application loads straight into the live viewport without a stuck splash overlay.

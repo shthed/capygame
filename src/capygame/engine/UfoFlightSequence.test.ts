@@ -17,6 +17,7 @@ import {
   beginBoardingSequence,
   beginFinalTouchdown,
   beginOrbitalDescent,
+  computeAirFlightAltitudeForCamera,
   computeAirFlightSpeedForAltitude,
   computeOrbitalAscentLogSpeed,
   computeOrbitalDescentLogSpeed,
@@ -340,22 +341,33 @@ test('local-air UFO fast-travel launches into air (never orbit), flies across ma
   assert.equal(sample.pilotInVesselVisible, true);
   assert.equal(sample.heroVisible, false);
 
-  // Speed scales smoothly with altitude and boost
+  // Speed and hover altitude scale smoothly with camera height so UFO rises into sky when zooming out
   const lowSpeed = computeAirFlightSpeedForAltitude(35, false);
   const highSpeed = computeAirFlightSpeedForAltitude(320, false);
   const boostSpeed = computeAirFlightSpeedForAltitude(320, true);
   assert.ok(highSpeed > lowSpeed * 2, 'Zooming out must increase UFO fast-travel speed');
   assert.ok(boostSpeed > highSpeed * 1.5, 'Boost must accelerate UFO fast-travel speed');
 
-  // Fly east-northeast across the map for 2 seconds
+  const lowCamHoverY = computeAirFlightAltitudeForCamera(35);
+  const midCamHoverY = computeAirFlightAltitudeForCamera(220);
+  const highCamHoverY = computeAirFlightAltitudeForCamera(1200);
+  assert.ok(midCamHoverY > lowCamHoverY * 3, 'Zooming out must raise UFO higher into the sky');
+  assert.ok(highCamHoverY > midCamHoverY * 4, 'Extreme zoom-out must continue raising UFO relative to camera');
+  assert.ok(highCamHoverY < 1200 * 0.66, 'UFO hover altitude must stay safely below the camera lens');
+
+  // Fly east-northeast across the map for 2 seconds while climbing to high-zoom target altitude
   for (let i = 0; i < 100; i++) {
-    stepAirFlightKinematics(state, 1, -0.5, 90, dt, sample);
+    stepAirFlightKinematics(state, 1, -0.5, 90, dt, sample, midCamHoverY);
   }
   const travelDist = Math.hypot(
     state.airPosX - startSite.padX,
     state.airPosZ - startSite.padZ
   );
   assert.ok(travelDist > 120, `UFO should fast-travel > 120m in 2s, traveled ${travelDist.toFixed(1)}m`);
+  assert.ok(
+    Math.abs(state.airPosY - midCamHoverY) < 1.0,
+    `UFO altitude should smoothly climb to camera-relative height (${midCamHoverY.toFixed(1)}m), got ${state.airPosY.toFixed(1)}m`
+  );
 
   // Land at the new arbitrary spot on the map
   const newPadX = state.airPosX;

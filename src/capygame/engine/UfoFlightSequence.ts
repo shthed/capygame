@@ -456,6 +456,23 @@ export function computeAirFlightSpeedForAltitude(
 }
 
 /**
+ * Computes target UFO hover altitude above ground (meters) during local-air flight so the UFO
+ * smoothly rises into the sky when zooming out to stay visually relative to the camera without
+ * clipping into the camera lens.
+ */
+export function computeAirFlightAltitudeForCamera(
+  cameraHeightAboveGround: number,
+  baseCruiseAltitudeY: number = UFO_AIR_CRUISE_ALTITUDE_Y
+): number {
+  const safeCamY = Number.isFinite(cameraHeightAboveGround)
+    ? Math.max(12, cameraHeightAboveGround)
+    : 45;
+  const proportionalY = safeCamY * 0.42;
+  const minHoverY = Math.min(baseCruiseAltitudeY, safeCamY * 0.45);
+  return Math.max(6.0, Math.min(safeCamY * 0.65, Math.max(minHoverY, proportionalY)));
+}
+
+/**
  * Advances local-air UFO flight kinematics in-place with zero heap allocations.
  */
 export function stepAirFlightKinematics(
@@ -464,7 +481,8 @@ export function stepAirFlightKinematics(
   inputZ: number,
   maxSpeed: number,
   dt: number,
-  out: UfoFlightSample
+  out: UfoFlightSample,
+  targetWorldY?: number
 ): UfoFlightSample {
   const safeDt = dt > 0 && Number.isFinite(dt) ? Math.min(dt, 0.1) : 0;
   state.phaseElapsedSec += safeDt;
@@ -488,6 +506,11 @@ export function stepAirFlightKinematics(
   state.airPosX += state.airVelX * safeDt;
   state.airPosZ += state.airVelZ * safeDt;
 
+  if (typeof targetWorldY === 'number' && Number.isFinite(targetWorldY)) {
+    const altBlend = 1 - Math.exp(-7.5 * safeDt);
+    state.airPosY += (targetWorldY - state.airPosY) * altBlend;
+  }
+
   const speed = Math.hypot(state.airVelX, state.airVelZ);
   const speedFrac = maxSpeed > 0.1 ? clamp01(speed / maxSpeed) : 0;
   if (speed > 0.45) {
@@ -506,7 +529,8 @@ export function stepAirFlightKinematics(
   state.airPitch += (targetPitch - state.airPitch) * tiltBlend;
   state.airRoll += (targetRoll - state.airRoll) * tiltBlend;
 
-  const hoverBob = Math.sin(state.phaseElapsedSec * 2.8) * 0.28;
+  const relAlt = Math.max(0, state.airPosY - state.site.padSurfaceY);
+  const hoverBob = Math.sin(state.phaseElapsedSec * 2.8) * Math.min(2.4, 0.28 + relAlt * 0.008);
 
   out.justTouchedDown = false;
   out.justStartedDisembark = false;
@@ -539,7 +563,7 @@ export function stepAirFlightKinematics(
   out.heroYaw = state.airYaw;
   out.heroAirborne = true;
   out.cameraFocusX = state.airPosX;
-  out.cameraFocusY = state.airPosY * 0.35;
+  out.cameraFocusY = state.airPosY * 0.45;
   out.cameraFocusZ = state.airPosZ;
   return out;
 }

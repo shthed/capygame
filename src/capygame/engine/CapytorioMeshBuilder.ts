@@ -2167,6 +2167,7 @@ export class Capytorio3DRenderer {
     this.deckMat = deckMat;
     this.groundDeck = new THREE.Mesh(deckGeo, deckMat);
     this.groundDeck.position.set(CAPYTORIO_WORLD_ORIGIN_X, 0, CAPYTORIO_WORLD_ORIGIN_Z);
+    this.groundDeck.renderOrder = -5;
     this.groundDeck.receiveShadow = true;
     this.groundDeck.userData.ignoreCameraFade = true;
     this.root.add(this.groundDeck);
@@ -4452,11 +4453,16 @@ export class Capytorio3DRenderer {
     );
 
     // Close-range tile-exact 128x128 3D groundDeck & animated waterDeck (10 m - 340 m),
-    // seamlessly handing off to Ring 0's 1-tile-per-pixel GPU clipmap right underneath
+    // seamlessly handing off to Ring 0's 1-tile-per-pixel GPU clipmap right underneath.
+    // waterDeck relies on groundDeck's depth buffer to mask tucked dry-land vertices (-8 m),
+    // so waterDeck MUST fade out and hide before groundDeck disables depthWrite.
     const deckAlpha = lod.groundDeckAlpha;
     const showGroundDeck = deckAlpha > 0.015;
+    const deckDepthWrites = deckAlpha >= 0.985;
+    const waterAlpha = deckDepthWrites ? lod.waterDeckAlpha : 0;
+    const showWaterDeck = showGroundDeck && deckDepthWrites && waterAlpha > 0.01;
     this.groundDeck.visible = showGroundDeck;
-    this.waterDeck.visible = showGroundDeck;
+    this.waterDeck.visible = showWaterDeck;
     this.groundEdgeStrip.visible = false;
     this.beaconPillarGroup.visible = altitudeRadius <= 1_800;
     if (showGroundDeck) {
@@ -4466,8 +4472,10 @@ export class Capytorio3DRenderer {
         this.deckMat.needsUpdate = true;
       }
       this.deckMat.opacity = deckAlpha;
-      this.deckMat.depthWrite = deckAlpha >= 0.98;
-      this.waterMat.opacity = 0.76 * deckAlpha;
+      this.deckMat.depthWrite = deckDepthWrites;
+      if (showWaterDeck) {
+        this.waterMat.opacity = 0.76 * waterAlpha;
+      }
 
       // Keep 3D groundDeck strictly crisp (lodStep 1..2 only); distant vistas use mipmapped clipmap rings!
       const lodStep = altitudeRadius <= 115 ? 1 : 2;

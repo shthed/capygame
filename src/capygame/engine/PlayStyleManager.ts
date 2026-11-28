@@ -147,6 +147,7 @@ import {
   beginBoardingSequence,
   beginFinalTouchdown,
   beginOrbitalDescent,
+  computeAirFlightAltitudeForCamera,
   computeAirFlightSpeedForAltitude,
   computeOrbitalAscentLogSpeed,
   computeOrbitalDescentLogSpeed,
@@ -2425,6 +2426,9 @@ export class PlayStyleManager {
     if (!started) return false;
 
     this.hideUfoLandingReticle();
+    if (isCapytorio && this.capytorioObliqueZoomDist > 2.2) {
+      this.capytorioObliqueZoomDist = 2.2;
+    }
     this.ufoAirFlightTargetX = null;
     this.ufoAirFlightTargetZ = null;
     this.moveInput.x = 0;
@@ -2476,10 +2480,17 @@ export class PlayStyleManager {
       }
     }
 
-    // 2. Compute altitude-scaled fast-travel flight speed
+    // 2. Compute altitude-scaled fast-travel flight speed & zoom-relative sky altitude
     const obliquePose = isCapytorio
       ? evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist)
       : null;
+    const camDistScale = this.settings.cameraDistance || 1.0;
+    const camHeightAboveGround =
+      isCapytorio && obliquePose ? obliquePose.dy + 4.0 : 28.0 * camDistScale;
+    const preEval = this.evaluateUfoLandingAt(state.airPosX, state.airPosZ, isCapytorio);
+    const targetAirWorldY =
+      preEval.padSurfaceY +
+      computeAirFlightAltitudeForCamera(camHeightAboveGround, state.airCruiseAltitudeY);
     const maxSpeed = isCapytorio
       ? computeAirFlightSpeedForAltitude(obliquePose?.altitudeRadius ?? 55, this.ufoAirBoostHeld)
       : 38 * (this.ufoAirBoostHeld ? 1.75 : 1.0);
@@ -2490,7 +2501,8 @@ export class PlayStyleManager {
       inputZ,
       maxSpeed,
       dt,
-      this.ufoFlightSample
+      this.ufoFlightSample,
+      targetAirWorldY
     );
 
     if (!isCapytorio) {
@@ -2519,7 +2531,9 @@ export class PlayStyleManager {
     reticle.visible = true;
     reticle.position.set(state.airPosX, evalRes.padSurfaceY + 0.16, state.airPosZ);
     const pulse = 1.0 + Math.sin(elapsedSec * 5.0) * 0.045;
-    reticle.scale.setScalar(pulse);
+    const altRadiusForReticle = obliquePose?.altitudeRadius ?? 28 * camDistScale;
+    const reticleScale = Math.max(1.0, Math.min(18.0, altRadiusForReticle * 0.03)) * pulse;
+    reticle.scale.setScalar(reticleScale);
     if (this.ufoLandingReticleMat) {
       this.ufoLandingReticleMat.color.setHex(evalRes.canLand ? 0x34d399 : 0xfb7185);
     }
@@ -2547,12 +2561,17 @@ export class PlayStyleManager {
     this.heroCapy.position.set(state.airPosX, evalRes.padSurfaceY, state.airPosZ);
 
     // 5. Camera framing + live terrain/factory streaming beneath the flying UFO
+    const relAirY = Math.max(0, state.airPosY - evalRes.padSurfaceY);
     if (isCapytorio && obliquePose) {
       this.surfaceCamYaw = Math.PI;
       this.surfaceCamPitch = obliquePose.pitchRad;
-      _camTarget.set(state.airPosX, obliquePose.dy + 4.0, state.airPosZ + obliquePose.dz);
+      _camTarget.set(
+        state.airPosX,
+        evalRes.padSurfaceY + obliquePose.dy + 4.0,
+        state.airPosZ + obliquePose.dz
+      );
       this.camera.position.lerp(_camTarget, 1 - Math.exp(-9.0 * dt));
-      _lookTarget.set(state.airPosX, state.airPosY * 0.25, state.airPosZ);
+      _lookTarget.set(state.airPosX, evalRes.padSurfaceY + relAirY * 0.45, state.airPosZ);
       this.camera.lookAt(_lookTarget);
       this.syncCapytorioHighAltitudePlanetSurface(
         dt,
@@ -2580,9 +2599,13 @@ export class PlayStyleManager {
         }
       }
     } else {
-      _camTarget.set(state.airPosX, state.airPosY + 18.0, state.airPosZ + 22.0);
+      _camTarget.set(
+        state.airPosX,
+        evalRes.padSurfaceY + 28.0 * camDistScale,
+        state.airPosZ + 24.0 * camDistScale
+      );
       this.camera.position.lerp(_camTarget, 1 - Math.exp(-6.5 * dt));
-      _lookTarget.set(state.airPosX, state.airPosY * 0.4, state.airPosZ);
+      _lookTarget.set(state.airPosX, evalRes.padSurfaceY + relAirY * 0.45, state.airPosZ);
       this.camera.lookAt(_lookTarget);
     }
 
@@ -2892,6 +2915,19 @@ export class PlayStyleManager {
   }
 
   /**
+   * Resets Capytorio's oblique zoom distance cleanly back to ground level so re-entering
+   * Capytorio from orbit never snaps back up to the previous high-altitude zoom.
+   */
+  private resetCapytorioZoomToGroundLevel(): void {
+    this.capytorioObliqueZoomDist = THREE.MathUtils.clamp(
+      this.settings.cameraDistance ?? 1.0,
+      CAPYTORIO_ZOOM_MIN_DIST,
+      1.6
+    );
+    this.capytorioPlanetFadeActive = false;
+  }
+
+  /**
    * Switches cleanly into standalone Capytorio factory mode with Forest Games and Infinite Zoom paused & hidden,
    * while preserving Capytorio's parked UFO and orbital launch sequence.
    */
@@ -2904,7 +2940,7 @@ export class PlayStyleManager {
     this.targetCruiseVelocityLogPerSec = 0;
     this.autoLandAtForestPending = false;
     this.orbitalAscentFromSurfaceActive = false;
-    this.capytorioPlanetFadeActive = false;
+    this.resetCapytorioZoomToGroundLevel();
     this.seamlessZoomActive = false;
     this.seamlessUniverse?.hide();
     this.currentMode = 'capytorio';
@@ -2944,6 +2980,7 @@ export class PlayStyleManager {
     }
     if (targetMode === 'capytorio') {
       this.settings.capytorioCameraMode = 'oblique';
+      this.resetCapytorioZoomToGroundLevel();
       if (this.capytorioEngine) {
         const initPose = evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist);
         this.ensureCapytorioRenderer()?.sync(
@@ -3984,6 +4021,9 @@ export class PlayStyleManager {
         'Moved to Spore Lagoon (-110, -110) • Eat Yuzu Plankton & DNA Helixes to grow!'
       );
     } else if (mode === 'capytorio') {
+      if (this.capytorioObliqueZoomDist > 2.2) {
+        this.resetCapytorioZoomToGroundLevel();
+      }
       if (!this.isUfoSequenceActive()) {
         setParkedOnGroundImmediate(
           this.ufoFlightState,
@@ -13067,7 +13107,7 @@ export class PlayStyleManager {
           this.cruiseVelocityLogPerSec = 0;
           this.targetCruiseVelocityLogPerSec = 0;
           this.lastLaunchSourceMode = 'sanctuary';
-          this.capytorioObliqueZoomDist = CAPYTORIO_ORBIT_HANDOFF_DIST * 0.85;
+          this.resetCapytorioZoomToGroundLevel();
           this.settings.capytorioCameraMode = 'oblique';
           this.resumeSurfacePlayFromForest(true);
           this.switchMode('capytorio', true);
@@ -14059,6 +14099,9 @@ export class PlayStyleManager {
     this.descentRingsGroup.visible = false;
     this.descentRingsGroup.matrixWorldAutoUpdate = false;
     this.setSkyDomeAlpha(1.0);
+    if (this.currentMode === 'capytorio') {
+      this.resetCapytorioZoomToGroundLevel();
+    }
     const siteMode = this.currentMode === 'capytorio' ? 'capytorio' : 'sanctuary';
     setParkedOnGroundImmediate(
       this.ufoFlightState,

@@ -90,6 +90,8 @@ export interface CapytorioAltitudeLodState {
   logAlt: number;
   /** 1.0 close to ground (<= 180 m), fades cleanly to 0 by 340 m onto Ring 0 clipmap */
   groundDeckAlpha: number;
+  /** 1.0 close to ground (<= 130 m), fades to 0 by 180 m while groundDeck still writes depth */
+  waterDeckAlpha: number;
   /** True while full multi-part 3D machine groups should render */
   useDetailedMachines: boolean;
   /** True while single-draw-call simplified 3D machine box proxies should render */
@@ -124,6 +126,7 @@ export function createCapytorioAltitudeLodState(): CapytorioAltitudeLodState {
   return {
     logAlt: 1.41,
     groundDeckAlpha: 1,
+    waterDeckAlpha: 1,
     useDetailedMachines: true,
     useProxyMachines: false,
     useDetailedBelts: true,
@@ -164,6 +167,9 @@ export function evaluateCapytorioAltitudeLod(
 
   // Ground 128x128 vertex deck stays crisp at close range (<= 180 m) and crossfades onto Ring 0 by 340 m
   out.groundDeckAlpha = 1.0 - smoothstep(185, 340, alt);
+  // Shimmering animated waterDeck fades out completely before groundDeck disables depthWrite (185 m),
+  // preventing dry-land tucked water vertices (-8 m) from ever depth-bleeding blue across continents!
+  out.waterDeckAlpha = 1.0 - smoothstep(130, 180, alt);
 
   // Full 3D machines vs single-draw-call simplified 3D proxies (both also stamped into Ring 0..4 clipmaps!)
   out.useDetailedMachines = alt <= 280;

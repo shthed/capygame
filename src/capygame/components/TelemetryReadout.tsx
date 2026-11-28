@@ -161,8 +161,9 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
               </span>
             )}
           </button>
-          <span className="px-2.5 py-0.5 rounded-md bg-zinc-950/85 border border-white/10 text-[10px] font-mono text-zinc-300 pointer-events-none whitespace-nowrap">
-            WASD / Tap Map to Fast-Travel · Shift Boost · Scroll Zoom
+          <span className="max-w-[calc(100vw-24px)] px-2.5 py-0.5 rounded-md bg-zinc-950/85 border border-white/10 text-[10px] font-mono text-zinc-300 pointer-events-none text-center truncate">
+            <span className="sm:hidden">Tap Map to Fast-Travel · Pinch / +/- Zoom</span>
+            <span className="hidden sm:inline">WASD / Tap Map to Fast-Travel · Shift Boost · Scroll Zoom</span>
           </span>
         </div>
       );

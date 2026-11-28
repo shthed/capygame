@@ -544,6 +544,7 @@ test('CapytorioOrbitalLodMath: continuous coverage 10 m - 234 km, cloud lens-fad
   // Ground tier (26 m)
   evaluateCapytorioAltitudeLod(26, lod);
   assert.equal(lod.groundDeckAlpha, 1);
+  assert.equal(lod.waterDeckAlpha, 1);
   assert.equal(lod.useDetailedMachines, true);
   assert.equal(lod.useProxyMachines, false);
   assert.equal(lod.useDetailedBelts, true);
@@ -554,9 +555,21 @@ test('CapytorioOrbitalLodMath: continuous coverage 10 m - 234 km, cloud lens-fad
   assert.equal(lod.cloudLayer1Opacity, 0);
   assert.equal(lod.planetGlobeActive, false);
 
+  // Critical mid-zoom crossfade band (185 m..340 m): waterDeck must ALREADY be completely hidden
+  // before groundDeck disables depthWrite so tucked dry-land water vertices never paint the ground blue
+  for (const crossAlt of [185, 220, 260, 300, 335]) {
+    evaluateCapytorioAltitudeLod(crossAlt, lod);
+    assert.equal(
+      lod.waterDeckAlpha,
+      0,
+      `waterDeckAlpha must be 0 at ${crossAlt} m while groundDeck crossfades (groundDeckAlpha=${lod.groundDeckAlpha})`
+    );
+  }
+
   // Regional tier (600 m): groundDeck handed off to Ring 0..2, simplified 3D proxies active
   evaluateCapytorioAltitudeLod(600, lod);
   assert.equal(lod.groundDeckAlpha, 0);
+  assert.equal(lod.waterDeckAlpha, 0);
   assert.equal(lod.useDetailedMachines, false);
   assert.equal(lod.useProxyMachines, true);
   assert.equal(lod.useDetailedBelts, false);
