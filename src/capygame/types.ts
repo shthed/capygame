@@ -262,6 +262,7 @@ export interface LiveModeTelemetry {
   canDive?: boolean;
   ufoFlightPhase?: UfoFlightPhase;
   nearParkedUfo?: boolean;
+  ufoCanLandHere?: boolean;
 }
 
 export type AstrophysicsPaletteMode = 'natural' | 'hubble';

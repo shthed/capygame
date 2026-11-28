@@ -70,6 +70,7 @@ export type TelemetryReadoutProps =
       store: LiveTelemetryStore;
       activeMode: PlayStyle;
       onBoardUfo: () => void;
+      onLandUfo: () => void;
     };
 
 export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((props) => {
@@ -130,13 +131,46 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
   }
 
   if (props.variant === 'ufo_prompt') {
-    if (!telemetry.nearParkedUfo || telemetry.ufoFlightPhase !== 'parked_on_ground') {
-      return null;
-    }
     const bottomClass =
       props.activeMode === 'capytorio'
         ? 'bottom-[calc(136px+var(--sab))] sm:bottom-[calc(92px+var(--sab))]'
         : 'bottom-[calc(1rem+var(--sab))]';
+
+    if (telemetry.ufoFlightPhase === 'air_flight') {
+      const canLand = telemetry.ufoCanLandHere !== false;
+      return (
+        <div
+          data-testid="ufo-air-flight-controls"
+          className={`fixed left-1/2 -translate-x-1/2 ${bottomClass} z-20 pointer-events-auto flex flex-col items-center gap-1.5`}
+        >
+          <button
+            type="button"
+            data-testid="land-ufo-btn"
+            onClick={props.onLandUfo}
+            className={`min-h-11 px-4 py-2 rounded-xl border shadow-2xl flex items-center gap-2 text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap ${
+              canLand
+                ? 'bg-zinc-950/95 hover:bg-zinc-900 border-emerald-400/75 text-emerald-100'
+                : 'bg-zinc-950/95 border-amber-400/60 text-amber-200'
+            }`}
+          >
+            <ChevronDown className={`w-4 h-4 shrink-0 ${canLand ? 'text-emerald-300' : 'text-amber-300'}`} />
+            <span>{canLand ? 'Land UFO' : 'Fly Over Dry Land to Land'}</span>
+            {canLand && (
+              <span className="hidden sm:inline px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/45 text-[10px] font-mono text-emerald-200">
+                E
+              </span>
+            )}
+          </button>
+          <span className="px-2.5 py-0.5 rounded-md bg-zinc-950/85 border border-white/10 text-[10px] font-mono text-zinc-300 pointer-events-none whitespace-nowrap">
+            WASD / Tap Map to Fast-Travel · Shift Boost · Scroll Zoom
+          </span>
+        </div>
+      );
+    }
+
+    if (!telemetry.nearParkedUfo || telemetry.ufoFlightPhase !== 'parked_on_ground') {
+      return null;
+    }
     return (
       <div
         data-testid="parked-ufo-prompt"
@@ -149,7 +183,7 @@ export const TelemetryReadout: React.FC<TelemetryReadoutProps> = React.memo((pro
           className="min-h-11 px-4 py-2 rounded-xl bg-zinc-950/95 hover:bg-zinc-900 border border-cyan-400/70 text-cyan-100 shadow-2xl flex items-center gap-2 text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap"
         >
           <Rocket className="w-4 h-4 text-cyan-300 shrink-0" />
-          <span>Board UFO · Launch to Orbit</span>
+          <span>Board UFO</span>
           <span className="hidden sm:inline px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-400/45 text-[10px] font-mono text-cyan-200">
             E
           </span>

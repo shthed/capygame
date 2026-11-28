@@ -13,7 +13,10 @@ export type UfoFlightPhase =
   | 'disembark'
   | 'parked_on_ground'
   | 'boarding'
-  | 'liftoff';
+  | 'liftoff'
+  | 'air_flight';
+
+export type UfoFlightMode = 'orbit' | 'local_air';
 
 export type UfoLandingSiteId = 'sanctuary' | 'capytorio';
 
@@ -32,12 +35,15 @@ export const UFO_TOUCHDOWN_DURATION_SEC = 1.35;
 export const UFO_DISEMBARK_DURATION_SEC = 0.85;
 export const UFO_BOARDING_DURATION_SEC = 0.72;
 export const UFO_LIFTOFF_DURATION_SEC = 1.65;
+export const UFO_AIR_LIFTOFF_DURATION_SEC = 0.85;
 
 export const UFO_APPROACH_ALTITUDE_OFFSET = 4.6;
+export const UFO_AIR_CRUISE_ALTITUDE_Y = 14.0;
 export const UFO_LIFTOFF_HANDOFF_ALTITUDE = 24.0;
 export const UFO_GROUNDED_FOOT_CLEARANCE = 0.26; // local Y of extended landing feet below vessel origin
 export const UFO_COCKPIT_SEAT_OFFSET_Y = 0.42; // world Y offset from resting vessel origin to cockpit seat
 export const UFO_BOARDING_PROXIMITY_RADIUS = 5.4;
+export const UFO_TOUCH_BOARDING_RADIUS = 3.35;
 export const UFO_CLICK_BOARD_MAX_RADIUS = 16.0;
 
 export const UFO_ORBIT_TARGET_LOG_METERS = 7.1; // Planetary orbit framing the globe
@@ -48,6 +54,7 @@ export const UFO_LIFTOFF_ORBIT_HANDOFF_LOG = 1.18;
 
 export interface UfoFlightState {
   phase: UfoFlightPhase;
+  flightMode: UfoFlightMode;
   phaseElapsedSec: number;
   site: UfoLandingSiteSpec;
   vesselScale: number;
@@ -63,6 +70,17 @@ export interface UfoFlightState {
   heroStartYaw: number;
   // Target orbit log altitude when launching back to space
   launchTargetLogMeters: number;
+  // Local-air fast-travel flight kinematics (zero heap allocations)
+  airCruiseAltitudeY: number;
+  airPosX: number;
+  airPosY: number;
+  airPosZ: number;
+  airVelX: number;
+  airVelZ: number;
+  airYaw: number;
+  airPitch: number;
+  airRoll: number;
+  canLandAtCurrentSpot: boolean;
   // One-shot milestone latch flags inside phases
   touchdownImpactEmitted: boolean;
   liftoffIgnitionEmitted: boolean;
@@ -104,6 +122,7 @@ export interface UfoFlightSample {
   justEnteredCockpit: boolean;
   justIgnitedLiftoff: boolean;
   justEnteredOrbitAscent: boolean;
+  justEnteredAirFlight: boolean;
 }
 
 function clamp01(v: number): number {
@@ -243,6 +262,7 @@ export function createUfoFlightState(
   const restY = computeUfoRestingY(site.padSurfaceY, vesselScale);
   return {
     phase: initialPhase,
+    flightMode: 'orbit',
     phaseElapsedSec: 0,
     site,
     vesselScale,
@@ -255,6 +275,16 @@ export function createUfoFlightState(
     heroStartZ: site.disembarkZ,
     heroStartYaw: site.padYaw,
     launchTargetLogMeters: UFO_ORBIT_TARGET_LOG_METERS,
+    airCruiseAltitudeY: UFO_AIR_CRUISE_ALTITUDE_Y,
+    airPosX: site.padX,
+    airPosY: site.padSurfaceY + UFO_AIR_CRUISE_ALTITUDE_Y,
+    airPosZ: site.padZ,
+    airVelX: 0,
+    airVelZ: 0,
+    airYaw: site.padYaw,
+    airPitch: 0,
+    airRoll: 0,
+    canLandAtCurrentSpot: true,
     touchdownImpactEmitted: false,
     liftoffIgnitionEmitted: false,
   };
@@ -293,6 +323,7 @@ export function createUfoFlightSample(): UfoFlightSample {
     justEnteredCockpit: false,
     justIgnitedLiftoff: false,
     justEnteredOrbitAscent: false,
+    justEnteredAirFlight: false,
   };
 }
 
@@ -364,6 +395,7 @@ export function beginBoardingSequence(
     return false;
   }
   state.phase = 'boarding';
+  state.flightMode = 'orbit';
   state.phaseElapsedSec = 0;
   state.heroStartX = heroX;
   state.heroStartY = heroY;
@@ -375,8 +407,187 @@ export function beginBoardingSequence(
 }
 
 /**
+ * Initiates local low-altitude fast-travel flight (boarding -> short liftoff -> air_flight).
+ * Stays in local planetary airspace and NEVER launches into cosmic orbit.
+ */
+export function beginAirFlightBoarding(
+  state: UfoFlightState,
+  heroX: number,
+  heroY: number,
+  heroZ: number,
+  heroYaw: number,
+  cruiseAltitudeY: number = UFO_AIR_CRUISE_ALTITUDE_Y
+): boolean {
+  if (state.phase !== 'parked_on_ground') {
+    return false;
+  }
+  state.phase = 'boarding';
+  state.flightMode = 'local_air';
+  state.phaseElapsedSec = 0;
+  state.heroStartX = heroX;
+  state.heroStartY = heroY;
+  state.heroStartZ = heroZ;
+  state.heroStartYaw = heroYaw;
+  state.airCruiseAltitudeY = Math.max(6.0, cruiseAltitudeY);
+  state.airPosX = state.site.padX;
+  state.airPosY = state.site.padSurfaceY + state.airCruiseAltitudeY;
+  state.airPosZ = state.site.padZ;
+  state.airVelX = 0;
+  state.airVelZ = 0;
+  state.airYaw = state.site.padYaw;
+  state.airPitch = 0;
+  state.airRoll = 0;
+  state.canLandAtCurrentSpot = true;
+  state.liftoffIgnitionEmitted = false;
+  return true;
+}
+
+/**
+ * Computes fast-travel UFO flight speed (m/s) scaled smoothly by camera altitude so zooming out
+ * lets the player rocket across kilometers of terrain while staying crisp when zoomed in.
+ */
+export function computeAirFlightSpeedForAltitude(
+  cameraAltitudeRadius: number,
+  boostHeld: boolean = false
+): number {
+  const safeAlt = Number.isFinite(cameraAltitudeRadius) ? Math.max(10, cameraAltitudeRadius) : 35;
+  const baseSpeed = Math.min(480, 48 + Math.max(0, safeAlt - 22) * 0.52);
+  return boostHeld ? baseSpeed * 1.85 : baseSpeed;
+}
+
+/**
+ * Advances local-air UFO flight kinematics in-place with zero heap allocations.
+ */
+export function stepAirFlightKinematics(
+  state: UfoFlightState,
+  inputX: number,
+  inputZ: number,
+  maxSpeed: number,
+  dt: number,
+  out: UfoFlightSample
+): UfoFlightSample {
+  const safeDt = dt > 0 && Number.isFinite(dt) ? Math.min(dt, 0.1) : 0;
+  state.phaseElapsedSec += safeDt;
+
+  const mag = Math.hypot(inputX, inputZ);
+  const normX = mag > 1 ? inputX / mag : inputX;
+  const normZ = mag > 1 ? inputZ / mag : inputZ;
+
+  const targetVx = normX * maxSpeed;
+  const targetVz = normZ * maxSpeed;
+  const rate = mag > 0.04 ? 7.5 : 5.8;
+  const blend = 1 - Math.exp(-rate * safeDt);
+  state.airVelX += (targetVx - state.airVelX) * blend;
+  state.airVelZ += (targetVz - state.airVelZ) * blend;
+
+  if (Math.hypot(state.airVelX, state.airVelZ) < 0.08 && mag <= 0.04) {
+    state.airVelX = 0;
+    state.airVelZ = 0;
+  }
+
+  state.airPosX += state.airVelX * safeDt;
+  state.airPosZ += state.airVelZ * safeDt;
+
+  const speed = Math.hypot(state.airVelX, state.airVelZ);
+  const speedFrac = maxSpeed > 0.1 ? clamp01(speed / maxSpeed) : 0;
+  if (speed > 0.45) {
+    const moveYaw = Math.atan2(state.airVelX, state.airVelZ);
+    state.airYaw = lerpAngle(state.airYaw, moveYaw, 1 - Math.exp(-8.0 * safeDt));
+  }
+
+  const targetPitch = speedFrac * 0.19;
+  const crossTurn =
+    speed > 0.45
+      ? (Math.sin(state.airYaw) * state.airVelZ - Math.cos(state.airYaw) * state.airVelX) /
+        Math.max(1, maxSpeed)
+      : 0;
+  const targetRoll = Math.max(-0.26, Math.min(0.26, crossTurn * 0.45));
+  const tiltBlend = 1 - Math.exp(-7.0 * safeDt);
+  state.airPitch += (targetPitch - state.airPitch) * tiltBlend;
+  state.airRoll += (targetRoll - state.airRoll) * tiltBlend;
+
+  const hoverBob = Math.sin(state.phaseElapsedSec * 2.8) * 0.28;
+
+  out.justTouchedDown = false;
+  out.justStartedDisembark = false;
+  out.justFinishedDisembark = false;
+  out.justEnteredCockpit = false;
+  out.justIgnitedLiftoff = false;
+  out.justEnteredOrbitAscent = false;
+  out.justEnteredAirFlight = false;
+  out.heroSquashImpulse = 0;
+
+  out.phase = 'air_flight';
+  out.phaseProgress01 = 1;
+  out.vesselVisible = true;
+  out.pilotInVesselVisible = true;
+  out.heroVisible = false;
+  out.controlsLocked = false;
+  out.groundedIdle = false;
+  out.landingGear01 = 0;
+  out.thrusterPower = 0.52 + speedFrac * 0.72;
+  out.vesselX = state.airPosX;
+  out.vesselY = state.airPosY + hoverBob;
+  out.vesselZ = state.airPosZ;
+  out.vesselYaw = state.airYaw;
+  out.vesselPitch = state.airPitch;
+  out.vesselRoll = state.airRoll;
+  out.vesselScale = state.vesselScale;
+  out.heroX = state.airPosX;
+  out.heroY = state.airPosY + hoverBob;
+  out.heroZ = state.airPosZ;
+  out.heroYaw = state.airYaw;
+  out.heroAirborne = true;
+  out.cameraFocusX = state.airPosX;
+  out.cameraFocusY = state.airPosY * 0.35;
+  out.cameraFocusZ = state.airPosZ;
+  return out;
+}
+
+/**
+ * Transitions an actively flying local-air UFO into final touchdown at any arbitrary clear
+ * landing spot on the map, updating the UFO's parked site coordinates dynamically.
+ */
+export function beginAirFlightTouchdown(
+  state: UfoFlightState,
+  padX: number,
+  padSurfaceY: number,
+  padZ: number,
+  disembarkX: number,
+  disembarkGroundY: number,
+  disembarkZ: number
+): boolean {
+  if (state.phase !== 'air_flight') {
+    return false;
+  }
+  const nextSite: UfoLandingSiteSpec = {
+    id: state.site.id,
+    padX,
+    padSurfaceY,
+    padZ,
+    padYaw: state.airYaw,
+    disembarkX,
+    disembarkGroundY,
+    disembarkZ,
+  };
+  state.airVelX = 0;
+  state.airVelZ = 0;
+  beginFinalTouchdown(
+    state,
+    nextSite,
+    state.airPosX,
+    state.airPosY,
+    state.airPosZ,
+    state.airYaw,
+    state.vesselScale
+  );
+  return true;
+}
+
+/**
  * Advances the ground-side cinematic sequences (`touchdown` -> `disembark` -> `parked_on_ground`,
- * and `boarding` -> `liftoff` -> `orbit_flight`) with zero heap allocations.
+ * `boarding` -> `liftoff` -> `air_flight` for local fast-travel, or `orbit_flight` for orbital launch)
+ * with zero heap allocations.
  */
 export function stepUfoFlightSequence(
   state: UfoFlightState,
@@ -391,6 +602,7 @@ export function stepUfoFlightSequence(
   out.justEnteredCockpit = false;
   out.justIgnitedLiftoff = false;
   out.justEnteredOrbitAscent = false;
+  out.justEnteredAirFlight = false;
   out.heroSquashImpulse = 0;
 
   const site = state.site;
@@ -635,8 +847,72 @@ export function stepUfoFlightSequence(
     return out;
   }
 
+  if (state.phase === 'air_flight') {
+    return stepAirFlightKinematics(state, 0, 0, 50, safeDt, out);
+  }
+
   // phase === 'liftoff'
   state.phaseElapsedSec += safeDt;
+
+  if (state.flightMode === 'local_air') {
+    const t = clamp01(state.phaseElapsedSec / UFO_AIR_LIFTOFF_DURATION_SEC);
+    const climbEase = easeInOutCubic(t);
+    const targetAirY = site.padSurfaceY + state.airCruiseAltitudeY;
+    const vy = restY + (targetAirY - restY) * climbEase;
+    const gear01 = 1 - smoothstep01(0.18, 0.65, t);
+    const thruster = 0.48 + Math.sin(t * Math.PI) * 0.72 + 0.18 * t;
+    const levelPitch = Math.sin(t * Math.PI) * 0.08;
+
+    if (!state.liftoffIgnitionEmitted && t >= 0.08) {
+      state.liftoffIgnitionEmitted = true;
+      out.justIgnitedLiftoff = true;
+    }
+
+    out.phase = 'liftoff';
+    out.phaseProgress01 = t;
+    out.vesselVisible = true;
+    out.pilotInVesselVisible = true;
+    out.heroVisible = false;
+    out.controlsLocked = true;
+    out.groundedIdle = false;
+    out.landingGear01 = gear01;
+    out.thrusterPower = thruster;
+    out.vesselX = site.padX;
+    out.vesselY = vy;
+    out.vesselZ = site.padZ;
+    out.vesselYaw = site.padYaw;
+    out.vesselPitch = levelPitch;
+    out.vesselRoll = 0;
+    out.vesselScale = state.vesselScale;
+    out.heroX = site.padX;
+    out.heroY = vy;
+    out.heroZ = site.padZ;
+    out.heroYaw = site.padYaw;
+    out.heroAirborne = true;
+    out.cameraFocusX = site.padX;
+    out.cameraFocusY = vy * 0.45;
+    out.cameraFocusZ = site.padZ;
+
+    if (t >= 1) {
+      state.phase = 'air_flight';
+      state.phaseElapsedSec = 0;
+      state.airPosX = site.padX;
+      state.airPosY = targetAirY;
+      state.airPosZ = site.padZ;
+      state.airVelX = 0;
+      state.airVelZ = 0;
+      state.airYaw = site.padYaw;
+      state.airPitch = 0;
+      state.airRoll = 0;
+      out.phase = 'air_flight';
+      out.phaseProgress01 = 1;
+      out.controlsLocked = false;
+      out.landingGear01 = 0;
+      out.justEnteredAirFlight = true;
+    }
+    return out;
+  }
+
   const t = clamp01(state.phaseElapsedSec / UFO_LIFTOFF_DURATION_SEC);
   const hoverPhase = smoothstep01(0.0, 0.28, t);
   const climbT = clamp01((t - 0.24) / 0.76);

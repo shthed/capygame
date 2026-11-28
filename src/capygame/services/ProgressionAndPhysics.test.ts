@@ -1910,13 +1910,21 @@ test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains
     'PlayStyleManager.ts must cache viewport dimensions across frames'
   );
 
-  // 6. index.html uses tiny SVG favicon, places #static-boot-shell outside #root, and keeps renderBootError
+  // 6. index.html uses tiny SVG favicon, omits the static progress-bar loading shell, and keeps renderBootError
   const indexHtml = fs.readFileSync(path.resolve(root, 'index.html'), 'utf8');
-  assert.ok(indexHtml.includes('id="static-boot-shell"'), 'index.html must include id="static-boot-shell"');
-  assert.ok(indexHtml.includes('data-testid="static-boot-shell"'), 'index.html must include instant static LCP shell');
+  assert.equal(
+    indexHtml.includes('id="static-boot-shell"'),
+    false,
+    'index.html must not mount a static progress-bar loading screen'
+  );
+  assert.equal(
+    indexHtml.includes('data-testid="static-boot-shell"'),
+    false,
+    'index.html must not include static-boot-shell overlay'
+  );
   assert.ok(
     indexHtml.includes('<div id="root"></div>'),
-    '#static-boot-shell must sit outside <div id="root"></div> so React mount never destroys LCP'
+    'index.html must mount <div id="root"></div>'
   );
   assert.ok(
     indexHtml.includes('href="assets/favicon.svg"'),
@@ -1947,7 +1955,7 @@ test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains
   );
   assert.ok(swSrc.includes('./assets/favicon.svg'), 'public/sw.js should precache tiny ./assets/favicon.svg');
 
-  // 8. Cold-boot regressions: FocusGuard chunk split, zero throwaway WebGL probes, zero duplicate engine-boot-shell
+  // 8. Cold-boot regressions: FocusGuard chunk split, zero throwaway WebGL probes, zero loading-shell overlays
   const viteConfigSrc = fs.readFileSync(path.resolve(root, 'vite.config.ts'), 'utf8');
   assert.ok(
     viteConfigSrc.includes('/src/capygame/engine/FocusGuard.ts'),
@@ -1968,9 +1976,10 @@ test('Cold-load LCP & lazy-boot optimization: GPU presets, lazy Alpine mountains
     false,
     'CapyGameView.tsx must not mount a duplicate React engine-boot-shell overlay'
   );
-  assert.ok(
+  assert.equal(
     viewSrc.includes("document.getElementById('static-boot-shell')"),
-    'CapyGameView.tsx must tuck #static-boot-shell behind the canvas instead of unmounting it'
+    false,
+    'CapyGameView.tsx must not reference removed #static-boot-shell'
   );
 
   // 9. Cloudflare Pages _headers detaches inherited /assets/* Cache-Control before setting immutable rules

@@ -1208,6 +1208,10 @@ export class CapytorioFactoryEngine {
     return this.occupancyGrid.get(tileKey(gx, gz));
   }
 
+  public isTileWater(gx: number, gz: number): boolean {
+    return isCapytorioWaterTerrain(sampleCapytorioTerrain(gx, gz));
+  }
+
   private registerMachineOccupancy(m: CapytorioMachine): void {
     const fp = this.getMachineFootprint(m);
     for (let dx = 0; dx < fp.width; dx++) {

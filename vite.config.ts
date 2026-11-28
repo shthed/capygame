@@ -61,9 +61,9 @@ const PACKAGE_VERSION = (() => {
     const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
     return typeof parsed.version === 'string' && parsed.version.trim()
       ? parsed.version.trim()
-      : '1.8.0';
+      : '1.9.0';
   } catch {
-    return '1.8.0';
+    return '1.9.0';
   }
 })();
 
@@ -103,6 +103,7 @@ export default defineConfig(({ command }) => {
             norm.includes('/src/capygame/services/AudioSynthesisMath.ts') ||
             norm.includes('/src/capygame/config/ProceduralGameConfig.ts') ||
             norm.includes('/src/capygame/config/appVersion.ts') ||
+            norm.includes('/src/capygame/engine/SurfaceCollisionMath.ts') ||
             norm.includes('/src/capygame/engine/capytorio/CapytorioStateGuard.ts')
           ) {
             return 'capy-shared-core';

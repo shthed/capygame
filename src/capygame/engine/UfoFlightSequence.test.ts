@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  UFO_AIR_CRUISE_ALTITUDE_Y,
+  UFO_AIR_LIFTOFF_DURATION_SEC,
   UFO_BOARDING_DURATION_SEC,
   UFO_BOARDING_PROXIMITY_RADIUS,
   UFO_DISEMBARK_DURATION_SEC,
@@ -9,9 +11,13 @@ import {
   UFO_ORBIT_DESCENT_START_LOG,
   UFO_ORBIT_TARGET_LOG_METERS,
   UFO_TOUCHDOWN_DURATION_SEC,
+  UFO_TOUCH_BOARDING_RADIUS,
+  beginAirFlightBoarding,
+  beginAirFlightTouchdown,
   beginBoardingSequence,
   beginFinalTouchdown,
   beginOrbitalDescent,
+  computeAirFlightSpeedForAltitude,
   computeOrbitalAscentLogSpeed,
   computeOrbitalDescentLogSpeed,
   computeUfoApproachY,
@@ -23,8 +29,20 @@ import {
   isNearParkedUfo,
   resolveSmoothDescentStartLog,
   setParkedOnGroundImmediate,
+  stepAirFlightKinematics,
   stepUfoFlightSequence,
 } from './UfoFlightSequence.ts';
+import {
+  HERO_COLLISION_RADIUS,
+  UFO_HULL_COLLISION_RADIUS,
+  computeCapytorioMachineWorldAabb,
+  createAabb2DScratch,
+  createCirclePushScratch,
+  isCapytorioMachineSolid,
+  isTouchingParkedUfo,
+  resolveCircleAabbPush,
+  resolveCircleCirclePush,
+} from './SurfaceCollisionMath.ts';
 
 test('resolveSmoothDescentStartLog preserves planetary orbit altitude without snapping past planet', () => {
   // Already in planetary orbit (~7.1) or atmosphere (~3.4) -> ZERO warp/teleport!
@@ -211,4 +229,159 @@ test('setParkedOnGroundImmediate puts UFO cleanly on ground and supports Capytor
   assert.equal(sample.vesselX, capySite.padX);
   assert.equal(sample.vesselZ, capySite.padZ);
   assert.equal(sample.vesselY, computeUfoRestingY(0.0, 3.85));
+});
+
+test('SurfaceCollisionMath blocks capybara clipping through parked UFO and solid buildings while keeping belts walkable', () => {
+  const push = createCirclePushScratch();
+  const padX = 1204.4;
+  const padZ = 5.2;
+
+  // Pushing directly into parked UFO center ejects capybara cleanly to rim separation (2.05 + 0.68 = 2.73 m)
+  const hitCenter = resolveCircleCirclePush(
+    padX + 0.4,
+    padZ + 0.3,
+    HERO_COLLISION_RADIUS,
+    padX,
+    padZ,
+    UFO_HULL_COLLISION_RADIUS,
+    push
+  );
+  assert.equal(hitCenter, true);
+  assert.equal(push.hit, true);
+  const sep = Math.hypot(push.x - padX, push.z - padZ);
+  assert.ok(
+    Math.abs(sep - (HERO_COLLISION_RADIUS + UFO_HULL_COLLISION_RADIUS)) < 1e-6,
+    `Expected exact rim separation, got ${sep}`
+  );
+
+  // Touching-only boarding radius triggers strictly when touching the UFO rim, NOT at spawn/disembark (~4.4 m)
+  assert.equal(isTouchingParkedUfo(push.x, push.z, padX, padZ), true);
+  assert.equal(isTouchingParkedUfo(padX + 3.1, padZ, padX, padZ), true);
+  assert.equal(isTouchingParkedUfo(1200.0, 3.0, padX, padZ), false, 'Capytorio spawn must not show Board UFO');
+  assert.equal(
+    isTouchingParkedUfo(padX + UFO_TOUCH_BOARDING_RADIUS + 0.25, padZ, padX, padZ),
+    false
+  );
+
+  // Capytorio machine solidness: belts remain walkable, buildings are solid
+  assert.equal(isCapytorioMachineSolid('belt'), false);
+  assert.equal(isCapytorioMachineSolid('assembler'), true);
+  assert.equal(isCapytorioMachineSolid('furnace'), true);
+  assert.equal(isCapytorioMachineSolid('drill'), true);
+  assert.equal(isCapytorioMachineSolid('chest'), true);
+
+  // 3x3 Assembler at grid (2, 2) world AABB blocks both edge approach and deep interior clipping
+  const aabb = createAabb2DScratch();
+  computeCapytorioMachineWorldAabb(1200, 0, 2, 2, 3, 3, aabb);
+  assert.ok(aabb.maxX - aabb.minX > 7.0 && aabb.maxZ - aabb.minZ > 7.0);
+
+  // Approach from west side into west wall
+  const edgeHit = resolveCircleAabbPush(
+    aabb.minX - 0.2,
+    (aabb.minZ + aabb.maxZ) * 0.5,
+    HERO_COLLISION_RADIUS,
+    aabb.minX,
+    aabb.minZ,
+    aabb.maxX,
+    aabb.maxZ,
+    push
+  );
+  assert.equal(edgeHit, true);
+  assert.ok(push.x <= aabb.minX - HERO_COLLISION_RADIUS + 1e-6);
+
+  // Deep interior escape pushes cleanly outside nearest wall
+  const interiorHit = resolveCircleAabbPush(
+    aabb.minX + 0.4,
+    (aabb.minZ + aabb.maxZ) * 0.5,
+    HERO_COLLISION_RADIUS,
+    aabb.minX,
+    aabb.minZ,
+    aabb.maxX,
+    aabb.maxZ,
+    push
+  );
+  assert.equal(interiorHit, true);
+  assert.ok(push.x <= aabb.minX - HERO_COLLISION_RADIUS + 1e-6);
+});
+
+test('local-air UFO fast-travel launches into air (never orbit), flies across map, and lands anywhere', () => {
+  const startSite = getUfoLandingSiteSpec('capytorio');
+  const state = createUfoFlightState('parked_on_ground', startSite, 3.85);
+  const sample = createUfoFlightSample();
+
+  const started = beginAirFlightBoarding(
+    state,
+    startSite.padX - 2.8,
+    0,
+    startSite.padZ,
+    0,
+    UFO_AIR_CRUISE_ALTITUDE_Y
+  );
+  assert.equal(started, true);
+  assert.equal(state.phase, 'boarding');
+  assert.equal(state.flightMode, 'local_air');
+
+  const dt = 0.02;
+  let enteredAirFlight = false;
+  let enteredOrbit = false;
+  const maxSteps = Math.ceil((UFO_BOARDING_DURATION_SEC + UFO_AIR_LIFTOFF_DURATION_SEC) / dt) + 8;
+  for (let i = 0; i < maxSteps; i++) {
+    stepUfoFlightSequence(state, dt, sample);
+    if (sample.justEnteredOrbitAscent) enteredOrbit = true;
+    if (sample.justEnteredAirFlight) {
+      enteredAirFlight = true;
+      break;
+    }
+  }
+  assert.equal(enteredOrbit, false, 'Local-air UFO takeoff must NEVER transition to orbital space ascent');
+  assert.equal(enteredAirFlight, true, 'Local-air UFO takeoff must enter air_flight');
+  assert.equal(state.phase, 'air_flight');
+  assert.equal(sample.controlsLocked, false);
+  assert.equal(sample.pilotInVesselVisible, true);
+  assert.equal(sample.heroVisible, false);
+
+  // Speed scales smoothly with altitude and boost
+  const lowSpeed = computeAirFlightSpeedForAltitude(35, false);
+  const highSpeed = computeAirFlightSpeedForAltitude(320, false);
+  const boostSpeed = computeAirFlightSpeedForAltitude(320, true);
+  assert.ok(highSpeed > lowSpeed * 2, 'Zooming out must increase UFO fast-travel speed');
+  assert.ok(boostSpeed > highSpeed * 1.5, 'Boost must accelerate UFO fast-travel speed');
+
+  // Fly east-northeast across the map for 2 seconds
+  for (let i = 0; i < 100; i++) {
+    stepAirFlightKinematics(state, 1, -0.5, 90, dt, sample);
+  }
+  const travelDist = Math.hypot(
+    state.airPosX - startSite.padX,
+    state.airPosZ - startSite.padZ
+  );
+  assert.ok(travelDist > 120, `UFO should fast-travel > 120m in 2s, traveled ${travelDist.toFixed(1)}m`);
+
+  // Land at the new arbitrary spot on the map
+  const newPadX = state.airPosX;
+  const newPadZ = state.airPosZ;
+  const newDisembarkX = newPadX;
+  const newDisembarkZ = newPadZ + 4.35;
+  const landingStarted = beginAirFlightTouchdown(
+    state,
+    newPadX,
+    0,
+    newPadZ,
+    newDisembarkX,
+    0,
+    newDisembarkZ
+  );
+  assert.equal(landingStarted, true);
+  assert.equal(state.phase, 'touchdown');
+
+  const landSteps = Math.ceil((UFO_TOUCHDOWN_DURATION_SEC + UFO_DISEMBARK_DURATION_SEC) / dt) + 8;
+  for (let i = 0; i < landSteps; i++) {
+    stepUfoFlightSequence(state, dt, sample);
+    if (sample.justFinishedDisembark) break;
+  }
+  assert.equal(state.phase, 'parked_on_ground');
+  assert.ok(Math.abs(state.site.padX - newPadX) < 0.001, 'UFO parked padX must persist at new landing site');
+  assert.ok(Math.abs(state.site.padZ - newPadZ) < 0.001, 'UFO parked padZ must persist at new landing site');
+  assert.ok(Math.abs(sample.heroX - newDisembarkX) < 0.001);
+  assert.ok(Math.abs(sample.heroZ - newDisembarkZ) < 0.001);
 });

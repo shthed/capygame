@@ -1448,19 +1448,9 @@ export const CapyGameView: React.FC = () => {
     const containerEl = mountRef.current;
     if (!containerEl) return;
 
-    const tuckStaticBootShell = () => {
-      const staticShell = document.getElementById('static-boot-shell');
-      if (!staticShell) return;
-      staticShell.style.opacity = '0';
-      staticShell.style.pointerEvents = 'none';
-      staticShell.style.zIndex = '-1';
-      staticShell.setAttribute('aria-hidden', 'true');
-    };
-
     try {
       const params = new URLSearchParams(window.location.search);
       if (params.get('simulate_webgl_error') === '1') {
-        tuckStaticBootShell();
         setWebglError('Simulated WebGL 3D context initialization failure.');
         return;
       }
@@ -1485,7 +1475,6 @@ export const CapyGameView: React.FC = () => {
         PlayStyleManagerCtor = mod.PlayStyleManager;
       } catch (err) {
         if (!cancelled) {
-          tuckStaticBootShell();
           const message =
             err instanceof Error
               ? err.message
@@ -1645,7 +1634,6 @@ export const CapyGameView: React.FC = () => {
       }
     );
       } catch (err) {
-        tuckStaticBootShell();
         const message =
           err instanceof Error ? err.message : 'Unable to initialize 3D graphics context.';
         setWebglError(message);
@@ -1846,7 +1834,6 @@ export const CapyGameView: React.FC = () => {
 
         if (!firstFrameRendered) {
           firstFrameRendered = true;
-          tuckStaticBootShell();
           syncBackgroundSuspension();
           if (isBackgroundSuspendedRef.current) {
             return;
@@ -1886,7 +1873,6 @@ export const CapyGameView: React.FC = () => {
       } else {
         manager.gpuEngine?.render();
         firstFrameRendered = true;
-        tuckStaticBootShell();
         manager.setPaused(true);
       }
 
@@ -2015,13 +2001,20 @@ export const CapyGameView: React.FC = () => {
           }
           if (key === ' ') {
             isSpaceHeldRef.current = true;
-            const clipActiveNow =
-              inCapytorioActive &&
-              managerRef.current.getCapytorioSnapshot()?.clipboard.toolState !== 'off';
-            if (clipActiveNow) {
-              e.preventDefault();
+            if (managerRef.current.isUfoAirFlightActive()) {
+              if (!e.repeat) {
+                e.preventDefault();
+                managerRef.current.landAirFlightUfo();
+              }
             } else {
-              managerRef.current.isJumping = true;
+              const clipActiveNow =
+                inCapytorioActive &&
+                managerRef.current.getCapytorioSnapshot()?.clipboard.toolState !== 'off';
+              if (clipActiveNow) {
+                e.preventDefault();
+              } else {
+                managerRef.current.isJumping = true;
+              }
             }
           }
         }
@@ -2034,8 +2027,13 @@ export const CapyGameView: React.FC = () => {
         }
         altTapCandidateRef.current = false;
 
+        if (e.key === 'Shift') {
+          managerRef.current.setUfoAirBoost(true);
+        }
         if ((e.key === 'Shift' || (key === 'q' && !inCapytorioActive)) && !e.repeat) {
-          managerRef.current.triggerDash();
+          if (!managerRef.current.isUfoAirFlightActive()) {
+            managerRef.current.triggerDash();
+          }
         }
         if ((key === 'c' || e.key === 'Control') && !e.repeat) {
           managerRef.current.triggerGroundPound();
@@ -2174,25 +2172,29 @@ export const CapyGameView: React.FC = () => {
               }
             }
           } else if (key === 'e' && !e.repeat) {
-            const act = managerRef.current.mineOrPickupCapytorioAtCursorOrHero();
-            if (act.kind === 'belt_pickup' || act.kind === 'floor_pickup') {
-              const itemName = act.itemId
-                ? (capyRt?.getCapytorioItemMeta(act.itemId).name ?? act.itemId)
-                : 'items';
-              showToast(
-                `Picked up +${act.total} ${itemName} from ${act.kind === 'floor_pickup' ? 'ground' : 'belt'}`
-              );
-            } else if (act.itemId) {
-              const itemName = capyRt?.getCapytorioItemMeta(act.itemId).name ?? act.itemId;
-              showToast(
-                act.itemId === 'orange'
-                  ? `Harvested +${act.total} ${itemName} from Citrus Tree`
-                  : `Mined +${act.total} ${itemName}`
-              );
+            if (managerRef.current.isUfoAirFlightActive()) {
+              managerRef.current.landAirFlightUfo();
             } else if (managerRef.current.isHeroNearParkedUfo()) {
-              managerRef.current.boardParkedUfoAndLaunch();
+              managerRef.current.boardParkedUfoForAirFlight();
             } else {
-              showToast('Point or stand near a belt item or ore seam [E]');
+              const act = managerRef.current.mineOrPickupCapytorioAtCursorOrHero();
+              if (act.kind === 'belt_pickup' || act.kind === 'floor_pickup') {
+                const itemName = act.itemId
+                  ? (capyRt?.getCapytorioItemMeta(act.itemId).name ?? act.itemId)
+                  : 'items';
+                showToast(
+                  `Picked up +${act.total} ${itemName} from ${act.kind === 'floor_pickup' ? 'ground' : 'belt'}`
+                );
+              } else if (act.itemId) {
+                const itemName = capyRt?.getCapytorioItemMeta(act.itemId).name ?? act.itemId;
+                showToast(
+                  act.itemId === 'orange'
+                    ? `Harvested +${act.total} ${itemName} from Citrus Tree`
+                    : `Mined +${act.total} ${itemName}`
+                );
+              } else {
+                showToast('Point or stand near a belt item or ore seam [E]');
+              }
             }
           } else if (key === 'i' && !e.repeat) {
             setCapytorioDrawerTab((prev) => (prev === 'inventory' ? 'none' : 'inventory'));
@@ -2220,10 +2222,14 @@ export const CapyGameView: React.FC = () => {
           !modalOpenRef.current &&
           !menuOpenRef.current &&
           !firstRunSetupOpenRef.current &&
-          managerRef.current.isHeroNearParkedUfo()
+          (managerRef.current.isUfoAirFlightActive() || managerRef.current.isHeroNearParkedUfo())
         ) {
           e.preventDefault();
-          managerRef.current.boardParkedUfoAndLaunch();
+          if (managerRef.current.isUfoAirFlightActive()) {
+            managerRef.current.landAirFlightUfo();
+          } else {
+            managerRef.current.boardParkedUfoForAirFlight();
+          }
         }
         if (key === '=' || key === '+' || key === ']') {
           managerRef.current.adjustZoom(0.18);
@@ -2283,6 +2289,9 @@ export const CapyGameView: React.FC = () => {
           return;
         }
         const key = e.key.toLowerCase();
+        if (e.key === 'Shift') {
+          managerRef.current.setUfoAirBoost(false);
+        }
         if (heldMoveKeys.delete(key)) {
           syncMoveInput();
         }
@@ -2534,7 +2543,6 @@ export const CapyGameView: React.FC = () => {
       if (!cancelled) {
         void bootEngine().catch((err) => {
           if (cancelled) return;
-          tuckStaticBootShell();
           const message =
             err instanceof Error
               ? err.message
@@ -5359,8 +5367,8 @@ export const CapyGameView: React.FC = () => {
           />
         )}
 
-      {/* Contextual Board Parked UFO Prompt (Capytorio Only) */}
-      {isCapytorioGame &&
+      {/* Contextual Board UFO / Land UFO Controls (Touching Parked UFO or Local-Air Flight) */}
+      {(isCapytorioGame || activeMode === 'sanctuary') &&
         cosmicStage === 'playing' &&
         !universeScale.active &&
         !isFirstRunSetupOpen &&
@@ -5376,7 +5384,10 @@ export const CapyGameView: React.FC = () => {
             store={telemetryStore}
             activeMode={activeMode}
             onBoardUfo={() => {
-              managerRef.current?.boardParkedUfoAndLaunch();
+              managerRef.current?.boardParkedUfoForAirFlight();
+            }}
+            onLandUfo={() => {
+              managerRef.current?.landAirFlightUfo();
             }}
           />
         )}

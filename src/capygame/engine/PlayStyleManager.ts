@@ -138,13 +138,16 @@ import {
 } from './ChronoVesselRig';
 import type { ForestBuilderHost } from './ForestDistrictBuilders';
 import {
-  UFO_BOARDING_PROXIMITY_RADIUS,
-  UFO_CLICK_BOARD_MAX_RADIUS,
+  UFO_AIR_CRUISE_ALTITUDE_Y,
   UFO_LIFTOFF_ORBIT_HANDOFF_LOG,
   UFO_ORBIT_TARGET_LOG_METERS,
+  UFO_TOUCH_BOARDING_RADIUS,
+  beginAirFlightBoarding,
+  beginAirFlightTouchdown,
   beginBoardingSequence,
   beginFinalTouchdown,
   beginOrbitalDescent,
+  computeAirFlightSpeedForAltitude,
   computeOrbitalAscentLogSpeed,
   computeOrbitalDescentLogSpeed,
   computeUfoApproachY,
@@ -155,12 +158,25 @@ import {
   isNearParkedUfo,
   resolveSmoothDescentStartLog,
   setParkedOnGroundImmediate,
+  stepAirFlightKinematics,
   stepUfoFlightSequence,
   type UfoFlightPhase,
   type UfoFlightSample,
   type UfoFlightState,
   type UfoLandingSiteSpec,
 } from './UfoFlightSequence';
+import {
+  HERO_COLLISION_RADIUS,
+  UFO_HULL_COLLISION_RADIUS,
+  computeCapytorioMachineWorldAabb,
+  createAabb2DScratch,
+  createCirclePushScratch,
+  isCapytorioMachineSolid,
+  resolveCircleAabbPush,
+  resolveCircleCirclePush,
+  type Aabb2DScratch,
+  type CirclePushScratch,
+} from './SurfaceCollisionMath';
 import {
   DEFAULT_PROCEDURAL_GAME_CONFIG,
   ProceduralGameConfig,
@@ -531,6 +547,25 @@ export class PlayStyleManager {
   );
   private readonly ufoFlightSample: UfoFlightSample = createUfoFlightSample();
   private nearParkedUfoCached: boolean = false;
+  private ufoCanLandHereCached: boolean = true;
+  private ufoAirBoostHeld: boolean = false;
+  private ufoAirFlightTargetX: number | null = null;
+  private ufoAirFlightTargetZ: number | null = null;
+  private customCapytorioUfoSite: UfoLandingSiteSpec | null = null;
+  private customSanctuaryUfoSite: UfoLandingSiteSpec | null = null;
+  private ufoLandingReticleMesh: THREE.Mesh | null = null;
+  private ufoLandingReticleMat: THREE.MeshBasicMaterial | null = null;
+  private ufoLandingReticleGeo: THREE.RingGeometry | null = null;
+  private readonly collisionPushScratch: CirclePushScratch = createCirclePushScratch();
+  private readonly buildingAabbScratch: Aabb2DScratch = createAabb2DScratch();
+  private readonly nearbySolidMachinesScratch: unknown[] = [];
+  private readonly ufoLandingEvalScratch = {
+    canLand: true,
+    padSurfaceY: 0,
+    disembarkX: 0,
+    disembarkGroundY: 0,
+    disembarkZ: 0,
+  };
   private lastPublishedUfoPhase: UfoFlightPhase = 'orbit_flight';
   private readonly ufoCinematicCamStartPos = new THREE.Vector3();
   private readonly ufoCinematicCamTargetPos = new THREE.Vector3();
@@ -2096,6 +2131,12 @@ export class PlayStyleManager {
   }
 
   private getActiveLandingSite(mode: 'sanctuary' | 'capytorio'): UfoLandingSiteSpec {
+    if (mode === 'capytorio' && this.customCapytorioUfoSite) {
+      return this.customCapytorioUfoSite;
+    }
+    if (mode === 'sanctuary' && this.customSanctuaryUfoSite) {
+      return this.customSanctuaryUfoSite;
+    }
     return getUfoLandingSiteSpec(
       mode,
       CHRONO_PAD_X,
@@ -2109,6 +2150,7 @@ export class PlayStyleManager {
     if (typeof document === 'undefined' || !document.body) return;
     document.body.dataset.ufoPhase = this.ufoFlightState.phase;
     document.body.dataset.nearParkedUfo = this.nearParkedUfoCached ? 'true' : 'false';
+    document.body.dataset.ufoCanLand = this.ufoCanLandHereCached ? 'true' : 'false';
     document.body.dataset.logScale = this.currentLogScaleMeters.toFixed(2);
   }
 
@@ -2123,6 +2165,432 @@ export class PlayStyleManager {
   public isUfoSequenceActive(): boolean {
     const p = this.ufoFlightState.phase;
     return p === 'touchdown' || p === 'disembark' || p === 'boarding' || p === 'liftoff';
+  }
+
+  public isUfoAirFlightActive(): boolean {
+    return this.ufoFlightState.phase === 'air_flight';
+  }
+
+  public setUfoAirBoost(held: boolean): void {
+    this.ufoAirBoostHeld = held;
+  }
+
+  public setUfoAirFlightDestination(wx: number, wz: number): boolean {
+    if (this.ufoFlightState.phase !== 'air_flight') return false;
+    if (!Number.isFinite(wx) || !Number.isFinite(wz)) return false;
+    this.ufoAirFlightTargetX = wx;
+    this.ufoAirFlightTargetZ = wz;
+    return true;
+  }
+
+  /**
+   * Boards the parked UFO and launches ONLY into local planetary air flight (never orbit)
+   * so the player can fast-travel around the map and land anywhere on clear dry land.
+   */
+  public boardParkedUfoForAirFlight(): boolean {
+    if (this.seamlessZoomActive || this.cosmicStage !== 'playing') return false;
+    if (this.ufoFlightState.phase !== 'parked_on_ground') return false;
+    if (this.currentMode !== this.ufoFlightState.site.id) return false;
+
+    if (this.placementGhost.active) {
+      this.cancelBuildingPlacementGhost(true);
+    }
+    if (this.yuzuGhostRunActive) {
+      this.yuzuGhostRunActive = false;
+      this.yuzuGhostRunElapsedSec = 0;
+      this.yuzuGhostRecorder.stopRun();
+    }
+
+    const started = beginAirFlightBoarding(
+      this.ufoFlightState,
+      this.heroCapy.position.x,
+      this.heroCapy.position.y,
+      this.heroCapy.position.z,
+      this.heroYaw,
+      UFO_AIR_CRUISE_ALTITUDE_Y
+    );
+    if (!started) return false;
+
+    this.moveInput.x = 0;
+    this.moveInput.z = 0;
+    this.isJumping = false;
+    this.pointerTargetX = null;
+    this.ufoAirFlightTargetX = null;
+    this.ufoAirFlightTargetZ = null;
+    this.heroVelocity.set(0, 0, 0);
+    this.nearParkedUfoCached = false;
+    this.ufoCinematicCamStartPos.copy(this.camera.position);
+    AudioService.playJump();
+    NativeBridge.haptic('tick');
+    this.syncUfoDomDataset();
+    this.emitTelemetry();
+    return true;
+  }
+
+  private ensureUfoLandingReticleMesh(): THREE.Mesh {
+    if (this.ufoLandingReticleMesh) {
+      return this.ufoLandingReticleMesh;
+    }
+    this.ufoLandingReticleGeo = new THREE.RingGeometry(1.75, 2.24, 32);
+    this.ufoLandingReticleGeo.rotateX(-Math.PI * 0.5);
+    this.ufoLandingReticleMat = new THREE.MeshBasicMaterial({
+      color: 0x34d399,
+      transparent: true,
+      opacity: 0.8,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.ufoLandingReticleMesh = new THREE.Mesh(
+      this.ufoLandingReticleGeo,
+      this.ufoLandingReticleMat
+    );
+    this.ufoLandingReticleMesh.renderOrder = 8;
+    this.ufoLandingReticleMesh.visible = false;
+    this.scene.add(this.ufoLandingReticleMesh);
+    return this.ufoLandingReticleMesh;
+  }
+
+  private hideUfoLandingReticle(): void {
+    if (this.ufoLandingReticleMesh) {
+      this.ufoLandingReticleMesh.visible = false;
+    }
+  }
+
+  private isCapytorioPointBlockedByWaterOrSolid(
+    wx: number,
+    wz: number,
+    clearanceRadius: number
+  ): boolean {
+    if (!this.capytorioEngine) return false;
+    const gx = worldToCapytorioGridX(wx);
+    const gz = worldToCapytorioGridZ(wz);
+    const tileRadius = Math.max(1, Math.ceil(clearanceRadius / 2.5));
+    for (let dx = -tileRadius; dx <= tileRadius; dx++) {
+      for (let dz = -tileRadius; dz <= tileRadius; dz++) {
+        const tx = gx + dx;
+        const tz = gz + dz;
+        if (dx * dx + dz * dz <= tileRadius * tileRadius + 1) {
+          if (this.capytorioEngine.isTileWater(tx, tz)) {
+            return true;
+          }
+        }
+        const m = this.capytorioEngine.getMachineAt(tx, tz);
+        if (!m || !isCapytorioMachineSolid(m.type)) continue;
+        const fp = this.capytorioEngine.getMachineFootprint(m);
+        computeCapytorioMachineWorldAabb(
+          CAPYTORIO_WORLD_ORIGIN_X,
+          CAPYTORIO_WORLD_ORIGIN_Z,
+          m.gx,
+          m.gz,
+          fp.width,
+          fp.height,
+          this.buildingAabbScratch,
+          0.02
+        );
+        if (
+          resolveCircleAabbPush(
+            wx,
+            wz,
+            clearanceRadius,
+            this.buildingAabbScratch.minX,
+            this.buildingAabbScratch.minZ,
+            this.buildingAabbScratch.maxX,
+            this.buildingAabbScratch.maxZ,
+            this.collisionPushScratch
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private evaluateUfoLandingAt(wx: number, wz: number, isCapytorio: boolean) {
+    const out = this.ufoLandingEvalScratch;
+    const disembarkDist = 4.35;
+
+    if (isCapytorio) {
+      const blocked = this.isCapytorioPointBlockedByWaterOrSolid(
+        wx,
+        wz,
+        UFO_HULL_COLLISION_RADIUS + 0.15
+      );
+      out.canLand = !blocked;
+      out.padSurfaceY = 0.0;
+      out.disembarkGroundY = 0.0;
+      // Pick first clear dry disembark spot around the saucer rim (prefer south/+Z first)
+      out.disembarkX = wx;
+      out.disembarkZ = wz + disembarkDist;
+      for (let i = 0; i < 8; i++) {
+        const angle = (i * Math.PI) / 4;
+        const candX = wx + Math.sin(angle) * disembarkDist;
+        const candZ = wz + Math.cos(angle) * disembarkDist;
+        if (!this.isCapytorioPointBlockedByWaterOrSolid(candX, candZ, HERO_COLLISION_RADIUS + 0.2)) {
+          out.disembarkX = candX;
+          out.disembarkZ = candZ;
+          break;
+        }
+      }
+      return out;
+    }
+
+    // Sanctuary / unified island dry-land check
+    if (this.homePool) {
+      _cachedPoolSpec.x = this.homePool.centerX;
+      _cachedPoolSpec.z = this.homePool.centerZ;
+      _cachedPoolSpec.radius = this.homePool.basinRadius;
+    }
+    const groundY = sampleContiguousGroundY(
+      wx,
+      wz,
+      this.homePool ? _cachedPoolSpec : null,
+      this.physicsBridge?.getSeeSawTiltAngle() ?? 0
+    );
+    let canLand = groundY > OPEN_OCEAN_SURFACE_Y + 0.14;
+    if (canLand && this.homePool) {
+      const dPool = Math.hypot(wx - this.homePool.centerX, wz - this.homePool.centerZ);
+      if (dPool < this.homePool.basinRadius + UFO_HULL_COLLISION_RADIUS + 0.6) {
+        canLand = false;
+      }
+    }
+    if (canLand) {
+      for (let b = 0; b < this.stats.buildings.length; b++) {
+        const bld = this.stats.buildings[b];
+        if (Math.hypot(wx - bld.x, wz - bld.z) < 1.55 + UFO_HULL_COLLISION_RADIUS) {
+          canLand = false;
+          break;
+        }
+      }
+    }
+    if (canLand) {
+      for (let t = 0; t < this.sanctuaryTrees.length; t++) {
+        const tree = this.sanctuaryTrees[t];
+        if (Math.hypot(wx - tree.x, wz - tree.z) < tree.trunkRadius + UFO_HULL_COLLISION_RADIUS) {
+          canLand = false;
+          break;
+        }
+      }
+    }
+    out.canLand = canLand;
+    out.padSurfaceY = Math.max(0, groundY);
+    out.disembarkX = wx;
+    out.disembarkZ = wz + disembarkDist;
+    out.disembarkGroundY = out.padSurfaceY;
+    for (let i = 0; i < 8; i++) {
+      const angle = (i * Math.PI) / 4;
+      const candX = wx + Math.sin(angle) * disembarkDist;
+      const candZ = wz + Math.cos(angle) * disembarkDist;
+      const candY = sampleContiguousGroundY(
+        candX,
+        candZ,
+        this.homePool ? _cachedPoolSpec : null,
+        this.physicsBridge?.getSeeSawTiltAngle() ?? 0
+      );
+      if (candY > OPEN_OCEAN_SURFACE_Y + 0.14) {
+        out.disembarkX = candX;
+        out.disembarkZ = candZ;
+        out.disembarkGroundY = Math.max(0, candY);
+        break;
+      }
+    }
+    return out;
+  }
+
+  public landAirFlightUfo(): boolean {
+    if (this.ufoFlightState.phase !== 'air_flight') return false;
+    const isCapytorio = this.ufoFlightState.site.id === 'capytorio';
+    const evalRes = this.evaluateUfoLandingAt(
+      this.ufoFlightState.airPosX,
+      this.ufoFlightState.airPosZ,
+      isCapytorio
+    );
+    if (!evalRes.canLand) {
+      AudioService.playSplash();
+      this.callbacks.onModeNotification?.(
+        'Cannot land over water or buildings — fly to clear dry ground!'
+      );
+      return false;
+    }
+
+    const started = beginAirFlightTouchdown(
+      this.ufoFlightState,
+      this.ufoFlightState.airPosX,
+      evalRes.padSurfaceY,
+      this.ufoFlightState.airPosZ,
+      evalRes.disembarkX,
+      evalRes.disembarkGroundY,
+      evalRes.disembarkZ
+    );
+    if (!started) return false;
+
+    this.hideUfoLandingReticle();
+    this.ufoAirFlightTargetX = null;
+    this.ufoAirFlightTargetZ = null;
+    this.moveInput.x = 0;
+    this.moveInput.z = 0;
+    this.isJumping = false;
+    this.ufoCinematicCamStartPos.copy(this.camera.position);
+    AudioService.playUfoTouchdown();
+    NativeBridge.haptic('tick');
+    this.syncUfoDomDataset();
+    this.emitTelemetry();
+    return true;
+  }
+
+  private tickUfoAirFlight(dt: number): void {
+    const state = this.ufoFlightState;
+    const isCapytorio = state.site.id === 'capytorio';
+    const elapsedSec = this.worldEnv?.elapsedSeconds ?? performance.now() * 0.001;
+
+    // 1. Determine planar flight steering (manual WASD/joystick overrides click-to-fly autopilot)
+    let inputX = 0;
+    let inputZ = 0;
+    const manualMag = Math.hypot(this.moveInput.x, this.moveInput.z);
+    if (manualMag > 0.04) {
+      this.ufoAirFlightTargetX = null;
+      this.ufoAirFlightTargetZ = null;
+      if (isCapytorio && this.getCapytorioCameraMode() === 'oblique') {
+        inputX = this.moveInput.x;
+        inputZ = this.moveInput.z;
+      } else {
+        const yaw = this.surfaceCamYaw;
+        const fwdX = Math.sin(yaw);
+        const fwdZ = Math.cos(yaw);
+        const rightX = -Math.cos(yaw);
+        const rightZ = Math.sin(yaw);
+        inputX = rightX * this.moveInput.x - fwdX * this.moveInput.z;
+        inputZ = rightZ * this.moveInput.x - fwdZ * this.moveInput.z;
+      }
+    } else if (this.ufoAirFlightTargetX !== null && this.ufoAirFlightTargetZ !== null) {
+      const dx = this.ufoAirFlightTargetX - state.airPosX;
+      const dz = this.ufoAirFlightTargetZ - state.airPosZ;
+      const dist = Math.hypot(dx, dz);
+      if (dist <= 1.2) {
+        this.ufoAirFlightTargetX = null;
+        this.ufoAirFlightTargetZ = null;
+      } else {
+        const throttle = Math.min(1, dist / 14.0);
+        inputX = (dx / dist) * throttle;
+        inputZ = (dz / dist) * throttle;
+      }
+    }
+
+    // 2. Compute altitude-scaled fast-travel flight speed
+    const obliquePose = isCapytorio
+      ? evaluateCapytorioAltitudePose(this.capytorioObliqueZoomDist)
+      : null;
+    const maxSpeed = isCapytorio
+      ? computeAirFlightSpeedForAltitude(obliquePose?.altitudeRadius ?? 55, this.ufoAirBoostHeld)
+      : 38 * (this.ufoAirBoostHeld ? 1.75 : 1.0);
+
+    const sample = stepAirFlightKinematics(
+      state,
+      inputX,
+      inputZ,
+      maxSpeed,
+      dt,
+      this.ufoFlightSample
+    );
+
+    if (!isCapytorio) {
+      // Keep Sanctuary UFO within archipelago bounds
+      const maxSanctuaryR = FOREST_UNIFIED_ISLAND_BEACH_OUTER_RADIUS + 42;
+      const dxC = state.airPosX - FOREST_UNIFIED_ISLAND_CENTER_X;
+      const dzC = state.airPosZ - FOREST_UNIFIED_ISLAND_CENTER_Z;
+      const dC = Math.hypot(dxC, dzC);
+      if (dC > maxSanctuaryR) {
+        state.airPosX = FOREST_UNIFIED_ISLAND_CENTER_X + (dxC / dC) * maxSanctuaryR;
+        state.airPosZ = FOREST_UNIFIED_ISLAND_CENTER_Z + (dzC / dC) * maxSanctuaryR;
+        sample.vesselX = state.airPosX;
+        sample.vesselZ = state.airPosZ;
+      }
+    }
+
+    // 3. Evaluate landing clearance & update ground reticle ring directly below UFO
+    const evalRes = this.evaluateUfoLandingAt(state.airPosX, state.airPosZ, isCapytorio);
+    state.canLandAtCurrentSpot = evalRes.canLand;
+    if (evalRes.canLand !== this.ufoCanLandHereCached) {
+      this.ufoCanLandHereCached = evalRes.canLand;
+      this.syncUfoDomDataset();
+      this.emitTelemetry();
+    }
+    const reticle = this.ensureUfoLandingReticleMesh();
+    reticle.visible = true;
+    reticle.position.set(state.airPosX, evalRes.padSurfaceY + 0.16, state.airPosZ);
+    const pulse = 1.0 + Math.sin(elapsedSec * 5.0) * 0.045;
+    reticle.scale.setScalar(pulse);
+    if (this.ufoLandingReticleMat) {
+      this.ufoLandingReticleMat.color.setHex(evalRes.canLand ? 0x34d399 : 0xfb7185);
+    }
+
+    // 4. Sync UFO 3D vessel mesh & keep hero tracking beneath while hidden inside cockpit
+    if (this.chronoVessel) {
+      this.chronoVessel.setMode('chase_pod');
+      this.chronoVessel.root.visible = true;
+      this.chronoVessel.root.matrixWorldAutoUpdate = true;
+      this.chronoVessel.root.position.set(sample.vesselX, sample.vesselY, sample.vesselZ);
+      this.chronoVessel.root.scale.setScalar(sample.vesselScale);
+      _vesselEuler.set(sample.vesselPitch, sample.vesselYaw, sample.vesselRoll);
+      this.chronoVessel.root.quaternion.setFromEuler(_vesselEuler);
+      this.chronoVessel.setPilotVisible(true);
+      this.chronoVessel.setLandingGear(0);
+      this.chronoVessel.setGroundedState(false, sample.thrusterPower);
+      this.chronoVessel.update(dt, 0, 0, 0);
+      this.dockedChronoVesselVisible = true;
+    }
+    this.heroCapy.visible = false;
+    this.heroCapy.matrixWorldAutoUpdate = false;
+    const originX = isCapytorio ? CAPYTORIO_WORLD_ORIGIN_X : 0;
+    const originZ = isCapytorio ? CAPYTORIO_WORLD_ORIGIN_Z : 0;
+    this.heroLocalPos.set(state.airPosX - originX, evalRes.padSurfaceY, state.airPosZ - originZ);
+    this.heroCapy.position.set(state.airPosX, evalRes.padSurfaceY, state.airPosZ);
+
+    // 5. Camera framing + live terrain/factory streaming beneath the flying UFO
+    if (isCapytorio && obliquePose) {
+      this.surfaceCamYaw = Math.PI;
+      this.surfaceCamPitch = obliquePose.pitchRad;
+      _camTarget.set(state.airPosX, obliquePose.dy + 4.0, state.airPosZ + obliquePose.dz);
+      this.camera.position.lerp(_camTarget, 1 - Math.exp(-9.0 * dt));
+      _lookTarget.set(state.airPosX, state.airPosY * 0.25, state.airPosZ);
+      this.camera.lookAt(_lookTarget);
+      this.syncCapytorioHighAltitudePlanetSurface(
+        dt,
+        state.airPosX,
+        0,
+        state.airPosZ,
+        obliquePose
+      );
+      if (this.capytorioEngine) {
+        this.syncCapytorioConfigMultipliers();
+        this.capytorioEngine.step(dt, this.capytorioStepCallbacks);
+        this.ensureCapytorioRenderer()?.sync(
+          this.capytorioEngine,
+          state.airPosX,
+          state.airPosZ,
+          dt,
+          elapsedSec,
+          true,
+          obliquePose.altitudeRadius
+        );
+        this.capytorioUiAccum += dt;
+        if (this.capytorioUiAccum >= 0.15) {
+          this.capytorioUiAccum = 0;
+          this.emitCapytorioSnapshot();
+        }
+      }
+    } else {
+      _camTarget.set(state.airPosX, state.airPosY + 18.0, state.airPosZ + 22.0);
+      this.camera.position.lerp(_camTarget, 1 - Math.exp(-6.5 * dt));
+      _lookTarget.set(state.airPosX, state.airPosY * 0.4, state.airPosZ);
+      this.camera.lookAt(_lookTarget);
+    }
+
+    if (this.lastPublishedUfoPhase !== 'air_flight') {
+      this.lastPublishedUfoPhase = 'air_flight';
+      this.syncUfoDomDataset();
+      this.emitTelemetry();
+    }
   }
 
   public boardParkedUfoAndLaunch(
@@ -2370,6 +2838,9 @@ export class PlayStyleManager {
     this.capytorioPlanetFadeActive = false;
     this.dockedChronoVesselVisible = false;
     this.nearParkedUfoCached = false;
+    this.hideUfoLandingReticle();
+    this.ufoAirFlightTargetX = null;
+    this.ufoAirFlightTargetZ = null;
     this.ufoFlightState.phase = 'orbit_flight';
     this.ufoFlightState.phaseElapsedSec = 0;
     this.autoZoomDirection = 0;
@@ -2689,8 +3160,14 @@ export class PlayStyleManager {
         site.disembarkZ,
         site.padX,
         site.padZ,
-        UFO_BOARDING_PROXIMITY_RADIUS
+        UFO_TOUCH_BOARDING_RADIUS
       );
+      // Persist the UFO's new parked location across the map
+      if (isCapytorio) {
+        this.customCapytorioUfoSite = { ...site };
+      } else {
+        this.customSanctuaryUfoSite = { ...site };
+      }
       if (this.vfxEngine) {
         this.vfxEngine.emitBurst(
           site.disembarkX,
@@ -2702,9 +3179,7 @@ export class PlayStyleManager {
         );
       }
       this.callbacks.onModeNotification?.(
-        isCapytorio
-          ? 'Landed at Capytorio Frontier! Explore or return to your UFO [E] to launch back to orbit.'
-          : 'Landed! Explore on foot or return to your parked UFO [E] to launch back to orbit.'
+        'UFO Landed! Walk up to touch your UFO and press [E] to fly anywhere on the map.'
       );
       this.syncUfoDomDataset();
       this.emitTelemetry();
@@ -2738,6 +3213,24 @@ export class PlayStyleManager {
       }
     }
 
+    if (sample.justEnteredAirFlight) {
+      if (isCapytorio && this.getCapytorioCameraMode() === 'oblique') {
+        if (this.capytorioObliqueZoomDist < 3.0) {
+          this.capytorioObliqueZoomDist = 3.2;
+        }
+      }
+      this.ufoCanLandHereCached = true;
+      this.ufoAirFlightTargetX = null;
+      this.ufoAirFlightTargetZ = null;
+      this.callbacks.onModeNotification?.(
+        'UFO Airborne! Use WASD or tap anywhere on the map to fast-travel · Press [E] to Land.'
+      );
+      this.lastPublishedUfoPhase = 'air_flight';
+      this.syncUfoDomDataset();
+      this.emitTelemetry();
+      return false;
+    }
+
     if (sample.justEnteredOrbitAscent) {
       // Seamless handoff from vertical ground liftoff straight into orbital space climb!
       const dx = this.camera.position.x - site.padX;
@@ -2769,31 +3262,60 @@ export class PlayStyleManager {
       return true;
     }
 
-    // Smooth cinematic camera framing during touchdown, disembark, boarding, and liftoff
-    const camYaw = site.id === 'capytorio' ? 0.22 : 0.42;
-    const distScale = this.settings.cameraDistance || 1.0;
-    if (sample.phase === 'liftoff') {
-      const liftPull = 9.5 + sample.phaseProgress01 * 14.0;
-      const liftHeight = 3.2 + sample.phaseProgress01 * 9.5;
+    // Smooth camera framing during touchdown, disembark, boarding, and liftoff
+    if (isCapytorio && this.getCapytorioCameraMode() === 'oblique') {
+      const targetZoom =
+        sample.phase === 'liftoff' && this.ufoFlightState.flightMode === 'local_air'
+          ? Math.max(this.capytorioObliqueZoomDist, 3.2)
+          : Math.min(Math.max(this.capytorioObliqueZoomDist, 1.0), 3.6);
+      const pose = evaluateCapytorioAltitudePose(targetZoom);
       this.ufoCinematicCamTargetPos.set(
-        site.padX + Math.sin(camYaw) * liftPull,
-        site.padSurfaceY + liftHeight,
-        site.padZ + Math.cos(camYaw) * liftPull
+        sample.cameraFocusX,
+        site.padSurfaceY + pose.dy,
+        sample.cameraFocusZ + pose.dz
       );
-      this.ufoCinematicCamLookAt.set(sample.vesselX, sample.vesselY + 0.3, sample.vesselZ);
+      this.ufoCinematicCamLookAt.set(
+        sample.cameraFocusX,
+        sample.cameraFocusY,
+        sample.cameraFocusZ
+      );
+      const camLerp = 1 - Math.exp(-5.5 * dt);
+      this.camera.position.lerp(this.ufoCinematicCamTargetPos, camLerp);
+      this.camera.lookAt(this.ufoCinematicCamLookAt);
+      this.syncCapytorioHighAltitudePlanetSurface(
+        dt,
+        sample.cameraFocusX,
+        site.padSurfaceY,
+        sample.cameraFocusZ,
+        pose
+      );
     } else {
-      const dist = (sample.phase === 'boarding' ? 8.2 : 9.4) * distScale;
-      const elev = (sample.phase === 'boarding' ? 3.8 : 4.5) * distScale;
-      this.ufoCinematicCamTargetPos.set(
-        sample.cameraFocusX + Math.sin(camYaw) * dist,
-        Math.max(site.padSurfaceY + 2.4, sample.cameraFocusY + elev),
-        sample.cameraFocusZ + Math.cos(camYaw) * dist
-      );
-      this.ufoCinematicCamLookAt.set(sample.cameraFocusX, sample.cameraFocusY, sample.cameraFocusZ);
+      const camYaw = site.id === 'capytorio' ? 0.22 : 0.42;
+      const distScale = this.settings.cameraDistance || 1.0;
+      if (sample.phase === 'liftoff') {
+        const isLocalAir = this.ufoFlightState.flightMode === 'local_air';
+        const liftPull = isLocalAir ? 14.0 + sample.phaseProgress01 * 8.0 : 9.5 + sample.phaseProgress01 * 14.0;
+        const liftHeight = isLocalAir ? 8.0 + sample.phaseProgress01 * 12.0 : 3.2 + sample.phaseProgress01 * 9.5;
+        this.ufoCinematicCamTargetPos.set(
+          site.padX + Math.sin(camYaw) * liftPull,
+          site.padSurfaceY + liftHeight,
+          site.padZ + Math.cos(camYaw) * liftPull
+        );
+        this.ufoCinematicCamLookAt.set(sample.vesselX, sample.vesselY + 0.3, sample.vesselZ);
+      } else {
+        const dist = (sample.phase === 'boarding' ? 8.2 : 9.4) * distScale;
+        const elev = (sample.phase === 'boarding' ? 3.8 : 4.5) * distScale;
+        this.ufoCinematicCamTargetPos.set(
+          sample.cameraFocusX + Math.sin(camYaw) * dist,
+          Math.max(site.padSurfaceY + 2.4, sample.cameraFocusY + elev),
+          sample.cameraFocusZ + Math.cos(camYaw) * dist
+        );
+        this.ufoCinematicCamLookAt.set(sample.cameraFocusX, sample.cameraFocusY, sample.cameraFocusZ);
+      }
+      const camLerp = 1 - Math.exp(-3.8 * dt);
+      this.camera.position.lerp(this.ufoCinematicCamTargetPos, camLerp);
+      this.camera.lookAt(this.ufoCinematicCamLookAt);
     }
-    const camLerp = 1 - Math.exp(-3.8 * dt);
-    this.camera.position.lerp(this.ufoCinematicCamTargetPos, camLerp);
-    this.camera.lookAt(this.ufoCinematicCamLookAt);
 
     if (this.lastPublishedUfoPhase !== sample.phase) {
       this.lastPublishedUfoPhase = sample.phase;
@@ -2845,7 +3367,7 @@ export class PlayStyleManager {
       this.heroCapy.position.z,
       site.padX,
       site.padZ,
-      UFO_BOARDING_PROXIMITY_RADIUS
+      UFO_TOUCH_BOARDING_RADIUS
     );
     if (nearNow !== this.nearParkedUfoCached) {
       this.nearParkedUfoCached = nearNow;
@@ -3430,6 +3952,9 @@ export class PlayStyleManager {
     this.portalCooldown = 2.0;
 
     if (mode !== 'capytorio' && !this.isUfoSequenceActive()) {
+      this.hideUfoLandingReticle();
+      this.ufoAirFlightTargetX = null;
+      this.ufoAirFlightTargetZ = null;
       this.dockedChronoVesselVisible = false;
       this.nearParkedUfoCached = false;
       if (this.chronoVessel) {
@@ -4842,7 +5367,19 @@ export class PlayStyleManager {
       return true;
     }
 
-    // Click/tap directly on the parked UFO to board & launch back into orbit!
+    // While flying in the UFO, clicking/tapping the ground flies straight to that spot!
+    if (
+      this.cosmicStage === 'playing' &&
+      !this.seamlessZoomActive &&
+      this.ufoFlightState.phase === 'air_flight'
+    ) {
+      if (_raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit)) {
+        this.setUfoAirFlightDestination(_capyGroundHit.x, _capyGroundHit.z);
+        return true;
+      }
+    }
+
+    // Click/tap directly on the parked UFO to board for local-air fast travel (only when touching!)
     if (
       this.cosmicStage === 'playing' &&
       !this.seamlessZoomActive &&
@@ -4857,11 +5394,11 @@ export class PlayStyleManager {
           this.heroCapy.position.x - site.padX,
           this.heroCapy.position.z - site.padZ
         );
-        if (dist <= UFO_CLICK_BOARD_MAX_RADIUS) {
-          this.boardParkedUfoAndLaunch(UFO_ORBIT_TARGET_LOG_METERS);
+        if (dist <= UFO_TOUCH_BOARDING_RADIUS + 0.45) {
+          this.boardParkedUfoForAirFlight();
         } else {
           this.callbacks.onModeNotification?.(
-            'Walk closer to your parked UFO to board and launch back to orbit!'
+            'Walk right up to touch your parked UFO to board and fly!'
           );
         }
         return true;
@@ -5992,7 +6529,18 @@ export class PlayStyleManager {
     const gx = this.capytorioEngine.hoveredGx;
     const gz = this.capytorioEngine.hoveredGz;
 
-    // Click/tap directly on the parked UFO in Capytorio to board & launch back to orbit
+    // While flying the UFO in Capytorio, click/tap anywhere on the map to fast-travel fly there!
+    if (this.ufoFlightState.phase === 'air_flight') {
+      _pointerNdc.set(ndcX, ndcY);
+      _raycaster.setFromCamera(_pointerNdc, this.camera);
+      if (_raycaster.ray.intersectPlane(_capyGroundPlane, _capyGroundHit)) {
+        this.setUfoAirFlightDestination(_capyGroundHit.x, _capyGroundHit.z);
+        return { ok: true, inspected: true };
+      }
+      return { ok: false };
+    }
+
+    // Click/tap directly on the parked UFO in Capytorio to board for local-air fast travel (only when touching!)
     // Only intercept in Hand/Inspect ('mine') mode so armed build/demolish tools never get hijacked near the pad.
     const activeTool = this.capytorioEngine.selectedTool;
     const isInspectHandMode = !activeTool || activeTool === 'mine' || activeTool === 'inspect';
@@ -6012,13 +6560,13 @@ export class PlayStyleManager {
           this.heroCapy.position.x - site.padX,
           this.heroCapy.position.z - site.padZ
         );
-        if (dist <= UFO_CLICK_BOARD_MAX_RADIUS) {
-          this.boardParkedUfoAndLaunch(UFO_ORBIT_TARGET_LOG_METERS);
+        if (dist <= UFO_TOUCH_BOARDING_RADIUS + 0.45) {
+          this.boardParkedUfoForAirFlight();
           return { ok: true, inspected: true };
         }
         return {
           ok: true,
-          message: 'Walk closer to your parked UFO to board and launch to orbit!',
+          message: 'Walk right up to touch your parked UFO to board and fly!',
         };
       }
     }
@@ -9170,6 +9718,38 @@ export class PlayStyleManager {
       return;
     }
 
+    // Handle active local-air UFO fast-travel flight over the surface map
+    if (this.cosmicStage === 'playing' && this.isUfoAirFlightActive()) {
+      this.tickUfoAirFlight(dt);
+      const ufoX = this.ufoFlightState.airPosX;
+      const ufoY = this.ufoFlightState.airPosY;
+      const ufoZ = this.ufoFlightState.airPosZ;
+      this.profiler.startPhase('gpu_shadow_cascade');
+      this.gpuEngine.updateLightingAndShadowCascade(
+        dt,
+        ufoX,
+        ufoY,
+        ufoZ,
+        0,
+        true,
+        this.worldEnv.currentNightFactor,
+        this.worldEnv.currentSunDir,
+        this.worldEnv.currentMoonDir,
+        this.worldEnv.activeShadowCaster,
+        this.worldEnv.getDayPhaseLabel(),
+        this.worldEnv.timeOfDayHours,
+        this.worldEnv.currentIblEnvIntensity
+      );
+      this.profiler.endPhase('gpu_shadow_cascade');
+
+      this.profiler.startPhase('vfx_particles');
+      this.updateAaaCameraFeelAndWorldVfx(dt, 0);
+      this.profiler.endPhase('vfx_particles');
+
+      this.renderSceneFrame(rawFrameDt, tickStartMs);
+      return;
+    }
+
     // Tick ALL 5 minigame ecosystems simultaneously in the unified contiguous world,
     // plus active player physics & seamless overland district handover!
     this.profiler.startPhase('district_gameplay');
@@ -9758,6 +10338,7 @@ export class PlayStyleManager {
 
     const ufoFlightPhase = this.ufoFlightState.phase;
     const nearParkedUfo = this.nearParkedUfoCached;
+    const ufoCanLandHere = this.ufoCanLandHereCached;
 
     if (this.currentMode === 'sanctuary') {
       const snake = this.getCapySnakeTelemetry();
@@ -9773,6 +10354,7 @@ export class PlayStyleManager {
         canDive,
         ufoFlightPhase,
         nearParkedUfo,
+        ufoCanLandHere,
       });
     } else if (this.currentMode === 'spore') {
       this.callbacks.onTelemetryUpdate({
@@ -9787,6 +10369,7 @@ export class PlayStyleManager {
         canDive,
         ufoFlightPhase,
         nearParkedUfo,
+        ufoCanLandHere,
       });
     } else if (this.currentMode === 'capytorio') {
       const snap = this.capytorioEngine?.getUiSnapshot();
@@ -9804,6 +10387,7 @@ export class PlayStyleManager {
         canDive,
         ufoFlightPhase,
         nearParkedUfo,
+        ufoCanLandHere,
       });
     } else if (this.currentMode === 'runner') {
       this.callbacks.onTelemetryUpdate({
@@ -9818,6 +10402,7 @@ export class PlayStyleManager {
         canDive,
         ufoFlightPhase,
         nearParkedUfo,
+        ufoCanLandHere,
       });
     } else if (this.currentMode === 'fallguys') {
       const pbLabel = this.yuzuBestGhostRun
@@ -9838,6 +10423,7 @@ export class PlayStyleManager {
         canDive,
         ufoFlightPhase,
         nearParkedUfo,
+        ufoCanLandHere,
       });
     }
   }
@@ -10224,6 +10810,29 @@ export class PlayStyleManager {
           x = res.x;
           z = res.z;
         }
+      }
+    }
+
+    // 5. Parked UFO saucer hull (prevents hero & dachshund segments from clipping through UFO)
+    if (
+      this.ufoFlightState.phase === 'parked_on_ground' &&
+      this.ufoFlightState.site.id === 'sanctuary' &&
+      this.chronoVessel?.root.visible
+    ) {
+      const site = this.ufoFlightState.site;
+      if (
+        resolveCircleCirclePush(
+          x,
+          z,
+          radius,
+          site.padX,
+          site.padZ,
+          UFO_HULL_COLLISION_RADIUS,
+          this.collisionPushScratch
+        )
+      ) {
+        x = this.collisionPushScratch.x;
+        z = this.collisionPushScratch.z;
       }
     }
 
@@ -11821,9 +12430,15 @@ export class PlayStyleManager {
     this.coyoteGroundedTimer =
       phys.grounded || phys.inFluid ? 0.14 : Math.max(0, this.coyoteGroundedTimer - dt);
     this.heroLocalPos.set(phys.wx - zone.x, phys.wy, phys.wz - zone.z);
+    this.resolveCapytorioHeroCollisions(zone.x, zone.z);
     this.heroVelocity.y = phys.vy;
     if (this.isGroundPounding && (phys.grounded || phys.inFluid)) {
-      this.handleGroundPoundImpact(phys.wx, phys.wy, phys.wz, phys.inFluid);
+      this.handleGroundPoundImpact(
+        zone.x + this.heroLocalPos.x,
+        this.heroLocalPos.y,
+        zone.z + this.heroLocalPos.z,
+        phys.inFluid
+      );
     }
 
     this.updateWorldHeroAndCamera(dt, 11.5, 15.5);
@@ -11896,6 +12511,90 @@ export class PlayStyleManager {
         this.scheduleIdleCapytorioAutosave();
       }
     }
+  }
+
+  /**
+   * Zero-allocation 2-pass collision resolver preventing the player capybara from clipping
+   * through the parked UFO hull and solid Capytorio factory buildings (belts stay walkable).
+   */
+  private resolveCapytorioHeroCollisions(originX: number, originZ: number): void {
+    let wx = originX + this.heroLocalPos.x;
+    let wz = originZ + this.heroLocalPos.z;
+    const engine = this.capytorioEngine;
+    const ufoParkedHere =
+      this.ufoFlightState.phase === 'parked_on_ground' &&
+      this.ufoFlightState.site.id === 'capytorio';
+    const site = this.ufoFlightState.site;
+
+    for (let pass = 0; pass < 2; pass++) {
+      if (engine) {
+        const heroGx = worldToCapytorioGridX(wx);
+        const heroGz = worldToCapytorioGridZ(wz);
+        this.nearbySolidMachinesScratch.length = 0;
+
+        for (let dx = -3; dx <= 3; dx++) {
+          for (let dz = -3; dz <= 3; dz++) {
+            const m = engine.getMachineAt(heroGx + dx, heroGz + dz);
+            if (!m || !isCapytorioMachineSolid(m.type)) continue;
+            let seen = false;
+            for (let k = 0; k < this.nearbySolidMachinesScratch.length; k++) {
+              if (this.nearbySolidMachinesScratch[k] === m) {
+                seen = true;
+                break;
+              }
+            }
+            if (seen) continue;
+            this.nearbySolidMachinesScratch.push(m);
+
+            const fp = engine.getMachineFootprint(m);
+            computeCapytorioMachineWorldAabb(
+              originX,
+              originZ,
+              m.gx,
+              m.gz,
+              fp.width,
+              fp.height,
+              this.buildingAabbScratch
+            );
+            if (
+              resolveCircleAabbPush(
+                wx,
+                wz,
+                HERO_COLLISION_RADIUS,
+                this.buildingAabbScratch.minX,
+                this.buildingAabbScratch.minZ,
+                this.buildingAabbScratch.maxX,
+                this.buildingAabbScratch.maxZ,
+                this.collisionPushScratch
+              )
+            ) {
+              wx = this.collisionPushScratch.x;
+              wz = this.collisionPushScratch.z;
+            }
+          }
+        }
+      }
+
+      if (ufoParkedHere) {
+        if (
+          resolveCircleCirclePush(
+            wx,
+            wz,
+            HERO_COLLISION_RADIUS,
+            site.padX,
+            site.padZ,
+            UFO_HULL_COLLISION_RADIUS,
+            this.collisionPushScratch
+          )
+        ) {
+          wx = this.collisionPushScratch.x;
+          wz = this.collisionPushScratch.z;
+        }
+      }
+    }
+
+    this.heroLocalPos.x = wx - originX;
+    this.heroLocalPos.z = wz - originZ;
   }
 
   // --- 4. NUMBER STAMPEDE TICK (BOUNDED CIRCUIT WITH SIDE RETURN BOARDWALKS) ---
@@ -13578,7 +14277,12 @@ export class PlayStyleManager {
           this.cosmicStage === 'playing',
           this.currentMode === 'capytorio'
         );
-    if (delta < 0 && step.launchToOrbit && this.currentMode === 'capytorio') {
+    if (
+      delta < 0 &&
+      step.launchToOrbit &&
+      this.currentMode === 'capytorio' &&
+      !this.isUfoAirFlightActive()
+    ) {
       if (isCapytorioOblique) {
         this.currentLogScaleMeters = CAPYTORIO_ORBIT_HANDOFF_LOG_METERS;
         this.launchIntoCosmos(step.launchTargetLogMeters, 'capytorio');
@@ -13745,6 +14449,8 @@ export class PlayStyleManager {
     this.sporeWaterMat?.dispose();
     this.capytorioRenderer?.dispose();
     this.fallGuysGhostMat?.dispose();
+    this.ufoLandingReticleGeo?.dispose();
+    this.ufoLandingReticleMat?.dispose();
     disposeObject3DTree(this.scene);
     this.renderer.domElement.remove();
     this.renderer.dispose();

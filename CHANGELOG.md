@@ -2,6 +2,13 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.9.0] - 2026-11-28
+
+- Removed the static `#static-boot-shell` loading screen and its frozen progress bar from `index.html` and cleaned up its dismissal hooks in `CapyGameView.tsx` so the application loads straight into the live viewport without a stuck splash overlay.
+- Added zero-allocation solid collision resolution (`SurfaceCollisionMath.ts`, wired into `PlayStyleManager.ts`) preventing the player capybara from clipping through the parked UFO hull and solid factory/sanctuary buildings while keeping flat Capytorio transport belts walkable.
+- Tightened the parked UFO interaction prompt to trigger strictly when physically touching the saucer rim (`3.35 m` contact radius), replaced the orbital launch action with local-air fast-travel flight (`UfoFlightSequence.ts` `'air_flight'` phase, `TelemetryReadout.tsx` `Board UFO` / `Land UFO` controls), added altitude-scaled WASD, Shift boost, and tap-on-map flight with a live dry-land landing reticle, and allowed landing and reparking the UFO anywhere on clear dry land across the map.
+- Extended `UfoFlightSequence.test.ts` and updated `ProgressionAndPhysics.test.ts` to cover solid UFO/building collisions, touching-only UFO boarding, local-air fast-travel flight, landing anywhere, and loading-screen removal.
+
 ## [1.8.0] - 2026-11-27
 
 - Added a 5-ring nested GPU planetary surface clipmap (`CapytorioPlanetarySurfaceLayer.ts`, scales 1 through 256 covering 640 m up to 163.84 km) powered by `factorio-mapgen`'s extended multi-scale overview surface evaluator (`_sampleOverviewSurface`) so genuine Factorio Nauvis biomes, razor-sharp coastlines, lakes, forests, and ore fields remain continuously visible edge-to-edge all the way from ground level into high orbit with zero mid-screen cutoff or blocky shorelines.
