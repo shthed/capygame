@@ -101,6 +101,9 @@ const LazyCapyPrivacyModal = React.lazy(() =>
 const LazyCapyTermsModal = React.lazy(() =>
   import('./CapyAboutModal').then((m) => ({ default: m.CapyTermsModal }))
 );
+const LazyCapyFeedbackModal = React.lazy(() =>
+  import('./CapyFeedbackModal').then((m) => ({ default: m.CapyFeedbackModal }))
+);
 const LazyCapyTutorialBanner = React.lazy(() =>
   import('./CapyAboutModal').then((m) => ({ default: m.CapyTutorialBanner }))
 );
@@ -361,6 +364,7 @@ export const CapyGameView: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState<boolean>(false);
   const [isBountiesOpen, setIsBountiesOpen] = useState<boolean>(false);
   const [isJsonEditorOpen, setIsJsonEditorOpen] = useState<boolean>(false);
   const [isFirstRunSetupOpen, setIsFirstRunSetupOpen] = useState<boolean>(() => {
@@ -501,7 +505,8 @@ export const CapyGameView: React.FC = () => {
     isJsonEditorOpen ||
     isDebugReportOpen ||
     isPrivacyOpen ||
-    isTermsOpen;
+    isTermsOpen ||
+    isFeedbackOpen;
   const menuOpenRef = useRef<boolean>(false);
   menuOpenRef.current = isMenuOpen;
   const wasOverlayPausedRef = useRef<boolean>(false);
@@ -1357,6 +1362,7 @@ export const CapyGameView: React.FC = () => {
       isSettingsOpen ||
       isPrivacyOpen ||
       isTermsOpen ||
+      isFeedbackOpen ||
       isJsonEditorOpen ||
       isMenuOpen ||
       isScaleAtlasOpen ||
@@ -1364,7 +1370,8 @@ export const CapyGameView: React.FC = () => {
       isInfographicExpanded ||
       isPerfLogOpen;
     NativeBridge.setBackModalOpen(anyOpen, () => {
-      if (isTermsOpen) setIsTermsOpen(false);
+      if (isFeedbackOpen) setIsFeedbackOpen(false);
+      else if (isTermsOpen) setIsTermsOpen(false);
       else if (isPrivacyOpen) setIsPrivacyOpen(false);
       else if (isAboutOpen) setIsAboutOpen(false);
       else if (isSettingsOpen) setIsSettingsOpen(false);
@@ -1386,6 +1393,7 @@ export const CapyGameView: React.FC = () => {
       isDebugReportOpen ||
       isPrivacyOpen ||
       isTermsOpen ||
+      isFeedbackOpen ||
       isFirstRunSetupOpen;
     if (overlayPausedNow) {
       clearHeldInputsRef.current?.();
@@ -1399,6 +1407,7 @@ export const CapyGameView: React.FC = () => {
     isSettingsOpen,
     isPrivacyOpen,
     isTermsOpen,
+    isFeedbackOpen,
     isJsonEditorOpen,
     isDebugReportOpen,
     isMenuOpen,
@@ -2242,6 +2251,7 @@ export const CapyGameView: React.FC = () => {
           setIsPerfLogOpen(false);
           setIsPrivacyOpen(false);
           setIsTermsOpen(false);
+          setIsFeedbackOpen(false);
           setIsAboutOpen(false);
           setIsSettingsOpen(false);
           setIsJsonEditorOpen(false);
@@ -5235,6 +5245,7 @@ export const CapyGameView: React.FC = () => {
         !isAboutOpen &&
         !isPrivacyOpen &&
         !isTermsOpen &&
+        !isFeedbackOpen &&
         !isJsonEditorOpen && (() => {
           const activeBounties =
             stats.bounties && stats.bounties.length > 0
@@ -5337,6 +5348,7 @@ export const CapyGameView: React.FC = () => {
         !isAboutOpen &&
         !isPrivacyOpen &&
         !isTermsOpen &&
+        !isFeedbackOpen &&
         !isJsonEditorOpen && (
           <TelemetryReadout
             variant="abilities"
@@ -5359,6 +5371,7 @@ export const CapyGameView: React.FC = () => {
         !isAboutOpen &&
         !isPrivacyOpen &&
         !isTermsOpen &&
+        !isFeedbackOpen &&
         !isJsonEditorOpen && (
           <TelemetryReadout
             variant="ufo_prompt"
@@ -5500,6 +5513,7 @@ export const CapyGameView: React.FC = () => {
         !isAboutOpen &&
         !isPrivacyOpen &&
         !isTermsOpen &&
+        !isFeedbackOpen &&
         !isJsonEditorOpen &&
         capytorioSnap && (
           <Suspense fallback={null}>
@@ -5597,6 +5611,10 @@ export const CapyGameView: React.FC = () => {
               setIsAboutOpen(false);
               setIsSettingsOpen(true);
             }}
+            onOpenFeedback={() => {
+              setIsAboutOpen(false);
+              setIsFeedbackOpen(true);
+            }}
             onOpenPrivacy={() => {
               setIsAboutOpen(false);
               setIsPrivacyOpen(true);
@@ -5663,6 +5681,10 @@ export const CapyGameView: React.FC = () => {
               setIsSettingsOpen(false);
               setIsAboutOpen(true);
             }}
+            onOpenFeedback={() => {
+              setIsSettingsOpen(false);
+              setIsFeedbackOpen(true);
+            }}
             onOpenPrivacy={() => {
               setIsSettingsOpen(false);
               setIsPrivacyOpen(true);
@@ -5693,6 +5715,16 @@ export const CapyGameView: React.FC = () => {
       {isTermsOpen && (
         <Suspense fallback={null}>
           <LazyCapyTermsModal onClose={() => setIsTermsOpen(false)} />
+        </Suspense>
+      )}
+
+      {/* ANONYMOUS IN-GAME FEEDBACK MODAL (Lazily Loaded) */}
+      {isFeedbackOpen && (
+        <Suspense fallback={null}>
+          <LazyCapyFeedbackModal
+            activeMode={universeScale.active ? 'cosmic' : activeMode}
+            onClose={() => setIsFeedbackOpen(false)}
+          />
         </Suspense>
       )}
 
@@ -6020,6 +6052,7 @@ export const CapyGameView: React.FC = () => {
         !isSettingsOpen &&
         !isPrivacyOpen &&
         !isTermsOpen &&
+        !isFeedbackOpen &&
         !isJsonEditorOpen &&
         !isDebugReportOpen &&
         !isMenuOpen &&

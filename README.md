@@ -126,7 +126,7 @@ Open `http://localhost:3000` in your browser.
 
 ```bash
 npm run lint                 # Strict TypeScript type-checking (tsc -p tsconfig.json --noEmit)
-npm run test:unit            # Fast deterministic unit tests (11 suites: Audio DSP, Progression, Save/Cloud Sync, Capytorio, Forest, Physics, Universe & GPU)
+npm run test:unit            # Fast deterministic unit tests (12 suites: Audio DSP, Feedback Relay, Progression, Save/Cloud Sync, Capytorio, Forest, Physics, Universe & GPU)
 npm run build                # Production bundle compilation into dist/
 npm run verify:playstore     # Play Store manifest, TWA version parity, <=500 KB chunk budget & cold-boot preload preflight
 npm run test:game            # End-to-end Playwright suite (scripts/test-capygame.mjs)

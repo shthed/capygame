@@ -84,8 +84,10 @@ CapyGame runs 100% client-side with zero developer backend servers, analytics SD
 | :--- | :--- |
 | **Offline-Only Build (`VITE_GOOGLE_CLIENT_ID` unset)** | **No user data collected or shared.** All progression, settings, and factory saves stay strictly on-device in browser `localStorage` and Cache Storage. |
 | **With Optional Google Drive (`VITE_GOOGLE_CLIENT_ID` set) / Play Games Sync** | Declare **Account info (User ID / Email)** and **App activity (In-game save files)** as **Optional** (`Collected` only when the player explicitly signs in, **Not shared** with third parties, **Encrypted in transit** via HTTPS, **User can request/perform deletion** directly inside Settings or Google Drive). |
+| **Optional Anonymous In-Game Feedback (`Send Feedback`)** | Voluntary, user-initiated text submissions are sent over encrypted HTTPS to the CapyGame Cloudflare Worker relay (`POST /api/feedback`) solely to open an anonymous public issue on `capyboop/capygame` with app version, active mode, platform, and viewport only (no account, email, or personal identity collected; not shared with ad/analytics networks). |
 
 - **Privacy Policy URL**: `https://capyboop.com/privacy.html` (kept synchronized with `public/privacy.html`).
+- **Terms of Service URL**: `https://capyboop.com/terms.html` (kept synchronized with `public/terms.html`).
 - **IARC Content Rating**: Expected **Everyone / PEGI 3** (no violence, no user-generated chat, no purchases, no location sharing).
 
 ---
