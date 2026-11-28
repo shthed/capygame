@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  MessageSquare,
   Settings as SettingsIcon,
   Shield,
   X,
@@ -25,6 +26,7 @@ export interface CapyAboutModalProps {
   onClose: () => void;
   onStartTutorial: (tutorial: CapyTutorial) => void;
   onOpenSettings: () => void;
+  onOpenFeedback: () => void;
   onOpenPrivacy: () => void;
   onOpenTerms: () => void;
 }
@@ -33,6 +35,7 @@ export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
   onClose,
   onStartTutorial,
   onOpenSettings,
+  onOpenFeedback,
   onOpenPrivacy,
   onOpenTerms,
 }) => {
@@ -139,6 +142,18 @@ export const CapyAboutModal: React.FC<CapyAboutModalProps> = ({
             >
               <SettingsIcon className="w-3.5 h-3.5 text-sky-400" />
               <span>Settings</span>
+            </button>
+            <button
+              type="button"
+              data-testid="open-feedback-btn"
+              onClick={() => {
+                AudioService.playUiClick('tap');
+                onOpenFeedback();
+              }}
+              className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium text-xs px-3 py-2 rounded-lg border border-white/10 transition-colors cursor-pointer"
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-amber-300" />
+              <span>Send Feedback</span>
             </button>
             <button
               type="button"

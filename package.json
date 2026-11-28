@@ -1,6 +1,6 @@
 {
   "name": "capygame",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "lint": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
-    "test:unit": "tsx --test src/capygame/services/ProgressionAndPhysics.test.ts src/capygame/services/SaveAndCloudSync.test.ts src/capygame/services/AudioSynthesisMath.test.ts src/capygame/engine/UniverseAndGpuMath.test.ts src/capygame/engine/CapytorioFactoryEngine.test.ts src/capygame/engine/capytorio/CapytorioLogisticsMath.test.ts src/capygame/engine/controllers/ForestPlacementMath.test.ts src/capygame/engine/forestMicroSpecimens.test.ts src/capygame/engine/UfoFlightSequence.test.ts src/capygame/engine/TutorialCatalog.test.ts src/capygame/engine/FocusGuard.test.ts",
+    "test:unit": "tsx --test src/capygame/services/ProgressionAndPhysics.test.ts src/capygame/services/SaveAndCloudSync.test.ts src/capygame/services/AudioSynthesisMath.test.ts src/capygame/services/FeedbackAndWorker.test.ts src/capygame/engine/UniverseAndGpuMath.test.ts src/capygame/engine/CapytorioFactoryEngine.test.ts src/capygame/engine/capytorio/CapytorioLogisticsMath.test.ts src/capygame/engine/controllers/ForestPlacementMath.test.ts src/capygame/engine/forestMicroSpecimens.test.ts src/capygame/engine/UfoFlightSequence.test.ts src/capygame/engine/TutorialCatalog.test.ts src/capygame/engine/FocusGuard.test.ts",
     "verify:playstore": "node scripts/verify-playstore-readiness.mjs",
     "test:game": "node scripts/test-capygame.mjs",
     "test:pwa": "node scripts/test-pwa-offline.mjs",

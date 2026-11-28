@@ -2,6 +2,12 @@
 
 All notable changes to CapyGame are documented in this file using Semantic Versioning.
 
+## [1.6.0] - 2026-11-27
+
+- Added an anonymous in-game feedback flow matching Capy Paint: players can open **Send Feedback** from About or Settings (Basic and Advanced modes) to submit Bug Reports, Feature Requests, or General Feedback directly as anonymous issues on `capyboop/capygame` with automatic non-PII context (`appVersion`, active mode, platform, viewport) and prefilled GitHub fallback links when offline or unconfigured.
+- Added a Cloudflare Worker relay (`worker/index.ts` and `worker/feedbackProtocol.ts`) bound in `wrangler.jsonc` (`run_worker_first: ["/api/*"]`, `FEEDBACK_RATE_LIMITER` at 5 requests/min per IP, and Workers Logs + Traces observability) with strict origin allowlisting, bounded 8 KB request-body streaming, honeypot spam filtering, markdown/mention sanitization, API security headers, and `CAPYBOOP_FEEDBACK_TOKEN` GitHub Issues API forwarding.
+- Lazy-loaded `CapyFeedbackModal.tsx` and `FeedbackService.ts` so cold-boot preloads remain untouched, disclosed optional anonymous in-game feedback in `public/privacy.html`, `public/terms.html`, and `docs/ANDROID_PLAY_STORE.md`, included `worker/` in `tsconfig.json`, and added unit tests in `FeedbackAndWorker.test.ts`.
+
 ## [1.5.1] - 2026-11-27
 
 - Added a standalone Terms of Service page at `public/terms.html` (served at `https://capyboop.com/terms.html`) matching the dark styling and concise tone of `public/privacy.html`, covering free client-side zero-server operation, local saves and user-initiated Google Drive (`drive.file` / `CapyGame-Cloud-Save.json`) and Google Play Games backups, player ownership of saves and creations, acceptable use, and an "as-is" warranty disclaimer with links to `./`, `./privacy.html`, and `https://github.com/capyboop/capygame/issues`.

@@ -39,7 +39,7 @@ From the repository root:
 ```bash
 npm ci                       # Clean dependency install
 npm run lint                 # Strict TypeScript check (tsc -p tsconfig.json --noEmit)
-npm run test:unit            # Fast deterministic unit tests (node:test via tsx, 11 suites)
+npm run test:unit            # Fast deterministic unit tests (node:test via tsx, 12 suites)
 npm run build                # Compile production bundle into dist/
 npm run verify:playstore     # Validate TWA/PWA manifests, assets, <=500 KB chunk budgets & cold-boot preload diet
 npm run dev                  # Start Vite dev server on http://localhost:3000

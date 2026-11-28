@@ -20,8 +20,8 @@
     "path": "./android-release.keystore",
     "alias": "capygame"
   },
-  "appVersionName": "1.5.1",
-  "appVersionCode": 151,
+  "appVersionName": "1.6.0",
+  "appVersionCode": 160,
   "shortcuts": [
     {
       "name": "Infinite Zoom",

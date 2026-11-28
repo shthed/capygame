@@ -4,6 +4,7 @@ import {
   Download,
   FileText,
   HelpCircle,
+  MessageSquare,
   Moon,
   RotateCcw,
   Settings as SettingsIcon,
@@ -61,6 +62,7 @@ export interface CapySettingsModalProps {
   onToggleFpsButton: (next: boolean) => void;
   onUnlockAllFeatures: () => void;
   onOpenAbout: () => void;
+  onOpenFeedback: () => void;
   onOpenPrivacy: () => void;
   onOpenTerms: () => void;
   onOpenJsonEditor: () => void;
@@ -96,6 +98,7 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
   onToggleFpsButton,
   onUnlockAllFeatures,
   onOpenAbout,
+  onOpenFeedback,
   onOpenPrivacy,
   onOpenTerms,
   onOpenJsonEditor,
@@ -558,6 +561,18 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                   >
                     <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
                     <span>About &amp; Tutorials</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="open-feedback-btn"
+                    onClick={() => {
+                      AudioService.playUiClick('tap');
+                      onOpenFeedback();
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Send Feedback</span>
                   </button>
                   <button
                     type="button"
@@ -1749,6 +1764,18 @@ export const CapySettingsModal: React.FC<CapySettingsModalProps> = ({
                   >
                     <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
                     <span>About &amp; Tutorials</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="open-feedback-btn"
+                    onClick={() => {
+                      AudioService.playUiClick('tap');
+                      onOpenFeedback();
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-white/10 cursor-pointer"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Send Feedback</span>
                   </button>
                   <button
                     type="button"
