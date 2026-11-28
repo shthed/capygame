@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CapyGame — Privacy Policy</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 48px;
+        background: #09090b;
+        color: #f4f4f5;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        line-height: 1.65;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        background: #18181b;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 16px;
+        padding: 28px 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.5rem;
+        color: #ffffff;
+      }
+      h2 {
+        margin: 24px 0 8px;
+        font-size: 1.05rem;
+        color: #38bdf8;
+      }
+      p, li {
+        font-size: 0.95rem;
+        color: #d4d4d8;
+      }
+      ul {
+        padding-left: 20px;
+      }
+      .meta {
+        font-size: 0.85rem;
+        color: #a1a1aa;
+        margin-bottom: 20px;
+      }
+      a {
+        color: #34d399;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>CapyGame — Privacy Policy</h1>
+      <p class="meta">Effective Date: November 26, 2026</p>
+
+      <p>
+        CapyGame is a standalone 3D universe simulator, world builder, and multiphysics game
+        archipelago designed for players of all ages. CapyGame runs with <strong>zero backend servers</strong>
+        and zero developer-hosted databases.
+      </p>
+
+      <h2>1. Data We Collect</h2>
+      <p>
+        CapyGame does <strong>not</strong> operate game servers and does not collect, sell, or share
+        personal data with third parties. We do not integrate advertising networks, behavioral tracking
+        SDKs, cross-app identifiers, or external analytics servers.
+      </p>
+
+      <h2>2. On-Device Storage</h2>
+      <p>By default, all game data remains strictly on your device using standard browser storage:</p>
+      <ul>
+        <li>
+          <strong>Progression and Discovery Stickers:</strong> Saved locally under
+          <code>capy_game_save_v3</code> (unlocks, micro-glade specimen stickers, coins, DNA, Capytorio
+          factory snapshots, and Sanctuary builds) plus a local timestamp under
+          <code>capy_game_save_updated_ms</code>.
+        </li>
+        <li>
+          <strong>Settings and Preferences:</strong> Saved locally under
+          <code>capy_game_settings_v1</code> (Basic or Advanced UI mode, camera, audio, and graphics quality).
+        </li>
+        <li>
+          <strong>Procedural World &amp; Setup Preferences:</strong> Saved locally under
+          <code>capy_game_procedural_config_v1</code> and <code>capy_game_onboarding_v1</code> (custom simulation
+          parameters, seed presets, and first-run setup state).
+        </li>
+        <li>
+          <strong>Best Parkour Ghost Recording:</strong> Saved locally under
+          <code>capy_game_yuzu_ghost_v1</code> (quantized local Yuzu Mountain time-trial ghost replay).
+        </li>
+        <li>
+          <strong>Offline App Cache:</strong> Stored locally in Service Worker Cache Storage so CapyGame
+          runs offline.
+        </li>
+      </ul>
+
+      <h2>3. Optional Cloud Sync (Google Drive &amp; Play Games)</h2>
+      <p>
+        Cloud sync is strictly optional and disabled until you explicitly choose to sign in inside Settings:
+      </p>
+      <ul>
+        <li>
+          <strong>Google Drive Sync (Web &amp; Android TWA):</strong> When enabled by the player,
+          CapyGame authenticates directly from your browser using Google Sign-In with minimal
+          <code>drive.file</code> permission. CapyGame can only create, read, update, or delete its own
+          <code>CapyGame-Cloud-Save.json</code> backup file inside your personal Google Drive. Access
+          tokens are held strictly in browser memory for the active session, are never written to
+          <code>localStorage</code> or <code>sessionStorage</code>, and are cleared on sign-out.
+        </li>
+        <li>
+          <strong>Google Play Games Services (Native Android Builds):</strong> When packaged with the
+          optional Android Play Games bridge, players may sign in with their Google Play Games profile
+          to store save snapshots directly in Google Play Games Saved Games.
+        </li>
+      </ul>
+
+      <h2>4. Device Capabilities and Accessibility Audio</h2>
+      <p>
+        When enabled by the user, "Read Aloud" scale cards use the device's built-in Web Speech API
+        (<code>speechSynthesis</code>) directly on-device. CapyGame does not record microphone audio,
+        access camera feeds, request location data, or read contacts.
+      </p>
+
+      <h2>5. Managing or Deleting Your Data</h2>
+      <p>
+        You retain complete control over your game saves. You can export or import full-profile JSON
+        backups inside Settings (Basic or Advanced Mode), reset local saves at any time, delete your
+        <code>CapyGame-Cloud-Save.json</code> cloud backup from Settings or directly in Google Drive,
+        or clear app storage from your Android or browser settings.
+      </p>
+
+      <h2>6. Contact</h2>
+      <p>
+        For questions about this Privacy Policy or Google Play Store releases, open an issue on the
+        <a href="https://github.com/capyboop/capygame/issues" target="_blank" rel="noopener noreferrer">CapyGame Support &amp; Issues tracker</a>,
+        review our <a href="./terms.html">Terms of Service</a>, or return to
+        <a href="./">CapyGame</a>.
+      </p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+/*
+  Cross-Origin-Opener-Policy: same-origin-allow-popups
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+/
+  Cache-Control: public, max-age=0, must-revalidate
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+/manifest.webmanifest
+  Cache-Control: public, max-age=0, must-revalidate
+/privacy.html
+  Cache-Control: public, max-age=0, must-revalidate
+/terms.html
+  Cache-Control: public, max-age=0, must-revalidate
+/data/*
+  Cache-Control: public, max-age=0, must-revalidate
+/assets/*
+  Cache-Control: public, max-age=3600, must-revalidate
+/assets/*.js
+  ! Cache-Control
+  Cache-Control: public, max-age=31536000, immutable
+/assets/*.css
+  ! Cache-Control
+  Cache-Control: public, max-age=31536000, immutable
+/assets/*.wasm
+  ! Cache-Control
+  Cache-Control: public, max-age=31536000, immutable
+
